@@ -68,7 +68,7 @@ The whole overhead can be summed up as:
 - Multiple encoder process creation
 - Python objects <-> VapourSynth frames
 - FFmpeg -> VapourSynth -> Encoder pipes and inter process communication between them. Let's say you use 32 workers: It means 32 independent ffmpeg instances, 32 vapoursynth instances and also 32 encoder instances (96 processes communicating with each other and creating memory explosion)
-- If you add TQ into the equation, separate decoding/seeking and using VapourSynth based metrics crate extra significant overhead
+- If you add TQ into the equation, separate decoding/seeking and using VapourSynth based metrics create extra significant overhead
 
 # Installation
 Download the binary specific to your arch from the Releases page and extract them in your PATH. The pre-compiled binaries have all the dependencies and built statically with extensive optimizations.
