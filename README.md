@@ -11,7 +11,7 @@
 11. [Credits](https://github.com/emrakyz/xav?tab=readme-ov-file#credits)
 
 # Dependencies
-- Nothing (except svt-av1) if you use the pre-compiled binaries or build it statically with the provided tool.
+- Nothing really, (except svt-av1 for actual encoding and `mkvmerge` to concat video streams) if you use the pre-compiled binaries or build it statically with the provided tool.
 - Naturally, TQ feature would require [VSHIP](https://github.com/Line-fr/Vship) library being installed (no need for VapourSynth) since it's based on CUDA/HIP.
 - Currently, only forks ([SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) and [-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)) support `--progress 3` if progress monitoring is desired.
 
