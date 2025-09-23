@@ -232,7 +232,11 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
         let y_linesize = (*frame).linesize[0] as usize;
         let is_10bit = y_linesize >= (width as usize) * 2;
 
-        let color_range = ((*frame).color_range != 0).then_some((*frame).color_range);
+        let color_range = match (*frame).color_range {
+            1 => Some(0),
+            2 => Some(1),
+            _ => None,
+        };
 
         let chroma_sample_position =
             ((*frame).chroma_location != 0).then_some((*frame).chroma_location);
