@@ -1,0 +1,14 @@
+group_imports = "StdExternalCrate"
+imports_granularity = "Module"
+newline_style = "Unix"
+reorder_impl_items = true
+reorder_imports = true
+style_edition = "2024"
+unstable_features = true
+
+format_macro_bodies = true
+format_macro_matchers = true
+format_strings = true
+
+use_small_heuristics = "Max"
+remove_nested_parens = true

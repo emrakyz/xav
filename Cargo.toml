@@ -1,0 +1,26 @@
+[package]
+name = "xav"
+version = "0.1.0"
+authors = ["Emre Akyüz emreakyuz_2@hotmail.com"]
+edition = "2024"
+description = "Fastest & the most minimal chunked/target quality AV1 encoding"
+readme = "README.md"
+homepage = "https://github.com/emrakyz/xav"
+repository = "https://github.com/emrakyz/xav"
+license = "MIT"
+keywords = ["av1", "video", "multimedia", "encoding", "quality", "chunking"]
+categories = ["multimedia::video", "command-line-utilities"]
+
+[dependencies]
+libc = "0.2.175"
+crossbeam-channel = "0.5.15"
+av-decoders = { version = "0.4.0", features = ["ffmpeg_static"] }
+av-scenechange = { version = "0.17.3", features = ["ffmpeg"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+strip = "symbols"
+debug = 0
+panic = "abort"
+lto = "fat"
