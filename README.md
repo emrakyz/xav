@@ -124,7 +124,10 @@ If you use the script, you only need C, C++, libmath static libraries installed.
 
 ## Video Showcase
 
-<https://github.com/user-attachments/assets/228a4f22-b687-449d-9eb6-d0d2e7630e83>
+<video
+  width="1200px" controls preload="metadata" type="video/mp4"
+  src="https://github.com/user-attachments/assets/228a4f22-b687-449d-9eb6-d0d2e7630e83">
+</video>
 
 ## Software Used by This Project
 
