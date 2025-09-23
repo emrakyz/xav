@@ -97,16 +97,16 @@ Usage is very simple. Can be seen from the tool's help output:
 | `--help`          | -       | -        | Print help message                                   |
 | `<INPUT>`         | path    | None     | Input file path                                      |
 | `<OUTPUT>`        | path    | None     | Output file path. Appends `_av1.mkv` to the input name if not specified |
-| `--worker` , `-w` | integer | 0        | Number of encoder instances to run. If not specified, selects generic values for `--worker` and `--lp` and applies `--low-mem` |
+| `--worker`,  `-w` | integer | 0        | Number of encoder instances to run. If not specified, selects generic values for `--worker` and `--lp` and applies `--low-mem` |
 | `--low-mem`, `-l` | bool    | `true`   | Convert to 10 bit on worker thread or bit-pack 10 bit inputs to reduce memory usage |
-| `--sc`     , `-s` | path    | None     | Scene change file to use. Runs av-scenechange and creates a SCD file if not specified |
-| `--params` , `-p` | string  | `--lp 3` | Additional parameters passed directly to the encoder |
-| `--resume` , `-r` | bool    | `true`   | Add it to same cmd or use with the input file <!-- TODO: What exactly does this mean? --> |
-| `--quiet`  , `-q` | bool    | `true`   | Do not run any codepaths related to progress display |
+| `--sc`,      `-s` | path    | None     | Scene change file to use. Runs av-scenechange and creates a SCD file if not specified |
+| `--params`,  `-p` | string  | `--lp 3` | Additional parameters passed directly to the encoder |
+| `--resume`,  `-r` | bool    | `true`   | Add it to same cmd or use with the input file <!-- TODO: What exactly does this mean? --> |
+| `--quiet`,   `-q` | bool    | `true`   | Do not run any codepaths related to progress display |
 <!-- Currently non-functional:
-| `--tq`     , `-t` | `Option<String>` | None   | Allowed SSIMU2 Range for Target Quality. Takes single values or ranges formatted like `70.0-75.0` |
-| `--mode`   , `-m` | `String`         | `mean` | TQ metric evaluation mode. `mean` or percentile mean formatted like `p15` |
-| `--qp`     , `-q` | `Option<String>` | None   | Allowed CRF/QP search range for Target Quality. Takes single values or ranges formatted like `10.0-55.0` |
+| `--tq`,      `-t` | `Option<String>` | None   | Allowed SSIMU2 Range for Target Quality. Takes single values or ranges formatted like `70.0-75.0` |
+| `--mode`,    `-m` | `String`         | `mean` | TQ metric evaluation mode. `mean` or percentile mean formatted like `p15` |
+| `--qp`,      `-q` | `Option<String>` | None   | Allowed CRF/QP search range for Target Quality. Takes single values or ranges formatted like `10.0-55.0` |
 -->
 
 ## Building
