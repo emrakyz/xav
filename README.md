@@ -76,7 +76,7 @@ Download the binary specific to your arch from the Releases page and extract the
 # Usage
 Usage is very simple. Can be seen from the tool's help output:
 
-<img width="1484" height="660" alt="a" src="https://github.com/user-attachments/assets/adffe1cc-0598-4b6e-b5ea-13cb8c7ddb4b" />
+<img width="1558" height="680" alt="a" src="https://github.com/user-attachments/assets/624ff229-1414-4cbb-a42e-6c6311fa9fd8" />
 
 If the user does not provide a worker value, the tool selects generic values for `--worker` and `--lp` and applies `--low-mem` too.
 If OUTPUT is not given, it appens `_av1` to the input name: `input_av1.mkv`
