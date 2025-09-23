@@ -34,29 +34,34 @@ extern "C" fn exit_restore(_: i32) {
     std::process::exit(130);
 }
 
+// <!-- Update readme when modifying this! -->
 fn print_help() {
+    println!("Format: xav [options] <INPUT> [<OUTPUT>]");
+    println!();
+    println!("<INPUT>        Input file path");
+    println!("<OUTPUT>       Output file path. Appends `_av1.mkv` to the input name if not specified");
+    println!();
+    println!("Options:");
+    println!("--help         Show this help message");
+    println!("-w|--worker    Number of encoder instances to run. If not specified, selects generic values for `--worker` and `--lp` and applies `--low-mem`");
+    println!("-s|--sc        Scene change file to use. Runs av-scenechange and creates a SCD file if not specified");
+    println!("-r|--resume    Add it to same cmd or use with the input file");
+    println!("-l|--low-mem   Convert to 10 bit on worker thread or bit-pack 10 bit inputs to reduce memory usage");
+    println!("-q|--quiet     Do not run any codepaths related to progress display");
+    println!();
+    println!("TQ:");
+    println!("WORK IN PROGRESS");
+    // println!("-t|--tq        Allowed SSIMU2 Range for Target Quality. Takes single values or ranges formatted like `70.0-75.0`");
+    // println!("-m|--mode      TQ metric evaluation mode. `mean` or percentile mean formatted like `p15`");
+    // println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Takes single values or ranges formatted like `10.0-55.0`");
+    println!();
     println!("Examples:");
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
     println!(
         "xav -q -l -w 8 -s sc.txt -t 70-75 -c 4-70 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
     );
-    println!("xav i.mkv  # Use encoder defaults, add `_av1` to the input name.");
-    println!();
-    println!("Plain:");
-    println!("-w|--worker 8        No of encoders to run");
-    println!("-s|--sc scd.txt      SCD file to use");
-    println!("-r|--resume          Add it to same cmd or use with the input file");
-    println!("-l|--low-mem         Convert 10bit on worker thread or bit-pack (10b input)");
-    println!("-q|--quiet           Do not run any progress related codepaths");
-    println!("<INPUT>              In file w/o any flag");
-    println!("<OUTPUT>             Out file w/o any flag");
-    println!();
-    println!("TQ:");
-    println!("WORK IN PROGRESS");
-    // println!("-t|--tq 10.0-99.0    Allowed SSIMU2 Range");
-    // println!("-m|--mode p15        Metric mode for TQ: `mean`, or mean below any lowest %");
-    // println!("-c|--qp 4.0-70.0     Allowed CRF/QP range for TQ");
+    println!("xav i.mkv  # Uses all defaults, creates a `scd_i.txt` and output will be named `i_av1.mkv`.");
 }
 
 fn parse_args() -> Args {
