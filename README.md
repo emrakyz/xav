@@ -89,7 +89,8 @@ Download the binary specific to your arch from the Releases page and extract the
 
 Usage is very simple. Can be seen from the tool's help output:
 
-<img width="1200px" alt="xav help output" src="https://github.com/user-attachments/assets/624ff229-1414-4cbb-a42e-6c6311fa9fd8" />
+<img width="1500" height="808" alt="a" src="https://github.com/user-attachments/assets/7fba8d8b-ac19-47d4-a100-4a54170f5ac7" />
+
 
 ## Building
 
