@@ -91,24 +91,6 @@ Usage is very simple. Can be seen from the tool's help output:
 
 <img width="1200px" alt="xav help output" src="https://github.com/user-attachments/assets/624ff229-1414-4cbb-a42e-6c6311fa9fd8" />
 
-<!-- Update CLI help when modifying this! -->
-| Parameter          | Type    | Default  | Description                                          |
-| ------------------ |---------|----------|----------------------------------------------------- |
-| `--help`           | -       | -        | Print help message                                   |
-| `<INPUT>`          | path    | None     | Input file path                                      |
-| `<OUTPUT>`         | path    | None     | Output file path. Appends `_av1.mkv` to the input name if not specified |
-| `--worker`,   `-w` | integer | 0        | Number of encoder instances to run. If not specified, selects generic values for `--worker` and `--lp` |
-| `--high-mem`, `-l` | bool    | `false`  | Disables bit-packing and 10 bit conversion is handled by the decoder thread |
-| `--sc`,       `-s` | path    | None     | Scene change file to use. Runs av-scenechange and creates a SCD file if not specified |
-| `--params`,   `-p` | string  | `--lp 3` | Additional parameters passed directly to the encoder |
-| `--resume`,   `-r` | bool    | `false`  | Add it to same cmd or use with the input file <!-- TODO: What exactly does this mean? --> |
-| `--quiet`,    `-q` | bool    | `false`  | Do not run any codepaths related to progress display |
-<!-- Currently work-in-progress:
-| `--tq`,       `-t` | `Option<String>` | None   | Allowed SSIMU2 Range for Target Quality. Takes single values or ranges formatted like `70.0-75.0` |
-| `--mode`,     `-m` | `String`         | `mean` | TQ metric evaluation mode. `mean` or percentile mean formatted like `p15` |
-| `--qp`,       `-q` | `Option<String>` | None   | Allowed CRF/QP search range for Target Quality. Takes single values or ranges formatted like `10.0-55.0` |
--->
-
 ## Building
 
 Run the `build_all_static.sh` script to build ffms2 statically and build the main tool with it.
