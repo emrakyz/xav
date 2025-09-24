@@ -1,13 +1,2 @@
-/*
-
-!/src/
-!/.cargo/
-!.rustfmt.toml
-!build.rs
-!build_all_static.sh
-!Cargo.toml
-!CODE_OF_CONDUCT.md
-!CONTRIBUTING.md
-!LICENSE
-!README.md
-!.gitignore
+target
+Cargo.lock
