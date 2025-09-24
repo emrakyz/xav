@@ -36,19 +36,21 @@ extern "C" fn exit_restore(_: i32) {
 
 #[rustfmt::skip]
 fn print_help() {
-    // Update readme when modifying this!
     println!("Format: xav [options] <INPUT> [<OUTPUT>]");
     println!();
-    println!("<INPUT>        Input file path");
-    println!("<OUTPUT>       Output file path. Appends `_av1.mkv` to the input name if not specified");
+    println!("<INPUT>        Input path");
+    println!("<OUTPUT>       Output path. Adds `_av1` to the input name if not specified");
     println!();
     println!("Options:");
-    println!("--help         Show this help message");
-    println!("-w|--worker    Number of encoder instances to run. If not specified, selects generic values for `--worker` and `--lp`");
-    println!("-s|--sc        Scene change file to use. Runs av-scenechange and creates a SCD file if not specified");
+    println!("-w|--worker    Number of `svt-av1` to run");
+    println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
     println!("-r|--resume    Add it to same cmd or use with the input file");
-    println!("-h|--high-mem  Disables bit-packing and 10 bit conversion is handled by the decoder thread");
-    println!("-q|--quiet     Do not run any codepaths related to progress display");
+    println!("-h|--high-mem  Enable high memory mode: ");
+    println!("               Default Low: Bit-pack 10b or convert to 10b on worker threads");
+    println!("               High: Keep full data, do everything on decoder thread");
+    println!("               High also keeps +1 chunk in the buffer");
+	
+    println!("-q|--quiet     Do not run any code related to any progress");
     println!();
     println!("TQ:");
     println!("WORK IN PROGRESS");
@@ -62,7 +64,7 @@ fn print_help() {
     println!(
         "xav -q -h -w 8 -s sc.txt -t 70-75 -c 4-70 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
     );
-    println!("xav i.mkv  # Uses all defaults, creates a `scd_i.txt` and output will be named `i_av1.mkv`.");
+    println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`.");
 }
 
 fn parse_args() -> Args {
