@@ -1,33 +1,43 @@
-# Table of Contents
-1. [Dependencies](https://github.com/emrakyz/xav?tab=readme-ov-file#dependencies)
-2. [Description](https://github.com/emrakyz/xav?tab=readme-ov-file#description)
-3. [Features](https://github.com/emrakyz/xav?tab=readme-ov-file#features)
-4. [Design Decisions](https://github.com/emrakyz/xav?tab=readme-ov-file#design-decisions)
-5. [Why Is It Fast and Minimal Especially Compared to Av1an](https://github.com/emrakyz/xav?tab=readme-ov-file#why-is-it-fast-and-minimal-especially-compared-to-av1an)
-6. [Installation](https://github.com/emrakyz/xav?tab=readme-ov-file#installation)
-7. [Usage](https://github.com/emrakyz/xav?tab=readme-ov-file#usage)
-8. [Building](https://github.com/emrakyz/xav?tab=readme-ov-file#building)
-9. [Video Showcase](https://github.com/emrakyz/xav?tab=readme-ov-file#video-showcase)
-11. [Credits](https://github.com/emrakyz/xav?tab=readme-ov-file#credits)
+# xav - eXtreme AOMedia Video
 
-# Dependencies
+The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
+
+## Table of Contents
+
+1. [Dependencies](#dependencies)
+2. [Description](#description)
+3. [Features](#features)
+4. [Design Decisions](#design-decisions)
+5. [Why Is It Fast and Minimal Especially Compared to Av1an](#why-is-it-fast-and-minimal-especially-compared-to-av1an)
+6. [Installation](#installation)
+7. [Usage](#usage)
+8. [Building](#building)
+9. [Video Showcase](#video-showcase)
+10. [Credits](#credits)
+
+## Dependencies
+
 - Nothing really, (except svt-av1 for actual encoding and `mkvmerge` to concat video streams) if you use the pre-compiled binaries or build it statically with the provided tool.
 - Naturally, TQ feature would require [VSHIP](https://github.com/Line-fr/Vship) library being installed (no need for VapourSynth) since it's based on CUDA/HIP.
 - Currently, only forks ([SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) and [-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)) support `--progress 3` if progress monitoring is desired.
 
-# Description
+## Description
+
 `xav` aims to be the fastest, most minimal AV1 (and potentially AV2) encoding framework. By keeping its feature scope limited, the potential for the best encoder and the best video quality metric can be maximized without getting limited by extensive features.
 
 As the author has been involved with the `av1an` project since its inception as a user and continues to develop it; creating a direct competitor without purpose was not the objective. `xav` is a faster, more minimal alternative to Av1an's most popular features and the author acknowledges that `av1an` is the most powerful & feature-rich video encoding framework. This tool was developed with a strong interest and focus on the "av1an" concept.
 
-# Features
+## Features
+
 - Parses `--progress 3` output of `svt-av1` (WIP feature for mainline and available on forks such as ([SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) and [-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex))
 - Parses color and video metadata (container & frame based) to encoders automatically, including HDR metadata (Dolby Vision RPU automation for chunking is considered), FPS and resolution.
 - Offers fun process monitoring with almost no overhead for indexing, SCD, and encoding processes.
 
-# Design Decisions
+## Design Decisions
+
 It sets sane defaults without offering flags such as auto setting up the SCD algorithm.
-```
+
+```text
 min_dist = (fps_num + fps_den / 2) / fps_den;
 max_dist = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
 ```
@@ -36,7 +46,7 @@ max_dist = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
 - Overwhelming options such as different chunking methods, orders, pixel formats, or similar options are removed or not offered.
 - `xav` takes a stance that is similar to [SVT-AV1-Essential](https://github.com/nekotrix/SVT-AV1-Essential) on 10bit only encoding: It does not allow 8bit encoding.
 
-# Why Is It Fast and Minimal Especially Compared to Av1an
+## Why Is It Fast and Minimal Especially Compared to Av1an
 
 - Uses a direct memory pipeline (zero external process overhead). Everything runs within one Rust process with direct memory access.
 - Direct C FFI bindings to FFMS2. FFMS2 is currently the most efficient library to open/index/decode videos. With this way, we also get rid of Python/Vapoursynth/FFMPEG dependencies.
@@ -62,6 +72,7 @@ max_dist = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
 **`Av1an` on the other hand:**
 Relies on Python -> Vapoursynth -> FFmpeg -> Encoder and it means multiple pipe/subprocess calls with serialization overhead. And it must also parse and execute `.vpy` scripts.
 The whole overhead can be summed up as:
+
 - Python interpreter startup
 - VapourSynth initialization
 - FFmpeg subprocess spawning
@@ -70,19 +81,18 @@ The whole overhead can be summed up as:
 - FFmpeg -> VapourSynth -> Encoder pipes and inter process communication between them. Let's say you use 32 workers: It means 32 independent ffmpeg instances, 32 vapoursynth instances and also 32 encoder instances (96 processes communicating with each other and creating memory explosion)
 - If you add TQ into the equation, separate decoding/seeking and using VapourSynth based metrics create extra significant overhead
 
-# Installation
+## Installation
+
 Download the binary specific to your arch from the Releases page and extract them in your PATH. The pre-compiled binaries have all the dependencies and built statically with extensive optimizations.
 
-# Usage
+## Usage
+
 Usage is very simple. Can be seen from the tool's help output:
 
-<img width="1558" height="680" alt="a" src="https://github.com/user-attachments/assets/624ff229-1414-4cbb-a42e-6c6311fa9fd8" />
+<img width="1200px" alt="xav help output" src="https://github.com/user-attachments/assets/624ff229-1414-4cbb-a42e-6c6311fa9fd8" />
 
-If the user does not provide a worker value, the tool selects generic values for `--worker` and `--lp` and applies `--low-mem` too.
-If OUTPUT is not given, it appens `_av1` to the input name: `input_av1.mkv`
-If `-s` is not given, it creates `scd_inputname.txt`.
+## Building
 
-# Building
 Run the `build_all_static.sh` script to build ffms2 statically and build the main tool with it.
 Otherwise, you need to build the tool by showing your local, static FFmpeg build directory.
 The libraries should be in the `lib` directory inside the `ffmpeg` folder.
@@ -94,18 +104,20 @@ cargo build --release
 Building this tool requires you to have static libraries in your system for the C library (glibc or musl), CXX library (libstdc++ or libc++), libmath, ffmpeg, zimg and ffms2.
 If you use the script, you only need C, C++, libmath static libraries installed.
 
-# Video Showcase
+## Video Showcase
 
-https://github.com/user-attachments/assets/228a4f22-b687-449d-9eb6-d0d2e7630e83
+<video
+  width="1200px" controls preload="metadata" type="video/mp4"
+  src="https://github.com/user-attachments/assets/228a4f22-b687-449d-9eb6-d0d2e7630e83">
+</video>
 
+## Software Used by This Project
 
-# Software Used by This Project
 - [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) / [SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) / [SVT-AV1-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)
 - [FFMS2](https://github.com/FFMS/ffms2)
 - (WIP) [ZIMG](https://github.com/sekrit-twc/zimg) (for RGB conversion needed by VSHIP SSIMULACRA2 computation)
 - (WIP) [VSHIP](https://github.com/Line-fr/Vship)
 
-# Credits
+## Credits
+
 Huge thanks to [Soda](https://github.com/GreatValueCreamSoda) for the tremendous help & motivation & support to build this tool, and more importantly, for his friendship along the way. He is the partner in crime.
-
-

@@ -36,30 +36,35 @@ extern "C" fn exit_restore(_: i32) {
 
 #[rustfmt::skip]
 fn print_help() {
+    println!("Format: xav [options] <INPUT> [<OUTPUT>]");
+    println!();
+    println!("<INPUT>        Input path");
+    println!("<OUTPUT>       Output path. Adds `_av1` to the input name if not specified");
+    println!();
+    println!("Options:");
+    println!("-w|--worker    Number of `svt-av1` to run");
+    println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
+    println!("-r|--resume    Add it to same cmd or use with the input file");
+    println!("-h|--high-mem  Enable high memory mode: ");
+    println!("               Default Low: Bit-pack 10b or convert to 10b on worker threads");
+    println!("               High: Keep full data, do everything on decoder thread");
+    println!("               High also keeps +1 chunk in the buffer");
+	
+    println!("-q|--quiet     Do not run any code related to any progress");
+    println!();
+    println!("TQ:");
+    println!("WORK IN PROGRESS");
+    // println!("-t|--tq        Allowed SSIMU2 Range for Target Quality. Takes single values or ranges formatted like `70.0-75.0`");
+    // println!("-m|--mode      TQ metric evaluation mode. `mean` or percentile mean formatted like `p15`");
+    // println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Takes single values or ranges formatted like `10.0-55.0`");
+    println!();
     println!("Examples:");
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
     println!(
-        "xav -q -l -w 8 -s sc.txt -t 70-75 -c 4-70 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
+        "xav -q -h -w 8 -s sc.txt -t 70-75 -c 4-70 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
     );
-    println!("xav i.mkv  # Use encoder defaults, add `_av1` to the input name.");
-    println!();
-    println!("Plain:");
-    println!("-w|--worker 8        No of encoders to run");
-    println!("-s|--sc scd.txt      SCD file to use");
-    println!("-r|--resume          Add it to same cmd or use with the input file");
-    println!("-h|--high-mem        Enable high memory mode: ");
-    println!("                     Default Low Mem: Bit-pack 10b or convert to 10b on worker threads");
-    println!("                     High mem: Keep full data, do everything on decoder thread");
-    println!("-q|--quiet           Do not run any progress related codepaths");
-    println!("<INPUT>              In file w/o any flag");
-    println!("<OUTPUT>             Out file w/o any flag");
-    println!();
-    println!("TQ:");
-    println!("WORK IN PROGRESS");
-    // println!("-t|--tq 10.0-99.0    Allowed SSIMU2 Range");
-    // println!("-m|--mode p15        Metric mode for TQ: `mean`, or mean below any lowest %");
-    // println!("-c|--qp 4.0-70.0     Allowed CRF/QP range for TQ");
+    println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`.");
 }
 
 fn parse_args() -> Args {
