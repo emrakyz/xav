@@ -177,6 +177,11 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         i += 1;
     }
 
+    if high_mem && input == PathBuf::new() {
+        print_help();
+        std::process::exit(0);
+    }
+
     if resume {
         let mut saved_args = get_saved_args(&input)?;
         saved_args.resume = true;
