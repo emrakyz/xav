@@ -5,6 +5,7 @@
 !.rustfmt.toml
 !build.rs
 !build_all_static.sh
+!build_dynamic.sh
 !Cargo.toml
 !CODE_OF_CONDUCT.md
 !CONTRIBUTING.md

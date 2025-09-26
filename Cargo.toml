@@ -11,10 +11,14 @@ license = "MIT"
 keywords = ["av1", "video", "multimedia", "encoding", "quality", "chunking"]
 categories = ["multimedia::video", "command-line-utilities"]
 
+[features]
+default = []
+static = ["av-decoders"]
+
 [dependencies]
 libc = "0.2.175"
 crossbeam-channel = "0.5.15"
-av-decoders = { version = "0.4.0", features = ["ffmpeg_static"] }
+av-decoders = { version = "0.4.0", features = ["ffmpeg_static"], optional = true }
 av-scenechange = { version = "0.17.3", features = ["ffmpeg"] }
 
 [profile.release]

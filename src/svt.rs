@@ -275,7 +275,7 @@ fn write_frames(
     };
 
     let mut written = 0;
-    let mut buf = if !high_mem { Some(vec![0u8; calc_10bit_size(inf)]) } else { None };
+    let mut buf = if high_mem { None } else { Some(vec![0u8; calc_10bit_size(inf)]) };
 
     for frame in frames {
         let result = if let Some(ref mut b) = buf {

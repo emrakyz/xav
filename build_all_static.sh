@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 BUILD_DIR="${HOME}/.local/src"
 
+export PKG_CONFIG_PATH="${HOME}/.local/src/dav1d/lib/pkgconfig:${HOME}/.local/src/FFmpeg/install/lib/pkgconfig"
+
 XAV_DIR="$(pwd)"
 
 R='\e[1;91m' B='\e[1;94m'
@@ -115,19 +117,43 @@ export STRIP="llvm-strip"
 export OBJCOPY="llvm-objcopy"
 export OBJDUMP="llvm-objdump"
 
-export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fstrict-aliasing -fstrict-overflow -fno-zero-initialized-in-bss -static"
+export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fstrict-aliasing -fstrict-overflow -fno-zero-initialized-in-bss -static -fno-pic -fno-pie"
 export CFLAGS="${COMMON_FLAGS}"
 export CXXFLAGS="${COMMON_FLAGS} -stdlib=${selected_cxx}"
-export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=all -static"
+export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=all -static -fno-pic -fno-pie"
 
 mkdir -pv "${BUILD_DIR}"
 cd "${BUILD_DIR}"
+
+echo "=== Building zlib ==="
+git clone https://github.com/madler/zlib.git "${HOME}/.local/src/zlib"
+cd "${HOME}/.local/src/zlib"
+./configure --static --prefix="${HOME}/.local/src/zlib/install"
+make -j"$(nproc)"
+make install
+
+git clone https://code.videolan.org/videolan/dav1d.git "${HOME}/.local/src/dav1d"
+cd "${HOME}/.local/src/dav1d"
+meson setup build --default-library=static \
+        --buildtype=release -Denable_tools=false -Denable_examples=false
+ninja -C build
+
+cp "${HOME}/.local/src/dav1d/build/meson-private/dav1d.pc" "/tmp/dav1d.pc"
+sed -i "s|prefix=/usr/local|prefix=${HOME}/.local/src/dav1d|g" "/tmp/dav1d.pc"
+sed -i "s|includedir=\${prefix}/include|includedir=\${prefix}/include|g" "/tmp/dav1d.pc"
+sed -i "s|libdir=\${prefix}/lib64|libdir=\${prefix}/build/src|g" "/tmp/dav1d.pc" || true
+sed -i "s|libdir=\${prefix}/lib|libdir=\${prefix}/build/src|g" "/tmp/dav1d.pc" || true
+
+mkdir -p "${HOME}/.local/src/dav1d/lib/pkgconfig"
+cp /tmp/dav1d.pc "${HOME}/.local/src/dav1d/lib/pkgconfig/"
+
+cd "${HOME}/.local/src"
 
 git clone "https://github.com/FFmpeg/FFmpeg"
 
 cd "FFmpeg"
 
-git checkout n7.1 # av-decoders 4.0 and ffmpeg-the-third currently need this
+git checkout n7.1.2
 
 echo "=== Building FFmpeg with custom flags ==="
 
@@ -142,6 +168,7 @@ echo "=== Building FFmpeg with custom flags ==="
         --extra-ldflags="${LDFLAGS}" \
         --disable-shared \
         --enable-static \
+        --pkg-config-flags="--static" \
         --disable-programs \
         --disable-doc \
         --disable-htmlpages \
@@ -168,32 +195,29 @@ echo "=== Building FFmpeg with custom flags ==="
         --enable-demuxer=flv \
         --enable-decoder=h264 \
         --enable-decoder=hevc \
-        --enable-decoder=av1 \
-        --enable-decoder=vp8 \
-        --enable-decoder=vp9 \
         --enable-decoder=mpeg2video \
         --enable-decoder=mpeg1video \
         --enable-decoder=mpeg4 \
+        --enable-decoder=libdav1d \
+        --enable-decoder=vp9 \
+        --enable-decoder=vc-1 \
+        --enable-libdav1d \
         --enable-parser=h264 \
         --enable-parser=hevc \
-        --enable-parser=av1 \
-        --enable-parser=vp8 \
-        --enable-parser=vp9 \
         --enable-parser=mpeg4video \
-        --enable-parser=mpegvideo
+        --enable-parser=mpegvideo \
+        --enable-parser=av1 \
+        --enable-parser=vp9 \
+        --enable-parser=vc-1
 
 echo "=== Building FFmpeg ==="
 make -j"$(nproc)"
 
-echo "=== FFmpeg static libraries created ==="
-ls -la libav*/*.a
+echo "=== Installing FFmpeg ==="
+make install DESTDIR="${HOME}/.local/src/FFmpeg/install" prefix=""
 
-mkdir -p lib
-cp libavcodec/libavcodec.a lib/
-cp libavformat/libavformat.a lib/
-cp libavutil/libavutil.a lib/
-cp libswscale/libswscale.a lib/
-cp libswresample/libswresample.a lib/
+echo "=== FFmpeg static libraries created ==="
+ls -la "${HOME}/.local/src/FFmpeg/install/lib"/*.a
 
 FFMPEG_SRC_DIR="${HOME}/.local/src/FFmpeg"
 
@@ -207,18 +231,19 @@ mkdir -p src/config
 autoreconf -fiv
 
 echo "=== Configuring ffms2 with custom flags ==="
-PKG_CONFIG_PATH="${FFMPEG_SRC_DIR}/libavcodec:${FFMPEG_SRC_DIR}/libavformat:${FFMPEG_SRC_DIR}/libavutil:${FFMPEG_SRC_DIR}/libswscale:${FFMPEG_SRC_DIR}/libswresample" \
+PKG_CONFIG_PATH="${FFMPEG_SRC_DIR}/install/lib/pkgconfig:${HOME}/.local/src/zlib/install/lib/pkgconfig" \
         CC="${CC}" \
         CXX="${CXX}" \
         AR="${AR}" \
         RANLIB="${RANLIB}" \
-        CFLAGS="${CFLAGS}" \
-        CXXFLAGS="${CXXFLAGS}" \
-        LDFLAGS="${LDFLAGS} -L${FFMPEG_SRC_DIR}/libavcodec -L${FFMPEG_SRC_DIR}/libavformat -L${FFMPEG_SRC_DIR}/libavutil -L${FFMPEG_SRC_DIR}/libswscale -L${FFMPEG_SRC_DIR}/libswresample" \
+        CFLAGS="${CFLAGS} -I${FFMPEG_SRC_DIR}/install/include -I${HOME}/.local/src/zlib/install/include" \
+        CXXFLAGS="${CXXFLAGS} -I${FFMPEG_SRC_DIR}/install/include -I${HOME}/.local/src/zlib/install/include" \
+        LDFLAGS="${LDFLAGS} -L${FFMPEG_SRC_DIR}/install/lib -L${HOME}/.local/src/zlib/install/lib" \
         LIBS="-lpthread -lm -lz" \
         ./configure \
         --enable-static \
-        --disable-shared
+        --disable-shared \
+        --with-zlib="${HOME}/.local/src/zlib/install"
 
 echo "=== Building ffms2 ==="
 make -j"$(nproc)"
@@ -230,5 +255,10 @@ echo "ffms2 static library: $(pwd)/src/core/.libs/libffms2.a"
 cd "${XAV_DIR}"
 
 export PKG_CONFIG_ALL_STATIC=1
-export FFMPEG_DIR="${HOME}/.local/src/FFmpeg"
-cargo build --release
+export FFMPEG_DIR="${HOME}/.local/src/FFmpeg/install"
+
+[[ "${selected_cxx}" == "libc++" ]] && echo "libc++" > .libcxx || echo "libstdc++" > .libcxx
+
+cp -f ".cargo/config.toml.static" ".cargo/config.toml"
+
+cargo build --release --features static

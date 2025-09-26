@@ -94,15 +94,11 @@ Usage is very simple. Can be seen from the tool's help output:
 
 ## Building
 
-Run the `build_all_static.sh` script to build ffms2 statically and build the main tool with it.
-Otherwise, you need to build the tool by showing your local, static FFmpeg build directory.
-The libraries should be in the `lib` directory inside the `ffmpeg` folder.
+Run the `build_all_static.sh` script to build ffms2 statically and build the main tool with it. This is the indended way for maximum performance.
 
-export PKG_CONFIG_ALL_STATIC="1"
-export FFMPEG_DIR="${HOME}/.local/src/FFmpeg"
-cargo build --release
+For dynamic builds, you need ffmpegsource (ffms2) installed on your system and ffmpeg (for av-scenechange) and run `build_dynamic.sh`.
 
-Building this tool requires you to have static libraries in your system for the C library (glibc or musl), CXX library (libstdc++ or libc++), libmath, ffmpeg, zimg and ffms2.
+Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++ or libc++), libmath.
 If you use the script, you only need C, C++, libmath static libraries installed.
 
 ## Video Showcase
