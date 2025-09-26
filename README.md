@@ -98,8 +98,7 @@ Run the `build_all_static.sh` script to build ffms2 statically and build the mai
 
 For dynamic builds, you need ffmpegsource (ffms2) installed on your system and ffmpeg (for av-scenechange) and run `build_dynamic.sh`.
 
-Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++ or libc++), libmath.
-If you use the script, you only need C, C++, libmath static libraries installed.
+**NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++ or libc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. 
 
 ## Video Showcase
 
