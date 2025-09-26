@@ -200,7 +200,7 @@ echo "=== Building FFmpeg with custom flags ==="
         --enable-decoder=mpeg4 \
         --enable-decoder=libdav1d \
         --enable-decoder=vp9 \
-        --enable-decoder=vc-1 \
+        --enable-decoder=vc1 \
         --enable-libdav1d \
         --enable-parser=h264 \
         --enable-parser=hevc \
@@ -208,7 +208,7 @@ echo "=== Building FFmpeg with custom flags ==="
         --enable-parser=mpegvideo \
         --enable-parser=av1 \
         --enable-parser=vp9 \
-        --enable-parser=vc-1
+        --enable-parser=vc1
 
 echo "=== Building FFmpeg ==="
 make -j"$(nproc)"
