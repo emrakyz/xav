@@ -45,11 +45,11 @@ fn print_help() {
     println!("-w|--worker    Number of `svt-av1` to run");
     println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
     println!("-r|--resume    Add it to same cmd or use with the input file");
-    println!("-h|--high-mem  Enable high memory mode: ");
-    println!("               Default Low: Bit-pack 10b or convert to 10b on worker threads");
-    println!("               High: Keep full data, do everything on decoder thread");
-    println!("               High also keeps +1 chunk in the buffer");
-	
+    // println!("-h|--high-mem  Enable high memory mode: ");
+    // println!("               Default Low: Bit-pack 10b or convert to 10b on worker threads");
+    // println!("               High: Keep full data, do everything on decoder thread");
+    // println!("               High also keeps +1 chunk in the buffer");
+    //
     println!("-q|--quiet     Do not run any code related to any progress");
     println!();
     println!("TQ:");
@@ -112,7 +112,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut qp_range = None;
     let mut params = String::new();
     let mut resume = false;
-    let mut high_mem = false;
+    let high_mem = false;
     let mut quiet = false;
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
@@ -159,9 +159,9 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
             "-r" | "--resume" => {
                 resume = true;
             }
-            "-h" | "--high-mem" => {
-                high_mem = true;
-            }
+            // "-h" | "--high-mem" => {
+            //     high_mem = true;
+            // }
             "-q" | "--quiet" => {
                 quiet = true;
             }
@@ -177,10 +177,10 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    if high_mem && input == PathBuf::new() {
-        print_help();
-        std::process::exit(0);
-    }
+    // if high_mem && input == PathBuf::new() {
+    //     print_help();
+    //     std::process::exit(0);
+    // }
 
     if resume {
         let mut saved_args = get_saved_args(&input)?;
