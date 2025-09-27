@@ -42,9 +42,9 @@ fn print_help() {
     println!("<OUTPUT>       Output path. Adds `_av1` to the input name if not specified");
     println!();
     println!("Options:");
-    println!("-w|--worker    Number of `svt-av1` to run");
+    println!("-w|--worker    Number of `svt-av1` instances to run");
     println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
-    println!("-r|--resume    Add it to same cmd or use with the input file");
+    println!("-r|--resume    Resume the encoding. Example below");
     // println!("-h|--high-mem  Enable high memory mode: ");
     // println!("               Default Low: Bit-pack 10b or convert to 10b on worker threads");
     // println!("               High: Keep full data, do everything on decoder thread");
@@ -61,9 +61,9 @@ fn print_help() {
     println!("Examples:");
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
-    println!(
-        "xav -q -h -w 8 -s sc.txt -t 70-75 -c 4-70 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
-    );
+    // println!(
+    //     "xav -q -w 8 -s sc.txt -t 70-75 -c 4-70 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
+    // );
     println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`.");
 }
 
