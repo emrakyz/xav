@@ -89,8 +89,7 @@ Download the binary specific to your arch from the Releases page and extract the
 
 Usage is very simple. Can be seen from the tool's help output:
 
-<img width="1500" height="808" alt="a" src="https://github.com/user-attachments/assets/7fba8d8b-ac19-47d4-a100-4a54170f5ac7" />
-
+<img width="1478" height="638" alt="a" src="https://github.com/user-attachments/assets/cfb50523-1239-4bcd-a6b8-669ab484b61b" />
 
 ## Building
 
