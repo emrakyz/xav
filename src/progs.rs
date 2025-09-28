@@ -182,10 +182,10 @@ impl ProgsTrack {
                     break;
                 }
 
-                let Ok(line) = String::from_utf8(buffer.clone()) else {
-                    continue;
+                let line = match std::str::from_utf8(&buffer) {
+                    Ok(s) => s.trim_end_matches('\r'),
+                    Err(_) => continue,
                 };
-                let line = line.trim_end_matches('\r');
 
                 if line.contains("error") {
                     eprintln!("{line}");
