@@ -123,7 +123,6 @@ fn dec_10bit(
     let frame_size = calc_10bit_size(inf);
     let packed_size = calc_packed_size(inf);
     let mut frame_buf = vec![0u8; frame_size];
-    let mut temp_pack = [0u8; 8];
 
     let max_chunk_size = get_max_chunk_size(inf);
     let mut frames_buffer: Vec<Vec<u8>> =
@@ -137,7 +136,7 @@ fn dec_10bit(
                 continue;
             }
 
-            pack_10bit(&frame_buf, &mut frames_buffer[i], &mut temp_pack);
+            pack_10bit(&frame_buf, &mut frames_buffer[i]);
             valid += 1;
         }
 
