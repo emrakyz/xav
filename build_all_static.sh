@@ -198,6 +198,7 @@ echo "=== Building FFmpeg with custom flags ==="
         --enable-decoder=mpeg2video \
         --enable-decoder=mpeg1video \
         --enable-decoder=mpeg4 \
+        --enable-decoder=av1 \
         --enable-decoder=libdav1d \
         --enable-decoder=vp9 \
         --enable-decoder=vc1 \

@@ -281,7 +281,7 @@ fn write_frames(
     child: &mut std::process::Child,
     frames: Vec<Vec<u8>>,
     inf: &VidInf,
-    high_mem: bool,
+    _high_mem: bool,
     conversion_buf: &mut Option<Vec<u8>>,
 ) -> usize {
     let Some(mut stdin) = child.stdin.take() else {
