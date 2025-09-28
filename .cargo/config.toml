@@ -1,5 +1,5 @@
 [env]
-RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -C link-args=-static -no-pie -fno-pic -C target-feature=+crt-static -C relocation-model=static"
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -C link-args=-static -no-pie -fno-pic -C target-feature=+crt-static -C relocation-model=static -Z panic_abort_tests"
 
 [build]
 target = "x86_64-unknown-linux-gnu"
@@ -16,4 +16,5 @@ rustflags = [
     "-C", "link-args=-static -no-pie -fno-pic",
     "-C", "target-feature=+crt-static",
     "-C", "relocation-model=static",
+    "-Z", "panic_abort_tests",
 ]
