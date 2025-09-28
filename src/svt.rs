@@ -179,82 +179,11 @@ fn dec_8bit(chunks: &[Chunk], source: *mut std::ffi::c_void, inf: &VidInf, tx: &
     }
 }
 
-fn dec_10bit_full(
-    chunks: &[Chunk],
-    source: *mut std::ffi::c_void,
-    inf: &VidInf,
-    tx: &Sender<ChunkData>,
-) {
-    let max_chunk_size = get_max_chunk_size(inf);
-    let frame_size = calc_10bit_size(inf);
-    let mut frames_buffer: Vec<Vec<u8>> =
-        (0..max_chunk_size).map(|_| vec![0u8; frame_size]).collect();
-
-    for chunk in chunks {
-        let mut valid = 0;
-
-        for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            if extr_10bit(source, idx, &mut frames_buffer[i]).is_ok() {
-                valid += 1;
-            }
-        }
-
-        if valid == 0 {
-            continue;
-        }
-
-        let frames_to_send = frames_buffer[..valid].to_vec();
-
-        if tx.send(ChunkData { idx: chunk.idx, frames: frames_to_send }).is_err() {
-            break;
-        }
-    }
-}
-
-fn dec_8bit_to_10bit(
-    chunks: &[Chunk],
-    source: *mut std::ffi::c_void,
-    inf: &VidInf,
-    tx: &Sender<ChunkData>,
-) {
-    let size_8bit = calc_8bit_size(inf);
-    let size_10bit = calc_10bit_size(inf);
-    let mut buf_8bit = vec![0u8; size_8bit];
-
-    let max_chunk_size = get_max_chunk_size(inf);
-    let mut frames_buffer: Vec<Vec<u8>> =
-        (0..max_chunk_size).map(|_| vec![0u8; size_10bit]).collect();
-
-    for chunk in chunks {
-        let mut valid = 0;
-
-        for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            if extr_8bit(source, idx, &mut buf_8bit).is_err() {
-                continue;
-            }
-
-            conv_to_10bit(&buf_8bit, &mut frames_buffer[i]);
-            valid += 1;
-        }
-
-        if valid == 0 {
-            continue;
-        }
-
-        let frames_to_send = frames_buffer[..valid].to_vec();
-
-        if tx.send(ChunkData { idx: chunk.idx, frames: frames_to_send }).is_err() {
-            break;
-        }
-    }
-}
-
 fn decode_chunks(
     chunks: &[Chunk],
     idx: &Arc<VidIdx>,
     inf: &VidInf,
     tx: &Sender<ChunkData>,
-    high_mem: bool,
     skip_indices: &HashSet<usize>,
 ) {
     let threads =
@@ -267,11 +196,10 @@ fn decode_chunks(
     let filtered_chunks: Vec<Chunk> =
         chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).cloned().collect();
 
-    match (high_mem, inf.is_10bit) {
-        (false, true) => dec_10bit(&filtered_chunks, source, inf, tx),
-        (false, false) => dec_8bit(&filtered_chunks, source, inf, tx),
-        (true, true) => dec_10bit_full(&filtered_chunks, source, inf, tx),
-        (true, false) => dec_8bit_to_10bit(&filtered_chunks, source, inf, tx),
+    if inf.is_10bit {
+        dec_10bit(&filtered_chunks, source, inf, tx);
+    } else {
+        dec_8bit(&filtered_chunks, source, inf, tx);
     }
 
     destroy_vid_src(source);
@@ -281,7 +209,6 @@ fn write_frames(
     child: &mut std::process::Child,
     frames: Vec<Vec<u8>>,
     inf: &VidInf,
-    _high_mem: bool,
     conversion_buf: &mut Option<Vec<u8>>,
 ) -> usize {
     let Some(mut stdin) = child.stdin.take() else {
@@ -315,7 +242,6 @@ struct ProcConfig<'a> {
     inf: &'a VidInf,
     params: &'a str,
     crf: f32,
-    high_mem: bool,
     quiet: bool,
     work_dir: &'a Path,
 }
@@ -340,8 +266,7 @@ fn proc_chunk(
     }
 
     let frame_count = data.frames.len();
-    let written =
-        write_frames(&mut child, data.frames, config.inf, config.high_mem, conversion_buf);
+    let written = write_frames(&mut child, data.frames, config.inf, conversion_buf);
 
     let status = child.wait().unwrap();
     if !status.success() {
@@ -359,7 +284,6 @@ fn proc_chunk(
 
 struct WorkerCtx {
     crf: f32,
-    high_mem: bool,
     quiet: bool,
 }
 
@@ -372,19 +296,11 @@ fn run_worker(
     prog: Option<&Arc<ProgsTrack>>,
     work_dir: &Path,
 ) {
-    let mut conversion_buf =
-        if ctx.high_mem { None } else { Some(vec![0u8; calc_10bit_size(inf)]) };
+    let mut conversion_buf = Some(vec![0u8; calc_10bit_size(inf)]);
 
     loop {
         let Ok(data) = rx.recv() else { break };
-        let config = ProcConfig {
-            inf,
-            params,
-            crf: ctx.crf,
-            high_mem: ctx.high_mem,
-            quiet: ctx.quiet,
-            work_dir,
-        };
+        let config = ProcConfig { inf, params, crf: ctx.crf, quiet: ctx.quiet, work_dir };
         let (written, completion) =
             proc_chunk(data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
 
@@ -459,7 +375,7 @@ pub fn encode_all(
         )))
     };
 
-    let buffer_size = if args.high_mem { args.worker.min(1) } else { 0 };
+    let buffer_size = 0;
     let (tx, rx) = bounded::<ChunkData>(buffer_size);
     let rx = Arc::new(rx);
 
@@ -467,8 +383,7 @@ pub fn encode_all(
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
-        let high_mem = args.high_mem;
-        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, high_mem, &skip_indices))
+        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices))
     };
 
     let mut workers = Vec::new();
@@ -478,7 +393,7 @@ pub fn encode_all(
         let params = args.params.clone();
         let stats = stats.clone();
         let prog = prog.clone();
-        let ctx = WorkerCtx { crf, high_mem: args.high_mem, quiet: args.quiet };
+        let ctx = WorkerCtx { crf, quiet: args.quiet };
         let work_dir = work_dir.to_path_buf();
 
         let handle = thread::spawn(move || {
