@@ -176,7 +176,6 @@ fn dec_10bit_full(
     tx: &Sender<ChunkData>,
 ) {
     let frame_size = calc_10bit_size(inf);
-    let mut frame_buf = vec![0u8; frame_size];
 
     for chunk in chunks {
         let n = chunk.end - chunk.start;
@@ -184,12 +183,9 @@ fn dec_10bit_full(
         let mut valid = 0;
 
         for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            if extr_10bit(source, idx, &mut frame_buf).is_err() {
-                continue;
+            if extr_10bit(source, idx, &mut frames[i]).is_ok() {
+                valid += 1;
             }
-
-            frames[i].copy_from_slice(&frame_buf);
-            valid += 1;
         }
 
         if valid == 0 {
