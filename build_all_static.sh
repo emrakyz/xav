@@ -177,7 +177,6 @@ echo "=== Building FFmpeg with custom flags ==="
         --disable-txtpages \
         --disable-network \
         --disable-autodetect \
-        --disable-postproc \
         --disable-avdevice \
         --disable-avfilter \
         --disable-everything \
