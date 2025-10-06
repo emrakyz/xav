@@ -13,11 +13,12 @@ categories = ["multimedia::video", "command-line-utilities"]
 
 [features]
 default = []
-static = []
+static = ["av-decoders"]
 
 [dependencies]
 libc = "0.2.176"
 crossbeam-channel = "0.5.15"
+av-decoders = { version = "0.4.0", features = ["ffmpeg_static"], optional = true }
 av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", default-features = false, features = ["ffmpeg", "asm", "nasm-rs", "cc", "libc"] }
 
 [profile.release]
