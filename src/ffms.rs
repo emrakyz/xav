@@ -378,14 +378,10 @@ pub const fn calc_10bit_size(inf: &VidInf) -> usize {
 }
 
 pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
-    let mut out_pos = 0;
-    for &pixel in input {
-        let pixel_10bit = u16::from(pixel) << 2;
-        let bytes = pixel_10bit.to_le_bytes();
-        output[out_pos] = bytes[0];
-        output[out_pos + 1] = bytes[1];
-        out_pos += 2;
-    }
+    input.iter().zip(output.chunks_exact_mut(2)).for_each(|(&pixel, out_chunk)| {
+        let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
+        out_chunk.copy_from_slice(&pixel_10bit);
+    });
 }
 
 #[inline]
@@ -494,15 +490,18 @@ fn copy_plane_8to10(
 ) {
     unsafe {
         for row in 0..height {
-            let row_offset = row * src_linesize;
-            let src_row = std::slice::from_raw_parts(src.add(row_offset), width);
-            for &pixel in src_row {
-                let pixel_10bit = u16::from(pixel) << 2;
-                let bytes = pixel_10bit.to_le_bytes();
-                output[*out_pos] = bytes[0];
-                output[*out_pos + 1] = bytes[1];
-                *out_pos += 2;
-            }
+            let src_row = std::slice::from_raw_parts(src.add(row * src_linesize), width);
+            let out_start = *out_pos;
+            let out_end = out_start + width * 2;
+
+            src_row.iter().zip(output[out_start..out_end].chunks_exact_mut(2)).for_each(
+                |(&pixel, out_chunk)| {
+                    let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
+                    out_chunk.copy_from_slice(&pixel_10bit);
+                },
+            );
+
+            *out_pos = out_end;
         }
     }
 }
