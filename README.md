@@ -9,11 +9,10 @@
 3. [Features](#features)
 4. [Design Decisions](#design-decisions)
 5. [Why Is It Fast and Minimal Especially Compared to Av1an](#why-is-it-fast-and-minimal-especially-compared-to-av1an)
-6. [Installation](#installation)
-7. [Usage](#usage)
-8. [Building](#building)
-9. [Video Showcase](#video-showcase)
-10. [Credits](#credits)
+6. [Usage](#usage)
+7. [Building](#building)
+8. [Video Showcase](#video-showcase)
+9. [Credits](#credits)
 
 ## Dependencies
 
@@ -34,19 +33,14 @@ As the author has been involved with the `av1an` project since its inception as 
 - Parses the new fancy progress output on SVT-AV1 encoders (there is an example in below video).
 - Parses color and video metadata (container & frame based) to encoders automatically, including HDR metadata (Dolby Vision RPU automation for chunking is considered), FPS and resolution.
 - Offers fun process monitoring with almost no overhead for indexing, SCD, encoding, TQ processes.
+- Fastest chunked encoding with `svt-av1`.
+- Fastest target quality encoding with `CVVDP`.
 
 ## Design Decisions
 
-It sets sane defaults without offering flags such as auto setting up the SCD algorithm.
-
-```text
-min_dist = (fps_num + fps_den / 2) / fps_den;
-max_dist = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
-```
-
-- Here we simply utilize 1 second to 10 second min/max scene durations and maximum 5 second scene duration for 60+ FPS content. Max SCD duration has also an additional purpose here: Since the frame data is buffered up-front, instead of streamed; very long chunks can easily create memory explosion.
-- Overwhelming options such as different chunking methods, orders, pixel formats, or similar options are removed or not offered.
-- `xav` takes a stance that is similar to [SVT-AV1-Essential](https://github.com/nekotrix/SVT-AV1-Essential) on 10bit only encoding: It does not allow 8bit encoding.
+- Uses only absolute bleeding-edge tools with an opinionated setup.
+- No flexibility or extensive feature support (such as VapourSynth filtering, zoning, different encoders, metrics or statistical pooling for TQ).
+- `yuv420p10le` only. No 8 or 12bit support, as well as yuv422, yuv444 support.
 
 ## Why Is It Fast and Minimal Especially Compared to Av1an
 
@@ -83,13 +77,7 @@ The whole overhead can be summed up as:
 - FFmpeg -> VapourSynth -> Encoder pipes and inter process communication between them. Let's say you use 32 workers: It means 32 independent ffmpeg instances, 32 vapoursynth instances and also 32 encoder instances (96 processes communicating with each other and creating memory explosion)
 - If you add TQ into the equation, separate decoding/seeking and using VapourSynth based metrics create extra significant overhead
 
-## Installation
-
-Download the binary specific to your arch from the Releases page and extract them in your PATH. The pre-compiled binaries have all the dependencies and built statically with extensive optimizations.
-
 ## Usage
-
-Usage is very simple. Can be seen from the tool's help output:
 
 <img width="1532" height="788" alt="image" src="https://github.com/user-attachments/assets/93a5e68a-9b53-4ae2-bff2-d5be41737463" />
 
@@ -97,7 +85,7 @@ Usage is very simple. Can be seen from the tool's help output:
 
 Run the `build_all_static.sh` script to build dependencies statically and build the main tool with them. This is the intended way for maximum performance. Though this is not particularly trivial.
 
-For dynamic builds, you need ffmpegsource (ffms2) installed on your system and run `build_dynamic.sh`.
+For dynamic builds, you need ffmpegsource (ffms2) installed on your system and need to run `build_dynamic.sh`.
 
 For TQ support, you need `zimg`, `ffms2`, `vship`.
 
@@ -105,7 +93,7 @@ For TQ support, you need `zimg`, `ffms2`, `vship`.
 
 Rust Nightly is also needed for `-Z` based optimizations.
 
-NOTE: The tool is still in beta. Even though it works, especially static building has complexities that are hard to handle universally. I will provide arch specific optimized builds soon with or without TQ support.
+NOTE: The tool is still in pre-beta. Even though it works, especially static building has complexities that are hard to handle universally. I will provide arch specific optimized builds soon with or without TQ support.
 
 ## Video Showcase
 
