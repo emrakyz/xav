@@ -1,6 +1,6 @@
 # xav - eXtreme AOMedia Video
 
-The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
+(Research-only Tool) The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
 
 ## Table of Contents
 
