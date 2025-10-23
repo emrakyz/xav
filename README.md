@@ -126,4 +126,4 @@ NOTE: The tool is still in beta. Even though it works, especially static buildin
 
 Huge thanks to [Soda](https://github.com/GreatValueCreamSoda) for the tremendous help & motivation & support to build this tool, and more importantly, for his friendship along the way. He is the partner in crime.
 
-Also thanks [Lumen](https://github.com/Line-fr) for his great contributions on GPU based accessible state-of-the-art metric implementations and general help around the tooling.
+Also thanks [Lumen](https://github.com/Line-fr) for her great contributions on GPU based accessible state-of-the-art metric implementations and general help around the tooling.
