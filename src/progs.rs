@@ -166,7 +166,13 @@ impl ProgsTrack {
         }
     }
 
-    pub fn watch_enc(&self, stderr: impl std::io::Read + Send + 'static, chunk_idx: usize) {
+    pub fn watch_enc(
+        &self,
+        stderr: impl std::io::Read + Send + 'static,
+        chunk_idx: usize,
+        track_frames: bool,
+        crf_score: Option<(f32, Option<f64>)>,
+    ) {
         let lines = Arc::clone(&self.lines);
         let processed = Arc::clone(&self.processed);
         let state = Arc::clone(&self.state);
@@ -195,7 +201,7 @@ impl ProgsTrack {
                     continue;
                 }
 
-                Self::up_line(&lines, &processed, chunk_idx, line);
+                Self::up_line(&lines, &processed, chunk_idx, line, track_frames, crf_score);
 
                 Self::show_progs(&lines, &processed, &state);
             }
@@ -229,6 +235,8 @@ impl ProgsTrack {
         processed: &Arc<AtomicUsize>,
         chunk_idx: usize,
         line: &str,
+        track_frames: bool,
+        crf_score: Option<(f32, Option<f64>)>,
     ) {
         let mut map = lines.lock().unwrap();
 
@@ -236,10 +244,20 @@ impl ProgsTrack {
             map.get(&chunk_idx).map_or(0, |prev| Self::get_frame_cnt(prev).unwrap_or(0));
 
         let cleaned = line.strip_prefix("Encoding: ").unwrap_or(line).to_string();
-        map.insert(chunk_idx, format!("{C}[{chunk_idx:04}{C}] {cleaned}"));
+
+        let prefix = if let Some((crf, score_opt)) = crf_score {
+            score_opt.map_or_else(
+                || format!("{C}[{chunk_idx:04} / CRF {crf:.2}{C}]"),
+                |score| format!("{C}[{chunk_idx:04} / CRF {crf:.2} / {score:.2}{C}]"),
+            )
+        } else {
+            format!("{C}[{chunk_idx:04}{C}]")
+        };
+        map.insert(chunk_idx, format!("{prefix} {cleaned}"));
+
         drop(map);
 
-        if let Some(current) = Self::get_frame_cnt(line) {
+        if track_frames && let Some(current) = Self::get_frame_cnt(line) {
             let diff = current.saturating_sub(prev_frames);
             processed.fetch_add(diff, Ordering::Relaxed);
         }
@@ -251,7 +269,16 @@ impl ProgsTrack {
         state: &Arc<ProgsState>,
     ) {
         let _guard = DISPLAY_MUTEX.lock().unwrap();
-        let frames_done = processed.load(Ordering::Relaxed);
+
+        let processed_frames = processed.load(Ordering::Relaxed);
+
+        let data = state.completions.lock().unwrap();
+        let completed_frames: usize = data.chnks_done.iter().map(|c| c.frames).sum();
+        drop(data);
+
+        let frames_done =
+            if completed_frames > processed_frames { completed_frames } else { processed_frames };
+
         let elapsed = state.start.elapsed();
 
         let new_frames = frames_done.saturating_sub(state.init_frames);
@@ -292,6 +319,39 @@ impl ProgsTrack {
         );
 
         std::io::stdout().flush().unwrap();
+    }
+
+    pub fn show_metric(
+        &self,
+        chunk_idx: usize,
+        current: usize,
+        tot: usize,
+        fps: f32,
+        crf: f32,
+        last_score: Option<f64>,
+    ) {
+        if current >= tot {
+            self.lines.lock().unwrap().remove(&chunk_idx);
+            return;
+        }
+
+        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
+        let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
+        let perc = (current * 100 / tot.max(1)).min(100);
+
+        let score_str = last_score.map_or_else(String::new, |score| format!(" / {score:.2}"));
+
+        let mut map = self.lines.lock().unwrap();
+        map.insert(
+            chunk_idx,
+            format!(
+                "{C}[{chunk_idx:04} / CRF {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc}%{C}, \
+                 {Y}{fps:.2} FPS{C}, {G}{current}{C}/{R}{tot}"
+            ),
+        );
+        drop(map);
+
+        Self::show_progs(&self.lines, &self.processed, &self.state);
     }
 
     pub fn final_update(&self) {

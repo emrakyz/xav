@@ -48,20 +48,7 @@ show_opts() {
         ((${#opts[@]} % 3 != 0)) && echo
 }
 
-CXX_LIBS=(libc++ libstdc++)
-
-while true; do
-        show_opts "${CXX_LIBS[@]}"
-
-        echo -ne "${C}Select a CXX LIB: ${N}"
-        read -r cxx_choice
-
-        [[ "${cxx_choice}" == "1" || "${cxx_choice}" == "2" ]] && {
-                selected_cxx="${CXX_LIBS[cxx_choice - 1]}"
-                echo -e "${G}Selected: ${selected_cxx}${N}"
-                break
-        }
-done
+selected_cxx="libstdc++"
 
 echo ""
 
@@ -192,6 +179,7 @@ echo "=== Building FFmpeg with custom flags ==="
         --enable-demuxer=mpegps \
         --enable-demuxer=avi \
         --enable-demuxer=flv \
+        --enable-demuxer=ivf \
         --enable-decoder=h264 \
         --enable-decoder=hevc \
         --enable-decoder=mpeg2video \
@@ -252,12 +240,35 @@ echo "=== Build complete ==="
 echo "FFmpeg static libraries: ${FFMPEG_SRC_DIR}/lib/*.a"
 echo "ffms2 static library: $(pwd)/src/core/.libs/libffms2.a"
 
+echo "=== Cloning and building zimg ==="
+cd "${BUILD_DIR}"
+git clone --recursive https://github.com/sekrit-twc/zimg.git
+cd zimg
+
+./autogen.sh
+
+echo "=== Configuring zimg with custom flags ==="
+CC="${CC}" \
+        CXX="${CXX}" \
+        AR="${AR}" \
+        RANLIB="${RANLIB}" \
+        CFLAGS="${CFLAGS//-ffast-math/}" \
+        CXXFLAGS="${CXXFLAGS//-ffast-math/}" \
+        LDFLAGS="${LDFLAGS}" \
+        ./configure \
+        --enable-static \
+        --disable-shared
+
+echo "=== Building zimg ==="
+make -j"$(nproc)"
+
+echo "=== Build complete ==="
+echo "zimg static library: $(pwd)/.libs/libzimg.a"
+
 cd "${XAV_DIR}"
 
 export PKG_CONFIG_ALL_STATIC=1
 export FFMPEG_DIR="${HOME}/.local/src/FFmpeg/install"
-
-[[ "${selected_cxx}" == "libc++" ]] && echo "libc++" > .libcxx || echo "libstdc++" > .libcxx
 
 cp -f ".cargo/config.toml.static" ".cargo/config.toml"
 

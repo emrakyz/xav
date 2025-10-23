@@ -17,9 +17,11 @@ The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
 
 ## Dependencies
 
-- Nothing really, (except svt-av1 for actual encoding and `mkvmerge` to concat video streams) if you use the pre-compiled binaries or build it statically with the provided tool.
-- Naturally, TQ feature would require [VSHIP](https://github.com/Line-fr/Vship) library being installed (no need for VapourSynth) since it's based on CUDA/HIP.
-- Currently, only forks ([SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) and [-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)) support `--progress 3` if progress monitoring is desired.
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (mainline or a fork)
+- [mkvmerge](https://mkvtoolnix.download/source.html) (to concatenate chunks)
+- [FFMS2](https://github.com/FFMS/ffms2) (a hard dependency)
+- [VSHIP](https://github.com/Line-fr/Vship) (optional - needed for target quality encoding with CVVDP)
+- [ZIMG](https://github.com/sekrit-twc/zimg) (optional - provides color conversion features needed by VSHIP)
 
 ## Description
 
@@ -29,9 +31,9 @@ As the author has been involved with the `av1an` project since its inception as 
 
 ## Features
 
-- Parses `--progress 3` output of `svt-av1` (WIP feature for mainline and available on forks such as ([SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) and [-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex))
+- Parses the new fancy progress output on SVT-AV1 encoders (there is an example in below video).
 - Parses color and video metadata (container & frame based) to encoders automatically, including HDR metadata (Dolby Vision RPU automation for chunking is considered), FPS and resolution.
-- Offers fun process monitoring with almost no overhead for indexing, SCD, and encoding processes.
+- Offers fun process monitoring with almost no overhead for indexing, SCD, encoding, TQ processes.
 
 ## Design Decisions
 
@@ -67,7 +69,7 @@ max_dist = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
 - Sequential memory access
 - Only a single index needed for SCD/encoding.
 - No interpreter overhead.
-- TQ (WIP): Can directly use already handled frames for encoding, for metric comparison as well by utilizing `vship` API directly instead of using VapourSynth based SSIMU2 with inefficient seeking/decoding/computing.
+- TQ: Can directly use already handled frames for encoding, for metric comparison as well by utilizing `vship` API directly instead of using VapourSynth based CVVDP with inefficient seeking/decoding/computing.
 
 **`Av1an` on the other hand:**
 Relies on Python -> Vapoursynth -> FFmpeg -> Encoder and it means multiple pipe/subprocess calls with serialization overhead. And it must also parse and execute `.vpy` scripts.
@@ -93,11 +95,17 @@ Usage is very simple. Can be seen from the tool's help output:
 
 ## Building
 
-Run the `build_all_static.sh` script to build ffms2 statically and build the main tool with it. This is the indended way for maximum performance.
+Run the `build_all_static.sh` script to build dependencies statically and build the main tool with them. This is the intended way for maximum performance. Though this is not particularly trivial.
 
-For dynamic builds, you need ffmpegsource (ffms2) installed on your system and ffmpeg (for av-scenechange) and run `build_dynamic.sh`.
+For dynamic builds, you need ffmpegsource (ffms2) installed on your system and run `build_dynamic.sh`.
 
-**NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++ or libc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. 
+For TQ support, you need `zimg`, `ffms2`, `vship`.
+
+**NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. Some package managers do not provide them, in this case; they need to be compiled manually.
+
+Rust Nightly is also needed for `-Z` based optimizations.
+
+NOTE: The tool is still in beta. Even though it works, especially static building has complexities that are hard to handle universally. I will provide arch specific optimized builds soon with or without TQ support.
 
 ## Video Showcase
 
@@ -110,9 +118,12 @@ For dynamic builds, you need ffmpegsource (ffms2) installed on your system and f
 
 - [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) / [SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) / [SVT-AV1-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)
 - [FFMS2](https://github.com/FFMS/ffms2)
-- (WIP) [ZIMG](https://github.com/sekrit-twc/zimg) (for RGB conversion needed by VSHIP SSIMULACRA2 computation)
-- (WIP) [VSHIP](https://github.com/Line-fr/Vship)
+- [ZIMG](https://github.com/sekrit-twc/zimg) (for RGB conversion needed by VSHIP CVVDP computation)
+- [VSHIP](https://github.com/Line-fr/Vship)
+- [CVVDP](https://github.com/gfxdisp/ColorVideoVDP) (re-implemented by VSHIP)
 
 ## Credits
 
 Huge thanks to [Soda](https://github.com/GreatValueCreamSoda) for the tremendous help & motivation & support to build this tool, and more importantly, for his friendship along the way. He is the partner in crime.
+
+Also thanks [Lumen](https://github.com/Line-fr) for his great contributions on GPU based accessible state-of-the-art metric implementations and general help around the tooling.

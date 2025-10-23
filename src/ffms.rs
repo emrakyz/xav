@@ -592,6 +592,26 @@ pub fn extr_10bit(
     }
 }
 
+pub fn get_frame(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+) -> Result<*const FFMS_Frame, Box<dyn std::error::Error>> {
+    unsafe {
+        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+        let frame = FFMS_GetFrame(
+            vid_src,
+            i32::try_from(frame_idx).unwrap_or(0),
+            std::ptr::addr_of_mut!(err),
+        );
+
+        if frame.is_null() {
+            return Err("Failed to get frame".into());
+        }
+
+        Ok(frame)
+    }
+}
+
 pub fn destroy_vid_src(vid_src: *mut libc::c_void) {
     unsafe {
         FFMS_DestroyVideoSource(vid_src);

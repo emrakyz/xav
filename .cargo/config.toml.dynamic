@@ -1,5 +1,5 @@
 [env]
-RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Z panic_abort_tests -C link-args=-fno-pic -lffms2"
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Z panic_abort_tests -C link-args=-fPIC -lffms2 -lzimg -lvship"
 
 [build]
 rustflags = [
@@ -12,8 +12,10 @@ rustflags = [
     "-C", "linker=clang",
     "-C", "lto=fat",
     "-C", "embed-bitcode=yes",
-    "-C", "link-args=-fno-pic",
+    "-C", "link-args=-fPIC",
     "-Z", "dylib-lto",
     "-Z", "panic_abort_tests",
     "-lffms2",
+    "-lzimg",
+    "-lvship",
 ]
