@@ -12,7 +12,6 @@
 6. [Building](#building)
 7. [Video Showcase](#video-showcase)
 8. [How TQ Works](#how-tq-works)
-9. [Software Used by This Project](software-used-by-this-project)
 9. [Credits](#credits)
 10. [Minimal and Faster Than Av1an](#minimal-and-faster-than-av1an)
 
@@ -101,14 +100,6 @@ Interpolation + search space shrinkage + intelligently used `--tq` and `--qp` pa
 **Early Exit Conditions:**
 - It found the target.
 - Impossible to find (picks the closest candidate). This can be because of very narrow TQ range or an absurd CRF range (you allowed CRF 60-70 but requested a visually transparent quality).
-
-## Software Used by This Project
-
-- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) / [SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) / [SVT-AV1-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)
-- [FFMS2](https://github.com/FFMS/ffms2)
-- [ZIMG](https://github.com/sekrit-twc/zimg) (for RGB conversion needed by VSHIP CVVDP computation)
-- [VSHIP](https://github.com/Line-fr/Vship)
-- [CVVDP](https://github.com/gfxdisp/ColorVideoVDP) (re-implemented by VSHIP)
 
 ## Credits
 
