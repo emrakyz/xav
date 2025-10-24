@@ -8,11 +8,13 @@
 2. [Description](#description)
 3. [Features](#features)
 4. [Design Decisions](#design-decisions)
-5. [Why Is It Fast and Minimal Especially Compared to Av1an](#why-is-it-fast-and-minimal-especially-compared-to-av1an)
-6. [Usage](#usage)
-7. [Building](#building)
-8. [Video Showcase](#video-showcase)
+5. [Usage](#usage)
+6. [Building](#building)
+7. [Video Showcase](#video-showcase)
+8. [How TQ Works](#how-tq-works)
+9. [Software Used by This Project](software-used-by-this-project)
 9. [Credits](#credits)
+10. [Minimal and Faster Than Av1an](#minimal-and-faster-than-av1an)
 
 ## Dependencies
 
@@ -24,13 +26,15 @@
 
 ## Description
 
-`xav` aims to be the fastest, most minimal AV1 (and potentially AV2) encoding framework. By keeping its feature scope limited, the potential for the best encoder and the best video quality metric can be maximized without getting limited by extensive features.
+`xav` aims to be the fastest, most minimal AV1/AV2 encoding framework. By keeping its feature scope limited, the potential for the best encoder and the best video quality metric can be maximized without getting limited by extensive features.
 
 As the author has been involved with the `av1an` project since its inception as a user and continues to develop it; creating a direct competitor without purpose was not the objective. `xav` is a faster, more minimal alternative to Av1an's most popular features and the author acknowledges that `av1an` is the most powerful & feature-rich video encoding framework. This tool was developed with a strong interest and focus on the "av1an" concept.
 
+For this reason, adding `xav` features to `av1an` and `av1an` features to `xav`, do not make sense.
+
 ## Features
 
-- Parses the new fancy progress output on SVT-AV1 encoders (there is an example in below video).
+- Parses the new fancy progress output on SVT-AV1 encoders (there is an example in the below video).
 - Parses color and video metadata (container & frame based) to encoders automatically, including HDR metadata (Dolby Vision RPU automation for chunking is considered), FPS and resolution.
 - Offers fun process monitoring with almost no overhead for indexing, SCD, encoding, TQ processes.
 - Fastest chunked encoding with `svt-av1`.
@@ -39,10 +43,80 @@ As the author has been involved with the `av1an` project since its inception as 
 ## Design Decisions
 
 - Uses only absolute bleeding-edge tools with an opinionated setup.
-- No flexibility or extensive feature support (such as VapourSynth filtering, zoning, different encoders, metrics or statistical pooling for TQ).
-- `yuv420p10le` only. No 8 or 12bit support, as well as yuv422, yuv444 support.
+- No flexibility or extensive feature support (such as VapourSynth filtering, zoning, different encoders, metrics, chunking methods, scaling, configurable SC parameters, statistical pooling for TQ, probing with different parameters than actual encoding for TQ).
+- `yuv420p` & `yuv420p10le` input AND `yuv420p10le` output only. No 8 (output) or 12bit support, as well as yuv422, yuv444 support.
+- TQ aim is to: Get exactly what you requested in the most accurate / fastest way possible with no chance of deviation.
+- Chunked encoding's aim is to optimize internally and reduce overhead as much as possible to get the fastest possible encoding speed overall.
+- The tool's general aim is to achieve the previous 2 points, using as little characters in CLI, as possible: `xav -t 9.4-9.6 i.mkv`
 
-## Why Is It Fast and Minimal Especially Compared to Av1an
+These help me make the tool's already present features closer to perfect with each day. So I am constantly trying to reduce extra options and code-size.
+
+## Usage
+
+<img width="1524" height="744" alt="image" src="https://github.com/user-attachments/assets/cc4857c5-e7b3-401d-bce9-30bb33068544" />
+
+## Building
+
+Run the `build_all_static.sh` script to build dependencies statically and build the main tool with them. This is the intended way for maximum performance. Though this is not particularly trivial.
+
+For dynamic builds, you need ffmpegsource (ffms2) installed on your system and need to run `build_dynamic.sh`.
+
+For TQ support, you need `zimg`, `ffms2`, `vship`.
+
+**NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. Some package managers do not provide them, in this case; they need to be compiled manually.
+
+Rust Nightly is also needed for `-Z` based optimizations.
+
+NOTE: The tool is still in pre-beta. Even though it works, especially static building has complexities that are hard to handle universally. I will provide arch specific optimized builds soon with or without TQ support.
+
+## Video Showcase
+
+<video
+  width="1200px" controls preload="metadata" type="video/mp4"
+  src="https://github.com/user-attachments/assets/228a4f22-b687-449d-9eb6-d0d2e7630e83">
+</video>
+
+## How TQ Works
+Target quality logic comes from [my pull requests](https://github.com/rust-av/Av1an/pulls?q=is%3Apr+is%3Aclosed+author%3Aemrakyz) on `av1an` and it includes a little bit improvement on top of those.
+
+The tool gets the allowed target and CRF range from the user, such as:
+- `CRF = 12.25 - 44.75` - This means the tool will never use a CRF lower than `12.25` or higher than `44.75`.
+- `TQ = 9.49-9.51` - This means the allowed TQ range is very narrow and we target for a CVVDP score of `9.5` for each chunk separately.
+
+**Convergence rounds:**
+1) Binary Search
+2) Binary Search
+3) Linear Interpolation
+4) Natural Cubic Spline Interpolation
+5) PCHIP Interpolation
+6) AKIMA Interpolation
+7) Falls back to Binary Search
+
+It constantly uses higher-order interpolation methods to increase accuracy with additional data. And after each round, we shrink the search space.
+
+For example, if the user allows the whole CRF range (0 70), the first binary search tries CRF 35 and if it's lower than the target quality, then we limit the next search within CRF 0 to 34.75.
+
+Interpolation + search space shrinkage + intelligently used `--tq` and `--qp` parameters make the tool as fast as possible while keeping the accuracy.
+
+**Early Exit Conditions:**
+- It found the target.
+- Impossible to find (picks the closest candidate). This can be because of very narrow TQ range or an absurd CRF range (you allowed CRF 60-70 but requested a visually transparent quality).
+
+## Software Used by This Project
+
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) / [SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) / [SVT-AV1-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)
+- [FFMS2](https://github.com/FFMS/ffms2)
+- [ZIMG](https://github.com/sekrit-twc/zimg) (for RGB conversion needed by VSHIP CVVDP computation)
+- [VSHIP](https://github.com/Line-fr/Vship)
+- [CVVDP](https://github.com/gfxdisp/ColorVideoVDP) (re-implemented by VSHIP)
+
+## Credits
+
+Huge thanks to [Soda](https://github.com/GreatValueCreamSoda) for the tremendous help & motivation & support to build this tool, and more importantly, for his friendship along the way. He is the partner in crime.
+
+Also thanks [Lumen](https://github.com/Line-fr) for her great contributions on GPU based accessible state-of-the-art metric implementations and general help around the tooling.
+
+## Minimal and Faster Than Av1an
 
 - Uses a direct memory pipeline (zero external process overhead). Everything runs within one Rust process with direct memory access.
 - Direct C FFI bindings to FFMS2. FFMS2 is currently the most efficient library to open/index/decode videos. With this way, we also get rid of Python/Vapoursynth/FFMPEG dependencies.
@@ -76,42 +150,3 @@ The whole overhead can be summed up as:
 - Python objects <-> VapourSynth frames
 - FFmpeg -> VapourSynth -> Encoder pipes and inter process communication between them. Let's say you use 32 workers: It means 32 independent ffmpeg instances, 32 vapoursynth instances and also 32 encoder instances (96 processes communicating with each other and creating memory explosion)
 - If you add TQ into the equation, separate decoding/seeking and using VapourSynth based metrics create extra significant overhead
-
-## Usage
-
-<img width="1532" height="788" alt="image" src="https://github.com/user-attachments/assets/93a5e68a-9b53-4ae2-bff2-d5be41737463" />
-
-## Building
-
-Run the `build_all_static.sh` script to build dependencies statically and build the main tool with them. This is the intended way for maximum performance. Though this is not particularly trivial.
-
-For dynamic builds, you need ffmpegsource (ffms2) installed on your system and need to run `build_dynamic.sh`.
-
-For TQ support, you need `zimg`, `ffms2`, `vship`.
-
-**NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. Some package managers do not provide them, in this case; they need to be compiled manually.
-
-Rust Nightly is also needed for `-Z` based optimizations.
-
-NOTE: The tool is still in pre-beta. Even though it works, especially static building has complexities that are hard to handle universally. I will provide arch specific optimized builds soon with or without TQ support.
-
-## Video Showcase
-
-<video
-  width="1200px" controls preload="metadata" type="video/mp4"
-  src="https://github.com/user-attachments/assets/228a4f22-b687-449d-9eb6-d0d2e7630e83">
-</video>
-
-## Software Used by This Project
-
-- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) / [SVT-AV1-HDR](https://github.com/juliobbv-p/svt-av1-hdr) / [SVT-AV1-PSYEX](https://github.com/BlueSwordM/svt-av1-psyex)
-- [FFMS2](https://github.com/FFMS/ffms2)
-- [ZIMG](https://github.com/sekrit-twc/zimg) (for RGB conversion needed by VSHIP CVVDP computation)
-- [VSHIP](https://github.com/Line-fr/Vship)
-- [CVVDP](https://github.com/gfxdisp/ColorVideoVDP) (re-implemented by VSHIP)
-
-## Credits
-
-Huge thanks to [Soda](https://github.com/GreatValueCreamSoda) for the tremendous help & motivation & support to build this tool, and more importantly, for his friendship along the way. He is the partner in crime.
-
-Also thanks [Lumen](https://github.com/Line-fr) for her great contributions on GPU based accessible state-of-the-art metric implementations and general help around the tooling.
