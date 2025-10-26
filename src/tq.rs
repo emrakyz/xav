@@ -81,15 +81,14 @@ fn measure_quality(
     probe_path: &Path,
     crf: f32,
     last_score: Option<f64>,
+    metric_mode: &str,
 ) -> f64 {
     let idx = crate::ffms::VidIdx::new(probe_path, true).unwrap();
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
     let output_source = crate::ffms::thr_vid_src(&idx, threads).unwrap();
 
-    ctx.vship.reset().unwrap();
-
-    let mut last_frame_score = 0.0;
+    let mut scores = Vec::new();
     let start = std::time::Instant::now();
     let tot = ctx.yuv_frames.len();
 
@@ -129,8 +128,9 @@ fn measure_quality(
         let ref_planes = [ref_rgb[0].as_ptr(), ref_rgb[1].as_ptr(), ref_rgb[2].as_ptr()];
         let dist_planes = [dist_rgb[0].as_ptr(), dist_rgb[1].as_ptr(), dist_rgb[2].as_ptr()];
 
-        last_frame_score =
-            ctx.vship.compute_cvvdp(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap();
+        let score =
+            ctx.vship.compute_ssimulacra2(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap();
+        scores.push(score);
 
         if let Some(p) = ctx.prog {
             let elapsed = start.elapsed().as_secs_f32().max(0.001);
@@ -141,7 +141,18 @@ fn measure_quality(
 
     crate::ffms::destroy_vid_src(output_source);
 
-    last_frame_score
+    if metric_mode == "mean" {
+        scores.iter().sum::<f64>() / scores.len() as f64
+    } else if let Some(percentile_str) = metric_mode.strip_prefix('p') {
+        let percentile: f64 = percentile_str.parse().unwrap_or(15.0);
+        let mut sorted = scores.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let cutoff_idx =
+            ((sorted.len() as f64 * percentile / 100.0).ceil() as usize).min(sorted.len());
+        sorted[..cutoff_idx].iter().sum::<f64>() / cutoff_idx as f64
+    } else {
+        scores.iter().sum::<f64>() / scores.len() as f64
+    }
 }
 
 fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
@@ -170,6 +181,7 @@ pub fn find_target_quality(
     tq_range: &str,
     qp_range: &str,
     probe_info: &ProbeInfoMap,
+    metric_mode: &str,
 ) -> Option<String> {
     let config = TQConfig::new(tq_range, qp_range);
     let mut probes = Vec::new();
@@ -189,7 +201,7 @@ pub fn find_target_quality(
         let probe_name = encode_probe(ctx, crf, last_score_val);
         let probe_path = ctx.work_dir.join("split").join(&probe_name);
 
-        let score = measure_quality(ctx, &probe_path, crf as f32, last_score_val);
+        let score = measure_quality(ctx, &probe_path, crf as f32, last_score_val, metric_mode);
 
         {
             let mut info = probe_info.lock().unwrap();

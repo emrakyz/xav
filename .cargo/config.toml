@@ -1,8 +1,7 @@
 [env]
-RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -C link-args=-fno-pic no-pie -Z panic_abort_tests -Z dylib-lto"
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Z panic_abort_tests -C link-args=-fPIC -lffms2 -lzimg -lvship"
 
 [build]
-target = "x86_64-unknown-linux-gnu"
 rustflags = [
     "-C", "debuginfo=0",
     "-C", "target-cpu=native",
@@ -10,10 +9,13 @@ rustflags = [
     "-C", "codegen-units=1",
     "-C", "strip=symbols",
     "-C", "panic=abort",
-    "-Z", "panic_abort_tests",
-    "-Z", "dylib-lto",
     "-C", "linker=clang",
     "-C", "lto=fat",
     "-C", "embed-bitcode=yes",
-    "-C", "link-args=-no-pie -fno-pic",
+    "-C", "link-args=-fPIC",
+    "-Z", "dylib-lto",
+    "-Z", "panic_abort_tests",
+    "-lffms2",
+    "-lzimg",
+    "-lvship",
 ]

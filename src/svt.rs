@@ -491,12 +491,7 @@ fn create_tq_worker(
     )
     .unwrap();
 
-    let vship = crate::vship::VshipProcessor::new(
-        inf.width,
-        inf.height,
-        inf.fps_num as f32 / inf.fps_den as f32,
-    )
-    .unwrap();
+    let vship = crate::vship::VshipProcessor::new(inf.width, inf.height).unwrap();
 
     (ref_zimg, dist_zimg, vship)
 }
@@ -513,6 +508,7 @@ struct TQChunkConfig<'a> {
     rgb_size: usize,
     probe_info: &'a crate::tq::ProbeInfoMap,
     stats: Option<&'a Arc<WorkerStats>>,
+    metric_mode: &'a str,
 }
 
 fn process_tq_chunk(
@@ -537,9 +533,13 @@ fn process_tq_chunk(
             rgb_size: config.rgb_size,
         };
 
-        if let Some(best) =
-            crate::tq::find_target_quality(&mut ctx, config.tq, config.qp, config.probe_info)
-        {
+        if let Some(best) = crate::tq::find_target_quality(
+            &mut ctx,
+            config.tq,
+            config.qp,
+            config.probe_info,
+            config.metric_mode,
+        ) {
             let src = config.work_dir.join("split").join(&best);
             let dst = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
             std::fs::copy(&src, &dst).unwrap();
@@ -615,6 +615,7 @@ fn encode_tq(
         let stats = stats.clone();
         let prog = prog.clone();
         let wd = work_dir.to_path_buf();
+        let metric_mode = args.metric_mode.clone();
 
         workers.push(thread::spawn(move || {
             let stride = (inf.width * 2).div_ceil(32) * 32;
@@ -634,6 +635,7 @@ fn encode_tq(
                 rgb_size,
                 probe_info: &probe_info,
                 stats: stats.as_ref(),
+                metric_mode: &metric_mode,
             };
 
             while let Ok(data) = rx.recv() {

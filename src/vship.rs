@@ -2,7 +2,7 @@ use std::ptr;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipCVVDPHandler {
+pub struct VshipSSIMU2Handler {
     id: i32,
 }
 
@@ -26,25 +26,18 @@ pub enum VshipException {
 
 unsafe extern "C" {
     fn Vship_SetDevice(gpu_id: i32) -> VshipException;
-    fn Vship_CVVDPInit(
-        handler: *mut VshipCVVDPHandler,
+    fn Vship_SSIMU2Init(
+        handler: *mut VshipSSIMU2Handler,
         width: i32,
         height: i32,
-        fps: f32,
-        resize_to_display: bool,
-        model_key_cstr: *const i8,
     ) -> VshipException;
-    fn Vship_CVVDPFree(handler: VshipCVVDPHandler) -> VshipException;
-    fn Vship_ResetCVVDP(handler: VshipCVVDPHandler) -> VshipException;
-    fn Vship_ComputeCVVDPUint16(
-        handler: VshipCVVDPHandler,
+    fn Vship_SSIMU2Free(handler: VshipSSIMU2Handler) -> VshipException;
+    fn Vship_ComputeSSIMU2Uint16(
+        handler: VshipSSIMU2Handler,
         score: *mut f64,
-        dstp: *const u8,
-        dststride: i64,
         srcp1: *const *const u8,
         srcp2: *const *const u8,
         stride: i64,
-        stride2: i64,
     ) -> VshipException;
     fn Vship_GetErrorMessage(exception: VshipException, out_msg: *mut i8, len: i32) -> i32;
     fn Vship_PinnedMalloc(ptr: *mut *mut std::ffi::c_void, size: u64) -> VshipException;
@@ -52,26 +45,22 @@ unsafe extern "C" {
 }
 
 pub struct VshipProcessor {
-    handler: VshipCVVDPHandler,
+    handler: VshipSSIMU2Handler,
 }
 
 impl VshipProcessor {
-    pub fn new(width: u32, height: u32, fps: f32) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
             let ret = Vship_SetDevice(0);
             if ret as i32 != 0 {
                 return Err("Failed to set VSHIP device".into());
             }
 
-            let mut handler = std::mem::zeroed::<VshipCVVDPHandler>();
-            let model_key = std::ffi::CString::new("standard_4k").unwrap();
-            let ret = Vship_CVVDPInit(
+            let mut handler = std::mem::zeroed::<VshipSSIMU2Handler>();
+            let ret = Vship_SSIMU2Init(
                 ptr::from_mut(&mut handler),
                 i32::try_from(width).unwrap(),
                 i32::try_from(height).unwrap(),
-                fps,
-                true,
-                model_key.as_ptr(),
             );
             if ret as i32 != 0 {
                 let mut err_msg = vec![0i8; 1024];
@@ -84,17 +73,7 @@ impl VshipProcessor {
         }
     }
 
-    pub fn reset(&self) -> Result<(), Box<dyn std::error::Error>> {
-        unsafe {
-            let ret = Vship_ResetCVVDP(self.handler);
-            if ret as i32 != 0 {
-                return Err("Failed to reset CVVDP".into());
-            }
-            Ok(())
-        }
-    }
-
-    pub fn compute_cvvdp(
+    pub fn compute_ssimulacra2(
         &self,
         planes1: [*const u8; 3],
         planes2: [*const u8; 3],
@@ -102,14 +81,11 @@ impl VshipProcessor {
     ) -> Result<f64, Box<dyn std::error::Error>> {
         unsafe {
             let mut score = 0.0;
-            let ret = Vship_ComputeCVVDPUint16(
+            let ret = Vship_ComputeSSIMU2Uint16(
                 self.handler,
                 ptr::from_mut(&mut score),
-                std::ptr::null(),
-                0,
                 planes1.as_ptr(),
                 planes2.as_ptr(),
-                stride,
                 stride,
             );
 
@@ -128,7 +104,7 @@ impl VshipProcessor {
 impl Drop for VshipProcessor {
     fn drop(&mut self) {
         unsafe {
-            Vship_CVVDPFree(self.handler);
+            Vship_SSIMU2Free(self.handler);
         }
     }
 }

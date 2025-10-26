@@ -19,6 +19,7 @@ pub struct Args {
     pub worker: usize,
     pub scene_file: PathBuf,
     pub target_quality: Option<String>,
+    pub metric_mode: String,
     pub qp_range: Option<String>,
     pub params: String,
     pub resume: bool,
@@ -50,14 +51,15 @@ fn print_help() {
     println!("-q|--quiet     Do not run any code related to any progress");
     println!();
     println!("TQ:");
-    println!("-t|--tq        Allowed CVVDP Range for Target Quality. Example: `9.45-9.55`");
+    println!("-t|--tq        Allowed SSIMU2 Range for Target Quality. Example: `74.00-76.00`");
+    println!("-m|--mode      TQ metric evaluation mode. `mean` or mean of under certain percentile. Example: `p15`");
     println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
     println!();
     println!("Examples:");
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
     println!(
-        "xav -q -w 8 -s sc.txt -t 9.4-9.6 -c 1-63 -p \"--lp 3 --tune 0\" i.mkv o.mkv"
+        "xav -q -w 8 -s sc.txt -t 70-75 -c 6-63 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
     );
     println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`");
 }
@@ -103,6 +105,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut worker = 0;
     let mut scene_file = PathBuf::new();
     let mut target_quality = None;
+    let mut metric_mode = "mean".to_string();
     let mut qp_range = None;
     let mut params = String::new();
     let mut resume = false;
@@ -129,6 +132,12 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                 i += 1;
                 if i < args.len() {
                     target_quality = Some(args[i].clone());
+                }
+            }
+            "-m" | "--mode" => {
+                i += 1;
+                if i < args.len() {
+                    metric_mode.clone_from(&args[i]);
                 }
             }
             "-c" | "--qp" => {
@@ -167,8 +176,18 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         return Ok(saved_args);
     }
 
-    let mut result =
-        Args { worker, scene_file, target_quality, qp_range, params, resume, quiet, input, output };
+    let mut result = Args {
+        worker,
+        scene_file,
+        target_quality,
+        metric_mode,
+        qp_range,
+        params,
+        resume,
+        quiet,
+        input,
+        output,
+    };
 
     apply_defaults(&mut result);
 
