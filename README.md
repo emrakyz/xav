@@ -2,6 +2,29 @@
 
 (Research-only Tool) The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
 
+<img width="1772" height="680" alt="image_2025-10-26_01-18-55" src="https://github.com/user-attachments/assets/7652c8e2-4a9a-4660-b276-c345e22b932f" />
+
+**Input:** Lossless intermediate (8bit) of a full-length TV show episode (100k frames).
+
+Peak RSS difference might be related to the tool not parsing the sub-process data (av1an's resources are on vspipe and ffmpeg)
+
+Chunked Encoding Only Test (No TQ): The test includes indexing and scene change detection too.
+
+av1an's wrapper script for the above test:
+```
+av1an -i i.mkv -o o.mkv -q --log-level error --force --no-defaults --workers 8 -s s.json --split-method av-scenechange -e svt-av1 --video-params "--input-depth 10 --width 1920 --forced-max-frame-width 1920 --height 1080 --forced-max-frame-height 1080 --fps-num 24000 --fps-denom 1001 --keyint -1 --rc 0 --scd 0 --scm 0 --color-primaries 1 --transfer-characteristics 1 --matrix-coefficients 1 --color-range 0 --preset 10 --lp 3 --crf 63" --chunk-method ffms2 --pix-format yuv420p10le --extra-split 240 --min-scene-len 24
+
+rm -f s.json *index *idx o.mkv
+```
+
+`xav` wrapper script for the above test:
+```
+# Other parameters are auto-applied by xav including 8 workers and --lp 3 on my machine
+xav -q -p "--preset 10 --crf 63" i.mkv
+
+rm -rf i_av1.mkv *txt *idx *index
+```
+
 ## Table of Contents
 
 1. [Dependencies](#dependencies)
