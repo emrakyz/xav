@@ -200,6 +200,40 @@ impl Drop for VidIdx {
 unsafe impl Send for VidIdx {}
 unsafe impl Sync for VidIdx {}
 
+fn get_chroma_loc(path: &str, frame_chroma: i32) -> Option<i32> {
+    let ffmpeg_value = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=chroma_location",
+            "-of",
+            "default=noprint_wrappers=1",
+            path,
+        ])
+        .output()
+        .ok()
+        .and_then(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if text.starts_with("chroma_location=left") {
+                Some(1)
+            } else if text.starts_with("chroma_location=topleft") {
+                Some(3)
+            } else {
+                None
+            }
+        })
+        .or_else(|| (frame_chroma != 0).then_some(frame_chroma));
+
+    match ffmpeg_value? {
+        1 => Some(1),
+        3 => Some(2),
+        _ => None,
+    }
+}
+
 pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
@@ -238,8 +272,7 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
             _ => None,
         };
 
-        let chroma_sample_position =
-            ((*frame).chroma_location != 0).then_some((*frame).chroma_location);
+        let chroma_sample_position = get_chroma_loc(&idx.path, (*frame).chroma_location);
 
         let mastering_display = if (*props).has_mastering_display_primaries != 0
             && (*props).has_mastering_display_luminance != 0
