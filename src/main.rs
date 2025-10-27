@@ -29,7 +29,7 @@ pub struct Args {
 }
 
 extern "C" fn restore() {
-    print!("\x1b[?25h");
+    print!("\x1b[?25h\x1b[?1049l");
     let _ = std::io::stdout().flush();
 }
 extern "C" fn exit_restore(_: i32) {
@@ -270,7 +270,7 @@ fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if !args.quiet {
-        print!("\x1b[?25l");
+        print!("\x1b[?1049h\x1b[H");
         std::io::stdout().flush().unwrap();
     }
 
@@ -304,8 +304,33 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     chunk::merge_out(&work_dir.join("encode"), &args.output, &inf)?;
 
-    print!("\x1b[?25h");
+    print!("\x1b[?25h\x1b[?1049l");
     std::io::stdout().flush().unwrap();
+
+    let input_size = fs::metadata(&args.input)?.len();
+    let output_size = fs::metadata(&args.output)?.len();
+    let duration = inf.frames as f64 * inf.fps_den as f64 / inf.fps_num as f64;
+    let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
+    let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
+    let change = ((output_size as f64 / input_size as f64) - 1.0) * 100.0;
+
+    let fmt = |b: u64| {
+        if b > 1_000_000_000 {
+            format!("{:.2}GB", b as f64 / 1_000_000_000.0)
+        } else {
+            format!("{:.2}MB", b as f64 / 1_000_000.0)
+        }
+    };
+
+    eprintln!(
+        "{}, SUCCESS, {} ({:.0} kb/s) --> {} ({:.0} kb/s), {:+.2}%",
+        args.output.display(),
+        fmt(input_size),
+        input_br,
+        fmt(output_size),
+        output_br,
+        change
+    );
 
     fs::remove_dir_all(&work_dir)?;
 
@@ -313,11 +338,27 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = parse_args();
+    let output = args.output.clone();
+
+    std::panic::set_hook(Box::new(move |panic_info| {
+        print!("\x1b[?25h\x1b[?1049l");
+        let _ = std::io::stdout().flush();
+        eprintln!("{}", panic_info);
+        eprintln!("{}, FAIL", output.display());
+    }));
+
     unsafe {
         libc::atexit(restore);
         libc::signal(libc::SIGINT, exit_restore as usize);
     }
 
-    let args = parse_args();
-    main_with_args(&args)
+    if let Err(e) = main_with_args(&args) {
+        print!("\x1b[?1049l");
+        std::io::stdout().flush().unwrap();
+        eprintln!("{}, FAIL", args.output.display());
+        return Err(e);
+    }
+
+    Ok(())
 }
