@@ -194,7 +194,9 @@ impl ProgsTrack {
                 };
 
                 if line.contains("error") {
-                    eprintln!("{line}");
+                    print!("\x1b[?1049l");
+                    std::io::stdout().flush().unwrap();
+                    eprintln!("{}", line);
                 }
 
                 if !line.contains("Encoding:") || line.contains("SUMMARY") {
