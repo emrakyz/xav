@@ -294,11 +294,6 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         save_args(&work_dir)?;
     }
 
-    unsafe {
-        libc::atexit(restore);
-        libc::signal(libc::SIGINT, exit_restore as usize);
-    }
-
     let idx = ffms::VidIdx::new(&args.input, args.quiet)?;
     let inf = ffms::get_vidinf(&idx)?;
     let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
@@ -318,6 +313,11 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        libc::atexit(restore);
+        libc::signal(libc::SIGINT, exit_restore as usize);
+    }
+
     let args = parse_args();
     main_with_args(&args)
 }
