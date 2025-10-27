@@ -15,6 +15,29 @@ use crate::ffms::{
 };
 use crate::progs::ProgsTrack;
 
+fn get_tile_params(width: u32, height: u32) -> (&'static str, &'static str) {
+    let is_vertical = height > width;
+    let max_dim = width.max(height);
+
+    match max_dim {
+        0..=1080 => ("0", "0"),
+        1081..=2160 => {
+            if is_vertical {
+                ("0", "1")
+            } else {
+                ("1", "0")
+            }
+        }
+        _ => {
+            if is_vertical {
+                ("0", "2")
+            } else {
+                ("2", "0")
+            }
+        }
+    }
+}
+
 struct ChunkData {
     idx: usize,
     frames: Vec<Vec<u8>>,
@@ -75,6 +98,9 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
     }
 
     colorize(&mut cmd, cfg.inf);
+
+    let (tile_cols, tile_rows) = get_tile_params(cfg.inf.width, cfg.inf.height);
+    cmd.args(["--tile-columns", tile_cols, "--tile-rows", tile_rows]);
 
     if quiet {
         cmd.arg("--no-progress").arg("1");
