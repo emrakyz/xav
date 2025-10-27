@@ -95,6 +95,10 @@ fn apply_defaults(args: &mut Args) {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
         args.scene_file = PathBuf::from(format!("scd_{stem}.txt"));
     }
+
+    if args.target_quality.is_some() && args.qp_range.is_none() {
+        args.qp_range = Some("10.0-40.0".to_string());
+    }
 }
 
 fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
@@ -301,7 +305,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let chunks = chunk::chunkify(&scenes);
 
-    svt::encode_all(&chunks, &inf, args, 25.0, &idx, &work_dir);
+    svt::encode_all(&chunks, &inf, args, &idx, &work_dir);
 
     chunk::merge_out(&work_dir.join("encode"), &args.output, &inf)?;
 

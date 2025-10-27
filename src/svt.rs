@@ -35,7 +35,6 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
     let height_str = cfg.inf.height.to_string();
     let fps_num_str = cfg.inf.fps_num.to_string();
     let fps_den_str = cfg.inf.fps_den.to_string();
-    let crf_str = format!("{:.2}", cfg.crf);
 
     let base_args = [
         "-i",
@@ -54,8 +53,6 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
         &fps_num_str,
         "--fps-denom",
         &fps_den_str,
-        "--crf",
-        &crf_str,
         "--keyint",
         "-1",
         "--rc",
@@ -70,6 +67,11 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
 
     for i in (0..base_args.len()).step_by(2) {
         cmd.arg(base_args[i]).arg(base_args[i + 1]);
+    }
+
+    if !(cfg.crf < 0.0) {
+        let crf_str = format!("{:.2}", cfg.crf);
+        cmd.arg("--crf").arg(crf_str);
     }
 
     colorize(&mut cmd, cfg.inf);
@@ -252,7 +254,6 @@ fn write_frames(
 struct ProcConfig<'a> {
     inf: &'a VidInf,
     params: &'a str,
-    crf: f32,
     quiet: bool,
     work_dir: &'a Path,
 }
@@ -264,8 +265,7 @@ fn proc_chunk(
     conversion_buf: &mut Option<Vec<u8>>,
 ) -> (usize, Option<ChunkComp>) {
     let output = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
-    let enc_cfg =
-        EncConfig { inf: config.inf, params: config.params, crf: config.crf, output: &output };
+    let enc_cfg = EncConfig { inf: config.inf, params: config.params, crf: -1.0, output: &output };
     let mut cmd = make_enc_cmd(&enc_cfg, config.quiet);
     let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
 
@@ -294,7 +294,6 @@ fn proc_chunk(
 }
 
 struct WorkerCtx {
-    crf: f32,
     quiet: bool,
 }
 
@@ -311,7 +310,7 @@ fn run_worker(
 
     loop {
         let Ok(data) = rx.recv() else { break };
-        let config = ProcConfig { inf, params, crf: ctx.crf, quiet: ctx.quiet, work_dir };
+        let config = ProcConfig { inf, params, quiet: ctx.quiet, work_dir };
         let (written, completion) =
             proc_chunk(data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
 
@@ -353,7 +352,6 @@ pub fn encode_all(
     chunks: &[Chunk],
     inf: &VidInf,
     args: &crate::Args,
-    crf: f32,
     idx: &Arc<VidIdx>,
     work_dir: &Path,
 ) {
@@ -410,7 +408,7 @@ pub fn encode_all(
         let params = args.params.clone();
         let stats = stats.clone();
         let prog = prog.clone();
-        let ctx = WorkerCtx { crf, quiet: args.quiet };
+        let ctx = WorkerCtx { quiet: args.quiet };
         let work_dir = work_dir.to_path_buf();
 
         let handle = thread::spawn(move || {
