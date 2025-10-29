@@ -14,6 +14,15 @@ mod tq;
 mod vship;
 mod zimg;
 
+const G: &str = "\x1b[1;92m";
+const R: &str = "\x1b[1;91m";
+const P: &str = "\x1b[1;95m";
+const B: &str = "\x1b[1;94m";
+const Y: &str = "\x1b[1;93m";
+const C: &str = "\x1b[1;96m";
+const W: &str = "\x1b[1;97m";
+const N: &str = "\x1b[0m";
+
 #[derive(Clone)]
 pub struct Args {
     pub worker: usize,
@@ -270,7 +279,7 @@ fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if !args.quiet {
-        print!("\x1b[?1049h\x1b[H");
+        print!("\x1b[?1049h\x1b[H\x1b[?25l");
         std::io::stdout().flush().unwrap();
     }
 
@@ -300,7 +309,9 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let chunks = chunk::chunkify(&scenes);
 
+    let enc_start = std::time::Instant::now();
     svt::encode_all(&chunks, &inf, args, &idx, &work_dir);
+    let enc_time = enc_start.elapsed();
 
     chunk::merge_out(&work_dir.join("encode"), &args.output, &inf)?;
 
@@ -314,23 +325,43 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
     let change = ((output_size as f64 / input_size as f64) - 1.0) * 100.0;
 
-    let fmt = |b: u64| {
+    let fmt_size = |b: u64| {
         if b > 1_000_000_000 {
-            format!("{:.2}GB", b as f64 / 1_000_000_000.0)
+            format!("{:.2} GB", b as f64 / 1_000_000_000.0)
         } else {
-            format!("{:.2}MB", b as f64 / 1_000_000.0)
+            format!("{:.2} MB", b as f64 / 1_000_000.0)
         }
     };
 
+    let arrow = if change < 0.0 { "󰛀" } else { "󰛃" };
+    let change_color = if change < 0.0 { G } else { R };
+
+    let fps_rate = inf.fps_num as f64 / inf.fps_den as f64;
+    let enc_speed = inf.frames as f64 / enc_time.as_secs_f64();
+
+    let enc_secs = enc_time.as_secs();
+    let (eh, em, es) = (enc_secs / 3600, (enc_secs % 3600) / 60, enc_secs % 60);
+
+    let dur_secs = duration as u64;
+    let (dh, dm, ds) = (dur_secs / 3600, (dur_secs % 3600) / 60, dur_secs % 60);
+
     eprintln!(
-        "{}, SUCCESS, {} ({:.0} kb/s) --> {} ({:.0} kb/s), {:+.2}%",
-        args.output.display(),
-        fmt(input_size),
-        input_br,
-        fmt(output_size),
-        output_br,
-        change
-    );
+    "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
+{P}┃ {G}✅ {Y}DONE   {P}┃ {R}{:<30.30} {G}󰛂 {G}{:<30.30} {P}┃\n\
+{P}┣━━━━━━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
+{P}┃ {Y}Size      {P}┃ {R}{:<98} {P}┃\n\
+{P}┣━━━━━━━━━━━╋━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
+{P}┃ {Y}Video     {P}┃ {W}{}x{:<4} {P}┃ {B}{:.3} fps {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02}{:<30} {P}┃\n\
+{P}┣━━━━━━━━━━━╋━━━━━━━━━━━┻━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
+{P}┃ {Y}Time      {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02} {B}@ {:.2} fps{:<42} {P}┃\n\
+{P}┗━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{N}",
+    args.input.file_name().unwrap().to_string_lossy(),
+    args.output.file_name().unwrap().to_string_lossy(),
+    format!("{} {C}({:.0} kb/s) {G}󰛂 {G}{} {C}({:.0} kb/s) {}{} {:.2}%", 
+        fmt_size(input_size), input_br, fmt_size(output_size), output_br, change_color, arrow, change.abs()),
+    inf.width, inf.height, fps_rate, dh, dm, ds, "",
+    eh, em, es, enc_speed, ""
+);
 
     fs::remove_dir_all(&work_dir)?;
 
@@ -351,6 +382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         libc::atexit(restore);
         libc::signal(libc::SIGINT, exit_restore as usize);
+        libc::signal(libc::SIGSEGV, exit_restore as usize);
     }
 
     if let Err(e) = main_with_args(&args) {
