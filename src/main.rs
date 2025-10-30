@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 mod chunk;
 mod ffms;
 mod interp;
+mod noise;
 mod progs;
 mod scd;
 mod svt;
@@ -32,6 +33,7 @@ pub struct Args {
     pub params: String,
     pub resume: bool,
     pub quiet: bool,
+    pub noise: Option<u32>,
     pub input: PathBuf,
     pub output: PathBuf,
 }
@@ -61,6 +63,9 @@ fn print_help() {
     println!("TQ:");
     println!("-t|--tq        Allowed CVVDP Range for Target Quality. Example: `9.45-9.55`");
     println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
+    println!();
+    println!("Misc:");
+    println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
     println!();
     println!("Examples:");
     println!("xav -r i.mkv");
@@ -120,6 +125,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut params = String::new();
     let mut resume = false;
     let mut quiet = false;
+    let mut noise = None;
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
 
@@ -162,6 +168,16 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
             "-q" | "--quiet" => {
                 quiet = true;
             }
+            "-n" | "--noise" => {
+                i += 1;
+                if i < args.len() {
+                    let val: u32 = args[i].parse()?;
+                    if !(1..=64).contains(&val) {
+                        return Err("Noise ISO must be between 1-64".into());
+                    }
+                    noise = Some(val * 100);
+                }
+            }
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
                     input = PathBuf::from(arg);
@@ -180,8 +196,18 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         return Ok(saved_args);
     }
 
-    let mut result =
-        Args { worker, scene_file, target_quality, qp_range, params, resume, quiet, input, output };
+    let mut result = Args {
+        worker,
+        scene_file,
+        target_quality,
+        qp_range,
+        params,
+        resume,
+        quiet,
+        noise,
+        input,
+        output,
+    };
 
     apply_defaults(&mut result);
 
@@ -286,12 +312,21 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let idx = ffms::VidIdx::new(&args.input, args.quiet)?;
     let inf = ffms::get_vidinf(&idx)?;
+
+    let grain_table = if let Some(iso) = args.noise {
+        let table_path = work_dir.join("grain.tbl");
+        noise::gen_table(iso, &inf, &table_path)?;
+        Some(table_path)
+    } else {
+        None
+    };
+
     let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
 
     let chunks = chunk::chunkify(&scenes);
 
     let enc_start = std::time::Instant::now();
-    svt::encode_all(&chunks, &inf, args, &idx, &work_dir);
+    svt::encode_all(&chunks, &inf, args, &idx, &work_dir, grain_table.as_ref());
     let enc_time = enc_start.elapsed();
 
     chunk::merge_out(&work_dir.join("encode"), &args.output, &inf)?;
@@ -301,7 +336,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let input_size = fs::metadata(&args.input)?.len();
     let output_size = fs::metadata(&args.output)?.len();
-    let duration = inf.frames as f64 * inf.fps_den as f64 / inf.fps_num as f64;
+    let duration = inf.frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
     let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
     let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
     let change = ((output_size as f64 / input_size as f64) - 1.0) * 100.0;
@@ -317,7 +352,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let arrow = if change < 0.0 { "󰛀" } else { "󰛃" };
     let change_color = if change < 0.0 { G } else { R };
 
-    let fps_rate = inf.fps_num as f64 / inf.fps_den as f64;
+    let fps_rate = f64::from(inf.fps_num) / f64::from(inf.fps_den);
     let enc_speed = inf.frames as f64 / enc_time.as_secs_f64();
 
     let enc_secs = enc_time.as_secs();
@@ -356,7 +391,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::panic::set_hook(Box::new(move |panic_info| {
         print!("\x1b[?25h\x1b[?1049l");
         let _ = std::io::stdout().flush();
-        eprintln!("{}", panic_info);
+        eprintln!("{panic_info}");
         eprintln!("{}, FAIL", output.display());
     }));
 

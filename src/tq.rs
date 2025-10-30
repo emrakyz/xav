@@ -48,6 +48,7 @@ pub struct QualityContext<'a> {
     pub vship: &'a crate::vship::VshipProcessor,
     pub stride: u32,
     pub rgb_size: usize,
+    pub grain_table: Option<&'a Path>,
 }
 
 fn round_crf(crf: f64) -> f64 {
@@ -70,6 +71,7 @@ fn encode_probe(ctx: &QualityContext, crf: f64, last_score: Option<f64>) -> Stri
             work_dir: ctx.work_dir,
             idx: ctx.chunk.idx,
             crf_score: Some((crf as f32, last_score)),
+            grain_table: ctx.grain_table,
         },
         ctx.prog,
     );

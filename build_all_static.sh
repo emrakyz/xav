@@ -122,7 +122,11 @@ make install
 git clone https://code.videolan.org/videolan/dav1d.git "${HOME}/.local/src/dav1d"
 cd "${HOME}/.local/src/dav1d"
 meson setup build --default-library=static \
-        --buildtype=release -Denable_tools=false -Denable_examples=false
+        --buildtype=release \
+        -Denable_tools=false \
+        -Denable_examples=false \
+        -Dbitdepths=8,16 \
+        -Denable_asm=true
 ninja -C build
 
 cp "${HOME}/.local/src/dav1d/build/meson-private/dav1d.pc" "/tmp/dav1d.pc"
@@ -140,7 +144,7 @@ git clone "https://github.com/FFmpeg/FFmpeg"
 
 cd "FFmpeg"
 
-git checkout n7.1.2
+git checkout n8.0
 
 echo "=== Building FFmpeg with custom flags ==="
 
@@ -164,8 +168,7 @@ echo "=== Building FFmpeg with custom flags ==="
         --disable-txtpages \
         --disable-network \
         --disable-autodetect \
-        --disable-avdevice \
-        --disable-avfilter \
+        --disable-all \
         --disable-everything \
         --enable-avcodec \
         --enable-avformat \
