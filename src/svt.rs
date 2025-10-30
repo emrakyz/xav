@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -49,6 +49,7 @@ struct EncConfig<'a> {
     params: &'a str,
     crf: f32,
     output: &'a Path,
+    grain_table: Option<&'a Path>,
 }
 
 fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
@@ -92,7 +93,7 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
         cmd.arg(base_args[i]).arg(base_args[i + 1]);
     }
 
-    if !(cfg.crf < 0.0) {
+    if cfg.crf >= 0.0 {
         let crf_str = format!("{:.2}", cfg.crf);
         cmd.arg("--crf").arg(crf_str);
     }
@@ -101,6 +102,10 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
 
     let (tile_cols, tile_rows) = get_tile_params(cfg.inf.width, cfg.inf.height);
     cmd.args(["--tile-columns", tile_cols, "--tile-rows", tile_rows]);
+
+    if let Some(grain_path) = cfg.grain_table {
+        cmd.arg("--fgs-table").arg(grain_path);
+    }
 
     if quiet {
         cmd.arg("--no-progress").arg("1");
@@ -282,6 +287,7 @@ struct ProcConfig<'a> {
     params: &'a str,
     quiet: bool,
     work_dir: &'a Path,
+    grain_table: Option<&'a Path>,
 }
 
 fn proc_chunk(
@@ -291,7 +297,13 @@ fn proc_chunk(
     conversion_buf: &mut Option<Vec<u8>>,
 ) -> (usize, Option<ChunkComp>) {
     let output = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
-    let enc_cfg = EncConfig { inf: config.inf, params: config.params, crf: -1.0, output: &output };
+    let enc_cfg = EncConfig {
+        inf: config.inf,
+        params: config.params,
+        crf: -1.0,
+        output: &output,
+        grain_table: config.grain_table,
+    };
     let mut cmd = make_enc_cmd(&enc_cfg, config.quiet);
     let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
 
@@ -319,8 +331,9 @@ fn proc_chunk(
     (written, completion)
 }
 
-struct WorkerCtx {
+struct WorkerCtx<'a> {
     quiet: bool,
+    grain_table: Option<&'a Path>,
 }
 
 fn run_worker(
@@ -334,9 +347,9 @@ fn run_worker(
 ) {
     let mut conversion_buf = Some(vec![0u8; calc_10bit_size(inf)]);
 
-    loop {
-        let Ok(data) = rx.recv() else { break };
-        let config = ProcConfig { inf, params, quiet: ctx.quiet, work_dir };
+    while let Ok(data) = rx.recv() {
+        let config =
+            ProcConfig { inf, params, quiet: ctx.quiet, work_dir, grain_table: ctx.grain_table };
         let (written, completion) =
             proc_chunk(data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
 
@@ -380,6 +393,7 @@ pub fn encode_all(
     args: &crate::Args,
     idx: &Arc<VidIdx>,
     work_dir: &Path,
+    grain_table: Option<&PathBuf>,
 ) {
     let resume_data = if args.resume {
         get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new() })
@@ -389,7 +403,7 @@ pub fn encode_all(
 
     let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
     if is_tq {
-        encode_tq(chunks, inf, args, idx, work_dir);
+        encode_tq(chunks, inf, args, idx, work_dir, grain_table);
         return;
     }
 
@@ -428,16 +442,18 @@ pub fn encode_all(
     };
 
     let mut workers = Vec::new();
+    let quiet = args.quiet;
     for _ in 0..args.worker {
         let rx = Arc::clone(&rx);
         let inf = inf.clone();
         let params = args.params.clone();
         let stats = stats.clone();
         let prog = prog.clone();
-        let ctx = WorkerCtx { quiet: args.quiet };
+        let grain = grain_table.cloned();
         let work_dir = work_dir.to_path_buf();
 
         let handle = thread::spawn(move || {
+            let ctx = WorkerCtx { quiet, grain_table: grain.as_deref() };
             run_worker(&rx, &inf, &params, &ctx, stats.as_ref(), prog.as_ref(), &work_dir);
         });
         workers.push(handle);
@@ -463,12 +479,18 @@ pub struct ProbeConfig<'a> {
     pub work_dir: &'a Path,
     pub idx: usize,
     pub crf_score: Option<(f32, Option<f64>)>,
+    pub grain_table: Option<&'a Path>,
 }
 
 pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>) {
     let output = config.work_dir.join("split").join(config.probe_name);
-    let enc_cfg =
-        EncConfig { inf: config.inf, params: config.params, crf: config.crf, output: &output };
+    let enc_cfg = EncConfig {
+        inf: config.inf,
+        params: config.params,
+        crf: config.crf,
+        output: &output,
+        grain_table: config.grain_table,
+    };
     let mut cmd = make_enc_cmd(&enc_cfg, false);
     let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
 
@@ -533,6 +555,7 @@ struct TQChunkConfig<'a> {
     probe_info: &'a crate::tq::ProbeInfoMap,
     stats: Option<&'a Arc<WorkerStats>>,
     metric_mode: &'a str,
+    grain_table: Option<&'a Path>,
 }
 
 fn process_tq_chunk(
@@ -555,6 +578,7 @@ fn process_tq_chunk(
             vship,
             stride: config.stride,
             rgb_size: config.rgb_size,
+            grain_table: config.grain_table,
         };
 
         if let Some(best) = crate::tq::find_target_quality(
@@ -585,6 +609,7 @@ fn encode_tq(
     args: &crate::Args,
     idx: &Arc<VidIdx>,
     work_dir: &Path,
+    grain_table: Option<&PathBuf>,
 ) {
     let resume_data = if args.resume {
         get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new() })
@@ -639,6 +664,7 @@ fn encode_tq(
         let stats = stats.clone();
         let prog = prog.clone();
         let wd = work_dir.to_path_buf();
+        let grain = grain_table.cloned();
         let metric_mode = args.metric_mode.clone();
 
         workers.push(thread::spawn(move || {
@@ -659,6 +685,7 @@ fn encode_tq(
                 rgb_size,
                 probe_info: &probe_info,
                 stats: stats.as_ref(),
+                grain_table: grain.as_deref(),
                 metric_mode: &metric_mode,
             };
 
