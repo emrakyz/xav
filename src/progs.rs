@@ -323,6 +323,7 @@ impl ProgsTrack {
         std::io::stdout().flush().unwrap();
     }
 
+    #[cfg(feature = "vship")]
     pub fn show_metric(
         &self,
         chunk_idx: usize,

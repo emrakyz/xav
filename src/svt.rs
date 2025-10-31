@@ -41,6 +41,7 @@ fn get_tile_params(width: u32, height: u32) -> (&'static str, &'static str) {
 struct ChunkData {
     idx: usize,
     frames: Vec<Vec<u8>>,
+    #[cfg(feature = "vship")]
     yuv_frames: Option<Vec<Vec<u8>>>,
 }
 
@@ -183,6 +184,7 @@ fn dec_10bit(
             tx.send(ChunkData {
                 idx: chunk.idx,
                 frames: frames_buffer[..valid].to_vec(),
+                #[cfg(feature = "vship")]
                 yuv_frames: if keep_yuv { Some(yuv) } else { None },
             })
             .ok();
@@ -219,6 +221,7 @@ fn dec_8bit(
             tx.send(ChunkData {
                 idx: chunk.idx,
                 frames: frames_buffer[..valid].to_vec(),
+                #[cfg(feature = "vship")]
                 yuv_frames: if keep_yuv { Some(yuv) } else { None },
             })
             .ok();
@@ -401,10 +404,13 @@ pub fn encode_all(
         ResumeInf { chnks_done: Vec::new() }
     };
 
-    let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
-    if is_tq {
-        encode_tq(chunks, inf, args, idx, work_dir, grain_table);
-        return;
+    #[cfg(feature = "vship")]
+    {
+        let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
+        if is_tq {
+            encode_tq(chunks, inf, args, idx, work_dir, grain_table);
+            return;
+        }
     }
 
     let skip_indices: HashSet<usize> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
@@ -470,6 +476,7 @@ pub fn encode_all(
     }
 }
 
+#[cfg(feature = "vship")]
 pub struct ProbeConfig<'a> {
     pub yuv_frames: &'a [Vec<u8>],
     pub inf: &'a VidInf,
@@ -482,6 +489,7 @@ pub struct ProbeConfig<'a> {
     pub grain_table: Option<&'a Path>,
 }
 
+#[cfg(feature = "vship")]
 pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>) {
     let output = config.work_dir.join("split").join(config.probe_name);
     let enc_cfg = EncConfig {
@@ -505,6 +513,7 @@ pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>)
     child.wait().unwrap();
 }
 
+#[cfg(feature = "vship")]
 fn create_tq_worker(
     inf: &VidInf,
     stride: u32,
@@ -547,6 +556,7 @@ fn create_tq_worker(
     (ref_zimg, dist_zimg, vship)
 }
 
+#[cfg(feature = "vship")]
 struct TQChunkConfig<'a> {
     chunks: &'a [Chunk],
     inf: &'a VidInf,
@@ -562,6 +572,7 @@ struct TQChunkConfig<'a> {
     grain_table: Option<&'a Path>,
 }
 
+#[cfg(feature = "vship")]
 fn process_tq_chunk(
     data: &ChunkData,
     config: &TQChunkConfig,
@@ -603,6 +614,7 @@ fn process_tq_chunk(
     }
 }
 
+#[cfg(feature = "vship")]
 fn encode_tq(
     chunks: &[Chunk],
     inf: &VidInf,

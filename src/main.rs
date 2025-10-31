@@ -6,13 +6,17 @@ use std::path::{Path, PathBuf};
 
 mod chunk;
 mod ffms;
+#[cfg(feature = "vship")]
 mod interp;
 mod noise;
 mod progs;
 mod scd;
 mod svt;
+#[cfg(feature = "vship")]
 mod tq;
+#[cfg(feature = "vship")]
 mod vship;
+#[cfg(feature = "vship")]
 mod zimg;
 
 const G: &str = "\x1b[1;92m";
@@ -28,7 +32,9 @@ const N: &str = "\x1b[0m";
 pub struct Args {
     pub worker: usize,
     pub scene_file: PathBuf,
+    #[cfg(feature = "vship")]
     pub target_quality: Option<String>,
+    #[cfg(feature = "vship")]
     pub qp_range: Option<String>,
     pub params: String,
     pub resume: bool,
@@ -60,10 +66,13 @@ fn print_help() {
     println!("-r|--resume    Resume the encoding. Example below");
     println!("-q|--quiet     Do not run any code related to any progress");
     println!();
-    println!("TQ:");
-    println!("-t|--tq        Allowed CVVDP Range for Target Quality. Example: `9.45-9.55`");
-    println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
-    println!();
+    #[cfg(feature = "vship")]
+    {
+        println!("TQ:");
+        println!("-t|--tq        Allowed CVVDP Range for Target Quality. Example: `9.45-9.55`");
+        println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
+        println!();
+    }
     println!("Misc:");
     println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
     println!();
@@ -108,6 +117,7 @@ fn apply_defaults(args: &mut Args) {
         args.scene_file = PathBuf::from(format!("scd_{stem}.txt"));
     }
 
+    #[cfg(feature = "vship")]
     if args.target_quality.is_some() && args.qp_range.is_none() {
         args.qp_range = Some("10.0-40.0".to_string());
     }
@@ -120,7 +130,9 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
 
     let mut worker = 0;
     let mut scene_file = PathBuf::new();
+    #[cfg(feature = "vship")]
     let mut target_quality = None;
+    #[cfg(feature = "vship")]
     let mut qp_range = None;
     let mut params = String::new();
     let mut resume = false;
@@ -144,12 +156,14 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     scene_file = PathBuf::from(&args[i]);
                 }
             }
+            #[cfg(feature = "vship")]
             "-t" | "--tq" => {
                 i += 1;
                 if i < args.len() {
                     target_quality = Some(args[i].clone());
                 }
             }
+            #[cfg(feature = "vship")]
             "-c" | "--qp" => {
                 i += 1;
                 if i < args.len() {
@@ -199,7 +213,9 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut result = Args {
         worker,
         scene_file,
+        #[cfg(feature = "vship")]
         target_quality,
+        #[cfg(feature = "vship")]
         qp_range,
         params,
         resume,

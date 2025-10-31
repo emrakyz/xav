@@ -8,8 +8,6 @@ fn main() {
         println!("cargo:rustc-link-search=native={home}/.local/src/FFmpeg/install/lib");
         println!("cargo:rustc-link-search=native={home}/.local/src/dav1d/build/src");
         println!("cargo:rustc-link-search=native={home}/.local/src/zlib/install/lib");
-        println!("cargo:rustc-link-search=native={home}/.local/src/zimg/.libs");
-        println!("cargo:rustc-link-search=native={home}/.local/src/Vship");
 
         println!("cargo:rustc-link-lib=static=ffms2");
         println!("cargo:rustc-link-lib=static=swscale");
@@ -19,13 +17,19 @@ fn main() {
         println!("cargo:rustc-link-lib=static=dav1d");
         println!("cargo:rustc-link-lib=static=z");
 
-        println!("cargo:rustc-link-lib=static=zimg");
-        println!("cargo:rustc-link-lib=static=vship");
+        #[cfg(feature = "vship")]
+        {
+            println!("cargo:rustc-link-search=native={home}/.local/src/zimg/.libs");
+            println!("cargo:rustc-link-search=native={home}/.local/src/Vship");
 
-        println!("cargo:rustc-link-lib=static=cudart_static");
-        println!("cargo:rustc-link-lib=static=stdc++");
-        println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
+            println!("cargo:rustc-link-lib=static=zimg");
+            println!("cargo:rustc-link-lib=static=vship");
 
-        println!("cargo:rustc-link-lib=dylib=cuda");
+            println!("cargo:rustc-link-lib=static=cudart_static");
+            println!("cargo:rustc-link-lib=static=stdc++");
+            println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
+
+            println!("cargo:rustc-link-lib=dylib=cuda");
+        }
     }
 }
