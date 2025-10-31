@@ -1,6 +1,6 @@
 # xav - eXtreme AOMedia Video
 
-(Research-only Tool) The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
+The Most Efficient Chunked or Target Quality AV1/AV2 Encoding Framework
 
 <img width="1772" height="680" alt="image_2025-10-26_01-18-55" src="https://github.com/user-attachments/assets/7652c8e2-4a9a-4660-b276-c345e22b932f" />
 
@@ -61,11 +61,12 @@ For this reason, adding `xav` features to `av1an` and `av1an` features to `xav`,
 - Offers fun process monitoring with almost no overhead for indexing, SCD, encoding, TQ processes.
 - Fastest chunked encoding with `svt-av1`.
 - Fastest target quality encoding with `CVVDP`.
+- Photon noise generation support.
 
 ## Design Decisions
 
 - Uses only absolute bleeding-edge tools with an opinionated setup.
-- No flexibility or extensive feature support (such as VapourSynth filtering, zoning, different encoders, metrics, chunking methods, scaling, configurable SC parameters, statistical pooling for TQ, probing with different parameters than actual encoding for TQ).
+- No flexibility or extensive feature support (such as VapourSynth filtering, zoning, different encoders, chunking methods, scaling, configurable SC parameters, probing with different parameters than actual encoding for TQ).
 - `yuv420p` & `yuv420p10le` input AND `yuv420p10le` output only. No 8 (output) or 12bit support, as well as yuv422, yuv444 support.
 - TQ aim is to: Get exactly what you requested in the most accurate / fastest way possible with no chance of deviation.
 - Chunked encoding's aim is to optimize internally and reduce overhead as much as possible to get the fastest possible encoding speed overall.
@@ -75,21 +76,21 @@ These help me make the tool's already present features closer to perfect with ea
 
 ## Usage
 
-<img width="1524" height="744" alt="image" src="https://github.com/user-attachments/assets/cc4857c5-e7b3-401d-bce9-30bb33068544" />
+<img width="1526" height="626" alt="image" src="https://github.com/user-attachments/assets/22ce28e8-257c-4655-bf5b-e1830194691c" />
 
 ## Building
 
-Run the `build_all_static.sh` script to build dependencies statically and build the main tool with them. This is the intended way for maximum performance. Though this is not particularly trivial.
+Run the `build.sh` script: It will guide you.
 
-For dynamic builds, you need ffmpegsource (ffms2) installed on your system and need to run `build_dynamic.sh`.
+Building dependencies statically and building the main tool with them, is the intended way for maximum performance but it's for advanced users due to compiler complexities.
 
-For TQ support, you need `zimg`, `ffms2`, `vship`.
+For dynamic builds, you need ffmpegsource (ffms2) installed on your system. That's all.
+
+For TQ support, you need `zimg`, `ffms2`, `vship` installed on your system.
 
 **NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. Some package managers do not provide them, in this case; they need to be compiled manually.
 
 Rust Nightly is also needed for `-Z` based optimizations.
-
-NOTE: The tool is still in pre-beta. Even though it works, especially static building has complexities that are hard to handle universally. I will provide arch specific optimized builds soon with or without TQ support.
 
 ## Video Showcase
 
