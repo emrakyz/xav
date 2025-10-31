@@ -1,0 +1,19 @@
+[env]
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Z panic_abort_tests -C link-args=-fno-pic -lffms2"
+
+[build]
+rustflags = [
+    "-C", "debuginfo=0",
+    "-C", "target-cpu=native",
+    "-C", "opt-level=3",
+    "-C", "codegen-units=1",
+    "-C", "strip=symbols",
+    "-C", "panic=abort",
+    "-C", "linker=clang",
+    "-C", "lto=fat",
+    "-C", "embed-bitcode=yes",
+    "-C", "link-args=-fno-pic",
+    "-Z", "dylib-lto",
+    "-Z", "panic_abort_tests",
+    "-lffms2",
+]
