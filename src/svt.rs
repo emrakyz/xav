@@ -41,7 +41,6 @@ fn get_tile_params(width: u32, height: u32) -> (&'static str, &'static str) {
 struct ChunkData {
     idx: usize,
     frames: Vec<Vec<u8>>,
-    yuv_frames: Option<Vec<Vec<u8>>>,
 }
 
 struct EncConfig<'a> {
@@ -153,7 +152,6 @@ fn dec_10bit(
     source: *mut std::ffi::c_void,
     inf: &VidInf,
     tx: &Sender<ChunkData>,
-    keep_yuv: bool,
 ) {
     let frame_size = calc_10bit_size(inf);
     let packed_size = calc_packed_size(inf);
@@ -165,7 +163,6 @@ fn dec_10bit(
 
     for chunk in chunks {
         let mut valid = 0;
-        let mut yuv = Vec::new();
 
         for (i, idx) in (chunk.start..chunk.end).enumerate() {
             if extr_10bit(source, idx, &mut frame_buf).is_err() {
@@ -173,30 +170,16 @@ fn dec_10bit(
             }
 
             pack_10bit(&frame_buf, &mut frames_buffer[i]);
-            if keep_yuv {
-                yuv.push(frames_buffer[i].clone());
-            }
             valid += 1;
         }
 
         if valid > 0 {
-            tx.send(ChunkData {
-                idx: chunk.idx,
-                frames: frames_buffer[..valid].to_vec(),
-                yuv_frames: if keep_yuv { Some(yuv) } else { None },
-            })
-            .ok();
+            tx.send(ChunkData { idx: chunk.idx, frames: frames_buffer[..valid].to_vec() }).ok();
         }
     }
 }
 
-fn dec_8bit(
-    chunks: &[Chunk],
-    source: *mut std::ffi::c_void,
-    inf: &VidInf,
-    tx: &Sender<ChunkData>,
-    keep_yuv: bool,
-) {
+fn dec_8bit(chunks: &[Chunk], source: *mut std::ffi::c_void, inf: &VidInf, tx: &Sender<ChunkData>) {
     let max_chunk_size = get_max_chunk_size(inf);
     let frame_size = calc_8bit_size(inf);
     let mut frames_buffer: Vec<Vec<u8>> =
@@ -204,24 +187,15 @@ fn dec_8bit(
 
     for chunk in chunks {
         let mut valid = 0;
-        let mut yuv = Vec::new();
 
         for (i, idx) in (chunk.start..chunk.end).enumerate() {
             if extr_8bit(source, idx, &mut frames_buffer[i]).is_ok() {
-                if keep_yuv {
-                    yuv.push(frames_buffer[i].clone());
-                }
                 valid += 1;
             }
         }
 
         if valid > 0 {
-            tx.send(ChunkData {
-                idx: chunk.idx,
-                frames: frames_buffer[..valid].to_vec(),
-                yuv_frames: if keep_yuv { Some(yuv) } else { None },
-            })
-            .ok();
+            tx.send(ChunkData { idx: chunk.idx, frames: frames_buffer[..valid].to_vec() }).ok();
         }
     }
 }
@@ -232,7 +206,6 @@ fn decode_chunks(
     inf: &VidInf,
     tx: &Sender<ChunkData>,
     skip_indices: &HashSet<usize>,
-    keep_yuv: bool,
 ) {
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -241,9 +214,9 @@ fn decode_chunks(
         chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).cloned().collect();
 
     if inf.is_10bit {
-        dec_10bit(&filtered, source, inf, tx, keep_yuv);
+        dec_10bit(&filtered, source, inf, tx);
     } else {
-        dec_8bit(&filtered, source, inf, tx, keep_yuv);
+        dec_8bit(&filtered, source, inf, tx);
     }
 
     destroy_vid_src(source);
@@ -401,10 +374,13 @@ pub fn encode_all(
         ResumeInf { chnks_done: Vec::new() }
     };
 
-    let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
-    if is_tq {
-        encode_tq(chunks, inf, args, idx, work_dir, grain_table);
-        return;
+    #[cfg(feature = "vship")]
+    {
+        let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
+        if is_tq {
+            encode_tq(chunks, inf, args, idx, work_dir, grain_table);
+            return;
+        }
     }
 
     let skip_indices: HashSet<usize> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
@@ -438,7 +414,7 @@ pub fn encode_all(
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
-        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, false))
+        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices))
     };
 
     let mut workers = Vec::new();
@@ -470,6 +446,7 @@ pub fn encode_all(
     }
 }
 
+#[cfg(feature = "vship")]
 pub struct ProbeConfig<'a> {
     pub yuv_frames: &'a [Vec<u8>],
     pub inf: &'a VidInf,
@@ -482,6 +459,7 @@ pub struct ProbeConfig<'a> {
     pub grain_table: Option<&'a Path>,
 }
 
+#[cfg(feature = "vship")]
 pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>) {
     let output = config.work_dir.join("split").join(config.probe_name);
     let enc_cfg = EncConfig {
@@ -505,6 +483,7 @@ pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>)
     child.wait().unwrap();
 }
 
+#[cfg(feature = "vship")]
 fn create_tq_worker(
     inf: &VidInf,
     stride: u32,
@@ -537,11 +516,17 @@ fn create_tq_worker(
     )
     .unwrap();
 
-    let vship = crate::vship::VshipProcessor::new(inf.width, inf.height).unwrap();
+    let vship = crate::vship::VshipProcessor::new(
+        inf.width,
+        inf.height,
+        inf.fps_num as f32 / inf.fps_den as f32,
+    )
+    .unwrap();
 
     (ref_zimg, dist_zimg, vship)
 }
 
+#[cfg(feature = "vship")]
 struct TQChunkConfig<'a> {
     chunks: &'a [Chunk],
     inf: &'a VidInf,
@@ -554,10 +539,10 @@ struct TQChunkConfig<'a> {
     rgb_size: usize,
     probe_info: &'a crate::tq::ProbeInfoMap,
     stats: Option<&'a Arc<WorkerStats>>,
-    metric_mode: &'a str,
     grain_table: Option<&'a Path>,
 }
 
+#[cfg(feature = "vship")]
 fn process_tq_chunk(
     data: &ChunkData,
     config: &TQChunkConfig,
@@ -565,44 +550,39 @@ fn process_tq_chunk(
     dist_zimg: &mut crate::zimg::ZimgProcessor,
     vship: &crate::vship::VshipProcessor,
 ) {
-    if let Some(yuv) = &data.yuv_frames {
-        let mut ctx = crate::tq::QualityContext {
-            chunk: &config.chunks[data.idx],
-            yuv_frames: yuv,
-            inf: config.inf,
-            params: config.params,
-            work_dir: config.work_dir,
-            prog: config.prog,
-            ref_zimg,
-            dist_zimg,
-            vship,
-            stride: config.stride,
-            rgb_size: config.rgb_size,
-            grain_table: config.grain_table,
-        };
+    let mut ctx = crate::tq::QualityContext {
+        chunk: &config.chunks[data.idx],
+        yuv_frames: &data.frames,
+        inf: config.inf,
+        params: config.params,
+        work_dir: config.work_dir,
+        prog: config.prog,
+        ref_zimg,
+        dist_zimg,
+        vship,
+        stride: config.stride,
+        rgb_size: config.rgb_size,
+        grain_table: config.grain_table,
+    };
 
-        if let Some(best) = crate::tq::find_target_quality(
-            &mut ctx,
-            config.tq,
-            config.qp,
-            config.probe_info,
-            config.metric_mode,
-        ) {
-            let src = config.work_dir.join("split").join(&best);
-            let dst = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
-            std::fs::copy(&src, &dst).unwrap();
+    if let Some(best) =
+        crate::tq::find_target_quality(&mut ctx, config.tq, config.qp, config.probe_info)
+    {
+        let src = config.work_dir.join("split").join(&best);
+        let dst = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
+        std::fs::copy(&src, &dst).unwrap();
 
-            if let Some(s) = config.stats {
-                let meta = std::fs::metadata(&dst).unwrap();
-                let comp = ChunkComp { idx: data.idx, frames: data.frames.len(), size: meta.len() };
-                s.frames_done.fetch_add(data.frames.len(), Ordering::Relaxed);
-                s.completed.fetch_add(1, Ordering::Relaxed);
-                s.add_completion(comp, config.work_dir);
-            }
+        if let Some(s) = config.stats {
+            let meta = std::fs::metadata(&dst).unwrap();
+            let comp = ChunkComp { idx: data.idx, frames: data.frames.len(), size: meta.len() };
+            s.frames_done.fetch_add(data.frames.len(), Ordering::Relaxed);
+            s.completed.fetch_add(1, Ordering::Relaxed);
+            s.add_completion(comp, config.work_dir);
         }
     }
 }
 
+#[cfg(feature = "vship")]
 fn encode_tq(
     chunks: &[Chunk],
     inf: &VidInf,
@@ -648,7 +628,7 @@ fn encode_tq(
         let i = Arc::clone(idx);
         let inf = inf.clone();
         thread::spawn(move || {
-            decode_chunks(&c, &i, &inf, &tx, &skip_indices, true);
+            decode_chunks(&c, &i, &inf, &tx, &skip_indices);
         })
     };
 
@@ -665,7 +645,6 @@ fn encode_tq(
         let prog = prog.clone();
         let wd = work_dir.to_path_buf();
         let grain = grain_table.cloned();
-        let metric_mode = args.metric_mode.clone();
 
         workers.push(thread::spawn(move || {
             let stride = (inf.width * 2).div_ceil(32) * 32;
@@ -686,7 +665,6 @@ fn encode_tq(
                 probe_info: &probe_info,
                 stats: stats.as_ref(),
                 grain_table: grain.as_deref(),
-                metric_mode: &metric_mode,
             };
 
             while let Ok(data) = rx.recv() {
