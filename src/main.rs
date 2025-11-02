@@ -63,10 +63,8 @@ fn print_help() {
     println!("<OUTPUT>       Output path. Adds `_av1` to the input name if not specified");
     println!();
     println!("Options:");
+    println!("-p|--param     SVT AV1 parameters inside quotes");
     println!("-w|--worker    Number of `svt-av1` instances to run");
-    println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
-    println!("-r|--resume    Resume the encoding. Example below");
-    println!("-q|--quiet     Do not run any code related to any progress");
     println!();
     #[cfg(feature = "vship")]
     {
@@ -78,6 +76,9 @@ fn print_help() {
     }
     println!("Misc:");
     println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
+    println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
+    println!("-r|--resume    Resume the encoding. Example below");
+    println!("-q|--quiet     Do not run any code related to any progress");
     println!();
     println!("Examples:");
     println!("xav -r i.mkv");

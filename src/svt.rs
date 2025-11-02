@@ -40,7 +40,9 @@ fn get_tile_params(width: u32, height: u32) -> (&'static str, &'static str) {
 
 struct ChunkData {
     idx: usize,
-    frames: Vec<Vec<u8>>,
+    frames: Vec<u8>,
+    frame_size: usize,
+    frame_count: usize,
 }
 
 struct EncConfig<'a> {
@@ -174,7 +176,18 @@ fn dec_10bit(
         }
 
         if valid > 0 {
-            tx.send(ChunkData { idx: chunk.idx, frames: frames_buffer[..valid].to_vec() }).ok();
+            let mut frames_data = vec![0u8; valid * packed_size];
+            for (i, frame) in frames_buffer.iter().enumerate().take(valid) {
+                let start = i * packed_size;
+                frames_data[start..start + packed_size].copy_from_slice(frame);
+            }
+            tx.send(ChunkData {
+                idx: chunk.idx,
+                frames: frames_data,
+                frame_size: packed_size,
+                frame_count: valid,
+            })
+            .ok();
         }
     }
 }
@@ -195,7 +208,18 @@ fn dec_8bit(chunks: &[Chunk], source: *mut std::ffi::c_void, inf: &VidInf, tx: &
         }
 
         if valid > 0 {
-            tx.send(ChunkData { idx: chunk.idx, frames: frames_buffer[..valid].to_vec() }).ok();
+            let mut frames_data = vec![0u8; valid * frame_size];
+            for (i, frame) in frames_buffer.iter().enumerate().take(valid) {
+                let start = i * frame_size;
+                frames_data[start..start + frame_size].copy_from_slice(frame);
+            }
+            tx.send(ChunkData {
+                idx: chunk.idx,
+                frames: frames_data,
+                frame_size,
+                frame_count: valid,
+            })
+            .ok();
         }
     }
 }
@@ -224,7 +248,9 @@ fn decode_chunks(
 
 fn write_frames(
     child: &mut std::process::Child,
-    frames: Vec<Vec<u8>>,
+    frames: &[u8],
+    frame_size: usize,
+    frame_count: usize,
     inf: &VidInf,
     conversion_buf: &mut Option<Vec<u8>>,
 ) -> usize {
@@ -234,16 +260,20 @@ fn write_frames(
 
     let mut written = 0;
 
-    for frame in frames {
+    for i in 0..frame_count {
+        let start = i * frame_size;
+        let end = start + frame_size;
+        let frame = &frames[start..end];
+
         let result = if let Some(buf) = conversion_buf {
             if inf.is_10bit {
-                unpack_10bit(&frame, buf);
+                unpack_10bit(frame, buf);
             } else {
-                conv_to_10bit(&frame, buf);
+                conv_to_10bit(frame, buf);
             }
             stdin.write_all(buf)
         } else {
-            stdin.write_all(&frame)
+            stdin.write_all(frame)
         };
 
         if result.is_err() {
@@ -264,7 +294,7 @@ struct ProcConfig<'a> {
 }
 
 fn proc_chunk(
-    data: ChunkData,
+    data: &ChunkData,
     config: &ProcConfig,
     prog: Option<&ProgsTrack>,
     conversion_buf: &mut Option<Vec<u8>>,
@@ -287,8 +317,15 @@ fn proc_chunk(
         p.watch_enc(stderr, data.idx, true, None);
     }
 
-    let frame_count = data.frames.len();
-    let written = write_frames(&mut child, data.frames, config.inf, conversion_buf);
+    let frame_count = data.frame_count;
+    let written = write_frames(
+        &mut child,
+        &data.frames,
+        data.frame_size,
+        data.frame_count,
+        config.inf,
+        conversion_buf,
+    );
 
     let status = child.wait().unwrap();
     if !status.success() {
@@ -324,7 +361,7 @@ fn run_worker(
         let config =
             ProcConfig { inf, params, quiet: ctx.quiet, work_dir, grain_table: ctx.grain_table };
         let (written, completion) =
-            proc_chunk(data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
+            proc_chunk(&data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
 
         if let Some(s) = stats {
             s.completed.fetch_add(1, Ordering::Relaxed);
@@ -448,7 +485,8 @@ pub fn encode_all(
 
 #[cfg(feature = "vship")]
 pub struct ProbeConfig<'a> {
-    pub yuv_frames: &'a [Vec<u8>],
+    pub yuv_frames: &'a [u8],
+    pub frame_count: usize,
     pub inf: &'a VidInf,
     pub params: &'a str,
     pub crf: f32,
@@ -479,7 +517,15 @@ pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>)
     }
 
     let mut buf = Some(vec![0u8; calc_10bit_size(config.inf)]);
-    write_frames(&mut child, config.yuv_frames.to_vec(), config.inf, &mut buf);
+    let frame_size = config.yuv_frames.len() / config.frame_count;
+    write_frames(
+        &mut child,
+        config.yuv_frames,
+        frame_size,
+        config.frame_count,
+        config.inf,
+        &mut buf,
+    );
     child.wait().unwrap();
 }
 
@@ -549,6 +595,7 @@ fn process_tq_chunk(
     let mut ctx = crate::tq::QualityContext {
         chunk: &config.chunks[data.idx],
         yuv_frames: &data.frames,
+        frame_count: data.frame_count,
         inf: config.inf,
         params: config.params,
         work_dir: config.work_dir,
@@ -574,7 +621,7 @@ fn process_tq_chunk(
 
         if let Some(s) = config.stats {
             let meta = std::fs::metadata(&dst).unwrap();
-            let comp = ChunkComp { idx: data.idx, frames: data.frames.len(), size: meta.len() };
+            let comp = ChunkComp { idx: data.idx, frames: data.frame_count, size: meta.len() };
             s.frames_done.fetch_add(data.frames.len(), Ordering::Relaxed);
             s.completed.fetch_add(1, Ordering::Relaxed);
             s.add_completion(comp, config.work_dir);

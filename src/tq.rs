@@ -38,7 +38,8 @@ impl TQConfig {
 
 pub struct QualityContext<'a> {
     pub chunk: &'a Chunk,
-    pub yuv_frames: &'a [Vec<u8>],
+    pub yuv_frames: &'a [u8],
+    pub frame_count: usize,
     pub inf: &'a VidInf,
     pub params: &'a str,
     pub work_dir: &'a Path,
@@ -64,6 +65,7 @@ fn encode_probe(ctx: &QualityContext, crf: f64, last_score: Option<f64>) -> Stri
     crate::svt::encode_single_probe(
         &crate::svt::ProbeConfig {
             yuv_frames: ctx.yuv_frames,
+            frame_count: ctx.frame_count,
             inf: ctx.inf,
             params: ctx.params,
             crf: crf as f32,
@@ -92,9 +94,13 @@ fn measure_quality(
 
     let mut scores = Vec::new();
     let start = std::time::Instant::now();
-    let tot = ctx.yuv_frames.len();
+    let frame_size = ctx.yuv_frames.len() / ctx.frame_count;
+    let tot = ctx.frame_count;
 
-    for (frame_idx, input_yuv_packed) in ctx.yuv_frames.iter().enumerate() {
+    for frame_idx in 0..ctx.frame_count {
+        let frame_start = frame_idx * frame_size;
+        let frame_end = frame_start + frame_size;
+        let input_yuv_packed = &ctx.yuv_frames[frame_start..frame_end];
         let output_frame = crate::ffms::get_frame(output_source, frame_idx).unwrap();
 
         let input_yuv = if ctx.inf.is_10bit {
@@ -102,7 +108,7 @@ fn measure_quality(
             crate::ffms::unpack_10bit(input_yuv_packed, &mut unpacked);
             unpacked
         } else {
-            input_yuv_packed.clone()
+            input_yuv_packed.to_vec()
         };
 
         let mut ref_rgb = [
