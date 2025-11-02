@@ -159,28 +159,25 @@ fn dec_10bit(
     let packed_size = calc_packed_size(inf);
     let mut frame_buf = vec![0u8; frame_size];
 
-    let max_chunk_size = get_max_chunk_size(inf);
-    let mut frames_buffer: Vec<Vec<u8>> =
-        (0..max_chunk_size).map(|_| vec![0u8; packed_size]).collect();
-
     for chunk in chunks {
+        let chunk_len = chunk.end - chunk.start;
+        let mut frames_data = vec![0u8; chunk_len * packed_size];
         let mut valid = 0;
 
         for (i, idx) in (chunk.start..chunk.end).enumerate() {
+            let start = i * packed_size;
+            let dest = &mut frames_data[start..start + packed_size];
+
             if extr_10bit(source, idx, &mut frame_buf).is_err() {
                 continue;
             }
 
-            pack_10bit(&frame_buf, &mut frames_buffer[i]);
+            pack_10bit(&frame_buf, dest);
             valid += 1;
         }
 
         if valid > 0 {
-            let mut frames_data = vec![0u8; valid * packed_size];
-            for (i, frame) in frames_buffer.iter().enumerate().take(valid) {
-                let start = i * packed_size;
-                frames_data[start..start + packed_size].copy_from_slice(frame);
-            }
+            frames_data.truncate(valid * packed_size);
             tx.send(ChunkData {
                 idx: chunk.idx,
                 frames: frames_data,
@@ -193,26 +190,24 @@ fn dec_10bit(
 }
 
 fn dec_8bit(chunks: &[Chunk], source: *mut std::ffi::c_void, inf: &VidInf, tx: &Sender<ChunkData>) {
-    let max_chunk_size = get_max_chunk_size(inf);
     let frame_size = calc_8bit_size(inf);
-    let mut frames_buffer: Vec<Vec<u8>> =
-        (0..max_chunk_size).map(|_| vec![0u8; frame_size]).collect();
 
     for chunk in chunks {
+        let chunk_len = chunk.end - chunk.start;
+        let mut frames_data = vec![0u8; chunk_len * frame_size];
         let mut valid = 0;
 
         for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            if extr_8bit(source, idx, &mut frames_buffer[i]).is_ok() {
+            let start = i * frame_size;
+            let dest = &mut frames_data[start..start + frame_size];
+
+            if extr_8bit(source, idx, dest).is_ok() {
                 valid += 1;
             }
         }
 
         if valid > 0 {
-            let mut frames_data = vec![0u8; valid * frame_size];
-            for (i, frame) in frames_buffer.iter().enumerate().take(valid) {
-                let start = i * frame_size;
-                frames_data[start..start + frame_size].copy_from_slice(frame);
-            }
+            frames_data.truncate(valid * frame_size);
             tx.send(ChunkData {
                 idx: chunk.idx,
                 frames: frames_data,
