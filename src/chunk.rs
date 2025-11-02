@@ -112,6 +112,33 @@ pub fn merge_out(
             .unwrap_or(0)
     });
 
+    if files.len() <= 1024 {
+        return run_merge(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), output, inf);
+    }
+
+    let temp_dir = encode_dir.join("temp_merge");
+    fs::create_dir_all(&temp_dir)?;
+
+    let batches: Vec<_> = files
+        .chunks(1024)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let path = temp_dir.join(format!("batch_{i}.ivf"));
+            run_merge(&chunk.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &path, inf)?;
+            Ok(path)
+        })
+        .collect::<Result<_, Box<dyn std::error::Error>>>()?;
+
+    run_merge(&batches, output, inf)?;
+    fs::remove_dir_all(&temp_dir)?;
+    Ok(())
+}
+
+fn run_merge(
+    files: &[std::path::PathBuf],
+    output: &Path,
+    inf: &crate::ffms::VidInf,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("mkvmerge");
     cmd.arg("-q")
         .arg("-o")
@@ -128,14 +155,13 @@ pub fn merge_out(
 
     for (i, file) in files.iter().enumerate() {
         if i == 0 {
-            cmd.arg(file.path());
+            cmd.arg(file);
         } else {
-            cmd.arg("+").arg(file.path());
+            cmd.arg("+").arg(file);
         }
     }
 
     cmd.arg("--default-duration").arg(format!("0:{}/{}fps", inf.fps_num, inf.fps_den));
-
     cmd.status()?;
     Ok(())
 }
