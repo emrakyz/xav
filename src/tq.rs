@@ -100,6 +100,17 @@ fn measure_quality(
 
     let mut unpacked_buf = vec![0u8; crate::ffms::calc_10bit_size(ctx.inf)];
 
+    let mut ref_rgb = [
+        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
+        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
+        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
+    ];
+    let mut dist_rgb = [
+        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
+        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
+        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
+    ];
+
     for frame_idx in 0..ctx.frame_count {
         let frame_start = frame_idx * frame_size;
         let frame_end = frame_start + frame_size;
@@ -112,17 +123,6 @@ fn measure_quality(
         } else {
             input_yuv_packed
         };
-
-        let mut ref_rgb = [
-            crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-            crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-            crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-        ];
-        let mut dist_rgb = [
-            crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-            crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-            crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-        ];
 
         ctx.ref_zimg
             .conv_yuv_to_rgb(
