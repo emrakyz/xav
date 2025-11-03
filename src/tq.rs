@@ -92,10 +92,13 @@ fn measure_quality(
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
     let output_source = crate::ffms::thr_vid_src(&idx, threads).unwrap();
 
-    let mut scores = Vec::new();
+    let mut scores = Vec::with_capacity(ctx.frame_count);
+
     let start = std::time::Instant::now();
     let frame_size = ctx.yuv_frames.len() / ctx.frame_count;
     let tot = ctx.frame_count;
+
+    let mut unpacked_buf = vec![0u8; crate::ffms::calc_10bit_size(ctx.inf)];
 
     for frame_idx in 0..ctx.frame_count {
         let frame_start = frame_idx * frame_size;
@@ -103,12 +106,11 @@ fn measure_quality(
         let input_yuv_packed = &ctx.yuv_frames[frame_start..frame_end];
         let output_frame = crate::ffms::get_frame(output_source, frame_idx).unwrap();
 
-        let input_yuv = if ctx.inf.is_10bit {
-            let mut unpacked = vec![0u8; crate::ffms::calc_10bit_size(ctx.inf)];
-            crate::ffms::unpack_10bit(input_yuv_packed, &mut unpacked);
-            unpacked
+        let input_yuv: &[u8] = if ctx.inf.is_10bit {
+            crate::ffms::unpack_10bit(input_yuv_packed, &mut unpacked_buf);
+            &unpacked_buf
         } else {
-            input_yuv_packed.to_vec()
+            input_yuv_packed
         };
 
         let mut ref_rgb = [
@@ -124,7 +126,7 @@ fn measure_quality(
 
         ctx.ref_zimg
             .conv_yuv_to_rgb(
-                &input_yuv,
+                input_yuv,
                 ctx.inf.width,
                 ctx.inf.height,
                 &mut ref_rgb,
