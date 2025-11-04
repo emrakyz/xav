@@ -650,7 +650,7 @@ fn encode_tq(
             chunks,
             inf,
             args.worker,
-            0,
+            completed_frames,
             Arc::clone(&s.completed),
             Arc::clone(&s.completions),
         ))
