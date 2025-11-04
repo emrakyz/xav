@@ -145,10 +145,6 @@ fn colorize(cmd: &mut Command, inf: &VidInf) {
     }
 }
 
-fn get_max_chunk_size(inf: &VidInf) -> usize {
-    ((inf.fps_num * 10 + inf.fps_den / 2) / inf.fps_den).min(300) as usize
-}
-
 fn dec_10bit(
     chunks: &[Chunk],
     source: *mut std::ffi::c_void,

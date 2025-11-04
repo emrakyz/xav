@@ -104,7 +104,7 @@ pub fn merge_out(
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "ivf"))
         .collect();
 
-    files.sort_by_key(|e| {
+    files.sort_unstable_by_key(|e| {
         e.path()
             .file_stem()
             .and_then(|s| s.to_str())
