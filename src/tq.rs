@@ -155,7 +155,7 @@ fn measure_quality(
         scores.iter().sum::<f64>() / scores.len() as f64
     } else if let Some(percentile_str) = metric_mode.strip_prefix('p') {
         let percentile: f64 = percentile_str.parse().unwrap_or(15.0);
-        scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        scores.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         let cutoff_idx =
             ((scores.len() as f64 * percentile / 100.0).ceil() as usize).min(scores.len());
         scores[..cutoff_idx].iter().sum::<f64>() / cutoff_idx as f64
@@ -166,7 +166,7 @@ fn measure_quality(
 
 fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
     let mut sorted = probes.to_vec();
-    sorted.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+    sorted.sort_unstable_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
 
     let n = sorted.len();
     let x: Vec<f64> = sorted.iter().map(|p| p.score).collect();
@@ -234,7 +234,7 @@ pub fn find_target_quality(
         }
     }
 
-    probes.sort_by(|a, b| {
+    probes.sort_unstable_by(|a, b| {
         let diff_a = (a.score - config.target).abs();
         let diff_b = (b.score - config.target).abs();
         diff_a.partial_cmp(&diff_b).unwrap()
