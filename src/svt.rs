@@ -15,6 +15,9 @@ use crate::ffms::{
 };
 use crate::progs::ProgsTrack;
 
+#[cfg(feature = "vship")]
+pub static TQ_SCORES: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
+
 struct ChunkData {
     idx: usize,
     frames: Vec<u8>,

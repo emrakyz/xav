@@ -439,5 +439,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err(e);
     }
 
+    #[cfg(feature = "vship")]
+    if args.target_quality.is_some()
+        && let Some(v) = crate::svt::TQ_SCORES.get()
+    {
+        let mut s = v.lock().unwrap().clone();
+        s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let m = s.iter().sum::<f64>() / s.len() as f64;
+        eprintln!("\n{Y}Mean: {W}{m:.4}");
+        for p in [25.0, 10.0, 5.0, 1.0, 0.1] {
+            let i = ((s.len() as f64 * p / 100.0).ceil() as usize).min(s.len());
+            eprintln!("{Y}Mean of worst {p}%: {W}{:.4}", s[..i].iter().sum::<f64>() / i as f64);
+        }
+        eprintln!(
+            "{Y}STDDEV: {W}{:.4}{N}",
+            (s.iter().map(|&x| (x - m).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
+        );
+    }
+
     Ok(())
 }

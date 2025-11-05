@@ -11,6 +11,7 @@ pub type ProbeInfoMap = Arc<std::sync::Mutex<std::collections::HashMap<usize, (f
 struct Probe {
     crf: f64,
     score: f64,
+    frame_scores: Vec<f64>,
 }
 
 struct TQConfig {
@@ -86,7 +87,7 @@ fn measure_quality(
     crf: f32,
     last_score: Option<f64>,
     metric_mode: &str,
-) -> f64 {
+) -> (f64, Vec<f64>) {
     let idx = crate::ffms::VidIdx::new(probe_path, true).unwrap();
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -151,7 +152,7 @@ fn measure_quality(
 
     crate::ffms::destroy_vid_src(output_source);
 
-    if metric_mode == "mean" {
+    let result = if metric_mode == "mean" {
         scores.iter().sum::<f64>() / scores.len() as f64
     } else if let Some(percentile_str) = metric_mode.strip_prefix('p') {
         let percentile: f64 = percentile_str.parse().unwrap_or(15.0);
@@ -161,7 +162,8 @@ fn measure_quality(
         scores[..cutoff_idx].iter().sum::<f64>() / cutoff_idx as f64
     } else {
         scores.iter().sum::<f64>() / scores.len() as f64
-    }
+    };
+    (result, scores)
 }
 
 fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
@@ -210,16 +212,22 @@ pub fn find_target_quality(
         let probe_name = encode_probe(ctx, crf, last_score_val);
         let probe_path = ctx.work_dir.join("split").join(&probe_name);
 
-        let score = measure_quality(ctx, &probe_path, crf as f32, last_score_val, metric_mode);
+        let (score, frame_scores) =
+            measure_quality(ctx, &probe_path, crf as f32, last_score_val, metric_mode);
 
         {
             let mut info = probe_info.lock().unwrap();
             info.insert(ctx.chunk.idx, (crf as f32, Some(score)));
         }
 
-        probes.push(Probe { crf, score });
+        probes.push(Probe { crf, score, frame_scores });
 
         if config.in_range(score) {
+            crate::svt::TQ_SCORES
+                .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+                .lock()
+                .unwrap()
+                .extend_from_slice(&probes.last().unwrap().frame_scores);
             return Some(probe_name);
         }
 
@@ -239,6 +247,12 @@ pub fn find_target_quality(
         let diff_b = (b.score - config.target).abs();
         diff_a.partial_cmp(&diff_b).unwrap()
     });
+
+    crate::svt::TQ_SCORES
+        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+        .lock()
+        .unwrap()
+        .extend_from_slice(&probes[0].frame_scores);
 
     probes.first().map(|p| format!("{:04}_{:.2}.ivf", ctx.chunk.idx, p.crf))
 }
