@@ -23,6 +23,8 @@ struct ChunkData {
     frames: Vec<u8>,
     frame_size: usize,
     frame_count: usize,
+    width: u32,
+    height: u32,
 }
 
 struct EncConfig<'a> {
@@ -33,11 +35,12 @@ struct EncConfig<'a> {
     grain_table: Option<&'a Path>,
 }
 
-fn make_enc_cmd(cfg: &EncConfig, quiet: bool) -> Command {
+fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Command {
     let mut cmd = Command::new("SvtAv1EncApp");
 
-    let width_str = cfg.inf.width.to_string();
-    let height_str = cfg.inf.height.to_string();
+    let width_str = width.to_string();
+    let height_str = height.to_string();
+
     let fps_num_str = cfg.inf.fps_num.to_string();
     let fps_den_str = cfg.inf.fps_den.to_string();
 
@@ -127,67 +130,239 @@ fn dec_10bit(
     source: *mut std::ffi::c_void,
     inf: &VidInf,
     tx: &Sender<ChunkData>,
+    crop: (u32, u32),
 ) {
-    let frame_size = calc_10bit_size(inf);
-    let packed_size = calc_packed_size(inf);
-    let mut frame_buf = vec![0u8; frame_size];
+    if crop == (0, 0) {
+        let frame_size = calc_10bit_size(inf);
+        let packed_size = calc_packed_size(inf);
+        let mut frame_buf = vec![0u8; frame_size];
 
-    for chunk in chunks {
-        let chunk_len = chunk.end - chunk.start;
-        let mut frames_data = vec![0u8; chunk_len * packed_size];
-        let mut valid = 0;
+        for chunk in chunks {
+            let chunk_len = chunk.end - chunk.start;
+            let mut frames_data = vec![0u8; chunk_len * packed_size];
+            let mut valid = 0;
 
-        for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            let start = i * packed_size;
-            let dest = &mut frames_data[start..start + packed_size];
+            for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                let start = i * packed_size;
+                let dest = &mut frames_data[start..start + packed_size];
 
-            if extr_10bit(source, idx, &mut frame_buf).is_err() {
-                continue;
+                if extr_10bit(source, idx, &mut frame_buf).is_err() {
+                    continue;
+                }
+
+                pack_10bit(&frame_buf, dest);
+                valid += 1;
             }
 
-            pack_10bit(&frame_buf, dest);
-            valid += 1;
+            if valid > 0 {
+                frames_data.truncate(valid * packed_size);
+                tx.send(ChunkData {
+                    idx: chunk.idx,
+                    frames: frames_data,
+                    frame_size: packed_size,
+                    frame_count: valid,
+                    width: inf.width,
+                    height: inf.height,
+                })
+                .ok();
+            }
         }
+    } else {
+        let (crop_v, crop_h) = crop;
+        let new_width = inf.width - crop_h * 2;
+        let new_height = inf.height - crop_v * 2;
 
-        if valid > 0 {
-            frames_data.truncate(valid * packed_size);
-            tx.send(ChunkData {
-                idx: chunk.idx,
-                frames: frames_data,
-                frame_size: packed_size,
-                frame_count: valid,
-            })
-            .ok();
+        let orig_frame_size = calc_10bit_size(inf);
+        let new_y_size = (new_width * new_height * 2) as usize;
+        let new_uv_size = (new_width * new_height / 2) as usize;
+        let new_frame_size = new_y_size + new_uv_size;
+        let new_packed_size = (new_frame_size * 5).div_ceil(4);
+
+        let mut frame_buf = vec![0u8; orig_frame_size];
+        let mut cropped_buf = vec![0u8; new_frame_size];
+
+        for chunk in chunks {
+            let chunk_len = chunk.end - chunk.start;
+            let mut frames_data = vec![0u8; chunk_len * new_packed_size];
+            let mut valid = 0;
+
+            for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                if extr_10bit(source, idx, &mut frame_buf).is_err() {
+                    continue;
+                }
+
+                let y_stride = (inf.width * 2) as usize;
+                let uv_stride = (inf.width / 2 * 2) as usize;
+
+                let y_start = ((crop_v * inf.width + crop_h) as usize) * 2;
+
+                let y_plane_size = (inf.width * inf.height) as usize * 2;
+                let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize * 2;
+
+                let u_start =
+                    y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
+                let v_start = y_plane_size
+                    + uv_plane_size
+                    + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
+
+                let mut pos = 0;
+
+                for row in 0..new_height {
+                    let src = y_start + row as usize * y_stride;
+                    let len = (new_width * 2) as usize;
+                    cropped_buf[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
+                    pos += len;
+                }
+
+                for row in 0..new_height / 2 {
+                    let src = u_start + row as usize * uv_stride;
+                    let len = (new_width / 2 * 2) as usize;
+                    cropped_buf[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
+                    pos += len;
+                }
+
+                for row in 0..new_height / 2 {
+                    let src = v_start + row as usize * uv_stride;
+                    let len = (new_width / 2 * 2) as usize;
+                    cropped_buf[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
+                    pos += len;
+                }
+
+                let dest_start = i * new_packed_size;
+                pack_10bit(
+                    &cropped_buf,
+                    &mut frames_data[dest_start..dest_start + new_packed_size],
+                );
+                valid += 1;
+            }
+
+            if valid > 0 {
+                frames_data.truncate(valid * new_packed_size);
+                tx.send(ChunkData {
+                    idx: chunk.idx,
+                    frames: frames_data,
+                    frame_size: new_packed_size,
+                    frame_count: valid,
+                    width: new_width,
+                    height: new_height,
+                })
+                .ok();
+            }
         }
     }
 }
 
-fn dec_8bit(chunks: &[Chunk], source: *mut std::ffi::c_void, inf: &VidInf, tx: &Sender<ChunkData>) {
-    let frame_size = calc_8bit_size(inf);
+fn dec_8bit(
+    chunks: &[Chunk],
+    source: *mut std::ffi::c_void,
+    inf: &VidInf,
+    tx: &Sender<ChunkData>,
+    crop: (u32, u32),
+) {
+    if crop == (0, 0) {
+        let frame_size = calc_8bit_size(inf);
 
-    for chunk in chunks {
-        let chunk_len = chunk.end - chunk.start;
-        let mut frames_data = vec![0u8; chunk_len * frame_size];
-        let mut valid = 0;
+        for chunk in chunks {
+            let chunk_len = chunk.end - chunk.start;
+            let mut frames_data = vec![0u8; chunk_len * frame_size];
+            let mut valid = 0;
 
-        for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            let start = i * frame_size;
-            let dest = &mut frames_data[start..start + frame_size];
+            for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                let start = i * frame_size;
+                let dest = &mut frames_data[start..start + frame_size];
 
-            if extr_8bit(source, idx, dest).is_ok() {
-                valid += 1;
+                if extr_8bit(source, idx, dest).is_ok() {
+                    valid += 1;
+                }
+            }
+
+            if valid > 0 {
+                frames_data.truncate(valid * frame_size);
+                tx.send(ChunkData {
+                    idx: chunk.idx,
+                    frames: frames_data,
+                    frame_size,
+                    frame_count: valid,
+                    width: inf.width,
+                    height: inf.height,
+                })
+                .ok();
             }
         }
+    } else {
+        let (crop_v, crop_h) = crop;
+        let new_width = inf.width - crop_h * 2;
+        let new_height = inf.height - crop_v * 2;
 
-        if valid > 0 {
-            frames_data.truncate(valid * frame_size);
-            tx.send(ChunkData {
-                idx: chunk.idx,
-                frames: frames_data,
-                frame_size,
-                frame_count: valid,
-            })
-            .ok();
+        let orig_frame_size = calc_8bit_size(inf);
+        let new_y_size = (new_width * new_height) as usize;
+        let new_uv_size = (new_width * new_height / 4) as usize;
+        let new_frame_size = new_y_size + new_uv_size * 2;
+
+        let mut frame_buf = vec![0u8; orig_frame_size];
+
+        for chunk in chunks {
+            let chunk_len = chunk.end - chunk.start;
+            let mut frames_data = vec![0u8; chunk_len * new_frame_size];
+            let mut valid = 0;
+
+            for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                if extr_8bit(source, idx, &mut frame_buf).is_err() {
+                    continue;
+                }
+
+                let y_stride = inf.width as usize;
+                let uv_stride = (inf.width / 2) as usize;
+
+                let y_start = (crop_v * inf.width + crop_h) as usize;
+
+                let y_plane_size = (inf.width * inf.height) as usize;
+                let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize;
+
+                let u_start = y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
+                let v_start = y_plane_size
+                    + uv_plane_size
+                    + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
+
+                let dest_start = i * new_frame_size;
+                let mut pos = dest_start;
+
+                for row in 0..new_height {
+                    let src = y_start + row as usize * y_stride;
+                    let len = new_width as usize;
+                    frames_data[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
+                    pos += len;
+                }
+
+                for row in 0..new_height / 2 {
+                    let src = u_start + row as usize * uv_stride;
+                    let len = (new_width / 2) as usize;
+                    frames_data[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
+                    pos += len;
+                }
+
+                for row in 0..new_height / 2 {
+                    let src = v_start + row as usize * uv_stride;
+                    let len = (new_width / 2) as usize;
+                    frames_data[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
+                    pos += len;
+                }
+
+                valid += 1;
+            }
+
+            if valid > 0 {
+                frames_data.truncate(valid * new_frame_size);
+                tx.send(ChunkData {
+                    idx: chunk.idx,
+                    frames: frames_data,
+                    frame_size: new_frame_size,
+                    frame_count: valid,
+                    width: new_width,
+                    height: new_height,
+                })
+                .ok();
+            }
         }
     }
 }
@@ -198,6 +373,7 @@ fn decode_chunks(
     inf: &VidInf,
     tx: &Sender<ChunkData>,
     skip_indices: &HashSet<usize>,
+    crop: (u32, u32),
 ) {
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -206,9 +382,9 @@ fn decode_chunks(
         chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).cloned().collect();
 
     if inf.is_10bit {
-        dec_10bit(&filtered, source, inf, tx);
+        dec_10bit(&filtered, source, inf, tx, crop);
     } else {
-        dec_8bit(&filtered, source, inf, tx);
+        dec_8bit(&filtered, source, inf, tx, crop);
     }
 
     destroy_vid_src(source);
@@ -275,7 +451,7 @@ fn proc_chunk(
         output: &output,
         grain_table: config.grain_table,
     };
-    let mut cmd = make_enc_cmd(&enc_cfg, config.quiet);
+    let mut cmd = make_enc_cmd(&enc_cfg, config.quiet, data.width, data.height);
     let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
 
     if !config.quiet
@@ -323,11 +499,25 @@ fn run_worker(
     prog: Option<&Arc<ProgsTrack>>,
     work_dir: &Path,
 ) {
-    let mut conversion_buf = Some(vec![0u8; calc_10bit_size(inf)]);
+    let mut current_inf = inf.clone();
+    let mut conversion_buf = Some(vec![0u8; calc_10bit_size(&current_inf)]);
+    let mut first_chunk = true;
 
     while let Ok(data) = rx.recv() {
-        let config =
-            ProcConfig { inf, params, quiet: ctx.quiet, work_dir, grain_table: ctx.grain_table };
+        if first_chunk || (data.width != current_inf.width || data.height != current_inf.height) {
+            current_inf.width = data.width;
+            current_inf.height = data.height;
+            conversion_buf = Some(vec![0u8; calc_10bit_size(&current_inf)]);
+            first_chunk = false;
+        }
+
+        let config = ProcConfig {
+            inf: &current_inf,
+            params,
+            quiet: ctx.quiet,
+            work_dir,
+            grain_table: ctx.grain_table,
+        };
         let (written, completion) =
             proc_chunk(&data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
 
@@ -415,11 +605,13 @@ pub fn encode_all(
     let (tx, rx) = bounded::<ChunkData>(buffer_size);
     let rx = Arc::new(rx);
 
+    let crop = args.crop.unwrap_or((0, 0));
+
     let decoder = {
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
-        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices))
+        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, crop))
     };
 
     let mut workers = Vec::new();
@@ -475,7 +667,7 @@ pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>)
         output: &output,
         grain_table: config.grain_table,
     };
-    let mut cmd = make_enc_cmd(&enc_cfg, false);
+    let mut cmd = make_enc_cmd(&enc_cfg, false, config.inf.width, config.inf.height);
     let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
 
     if let Some(p) = prog
@@ -638,12 +830,14 @@ fn encode_tq(
     let (tx, rx) = bounded::<ChunkData>(0);
     let rx = Arc::new(rx);
 
+    let crop = args.crop.unwrap_or((0, 0));
+
     let dec = {
         let c = chunks.to_vec();
         let i = Arc::clone(idx);
         let inf = inf.clone();
         thread::spawn(move || {
-            decode_chunks(&c, &i, &inf, &tx, &skip_indices);
+            decode_chunks(&c, &i, &inf, &tx, &skip_indices, crop);
         })
     };
 
@@ -663,29 +857,52 @@ fn encode_tq(
         let metric_mode = args.metric_mode.clone();
 
         workers.push(thread::spawn(move || {
-            let stride = (inf.width * 2).div_ceil(32) * 32;
-            let rgb_size = (inf.width * inf.height * 2) as usize;
-
-            let (mut ref_zimg, mut dist_zimg, vship) = create_tq_worker(&inf, stride);
-
-            let config = TQChunkConfig {
-                chunks: &c,
-                inf: &inf,
-                params: &params,
-                tq: &tq,
-                qp: &qp,
-                work_dir: &wd,
-                prog: prog.as_ref(),
-                stride,
-                rgb_size,
-                probe_info: &probe_info,
-                stats: stats.as_ref(),
-                grain_table: grain.as_deref(),
-                metric_mode: &metric_mode,
-            };
+            let mut init = false;
+            let mut ref_zimg = None;
+            let mut dist_zimg = None;
+            let mut vship = None;
+            let mut stride = 0;
+            let mut rgb_size = 0;
+            let mut working_inf = inf.clone();
 
             while let Ok(data) = rx.recv() {
-                process_tq_chunk(&data, &config, &mut ref_zimg, &mut dist_zimg, &vship);
+                if !init {
+                    working_inf.width = data.width;
+                    working_inf.height = data.height;
+
+                    stride = (data.width * 2).div_ceil(32) * 32;
+                    rgb_size = (stride * data.height) as usize;
+
+                    let (rz, dz, vs) = create_tq_worker(&working_inf, stride);
+                    ref_zimg = Some(rz);
+                    dist_zimg = Some(dz);
+                    vship = Some(vs);
+                    init = true;
+                }
+
+                let config = TQChunkConfig {
+                    chunks: &c,
+                    inf: &working_inf,
+                    params: &params,
+                    tq: &tq,
+                    qp: &qp,
+                    work_dir: &wd,
+                    prog: prog.as_ref(),
+                    stride,
+                    rgb_size,
+                    probe_info: &probe_info,
+                    stats: stats.as_ref(),
+                    grain_table: grain.as_deref(),
+                    metric_mode: &metric_mode,
+                };
+
+                process_tq_chunk(
+                    &data,
+                    &config,
+                    ref_zimg.as_mut().unwrap(),
+                    dist_zimg.as_mut().unwrap(),
+                    vship.as_ref().unwrap(),
+                );
             }
         }));
     }

@@ -42,6 +42,8 @@ pub struct Args {
     pub resume: bool,
     pub quiet: bool,
     pub noise: Option<u32>,
+    pub crop: Option<(u32, u32)>,
+    pub crop_str: Option<String>,
     pub input: PathBuf,
     pub output: PathBuf,
 }
@@ -71,11 +73,12 @@ fn print_help() {
         println!("TQ:");
         println!("-t|--tq        Allowed SSIMU2 Range for Target Quality. Example: `74.00-76.00`");
         println!("-m|--mode      TQ metric evaluation mode. `mean` or mean of under certain percentile. Example: `p15`");
-        println!("-c|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
+        println!("-f|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
         println!();
     }
     println!("Misc:");
     println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
+    println!("-c|--crop      Auto crop by original AR: `1.37` OR crop horizontal,vertical: `0,220`");
     println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
     println!("-r|--resume    Resume the encoding. Example below");
     println!("-q|--quiet     Do not run any code related to any progress");
@@ -84,7 +87,7 @@ fn print_help() {
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
     println!(
-        "xav -q -w 8 -s sc.txt -t 70-75 -c 6-63 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
+        "xav -q -w 8 -s sc.txt -t 70-75 -f 6-63 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
     );
     println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`");
 }
@@ -144,6 +147,8 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut resume = false;
     let mut quiet = false;
     let mut noise = None;
+    let crop = None;
+    let mut crop_str = None;
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
 
@@ -177,7 +182,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                 }
             }
             #[cfg(feature = "vship")]
-            "-c" | "--qp" => {
+            "-f" | "--qp" => {
                 i += 1;
                 if i < args.len() {
                     qp_range = Some(args[i].clone());
@@ -205,6 +210,13 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     noise = Some(val * 100);
                 }
             }
+            "-c" | "--crop" => {
+                i += 1;
+                if i < args.len() {
+                    crop_str = Some(args[i].clone());
+                }
+            }
+
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
                     input = PathBuf::from(arg);
@@ -236,6 +248,8 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         resume,
         quiet,
         noise,
+        crop,
+        crop_str,
         input,
         output,
     };
@@ -344,6 +358,36 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let idx = ffms::VidIdx::new(&args.input, args.quiet)?;
     let inf = ffms::get_vidinf(&idx)?;
 
+    let mut args = args.clone();
+    if let Some(ref s) = args.crop_str {
+        args.crop = Some(if let Ok(ar) = s.parse::<f64>() {
+            let (cur_dim, new_exact, is_vert) = if ar > f64::from(inf.width) / f64::from(inf.height)
+            {
+                (inf.height, f64::from(inf.width) / ar, true)
+            } else {
+                (inf.width, f64::from(inf.height) * ar, false)
+            };
+
+            let mut new_dim = new_exact as u32;
+            let cur_mod4 = cur_dim % 4;
+            let new_mod4 = new_dim % 4;
+
+            if new_mod4 != cur_mod4 || new_exact.fract() != 0.0 {
+                let mut adj = (cur_mod4 + 4 - new_mod4) % 4;
+                if adj == 0 {
+                    adj = 4;
+                }
+                new_dim += adj;
+            }
+
+            let crop = ((cur_dim - new_dim) / 2) & !1;
+            if is_vert { (crop, 0) } else { (0, crop) }
+        } else {
+            let p: Vec<u32> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+            if p.len() == 2 { (p[0] & !1, p[1] & !1) } else { (0, 0) }
+        });
+    }
+
     let grain_table = if let Some(iso) = args.noise {
         let table_path = work_dir.join("grain.tbl");
         noise::gen_table(iso, &inf, &table_path)?;
@@ -357,7 +401,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let chunks = chunk::chunkify(&scenes);
 
     let enc_start = std::time::Instant::now();
-    svt::encode_all(&chunks, &inf, args, &idx, &work_dir, grain_table.as_ref());
+    svt::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref());
     let enc_time = enc_start.elapsed();
 
     chunk::merge_out(&work_dir.join("encode"), &args.output, &inf)?;
@@ -392,6 +436,12 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let dur_secs = duration as u64;
     let (dh, dm, ds) = (dur_secs / 3600, (dur_secs % 3600) / 60, dur_secs % 60);
 
+    let (final_width, final_height) = if let Some((crop_v, crop_h)) = args.crop {
+        (inf.width - crop_h * 2, inf.height - crop_v * 2)
+    } else {
+        (inf.width, inf.height)
+    };
+
     eprintln!(
     "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
 {P}┃ {G}✅ {Y}DONE   {P}┃ {R}{:<30.30} {G}󰛂 {G}{:<30.30} {P}┃\n\
@@ -406,7 +456,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     args.output.file_name().unwrap().to_string_lossy(),
     format!("{} {C}({:.0} kb/s) {G}󰛂 {G}{} {C}({:.0} kb/s) {}{} {:.2}%", 
         fmt_size(input_size), input_br, fmt_size(output_size), output_br, change_color, arrow, change.abs()),
-    inf.width, inf.height, fps_rate, dh, dm, ds, "",
+    final_width, final_height, fps_rate, dh, dm, ds, "",
     eh, em, es, enc_speed, ""
 );
 
