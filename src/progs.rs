@@ -193,7 +193,7 @@ impl ProgsTrack {
                     Err(_) => continue,
                 };
 
-                if line.contains("error") {
+                if line.contains("error") || line.contains("Error") {
                     print!("\x1b[?1049l");
                     std::io::stdout().flush().unwrap();
                     eprintln!("{line}");
