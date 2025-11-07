@@ -43,7 +43,7 @@ rm -rf i_av1.mkv *txt *idx *index
 - [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) (mainline or a fork)
 - [mkvmerge](https://mkvtoolnix.download/source.html) (to concatenate chunks)
 - [FFMS2](https://github.com/FFMS/ffms2) (a hard dependency)
-- [VSHIP](https://github.com/Line-fr/Vship) (optional - needed for target quality encoding with CVVDP)
+- [VSHIP](https://github.com/Line-fr/Vship) (optional - needed for target quality encoding with CVVDP / SSIMULACRA2 / Butteraugli5pn)
 - [ZIMG](https://github.com/sekrit-twc/zimg) (optional - provides color conversion features needed by VSHIP)
 
 ## Description
@@ -60,8 +60,9 @@ For this reason, adding `xav` features to `av1an` and `av1an` features to `xav`,
 - Parses color and video metadata (container & frame based) to encoders automatically, including HDR metadata (Dolby Vision RPU automation for chunking is considered), FPS and resolution.
 - Offers fun process monitoring with almost no overhead for indexing, SCD, encoding, TQ processes.
 - Fastest chunked encoding with `svt-av1`.
-- Fastest target quality encoding with `CVVDP`.
+- Fastest target quality encoding with `CVVDP` / `Butteraugli 5pNorm` / `SSIMULACRA2`.
 - Photon noise generation support.
+- Efficient cropping or autocropping (based on original aspect ratio) support.
 
 ## Design Decisions
 
@@ -76,7 +77,7 @@ These help me make the tool's already present features closer to perfect with ea
 
 ## Usage
 
-<img width="1526" height="626" alt="image" src="https://github.com/user-attachments/assets/22ce28e8-257c-4655-bf5b-e1830194691c" />
+<img width="1530" height="1044" alt="image" src="https://github.com/user-attachments/assets/88474aba-5425-4be6-8f32-77d75e06dbfc" />
 
 ## Building
 
@@ -152,7 +153,7 @@ Also thanks [Lumen](https://github.com/Line-fr) for her great contributions on G
 - Sequential memory access
 - Only a single index needed for SCD/encoding.
 - No interpreter overhead.
-- TQ: Can directly use already handled frames for encoding, for metric comparison as well by utilizing `vship` API directly instead of using VapourSynth based CVVDP with inefficient seeking/decoding/computing.
+- TQ: Can directly use already handled frames for encoding, for metric comparison as well by utilizing `vship` API directly instead of using VapourSynth based implementations with inefficient seeking/decoding/computing & external process overhead.
 
 **`Av1an` on the other hand:**
 Relies on Python -> Vapoursynth -> FFmpeg -> Encoder and it means multiple pipe/subprocess calls with serialization overhead. And it must also parse and execute `.vpy` scripts.

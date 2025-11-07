@@ -693,6 +693,8 @@ pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>)
 fn create_tq_worker(
     inf: &VidInf,
     stride: u32,
+    use_cvvdp: bool,
+    use_butteraugli: bool,
 ) -> (crate::zimg::ZimgProcessor, crate::zimg::ZimgProcessor, crate::vship::VshipProcessor) {
     let ref_zimg = crate::zimg::ZimgProcessor::new(
         stride,
@@ -722,7 +724,10 @@ fn create_tq_worker(
     )
     .unwrap();
 
-    let vship = crate::vship::VshipProcessor::new(inf.width, inf.height).unwrap();
+    let fps = inf.fps_num as f32 / inf.fps_den as f32;
+    let vship =
+        crate::vship::VshipProcessor::new(inf.width, inf.height, fps, use_cvvdp, use_butteraugli)
+            .unwrap();
 
     (ref_zimg, dist_zimg, vship)
 }
@@ -742,6 +747,8 @@ struct TQChunkConfig<'a> {
     stats: Option<&'a Arc<WorkerStats>>,
     grain_table: Option<&'a Path>,
     metric_mode: &'a str,
+    use_cvvdp: bool,
+    use_butteraugli: bool,
 }
 
 #[cfg(feature = "vship")]
@@ -766,6 +773,8 @@ fn process_tq_chunk(
         stride: config.stride,
         rgb_size: config.rgb_size,
         grain_table: config.grain_table,
+        use_cvvdp: config.use_cvvdp,
+        use_butteraugli: config.use_butteraugli,
     };
 
     if let Some(best) = crate::tq::find_target_quality(
@@ -856,6 +865,18 @@ fn encode_tq(
         let grain = grain_table.cloned();
         let metric_mode = args.metric_mode.clone();
 
+        let use_cvvdp = {
+            let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
+            let target = f64::midpoint(tq_parts[0], tq_parts[1]);
+            target > 8.0 && target <= 10.0
+        };
+
+        let use_butteraugli = {
+            let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
+            let target = f64::midpoint(tq_parts[0], tq_parts[1]);
+            target < 8.0
+        };
+
         workers.push(thread::spawn(move || {
             let mut init = false;
             let mut ref_zimg = None;
@@ -873,7 +894,8 @@ fn encode_tq(
                     stride = (data.width * 2).div_ceil(32) * 32;
                     rgb_size = (stride * data.height) as usize;
 
-                    let (rz, dz, vs) = create_tq_worker(&working_inf, stride);
+                    let (rz, dz, vs) =
+                        create_tq_worker(&working_inf, stride, use_cvvdp, use_butteraugli);
                     ref_zimg = Some(rz);
                     dist_zimg = Some(dz);
                     vship = Some(vs);
@@ -894,6 +916,8 @@ fn encode_tq(
                     stats: stats.as_ref(),
                     grain_table: grain.as_deref(),
                     metric_mode: &metric_mode,
+                    use_cvvdp,
+                    use_butteraugli,
                 };
 
                 process_tq_chunk(

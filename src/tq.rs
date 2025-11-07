@@ -35,6 +35,10 @@ impl TQConfig {
     fn in_range(&self, score: f64) -> bool {
         (score - self.target).abs() <= self.tolerance
     }
+
+    fn in_range_reversed(&self, score: f64) -> bool {
+        (self.target - score).abs() <= self.tolerance
+    }
 }
 
 pub struct QualityContext<'a> {
@@ -51,6 +55,8 @@ pub struct QualityContext<'a> {
     pub stride: u32,
     pub rgb_size: usize,
     pub grain_table: Option<&'a Path>,
+    pub use_cvvdp: bool,
+    pub use_butteraugli: bool,
 }
 
 fn round_crf(crf: f64) -> f64 {
@@ -88,6 +94,10 @@ fn measure_quality(
     last_score: Option<f64>,
     metric_mode: &str,
 ) -> (f64, Vec<f64>) {
+    if ctx.use_cvvdp {
+        ctx.vship.reset_cvvdp().unwrap();
+    }
+
     let idx = crate::ffms::VidIdx::new(probe_path, true).unwrap();
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -139,8 +149,13 @@ fn measure_quality(
         let ref_planes = [ref_rgb[0].as_ptr(), ref_rgb[1].as_ptr(), ref_rgb[2].as_ptr()];
         let dist_planes = [dist_rgb[0].as_ptr(), dist_rgb[1].as_ptr(), dist_rgb[2].as_ptr()];
 
-        let score =
-            ctx.vship.compute_ssimulacra2(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap();
+        let score = if ctx.use_butteraugli {
+            ctx.vship.compute_butteraugli(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap()
+        } else if ctx.use_cvvdp {
+            ctx.vship.compute_cvvdp(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap()
+        } else {
+            ctx.vship.compute_ssimulacra2(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap()
+        };
         scores.push(score);
 
         if let Some(p) = ctx.prog {
@@ -152,7 +167,9 @@ fn measure_quality(
 
     crate::ffms::destroy_vid_src(output_source);
 
-    let result = if metric_mode == "mean" {
+    let result = if ctx.use_cvvdp {
+        scores.last().copied().unwrap_or(0.0)
+    } else if metric_mode == "mean" {
         scores.iter().sum::<f64>() / scores.len() as f64
     } else if let Some(percentile_str) = metric_mode.strip_prefix('p') {
         let percentile: f64 = percentile_str.parse().unwrap_or(15.0);
@@ -222,16 +239,36 @@ pub fn find_target_quality(
 
         probes.push(Probe { crf, score, frame_scores });
 
-        if config.in_range(score) {
-            crate::svt::TQ_SCORES
-                .get_or_init(|| std::sync::Mutex::new(Vec::new()))
-                .lock()
-                .unwrap()
-                .extend_from_slice(&probes.last().unwrap().frame_scores);
+        let in_range = if ctx.use_butteraugli {
+            config.in_range_reversed(score)
+        } else {
+            config.in_range(score)
+        };
+
+        if in_range {
+            if ctx.use_cvvdp {
+                crate::svt::TQ_SCORES
+                    .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+                    .lock()
+                    .unwrap()
+                    .push(score);
+            } else {
+                crate::svt::TQ_SCORES
+                    .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&probes.last().unwrap().frame_scores);
+            }
             return Some(probe_name);
         }
 
-        if score < config.target - config.tolerance {
+        if ctx.use_butteraugli {
+            if score > config.target + config.tolerance {
+                search_max = crf - 0.25;
+            } else if score < config.target - config.tolerance {
+                search_min = crf + 0.25;
+            }
+        } else if score < config.target - config.tolerance {
             search_max = crf - 0.25;
         } else if score > config.target + config.tolerance {
             search_min = crf + 0.25;
@@ -248,11 +285,19 @@ pub fn find_target_quality(
         diff_a.partial_cmp(&diff_b).unwrap()
     });
 
-    crate::svt::TQ_SCORES
-        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
-        .lock()
-        .unwrap()
-        .extend_from_slice(&probes[0].frame_scores);
+    if ctx.use_cvvdp {
+        crate::svt::TQ_SCORES
+            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .push(probes[0].score);
+    } else {
+        crate::svt::TQ_SCORES
+            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            .lock()
+            .unwrap()
+            .extend_from_slice(&probes[0].frame_scores);
+    }
 
     probes.first().map(|p| format!("{:04}_{:.2}.ivf", ctx.chunk.idx, p.crf))
 }

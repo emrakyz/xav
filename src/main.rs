@@ -71,9 +71,10 @@ fn print_help() {
     #[cfg(feature = "vship")]
     {
         println!("TQ:");
-        println!("-t|--tq        Allowed SSIMU2 Range for Target Quality. Example: `74.00-76.00`");
-        println!("-m|--mode      TQ metric evaluation mode. `mean` or mean of under certain percentile. Example: `p15`");
-        println!("-f|--qp        Allowed CRF/QP search range for Target Quality. Example: `12.25-44.75`");
+        println!("-t|--tq        Target quality range. Metric: <8=Butter5pn, 8-10=CVVDP, >10=SSIMU2");
+        println!("               SSIMU2: `74.00-76.00`, Butter: `1.5-2.0`, CVVDP: `9.45-9.55`");
+        println!("-m|--mode      Metric evaluation: `mean` or `pN` for mean of worst N%. Example: `p15`");
+        println!("-f|--qp        CRF/QP search range. Example: `12.25-44.75`");
         println!();
     }
     println!("Misc:");
@@ -86,9 +87,8 @@ fn print_help() {
     println!("Examples:");
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
-    println!(
-        "xav -q -w 8 -s sc.txt -t 70-75 -f 6-63 -m mean -p \"--lp 3 --tune 0\" i.mkv o.mkv"
-    );
+    println!("xav -q -w 8 -s sc.txt -t 75-76 -f 6-63 -m p15 -p \"--lp 3 --tune 0\" i.mkv o.mkv");
+    println!("xav -t 1.5-2.0 -f 20-50 -m mean i.mkv  # Butteraugli target");
     println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`");
 }
 
@@ -126,7 +126,7 @@ fn apply_defaults(args: &mut Args) {
 
     #[cfg(feature = "vship")]
     if args.target_quality.is_some() && args.qp_range.is_none() {
-        args.qp_range = Some("10.0-40.0".to_string());
+        args.qp_range = Some("8.0-48.0".to_string());
     }
 }
 
@@ -495,6 +495,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let mut s = v.lock().unwrap().clone();
         s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
         let m = s.iter().sum::<f64>() / s.len() as f64;
         eprintln!("\n{Y}Mean: {W}{m:.4}");
         for p in [25.0, 10.0, 5.0, 1.0, 0.1] {
