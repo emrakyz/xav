@@ -430,9 +430,8 @@ pub fn pack_4_pix_10bit(input: &[u8; 8], output: &mut [u8; 5]) {
 
 #[inline]
 pub fn unpack_4_pix_10bit(input: &[u8; 5], output: &mut [u8; 8]) {
-    let mut bytes = [0u8; 8];
-    bytes[..5].copy_from_slice(input);
-    let packed = u64::from_le_bytes(bytes);
+    let packed =
+        u32::from_le_bytes(input[0..4].try_into().unwrap()) as u64 | ((input[4] as u64) << 32);
 
     let p0 = (packed & 0x3FF) as u16;
     let p1 = ((packed >> 10) & 0x3FF) as u16;
