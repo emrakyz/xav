@@ -402,28 +402,43 @@ fn write_frames(
         return 0;
     };
 
-    let mut written = 0;
-
-    for i in 0..frame_count {
+    #[inline(always)]
+    fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
         let start = i * frame_size;
         let end = start + frame_size;
-        let frame = &frames[start..end];
+        &frames[start..end]
+    }
 
-        let result = if let Some(buf) = conversion_buf {
-            if inf.is_10bit {
+    let mut written = 0;
+
+    if let Some(buf) = conversion_buf {
+        if inf.is_10bit {
+            for i in 0..frame_count {
+                let frame = get_frame(frames, i, frame_size);
                 unpack_10bit(frame, buf);
-            } else {
-                conv_to_10bit(frame, buf);
+                if stdin.write_all(buf).is_err() {
+                    break;
+                }
+                written += 1;
             }
-            stdin.write_all(buf)
         } else {
-            stdin.write_all(frame)
-        };
-
-        if result.is_err() {
-            break;
+            for i in 0..frame_count {
+                let frame = get_frame(frames, i, frame_size);
+                conv_to_10bit(frame, buf);
+                if stdin.write_all(buf).is_err() {
+                    break;
+                }
+                written += 1;
+            }
         }
-        written += 1;
+    } else {
+        for i in 0..frame_count {
+            let frame = get_frame(frames, i, frame_size);
+            if stdin.write_all(frame).is_err() {
+                break;
+            }
+            written += 1;
+        }
     }
 
     written
