@@ -42,6 +42,28 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn s
     Ok(scenes)
 }
 
+pub fn validate_scenes(
+    scenes: &[Scene],
+    fps_num: u32,
+    fps_den: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let min_len = (fps_num + fps_den / 2) / fps_den;
+    let max_len = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
+
+    for (i, scene) in scenes.iter().enumerate() {
+        let len = scene.e_frame.saturating_sub(scene.s_frame);
+        if len < min_len as usize || len > max_len as usize {
+            return Err(format!(
+                "Scene {} (frames {}-{}) has invalid length {}: must be between {} and {} frames",
+                i, scene.s_frame, scene.e_frame, len, min_len, max_len
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
 pub fn chunkify(scenes: &[Scene]) -> Vec<Chunk> {
     scenes
         .iter()

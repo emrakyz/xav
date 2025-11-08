@@ -107,6 +107,11 @@ unsafe extern "C" {
         err: *mut FFMS_ErrorInfo,
     ) -> i32;
     fn FFMS_ReadIndex(idx_file: *const i8, err: *mut FFMS_ErrorInfo) -> *mut libc::c_void;
+    fn FFMS_IndexBelongsToFile(
+        idx: *mut libc::c_void,
+        source: *const i8,
+        err: *mut FFMS_ErrorInfo,
+    ) -> i32;
 }
 
 #[derive(Clone)]
@@ -153,9 +158,20 @@ impl VidIdx {
             let idx_path = format!("{}.ffidx", path.display());
             let idx_cstr = CString::new(idx_path.as_str())?;
 
-            let idx = if std::path::Path::new(&idx_path).exists() {
+            let mut idx = if std::path::Path::new(&idx_path).exists() {
                 FFMS_ReadIndex(idx_cstr.as_ptr(), std::ptr::addr_of_mut!(err))
             } else {
+                std::ptr::null_mut()
+            };
+
+            if !idx.is_null()
+                && FFMS_IndexBelongsToFile(idx, source.as_ptr(), std::ptr::addr_of_mut!(err)) != 0
+            {
+                FFMS_DestroyIndex(idx);
+                idx = std::ptr::null_mut();
+            }
+
+            let idx = if idx.is_null() {
                 let idxer = FFMS_CreateIndexer(source.as_ptr(), std::ptr::addr_of_mut!(err));
                 if idxer.is_null() {
                     return Err("Failed to create idxer".into());
@@ -177,6 +193,8 @@ impl VidIdx {
                 }
 
                 FFMS_WriteIndex(idx_cstr.as_ptr(), idx, std::ptr::addr_of_mut!(err));
+                idx
+            } else {
                 idx
             };
 
@@ -255,10 +273,13 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
         let props = FFMS_GetVideoProperties(video);
         let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
 
-        let matrix_coeff = if (*frame).matrix_coefficients == 3 {
+        let matrix_coeff = match if (*frame).matrix_coefficients == 3 {
             (*props).color_space
         } else {
             (*frame).matrix_coefficients
+        } {
+            0 => 2,
+            x => x,
         };
 
         let width = (*frame).encoded_width as u32;

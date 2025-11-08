@@ -379,6 +379,13 @@ fn decode_chunks(
     destroy_vid_src(source);
 }
 
+#[inline]
+fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
+    let start = i * frame_size;
+    let end = start + frame_size;
+    &frames[start..end]
+}
+
 fn write_frames(
     child: &mut std::process::Child,
     frames: &[u8],
@@ -390,13 +397,6 @@ fn write_frames(
     let Some(mut stdin) = child.stdin.take() else {
         return 0;
     };
-
-    #[inline(always)]
-    fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
-        let start = i * frame_size;
-        let end = start + frame_size;
-        &frames[start..end]
-    }
 
     let mut written = 0;
 

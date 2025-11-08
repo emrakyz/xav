@@ -397,6 +397,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
+    chunk::validate_scenes(&scenes, inf.fps_num, inf.fps_den)?;
 
     let chunks = chunk::chunkify(&scenes);
 
