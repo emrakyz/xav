@@ -418,20 +418,20 @@ pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
 }
 
 #[inline]
-pub fn pack_4_pix_10bit(input: &[u8; 8], output: &mut [u8; 5]) {
-    let p0 = u16::from_le_bytes([input[0], input[1]]) as u64;
-    let p1 = u16::from_le_bytes([input[2], input[3]]) as u64;
-    let p2 = u16::from_le_bytes([input[4], input[5]]) as u64;
-    let p3 = u16::from_le_bytes([input[6], input[7]]) as u64;
+pub fn pack_4_pix_10bit(input: [u8; 8], output: &mut [u8; 5]) {
+    let p0 = u64::from(u16::from_le_bytes([input[0], input[1]]));
+    let p1 = u64::from(u16::from_le_bytes([input[2], input[3]]));
+    let p2 = u64::from(u16::from_le_bytes([input[4], input[5]]));
+    let p3 = u64::from(u16::from_le_bytes([input[6], input[7]]));
     let packed: u64 = p0 | (p1 << 10) | (p2 << 20) | (p3 << 30);
     let bytes = packed.to_le_bytes();
     output.copy_from_slice(&bytes[..5]);
 }
 
 #[inline]
-pub fn unpack_4_pix_10bit(input: &[u8; 5], output: &mut [u8; 8]) {
-    let packed =
-        u32::from_le_bytes(input[0..4].try_into().unwrap()) as u64 | ((input[4] as u64) << 32);
+pub fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
+    let packed = u64::from(u32::from_le_bytes(input[0..4].try_into().unwrap()))
+        | (u64::from(input[4]) << 32);
 
     let p0 = (packed & 0x3FF) as u16;
     let p1 = ((packed >> 10) & 0x3FF) as u16;
@@ -449,7 +449,7 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
         let i_arr: &[u8; 8] = i_chunk.try_into().unwrap();
         let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
 
-        pack_4_pix_10bit(i_arr, o_arr);
+        pack_4_pix_10bit(*i_arr, o_arr);
     });
 
     let remaining_in = input.len() % 8;
@@ -462,7 +462,7 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
         let output_chunk: &mut [u8; 5] =
             unsafe { &mut *output.as_mut_ptr().add(processed_out).cast::<[u8; 5]>() };
 
-        pack_4_pix_10bit(&temp, output_chunk);
+        pack_4_pix_10bit(temp, output_chunk);
     }
 }
 
@@ -471,7 +471,7 @@ pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
         let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
         let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
 
-        unpack_4_pix_10bit(i_arr, o_arr);
+        unpack_4_pix_10bit(*i_arr, o_arr);
     });
 }
 
