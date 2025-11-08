@@ -178,6 +178,17 @@ fn dec_10bit(
         let new_frame_size = new_y_size + new_uv_size;
         let new_packed_size = (new_frame_size * 5).div_ceil(4);
 
+        let y_stride = (inf.width * 2) as usize;
+        let uv_stride = (inf.width / 2 * 2) as usize;
+        let y_start = ((crop_v * inf.width + crop_h) as usize) * 2;
+        let y_plane_size = (inf.width * inf.height) as usize * 2;
+        let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize * 2;
+        let u_start = y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
+        let v_start =
+            y_plane_size + uv_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
+        let y_len = (new_width * 2) as usize;
+        let uv_len = (new_width / 2 * 2) as usize;
+
         let mut frame_buf = vec![0u8; orig_frame_size];
         let mut cropped_buf = vec![0u8; new_frame_size];
 
@@ -191,41 +202,24 @@ fn dec_10bit(
                     continue;
                 }
 
-                let y_stride = (inf.width * 2) as usize;
-                let uv_stride = (inf.width / 2 * 2) as usize;
-
-                let y_start = ((crop_v * inf.width + crop_h) as usize) * 2;
-
-                let y_plane_size = (inf.width * inf.height) as usize * 2;
-                let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize * 2;
-
-                let u_start =
-                    y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
-                let v_start = y_plane_size
-                    + uv_plane_size
-                    + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
-
                 let mut pos = 0;
 
                 for row in 0..new_height {
                     let src = y_start + row as usize * y_stride;
-                    let len = (new_width * 2) as usize;
-                    cropped_buf[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
-                    pos += len;
+                    cropped_buf[pos..pos + y_len].copy_from_slice(&frame_buf[src..src + y_len]);
+                    pos += y_len;
                 }
 
                 for row in 0..new_height / 2 {
                     let src = u_start + row as usize * uv_stride;
-                    let len = (new_width / 2 * 2) as usize;
-                    cropped_buf[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
-                    pos += len;
+                    cropped_buf[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
+                    pos += uv_len;
                 }
 
                 for row in 0..new_height / 2 {
                     let src = v_start + row as usize * uv_stride;
-                    let len = (new_width / 2 * 2) as usize;
-                    cropped_buf[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
-                    pos += len;
+                    cropped_buf[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
+                    pos += uv_len;
                 }
 
                 let dest_start = i * new_packed_size;
@@ -299,6 +293,17 @@ fn dec_8bit(
         let new_uv_size = (new_width * new_height / 4) as usize;
         let new_frame_size = new_y_size + new_uv_size * 2;
 
+        let y_stride = inf.width as usize;
+        let uv_stride = (inf.width / 2) as usize;
+        let y_start = (crop_v * inf.width + crop_h) as usize;
+        let y_plane_size = (inf.width * inf.height) as usize;
+        let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize;
+        let u_start = y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
+        let v_start =
+            y_plane_size + uv_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
+        let y_len = new_width as usize;
+        let uv_len = (new_width / 2) as usize;
+
         let mut frame_buf = vec![0u8; orig_frame_size];
 
         for chunk in chunks {
@@ -311,41 +316,25 @@ fn dec_8bit(
                     continue;
                 }
 
-                let y_stride = inf.width as usize;
-                let uv_stride = (inf.width / 2) as usize;
-
-                let y_start = (crop_v * inf.width + crop_h) as usize;
-
-                let y_plane_size = (inf.width * inf.height) as usize;
-                let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize;
-
-                let u_start = y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
-                let v_start = y_plane_size
-                    + uv_plane_size
-                    + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
-
                 let dest_start = i * new_frame_size;
                 let mut pos = dest_start;
 
                 for row in 0..new_height {
                     let src = y_start + row as usize * y_stride;
-                    let len = new_width as usize;
-                    frames_data[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
-                    pos += len;
+                    frames_data[pos..pos + y_len].copy_from_slice(&frame_buf[src..src + y_len]);
+                    pos += y_len;
                 }
 
                 for row in 0..new_height / 2 {
                     let src = u_start + row as usize * uv_stride;
-                    let len = (new_width / 2) as usize;
-                    frames_data[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
-                    pos += len;
+                    frames_data[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
+                    pos += uv_len;
                 }
 
                 for row in 0..new_height / 2 {
                     let src = v_start + row as usize * uv_stride;
-                    let len = (new_width / 2) as usize;
-                    frames_data[pos..pos + len].copy_from_slice(&frame_buf[src..src + len]);
-                    pos += len;
+                    frames_data[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
+                    pos += uv_len;
                 }
 
                 valid += 1;
