@@ -230,9 +230,10 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     }
 
     if resume {
-        let mut saved_args = get_saved_args(&input)?;
-        saved_args.resume = true;
-        return Ok(saved_args);
+        if let Ok(mut saved_args) = get_saved_args(&input) {
+            saved_args.resume = true;
+            return Ok(saved_args);
+        }
     }
 
     let mut result = Args {
