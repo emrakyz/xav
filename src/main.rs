@@ -121,7 +121,7 @@ fn apply_defaults(args: &mut Args) {
 
     if args.scene_file == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
-        args.scene_file = PathBuf::from(format!("scd_{stem}.txt"));
+        args.scene_file = args.input.with_file_name(format!("scd_{stem}.txt"));
     }
 
     #[cfg(feature = "vship")]
@@ -343,7 +343,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let hash = hash_input(&args.input);
-    let work_dir = PathBuf::from(format!(".{}", &hash[..7]));
+    let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
 
     if !args.resume && work_dir.exists() {
         fs::remove_dir_all(&work_dir)?;
