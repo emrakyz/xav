@@ -418,11 +418,11 @@ pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
 }
 
 #[inline]
-pub fn pack_4_pix_10bit(input: [u8; 8], output: &mut [u8; 5]) {
-    let p0 = u32::from(u16::from_le_bytes([input[0], input[1]]) & 0x3FF);
-    let p1 = u32::from(u16::from_le_bytes([input[2], input[3]]) & 0x3FF);
-    let p2 = u32::from(u16::from_le_bytes([input[4], input[5]]) & 0x3FF);
-    let p3 = u32::from(u16::from_le_bytes([input[6], input[7]]) & 0x3FF);
+pub fn pack_4_pix_10bit(input: &[u8; 8], output: &mut [u8; 5]) {
+    let p0 = u16::from_le_bytes([input[0], input[1]]) & 0x3FF;
+    let p1 = u16::from_le_bytes([input[2], input[3]]) & 0x3FF;
+    let p2 = u16::from_le_bytes([input[4], input[5]]) & 0x3FF;
+    let p3 = u16::from_le_bytes([input[6], input[7]]) & 0x3FF;
 
     output[0] = (p0 & 0xFF) as u8;
     output[1] = ((p0 >> 8) | ((p1 & 0x3F) << 2)) as u8;
@@ -432,7 +432,7 @@ pub fn pack_4_pix_10bit(input: [u8; 8], output: &mut [u8; 5]) {
 }
 
 #[inline]
-pub fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
+pub fn unpack_4_pix_10bit(input: &[u8; 5], output: &mut [u8; 8]) {
     let p0 = u16::from(input[0]) | (u16::from(input[1] & 0x03) << 8);
     let p1 = (u16::from(input[1]) >> 2) | (u16::from(input[2] & 0x0F) << 6);
     let p2 = (u16::from(input[2]) >> 4) | (u16::from(input[3] & 0x3F) << 4);
@@ -445,72 +445,34 @@ pub fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
 }
 
 pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
-    const IN_CHUNK_SIZE: usize = 8;
-    const OUT_CHUNK_SIZE: usize = 5;
+    input.chunks_exact(8).zip(output.chunks_exact_mut(5)).for_each(|(i_chunk, o_chunk)| {
+        let i_arr: &[u8; 8] = i_chunk.try_into().unwrap();
+        let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
 
-    let in_len = input.len();
-    let out_len = output.len();
+        pack_4_pix_10bit(i_arr, o_arr);
+    });
 
-    let max_chunks_in = in_len / IN_CHUNK_SIZE;
-    let max_chunks_out = out_len / OUT_CHUNK_SIZE;
-    let num_chunks = max_chunks_in.min(max_chunks_out);
-
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
-
-    unsafe {
-        for _ in 0..num_chunks {
-            let input_chunk: &[u8; IN_CHUNK_SIZE] = &*in_ptr.cast::<[u8; IN_CHUNK_SIZE]>();
-            let output_chunk: &mut [u8; OUT_CHUNK_SIZE] =
-                &mut *out_ptr.cast::<[u8; OUT_CHUNK_SIZE]>();
-
-            pack_4_pix_10bit(*input_chunk, output_chunk);
-
-            in_ptr = in_ptr.add(IN_CHUNK_SIZE);
-            out_ptr = out_ptr.add(OUT_CHUNK_SIZE);
-        }
-    }
-
-    let remaining_in = in_len % IN_CHUNK_SIZE;
+    let remaining_in = input.len() % 8;
     if remaining_in > 0 {
-        let processed_in = num_chunks * IN_CHUNK_SIZE;
-        let processed_out = num_chunks * OUT_CHUNK_SIZE;
+        let processed_in = (input.len() / 8) * 8;
+        let processed_out = (output.len() / 5) * 5;
         let mut temp = [0u8; 8];
         temp[..remaining_in].copy_from_slice(&input[processed_in..]);
 
-        let output_chunk: &mut [u8; OUT_CHUNK_SIZE] =
-            unsafe { &mut *output.as_mut_ptr().add(processed_out).cast::<[u8; OUT_CHUNK_SIZE]>() };
+        let output_chunk: &mut [u8; 5] =
+            unsafe { &mut *output.as_mut_ptr().add(processed_out).cast::<[u8; 5]>() };
 
-        pack_4_pix_10bit(temp, output_chunk);
+        pack_4_pix_10bit(&temp, output_chunk);
     }
 }
 
 pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
-    const IN_CHUNK_SIZE: usize = 5;
-    const OUT_CHUNK_SIZE: usize = 8;
+    input.chunks_exact(5).zip(output.chunks_exact_mut(8)).for_each(|(i_chunk, o_chunk)| {
+        let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
+        let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
 
-    let in_len = input.len();
-    let out_len = output.len();
-
-    let max_chunks_in = in_len / IN_CHUNK_SIZE;
-    let max_chunks_out = out_len / OUT_CHUNK_SIZE;
-    let num_chunks = max_chunks_in.min(max_chunks_out);
-
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
-
-    unsafe {
-        for _ in 0..num_chunks {
-            let input_chunk: &[u8; IN_CHUNK_SIZE] = &*in_ptr.cast::<[u8; IN_CHUNK_SIZE]>();
-            let output_chunk: &mut [u8; OUT_CHUNK_SIZE] =
-                &mut *out_ptr.cast::<[u8; OUT_CHUNK_SIZE]>();
-
-            unpack_4_pix_10bit(*input_chunk, output_chunk);
-
-            in_ptr = in_ptr.add(IN_CHUNK_SIZE);
-            out_ptr = out_ptr.add(OUT_CHUNK_SIZE);
-        }
-    }
+        unpack_4_pix_10bit(i_arr, o_arr);
+    });
 }
 
 fn copy_plane_8to10(
