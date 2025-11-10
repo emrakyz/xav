@@ -16,8 +16,6 @@ mod svt;
 mod tq;
 #[cfg(feature = "vship")]
 mod vship;
-#[cfg(feature = "vship")]
-mod zimg;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
@@ -496,7 +494,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         && let Some(v) = crate::svt::TQ_SCORES.get()
     {
         let mut s = v.lock().unwrap().clone();
-        s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+
+        let tq_parts: Vec<f64> = args
+            .target_quality
+            .as_ref()
+            .unwrap()
+            .split('-')
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        let is_butteraugli = f64::midpoint(tq_parts[0], tq_parts[1]) < 8.0;
+
+        if is_butteraugli {
+            s.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
+        } else {
+            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        }
 
         let m = s.iter().sum::<f64>() / s.len() as f64;
         eprintln!("\n{Y}Mean: {W}{m:.4}");

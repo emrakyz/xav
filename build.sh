@@ -71,7 +71,7 @@ show_opts() {
 cleanup_existing() {
         [[ "${build_static}" == false ]] && return 0
 
-        local dirs=("dav1d" "FFmpeg" "ffms2" "zlib" "zimg")
+        local dirs=("dav1d" "FFmpeg" "ffms2" "zlib")
         local found=()
 
         for dir in "${dirs[@]}"; do
@@ -270,40 +270,6 @@ build_ffms2() {
         }
 }
 
-build_zimg() {
-        [[ -d "${BUILD_DIR}/zimg" ]] && return
-
-        loginf b "Building zimg"
-
-        local logfile="/tmp/build_zimg_$.log"
-
-        cd "${BUILD_DIR}"
-        git clone --recursive https://github.com/sekrit-twc/zimg.git > "${logfile}" 2>&1
-        cd zimg
-        ./autogen.sh >> "${logfile}" 2>&1
-
-        CC="${CC}" \
-                CXX="${CXX}" \
-                AR="${AR}" \
-                RANLIB="${RANLIB}" \
-                CFLAGS="${CFLAGS//-ffast-math/}" \
-                CXXFLAGS="${CXXFLAGS//-ffast-math/}" \
-                LDFLAGS="${LDFLAGS}" \
-                ./configure \
-                --enable-static \
-                --disable-shared >> "${logfile}" 2>&1
-
-        make -j"$(nproc)" >> "${logfile}" 2>&1 && {
-                rm -f "${logfile}"
-                loginf g "zimg built successfully"
-        } || {
-                echo -e "\n${R}Build failed! Output:${N}\n"
-                cat "${logfile}"
-                rm -f "${logfile}"
-                exit 1
-        }
-}
-
 setup_toolchain() {
         export CC="clang"
         export CXX="clang++"
@@ -353,9 +319,9 @@ main() {
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}\n"
 
         BUILD_MODES=(
-                "Build everything statically (ffms2, zimg) with TQ"
-                "Build dynamically (requires ffms2, zimg, vship installed) with TQ"
-                "Build statically without TQ (no zimg, no vship)"
+                "Build everything statically (ffms2) with TQ"
+                "Build dynamically (requires ffms2, vship installed) with TQ"
+                "Build statically without TQ (no vship)"
                 "Build dynamically without TQ (requires ffms2 only)"
         )
 
@@ -377,25 +343,21 @@ main() {
                         config_file=".cargo/config.toml.static"
                         cargo_features="--features static,vship"
                         build_static=true
-                        build_zimg_flag=true
                         ;;
                 2)
                         config_file=".cargo/config.toml.dynamic"
                         cargo_features="--features vship"
                         build_static=false
-                        build_zimg_flag=false
                         ;;
                 3)
                         config_file=".cargo/config.toml.static_notq"
                         cargo_features="--features static"
                         build_static=true
-                        build_zimg_flag=false
                         ;;
                 4)
                         config_file=".cargo/config.toml.dynamic_notq"
                         cargo_features=""
                         build_static=false
-                        build_zimg_flag=false
                         ;;
         esac
 
@@ -428,8 +390,6 @@ main() {
                 build_dav1d
                 build_ffmpeg
                 build_ffms2
-
-                [[ "${build_zimg_flag}" == true ]] && build_zimg
 
                 export PKG_CONFIG_ALL_STATIC=1
                 export FFMPEG_DIR="${BUILD_DIR}/FFmpeg/install"

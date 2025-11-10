@@ -696,44 +696,23 @@ pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>)
 #[cfg(feature = "vship")]
 fn create_tq_worker(
     inf: &VidInf,
-    stride: u32,
     use_cvvdp: bool,
     use_butteraugli: bool,
-) -> (crate::zimg::ZimgProcessor, crate::zimg::ZimgProcessor, crate::vship::VshipProcessor) {
-    let ref_zimg = crate::zimg::ZimgProcessor::new(
-        stride,
+) -> crate::vship::VshipProcessor {
+    let fps = inf.fps_num as f32 / inf.fps_den as f32;
+    crate::vship::VshipProcessor::new(
         inf.width,
         inf.height,
         inf.is_10bit,
-        crate::zimg::ColorParams {
-            matrix: inf.matrix_coefficients,
-            transfer: inf.transfer_characteristics,
-            primaries: inf.color_primaries,
-            color_range: inf.color_range,
-        },
+        inf.matrix_coefficients,
+        inf.transfer_characteristics,
+        inf.color_primaries,
+        inf.color_range,
+        fps,
+        use_cvvdp,
+        use_butteraugli,
     )
-    .unwrap();
-
-    let dist_zimg = crate::zimg::ZimgProcessor::new(
-        stride,
-        inf.width,
-        inf.height,
-        true,
-        crate::zimg::ColorParams {
-            matrix: inf.matrix_coefficients,
-            transfer: inf.transfer_characteristics,
-            primaries: inf.color_primaries,
-            color_range: inf.color_range,
-        },
-    )
-    .unwrap();
-
-    let fps = inf.fps_num as f32 / inf.fps_den as f32;
-    let vship =
-        crate::vship::VshipProcessor::new(inf.width, inf.height, fps, use_cvvdp, use_butteraugli)
-            .unwrap();
-
-    (ref_zimg, dist_zimg, vship)
+    .unwrap()
 }
 
 #[cfg(feature = "vship")]
@@ -745,8 +724,6 @@ struct TQChunkConfig<'a> {
     qp: &'a str,
     work_dir: &'a Path,
     prog: Option<&'a Arc<ProgsTrack>>,
-    stride: u32,
-    rgb_size: usize,
     probe_info: &'a crate::tq::ProbeInfoMap,
     stats: Option<&'a Arc<WorkerStats>>,
     grain_table: Option<&'a Path>,
@@ -759,8 +736,6 @@ struct TQChunkConfig<'a> {
 fn process_tq_chunk(
     data: &ChunkData,
     config: &TQChunkConfig,
-    ref_zimg: &mut crate::zimg::ZimgProcessor,
-    dist_zimg: &mut crate::zimg::ZimgProcessor,
     vship: &crate::vship::VshipProcessor,
 ) {
     let mut ctx = crate::tq::QualityContext {
@@ -771,11 +746,7 @@ fn process_tq_chunk(
         params: config.params,
         work_dir: config.work_dir,
         prog: config.prog,
-        ref_zimg,
-        dist_zimg,
         vship,
-        stride: config.stride,
-        rgb_size: config.rgb_size,
         grain_table: config.grain_table,
         use_cvvdp: config.use_cvvdp,
         use_butteraugli: config.use_butteraugli,
@@ -883,11 +854,7 @@ fn encode_tq(
 
         workers.push(thread::spawn(move || {
             let mut init = false;
-            let mut ref_zimg = None;
-            let mut dist_zimg = None;
             let mut vship = None;
-            let mut stride = 0;
-            let mut rgb_size = 0;
             let mut working_inf = inf.clone();
 
             while let Ok(data) = rx.recv() {
@@ -895,13 +862,7 @@ fn encode_tq(
                     working_inf.width = data.width;
                     working_inf.height = data.height;
 
-                    stride = (data.width * 2).div_ceil(32) * 32;
-                    rgb_size = (stride * data.height) as usize;
-
-                    let (rz, dz, vs) =
-                        create_tq_worker(&working_inf, stride, use_cvvdp, use_butteraugli);
-                    ref_zimg = Some(rz);
-                    dist_zimg = Some(dz);
+                    let vs = create_tq_worker(&working_inf, use_cvvdp, use_butteraugli);
                     vship = Some(vs);
                     init = true;
                 }
@@ -914,8 +875,6 @@ fn encode_tq(
                     qp: &qp,
                     work_dir: &wd,
                     prog: prog.as_ref(),
-                    stride,
-                    rgb_size,
                     probe_info: &probe_info,
                     stats: stats.as_ref(),
                     grain_table: grain.as_deref(),
@@ -924,13 +883,7 @@ fn encode_tq(
                     use_butteraugli,
                 };
 
-                process_tq_chunk(
-                    &data,
-                    &config,
-                    ref_zimg.as_mut().unwrap(),
-                    dist_zimg.as_mut().unwrap(),
-                    vship.as_ref().unwrap(),
-                );
+                process_tq_chunk(&data, &config, vship.as_ref().unwrap());
             }
         }));
     }

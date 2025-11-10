@@ -20,10 +20,8 @@ fn main() {
 
         #[cfg(feature = "vship")]
         {
-            println!("cargo:rustc-link-search=native={home}/.local/src/zimg/.libs");
             println!("cargo:rustc-link-search=native={home}/.local/src/Vship");
 
-            println!("cargo:rustc-link-lib=static=zimg");
             println!("cargo:rustc-link-lib=static=vship");
 
             println!("cargo:rustc-link-lib=static=cudart_static");

@@ -49,11 +49,7 @@ pub struct QualityContext<'a> {
     pub params: &'a str,
     pub work_dir: &'a Path,
     pub prog: Option<&'a Arc<crate::progs::ProgsTrack>>,
-    pub ref_zimg: &'a mut crate::zimg::ZimgProcessor,
-    pub dist_zimg: &'a mut crate::zimg::ZimgProcessor,
     pub vship: &'a crate::vship::VshipProcessor,
-    pub stride: u32,
-    pub rgb_size: usize,
     pub grain_table: Option<&'a Path>,
     pub use_cvvdp: bool,
     pub use_butteraugli: bool,
@@ -111,17 +107,6 @@ fn measure_quality(
 
     let mut unpacked_buf = vec![0u8; crate::ffms::calc_10bit_size(ctx.inf)];
 
-    let mut ref_rgb = [
-        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-    ];
-    let mut dist_rgb = [
-        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-        crate::vship::PinnedBuffer::new(ctx.rgb_size).unwrap(),
-    ];
-
     for frame_idx in 0..ctx.frame_count {
         let frame_start = frame_idx * frame_size;
         let frame_end = frame_start + frame_size;
@@ -135,26 +120,52 @@ fn measure_quality(
             input_yuv_packed
         };
 
-        ctx.ref_zimg
-            .conv_yuv_to_rgb(
-                input_yuv,
-                ctx.inf.width,
-                ctx.inf.height,
-                &mut ref_rgb,
-                ctx.inf.is_10bit,
-            )
-            .unwrap();
-        ctx.dist_zimg.convert_ffms_frame_to_rgb(output_frame, &mut dist_rgb).unwrap();
+        let pixel_size = if ctx.inf.is_10bit { 2 } else { 1 };
+        let y_size = (ctx.inf.width * ctx.inf.height) as usize * pixel_size;
+        let uv_size = y_size / 4;
 
-        let ref_planes = [ref_rgb[0].as_ptr(), ref_rgb[1].as_ptr(), ref_rgb[2].as_ptr()];
-        let dist_planes = [dist_rgb[0].as_ptr(), dist_rgb[1].as_ptr(), dist_rgb[2].as_ptr()];
+        let input_y_stride = (ctx.inf.width * pixel_size as u32) as i64;
+        let input_uv_stride = (ctx.inf.width / 2 * pixel_size as u32) as i64;
+
+        let input_planes = [
+            input_yuv.as_ptr(),
+            input_yuv[y_size..].as_ptr(),
+            input_yuv[y_size + uv_size..].as_ptr(),
+        ];
+        let input_line_sizes = [input_y_stride, input_uv_stride, input_uv_stride];
+
+        let output_planes =
+            unsafe { [(*output_frame).data[0], (*output_frame).data[1], (*output_frame).data[2]] };
+        let output_line_sizes = unsafe {
+            [
+                (*output_frame).linesize[0] as i64,
+                (*output_frame).linesize[1] as i64,
+                (*output_frame).linesize[2] as i64,
+            ]
+        };
 
         let score = if ctx.use_butteraugli {
-            ctx.vship.compute_butteraugli(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap()
+            ctx.vship
+                .compute_butteraugli(
+                    input_planes,
+                    output_planes,
+                    input_line_sizes,
+                    output_line_sizes,
+                )
+                .unwrap()
         } else if ctx.use_cvvdp {
-            ctx.vship.compute_cvvdp(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap()
+            ctx.vship
+                .compute_cvvdp(input_planes, output_planes, input_line_sizes, output_line_sizes)
+                .unwrap()
         } else {
-            ctx.vship.compute_ssimulacra2(ref_planes, dist_planes, i64::from(ctx.stride)).unwrap()
+            ctx.vship
+                .compute_ssimulacra2(
+                    input_planes,
+                    output_planes,
+                    input_line_sizes,
+                    output_line_sizes,
+                )
+                .unwrap()
         };
         scores.push(score);
 
