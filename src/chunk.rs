@@ -52,7 +52,9 @@ pub fn validate_scenes(
 
     for (i, scene) in scenes.iter().enumerate() {
         let len = scene.e_frame.saturating_sub(scene.s_frame);
-        if len < min_len as usize || len > max_len as usize {
+        let is_last = i == scenes.len() - 1;
+
+        if (!is_last && len < min_len as usize) || len > max_len as usize {
             return Err(format!(
                 "Scene {} (frames {}-{}) has invalid length {}: must be between {} and {} frames",
                 i, scene.s_frame, scene.e_frame, len, min_len, max_len
