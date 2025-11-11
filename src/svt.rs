@@ -62,7 +62,7 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Comman
         "--fps-denom",
         &fps_den_str,
         "--keyint",
-        "-1",
+        "0",
         "--rc",
         "0",
         "--scd",
