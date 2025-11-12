@@ -124,8 +124,8 @@ fn measure_quality(
         let y_size = (ctx.inf.width * ctx.inf.height) as usize * pixel_size;
         let uv_size = y_size / 4;
 
-        let input_y_stride = (ctx.inf.width * pixel_size as u32) as i64;
-        let input_uv_stride = (ctx.inf.width / 2 * pixel_size as u32) as i64;
+        let input_y_stride = i64::from(ctx.inf.width * pixel_size as u32);
+        let input_uv_stride = i64::from(ctx.inf.width / 2 * pixel_size as u32);
 
         let input_planes = [
             input_yuv.as_ptr(),
@@ -138,9 +138,9 @@ fn measure_quality(
             unsafe { [(*output_frame).data[0], (*output_frame).data[1], (*output_frame).data[2]] };
         let output_line_sizes = unsafe {
             [
-                (*output_frame).linesize[0] as i64,
-                (*output_frame).linesize[1] as i64,
-                (*output_frame).linesize[2] as i64,
+                i64::from((*output_frame).linesize[0]),
+                i64::from((*output_frame).linesize[1]),
+                i64::from((*output_frame).linesize[2]),
             ]
         };
 

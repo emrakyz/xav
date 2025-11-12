@@ -708,6 +708,7 @@ fn create_tq_worker(
         inf.transfer_characteristics,
         inf.color_primaries,
         inf.color_range,
+        inf.chroma_sample_position,
         fps,
         use_cvvdp,
         use_butteraugli,

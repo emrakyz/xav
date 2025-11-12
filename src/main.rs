@@ -227,11 +227,9 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    if resume {
-        if let Ok(mut saved_args) = get_saved_args(&input) {
-            saved_args.resume = true;
-            return Ok(saved_args);
-        }
+    if resume && let Ok(mut saved_args) = get_saved_args(&input) {
+        saved_args.resume = true;
+        return Ok(saved_args);
     }
 
     let mut result = Args {

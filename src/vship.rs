@@ -2,33 +2,34 @@ use std::ptr;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipSSIMU2Handler {
+struct VshipSSIMU2Handler {
     id: i32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipCVVDPHandler {
+struct VshipCVVDPHandler {
     id: i32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipButteraugliHandler {
+struct VshipButteraugliHandler {
     id: i32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipButteraugliScore {
-    normQ: f64,
+struct VshipButteraugliScore {
+    norm_q: f64,
     norm3: f64,
     norminf: f64,
 }
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipSample {
+#[allow(dead_code)]
+enum VshipSample {
     Float = 0,
     Half = 1,
     Uint8 = 2,
@@ -41,21 +42,22 @@ pub enum VshipSample {
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipRange {
+enum VshipRange {
     Limited = 0,
     Full = 1,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipChromaSubsample {
+struct VshipChromaSubsample {
     subw: i32,
     subh: i32,
 }
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipChromaLocation {
+#[allow(dead_code)]
+enum VshipChromaLocation {
     Left = 0,
     Center = 1,
     TopLeft = 2,
@@ -64,14 +66,15 @@ pub enum VshipChromaLocation {
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipColorFamily {
+#[allow(dead_code)]
+enum VshipColorFamily {
     Yuv = 0,
     Rgb = 1,
 }
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipYuvMatrix {
+enum VshipYuvMatrix {
     Rgb = 0,
     Bt709 = 1,
     Bt470Bg = 5,
@@ -83,7 +86,7 @@ pub enum VshipYuvMatrix {
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipTransferFunction {
+enum VshipTransferFunction {
     Bt709 = 1,
     Bt470M = 4,
     Bt470Bg = 5,
@@ -97,7 +100,7 @@ pub enum VshipTransferFunction {
 
 #[repr(i32)]
 #[derive(Copy, Clone)]
-pub enum VshipPrimaries {
+enum VshipPrimaries {
     Internal = -1,
     Bt709 = 1,
     Bt470M = 4,
@@ -107,7 +110,7 @@ pub enum VshipPrimaries {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipCropRectangle {
+struct VshipCropRectangle {
     top: i32,
     bottom: i32,
     left: i32,
@@ -116,7 +119,7 @@ pub struct VshipCropRectangle {
 
 #[repr(C)]
 #[derive(Copy, Clone)]
-pub struct VshipColorspace {
+struct VshipColorspace {
     width: i64,
     height: i64,
     target_width: i64,
@@ -135,7 +138,7 @@ pub struct VshipColorspace {
 #[repr(C)]
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
-pub enum VshipException {
+enum VshipException {
     NoError = 0,
     OutOfVRAM,
     OutOfRAM,
@@ -206,8 +209,6 @@ unsafe extern "C" {
         lineSize2: *const i64,
     ) -> VshipException;
     fn Vship_GetErrorMessage(exception: VshipException, out_msg: *mut i8, len: i32) -> i32;
-    fn Vship_PinnedMalloc(ptr: *mut *mut std::ffi::c_void, size: u64) -> VshipException;
-    fn Vship_PinnedFree(ptr: *mut std::ffi::c_void) -> VshipException;
 }
 
 pub struct VshipProcessor {
@@ -225,6 +226,7 @@ impl VshipProcessor {
         transfer: Option<i32>,
         primaries: Option<i32>,
         color_range: Option<i32>,
+        chroma_sample_position: Option<i32>,
         fps: f32,
         use_cvvdp: bool,
         use_butteraugli: bool,
@@ -243,6 +245,7 @@ impl VshipProcessor {
                 transfer,
                 primaries,
                 color_range,
+                chroma_sample_position,
             );
 
             let dis_colorspace = create_yuv_colorspace(
@@ -253,6 +256,7 @@ impl VshipProcessor {
                 transfer,
                 primaries,
                 color_range,
+                chroma_sample_position,
             );
 
             let handler = if !use_cvvdp && !use_butteraugli {
@@ -396,7 +400,7 @@ impl VshipProcessor {
         line_sizes2: [i64; 3],
     ) -> Result<f64, Box<dyn std::error::Error>> {
         unsafe {
-            let mut score = VshipButteraugliScore { normQ: 0.0, norm3: 0.0, norminf: 0.0 };
+            let mut score = VshipButteraugliScore { norm_q: 0.0, norm3: 0.0, norminf: 0.0 };
             let ret = Vship_ComputeButteraugli(
                 self.butteraugli_handler.ok_or("Butteraugli handler not initialized")?,
                 ptr::from_mut(&mut score),
@@ -415,7 +419,7 @@ impl VshipProcessor {
                 return Err(format!("Butteraugli compute failed: {err}").into());
             }
 
-            Ok(score.normQ)
+            Ok(score.norm_q)
         }
     }
 }
@@ -436,39 +440,6 @@ impl Drop for VshipProcessor {
     }
 }
 
-pub struct PinnedBuffer {
-    ptr: *mut u8,
-    size: usize,
-}
-
-unsafe impl Send for PinnedBuffer {}
-unsafe impl Sync for PinnedBuffer {}
-
-impl PinnedBuffer {
-    pub fn new(size: usize) -> Result<Self, Box<dyn std::error::Error>> {
-        unsafe {
-            let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
-            let ret = Vship_PinnedMalloc(&raw mut ptr, size as u64);
-            if ret as i32 != 0 {
-                return Err("Failed to allocate pinned memory".into());
-            }
-            Ok(Self { ptr: ptr.cast::<u8>(), size })
-        }
-    }
-
-    pub const fn as_ptr(&self) -> *const u8 {
-        self.ptr
-    }
-}
-
-impl Drop for PinnedBuffer {
-    fn drop(&mut self) {
-        unsafe {
-            Vship_PinnedFree(self.ptr.cast::<std::ffi::c_void>());
-        }
-    }
-}
-
 fn create_yuv_colorspace(
     width: u32,
     height: u32,
@@ -477,10 +448,15 @@ fn create_yuv_colorspace(
     transfer: Option<i32>,
     primaries: Option<i32>,
     color_range: Option<i32>,
+    chroma_sample_position: Option<i32>,
 ) -> VshipColorspace {
+    let chroma_loc = match chroma_sample_position {
+        Some(2) => VshipChromaLocation::TopLeft,
+        _ => VshipChromaLocation::Left,
+    };
+
     let matrix_val = match matrix {
         Some(0) => VshipYuvMatrix::Rgb,
-        Some(1) | Some(2) | None => VshipYuvMatrix::Bt709,
         Some(5) => VshipYuvMatrix::Bt470Bg,
         Some(6) => VshipYuvMatrix::St170M,
         Some(9) => VshipYuvMatrix::Bt2020Ncl,
@@ -490,7 +466,6 @@ fn create_yuv_colorspace(
     };
 
     let transfer_val = match transfer {
-        Some(1) | Some(2) | None => VshipTransferFunction::Bt709,
         Some(4) => VshipTransferFunction::Bt470M,
         Some(5) => VshipTransferFunction::Bt470Bg,
         Some(6) => VshipTransferFunction::Bt601,
@@ -504,7 +479,6 @@ fn create_yuv_colorspace(
 
     let primaries_val = match primaries {
         Some(-1) => VshipPrimaries::Internal,
-        Some(1) | Some(2) | None => VshipPrimaries::Bt709,
         Some(4) => VshipPrimaries::Bt470M,
         Some(5) => VshipPrimaries::Bt470Bg,
         Some(9) => VshipPrimaries::Bt2020,
@@ -526,7 +500,7 @@ fn create_yuv_colorspace(
         sample: sample_val,
         range: range_val,
         subsampling: VshipChromaSubsample { subw: 1, subh: 1 },
-        chroma_location: VshipChromaLocation::Left,
+        chroma_location: chroma_loc,
         color_family: VshipColorFamily::Yuv,
         yuv_matrix: matrix_val,
         transfer_function: transfer_val,
