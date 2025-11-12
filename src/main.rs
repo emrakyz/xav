@@ -282,7 +282,7 @@ fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 fn get_saved_args(input: &Path) -> Result<Args, Box<dyn std::error::Error>> {
     let hash = hash_input(input);
-    let work_dir = PathBuf::from(format!(".{}", &hash[..7]));
+    let work_dir = input.with_file_name(format!(".{}", &hash[..7]));
     let cmd_path = work_dir.join("cmd.txt");
 
     if cmd_path.exists() {
