@@ -284,7 +284,8 @@ fn hash_input(path: &Path) -> String {
 }
 
 fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let cmd: Vec<String> = std::env::args().collect();
+    let cmd: Vec<String> =
+        std::env::args().filter(|arg| arg != "-r" && arg != "--resume").collect();
     let quoted_cmd: Vec<String> = cmd
         .iter()
         .map(|arg| if arg.contains(' ') { format!("\"{arg}\"") } else { arg.clone() })
@@ -354,6 +355,8 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let hash = hash_input(&args.input);
     let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
 
+    let is_new_encode = !work_dir.exists();
+
     if !args.resume && work_dir.exists() {
         fs::remove_dir_all(&work_dir)?;
     }
@@ -361,7 +364,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir_all(work_dir.join("split"))?;
     fs::create_dir_all(work_dir.join("encode"))?;
 
-    if !args.resume {
+    if is_new_encode {
         save_args(&work_dir)?;
     }
 
