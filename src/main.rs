@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+mod audio;
 mod chunk;
 mod ffms;
 #[cfg(feature = "vship")]
@@ -42,6 +43,7 @@ pub struct Args {
     pub noise: Option<u32>,
     pub crop: Option<(u32, u32)>,
     pub crop_str: Option<String>,
+    pub audio: Option<audio::AudioSpec>,
     pub input: PathBuf,
     pub output: PathBuf,
 }
@@ -79,6 +81,9 @@ fn print_help() {
     println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
     println!("-c|--crop      Auto crop by original AR: `1.37` OR crop horizontal,vertical: `0,220`");
     println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
+    println!("-a|--audio     Encode with Opus: `-a \"<auto|bitrate> <all|stream_ids>\"`");
+    println!("               Examples: `-a \"auto all\"`, `-a \"auto 1\"`, `-a \"128 1,2,3\"`");
+    println!("               If enabled, subtitles/chapters are preserved in output");
     println!("-r|--resume    Resume the encoding. Example below");
     println!("-q|--quiet     Do not run any code related to any progress");
     println!();
@@ -147,6 +152,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut noise = None;
     let crop = None;
     let mut crop_str = None;
+    let mut audio = None;
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
 
@@ -214,6 +220,12 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     crop_str = Some(args[i].clone());
                 }
             }
+            "-a" | "--audio" => {
+                i += 1;
+                if i < args.len() {
+                    audio = Some(audio::parse_audio_arg(&args[i])?);
+                }
+            }
 
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
@@ -247,6 +259,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         noise,
         crop,
         crop_str,
+        audio,
         input,
         output,
     };
@@ -402,13 +415,14 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     svt::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref());
     let enc_time = enc_start.elapsed();
 
-    chunk::merge_out(&work_dir.join("encode"), &args.output, &inf)?;
+    let video_mkv = work_dir.join("encode").join("video.mkv");
+    chunk::merge_out(&work_dir.join("encode"), &video_mkv, &inf)?;
 
     print!("\x1b[?25h\x1b[?1049l");
     std::io::stdout().flush().unwrap();
 
     let input_size = fs::metadata(&args.input)?.len();
-    let output_size = fs::metadata(&args.output)?.len();
+    let output_size = fs::metadata(&video_mkv)?.len();
     let duration = inf.frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
     let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
     let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
@@ -457,6 +471,13 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     final_width, final_height, fps_rate, dh, dm, ds, "",
     eh, em, es, enc_speed, ""
 );
+
+    if let Some(ref audio_spec) = args.audio {
+        audio::process_audio(audio_spec, &args.input, &video_mkv, &args.output)?;
+        fs::remove_file(&video_mkv)?;
+    } else {
+        fs::rename(&video_mkv, &args.output)?;
+    }
 
     fs::remove_dir_all(&work_dir)?;
 

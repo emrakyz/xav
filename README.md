@@ -44,7 +44,6 @@ rm -rf i_av1.mkv *txt *idx *index
 - [mkvmerge](https://mkvtoolnix.download/source.html) (to concatenate chunks)
 - [FFMS2](https://github.com/FFMS/ffms2) (a hard dependency)
 - [VSHIP](https://github.com/Line-fr/Vship) (optional - needed for target quality encoding with CVVDP / SSIMULACRA2 / Butteraugli5pn)
-- [ZIMG](https://github.com/sekrit-twc/zimg) (optional - provides color conversion features needed by VSHIP)
 
 ## Description
 

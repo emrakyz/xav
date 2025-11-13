@@ -175,7 +175,7 @@ fn dec_10bit(
         let orig_frame_size = calc_10bit_size(inf);
         let new_y_size = (new_width * new_height * 2) as usize;
         let new_uv_size = (new_width * new_height / 2) as usize;
-        let new_frame_size = new_y_size + new_uv_size;
+        let new_frame_size = new_y_size + new_uv_size * 2;
         let new_packed_size = (new_frame_size * 5).div_ceil(4);
 
         let y_stride = (inf.width * 2) as usize;
