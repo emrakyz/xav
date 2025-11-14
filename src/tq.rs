@@ -184,7 +184,11 @@ fn measure_quality(
         scores.iter().sum::<f64>() / scores.len() as f64
     } else if let Some(percentile_str) = metric_mode.strip_prefix('p') {
         let percentile: f64 = percentile_str.parse().unwrap_or(15.0);
-        scores.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        if ctx.use_butteraugli {
+            scores.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
+        } else {
+            scores.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        }
         let cutoff_idx =
             ((scores.len() as f64 * percentile / 100.0).ceil() as usize).min(scores.len());
         scores[..cutoff_idx].iter().sum::<f64>() / cutoff_idx as f64
