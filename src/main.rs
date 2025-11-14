@@ -92,7 +92,7 @@ fn print_help() {
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
     println!("xav -q -w 8 -s sc.txt -t 75-76 -f 6-63 -m p15 -p \"--lp 3 --tune 0\" i.mkv o.mkv");
     println!("xav -t 1.5-2.0 -f 20-50 -m mean i.mkv  # Butteraugli target");
-    println!("xav i.mkv  # Uses all defaults, creates `scd_i.txt` and output will be `i_av1.mkv`");
+    println!("xav i.mkv  # Uses all defaults, creates `i_scd.txt` and output will be `i_av1.mkv`");
 }
 
 fn parse_args() -> Args {
@@ -124,7 +124,7 @@ fn apply_defaults(args: &mut Args) {
 
     if args.scene_file == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
-        args.scene_file = args.input.with_file_name(format!("scd_{stem}.txt"));
+        args.scene_file = args.input.with_file_name(format!("{stem}_scd.txt"));
     }
 
     #[cfg(feature = "vship")]
