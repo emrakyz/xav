@@ -80,17 +80,21 @@ These help me make the tool's already present features closer to perfect with ea
 
 ## Building
 
+Build script is only for Linux for now. Windows support can be expected for the future.
+
 Run the `build.sh` script: It will guide you.
 
 Building dependencies statically and building the main tool with them, is the intended way for maximum performance but it's for advanced users due to compiler complexities.
 
+For most people, running `build.sh` and selecting a dynamic option is recommended.
+
 For dynamic builds, you need ffmpegsource (ffms2) installed on your system. That's all.
 
-For TQ support, you need `zimg`, `ffms2`, `vship` installed on your system.
+Building requires NASM, Clang and Rust Nightly.
+
+For TQ support, you need `ffms2`, `vship` installed on your system.
 
 **NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. Some package managers do not provide them, in this case; they need to be compiled manually.
-
-Rust Nightly is also needed for `-Z` based optimizations.
 
 ## Video Showcase
 
