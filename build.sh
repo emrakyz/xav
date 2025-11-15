@@ -312,7 +312,36 @@ setup_toolchain() {
 }
 
 main() {
+        preset="${1:-}"
+
         selected_cxx="libstdc++"
+
+        case "$preset" in
+                static_tq)
+                        mode_choice=1
+                        polly="ON"
+                        ;;
+                dynamic_tq)
+                        mode_choice=2
+                        ;;
+                static_notq)
+                        mode_choice=3
+                        polly="ON"
+                        ;;
+                dynamic_notq)
+                        mode_choice=4
+                        ;;
+                "") ;;
+                *)
+                        echo -e "Unknown preset: $preset"
+                        echo "Valid presets:"
+                        echo "  static_tq"
+                        echo "  dynamic_tq"
+                        echo "  static_notq"
+                        echo "  dynamic_notq"
+                        exit 1
+                        ;;
+        esac
 
         echo -e "\n${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
         echo -e "${C}║${W}                         Build Configuration                           ${C}║${N}"
@@ -325,18 +354,17 @@ main() {
                 "Build dynamically without TQ (requires ffms2 only)"
         )
 
-        while true; do
-                show_opts "${BUILD_MODES[@]}"
-                echo -ne "${C}Build Mode: ${N}"
-                read -r mode_choice
-
-                [[ "${mode_choice}" =~ ^[1-4]$ ]] && {
-                        loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
-                        break
-                }
-        done
-
-        echo
+        [[ "${preset}" ]] || {
+                while true; do
+                        show_opts "${BUILD_MODES[@]}"
+                        echo -ne "${C}Build Mode: ${N}"
+                        read -r mode_choice
+                        [[ "${mode_choice}" =~ ^[1-4]$ ]] && {
+                                loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
+                                break
+                        }
+                done
+        }
 
         case "${mode_choice}" in
                 1)
@@ -361,7 +389,7 @@ main() {
                         ;;
         esac
 
-        [[ "${build_static}" == true ]] && {
+        [[ "${build_static}" == true && -z "${preset}" ]] && {
                 OPTS=("ON" "OFF")
 
                 while true; do
