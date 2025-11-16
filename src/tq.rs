@@ -14,6 +14,16 @@ struct Probe {
     frame_scores: Vec<f64>,
 }
 
+pub struct ProbeLog {
+    pub chunk_idx: usize,
+    pub probes: Vec<(f64, f64)>,
+    pub final_crf: f64,
+    pub final_score: f64,
+    pub round: usize,
+}
+
+pub type ProbeLogger = Arc<std::sync::Mutex<Vec<ProbeLog>>>;
+
 struct TQConfig {
     target: f64,
     tolerance: f64,
@@ -225,6 +235,7 @@ pub fn find_target_quality(
     qp_range: &str,
     probe_info: &ProbeInfoMap,
     metric_mode: &str,
+    logger: Option<&ProbeLogger>,
 ) -> Option<String> {
     let config = TQConfig::new(tq_range, qp_range);
     let mut probes = Vec::new();
@@ -261,6 +272,17 @@ pub fn find_target_quality(
         };
 
         if in_range {
+            if let Some(log) = logger {
+                let mut l = log.lock().unwrap();
+                l.push(ProbeLog {
+                    chunk_idx: ctx.chunk.idx,
+                    probes: probes.iter().map(|p| (p.crf, p.score)).collect(),
+                    final_crf: crf,
+                    final_score: score,
+                    round,
+                });
+            }
+
             if ctx.use_cvvdp {
                 crate::svt::TQ_SCORES
                     .get_or_init(|| std::sync::Mutex::new(Vec::new()))
@@ -299,6 +321,17 @@ pub fn find_target_quality(
         let diff_b = (b.score - config.target).abs();
         diff_a.partial_cmp(&diff_b).unwrap()
     });
+
+    if let Some(log) = logger {
+        let mut l = log.lock().unwrap();
+        l.push(ProbeLog {
+            chunk_idx: ctx.chunk.idx,
+            probes: probes.iter().map(|p| (p.crf, p.score)).collect(),
+            final_crf: probes[0].crf,
+            final_score: probes[0].score,
+            round: 10,
+        });
+    }
 
     if ctx.use_cvvdp {
         crate::svt::TQ_SCORES

@@ -738,6 +738,7 @@ fn process_tq_chunk(
     data: &ChunkData,
     config: &TQChunkConfig,
     vship: &crate::vship::VshipProcessor,
+    logger: Option<&crate::tq::ProbeLogger>,
 ) {
     let mut ctx = crate::tq::QualityContext {
         chunk: &config.chunks[data.idx],
@@ -759,6 +760,7 @@ fn process_tq_chunk(
         config.qp,
         config.probe_info,
         config.metric_mode,
+        logger,
     ) {
         let src = config.work_dir.join("split").join(&best);
         let dst = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
@@ -811,6 +813,7 @@ fn encode_tq(
     });
 
     let probe_info = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let logger = Arc::new(std::sync::Mutex::new(Vec::new()));
 
     let (tx, rx) = bounded::<ChunkData>(0);
     let rx = Arc::new(rx);
@@ -829,6 +832,7 @@ fn encode_tq(
     let mut workers = Vec::new();
     for _ in 0..args.worker {
         let probe_info = Arc::clone(&probe_info);
+        let logger = Arc::clone(&logger);
         let rx = Arc::clone(&rx);
         let c = chunks.to_vec();
         let inf = inf.clone();
@@ -884,7 +888,7 @@ fn encode_tq(
                     use_butteraugli,
                 };
 
-                process_tq_chunk(&data, &config, vship.as_ref().unwrap());
+                process_tq_chunk(&data, &config, vship.as_ref().unwrap(), Some(&logger));
             }
         }));
     }
@@ -896,4 +900,85 @@ fn encode_tq(
     if let Some(p) = prog {
         p.final_update();
     }
+
+    write_tq_log(&logger, work_dir, &args.input);
+}
+
+#[cfg(feature = "vship")]
+fn write_tq_log(logger: &crate::tq::ProbeLogger, work_dir: &Path, input: &Path) {
+    use std::collections::HashMap;
+    use std::fmt::Write;
+
+    let mut logs = logger.lock().unwrap();
+    logs.sort_by_key(|l| l.chunk_idx);
+
+    let hash = crate::hash_input(input);
+    let log_path = input.with_extension("log");
+    let mut content = String::new();
+
+    for log in logs.iter() {
+        let probes_str = log
+            .probes
+            .iter()
+            .map(|(c, s)| format!("({c:.2}, {s:.2})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(
+            content,
+            "{:04}: [{}] = {:.2}, {:.2}",
+            log.chunk_idx, probes_str, log.final_crf, log.final_score
+        );
+    }
+
+    let total = logs.len();
+    let avg_probes = logs.iter().map(|l| l.probes.len()).sum::<usize>() as f64 / total as f64;
+
+    let in_range = logs.iter().filter(|l| l.round < 10).count();
+    let out_range = total - in_range;
+
+    let mut round_counts: HashMap<usize, usize> = HashMap::new();
+    for log in logs.iter() {
+        *round_counts.entry(log.probes.len()).or_insert(0) += 1;
+    }
+
+    let mut crf_counts: HashMap<String, usize> = HashMap::new();
+    for log in logs.iter() {
+        let crf_key = format!("{:.2}", log.final_crf);
+        *crf_counts.entry(crf_key).or_insert(0) += 1;
+    }
+    drop(logs);
+
+    let _ = writeln!(content, "\nAverage No of Probes: {avg_probes:.1}");
+    let _ = writeln!(content, "In-range: {in_range} chunks");
+    let _ = writeln!(content, "Out-range: {out_range} chunks\n");
+
+    let method_name = |round: usize| match round {
+        3 => "linear",
+        4 => "natural",
+        5 => "PCHIP",
+        6 => "AKIMA",
+        _ => "binary",
+    };
+
+    let mut rounds: Vec<_> = round_counts.iter().collect();
+    rounds.sort_by_key(|(r, _)| *r);
+
+    for (round, count) in rounds {
+        let pct = *count as f64 / total as f64 * 100.0;
+        let _ = writeln!(
+            content,
+            "{round} probe finish: {count} scenes ({}) -> {pct:.2}%",
+            method_name(*round)
+        );
+    }
+
+    let mut crfs: Vec<_> = crf_counts.iter().collect();
+    crfs.sort_by(|(_, a), (_, b)| b.cmp(a));
+
+    let _ = writeln!(content, "\nMost popular CRFs:");
+    for (crf, count) in crfs {
+        let _ = writeln!(content, "{crf}: {count} times");
+    }
+
+    std::fs::write(log_path, content).ok();
 }

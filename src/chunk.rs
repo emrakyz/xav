@@ -175,7 +175,8 @@ fn run_merge(
         .arg("--no-global-tags")
         .arg("--no-chapters")
         .arg("--no-date")
-        .arg("--disable-language-ietf");
+        .arg("--disable-language-ietf")
+        .arg("--disable-track-statistics-tags");
 
     for (i, file) in files.iter().enumerate() {
         if i == 0 {
