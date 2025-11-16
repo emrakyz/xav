@@ -81,8 +81,9 @@ fn print_help() {
     println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
     println!("-c|--crop      Auto crop by original AR: `1.37` OR crop horizontal,vertical: `0,220`");
     println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
-    println!("-a|--audio     Encode with Opus: `-a \"<auto|bitrate> <all|stream_ids>\"`");
-    println!("               Examples: `-a \"auto all\"`, `-a \"auto 1\"`, `-a \"128 1,2,3\"`");
+    println!("-a|--audio     Encode with Opus: `-a \"<auto|norm|bitrate> <all|stream_ids>\"`");
+    println!("               Examples: `-a \"auto all\"`, `-a \"norm 1\"`, `-a \"128 1,2,3\"`");
+    println!("               `norm`: downmix to stereo + loudnorm + 128k bitrate");
     println!("               If enabled, subtitles/chapters are preserved in output");
     println!("-r|--resume    Resume the encoding. Example below");
     println!("-q|--quiet     Do not run any code related to any progress");

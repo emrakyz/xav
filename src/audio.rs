@@ -7,6 +7,7 @@ use std::process::Command;
 pub enum AudioBitrate {
     Auto,
     Fixed(u32),
+    Norm,
 }
 
 #[derive(Clone)]
@@ -31,14 +32,14 @@ struct AudioStream {
 pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     if parts.len() != 2 {
-        return Err("Audio format: -a <auto|bitrate> <all|stream_ids>".into());
+        return Err("Audio format: -a <auto|norm|bitrate> <all|stream_ids>".into());
     }
 
     Ok(AudioSpec {
-        bitrate: if parts[0] == "auto" {
-            AudioBitrate::Auto
-        } else {
-            AudioBitrate::Fixed(parts[0].parse()?)
+        bitrate: match parts[0] {
+            "auto" => AudioBitrate::Auto,
+            "norm" => AudioBitrate::Norm,
+            _ => AudioBitrate::Fixed(parts[0].parse()?),
         },
         streams: if parts[1] == "all" {
             AudioStreams::All
@@ -156,60 +157,55 @@ fn encode_stream(
     stream: &AudioStream,
     bitrate: u32,
     output: &Path,
+    normalize: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    Command::new("ffmpeg")
-        .args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"])
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"])
         .arg(input)
-        .args([
-            "-metadata",
-            "title=",
-            "-metadata",
-            "language=",
-            "-metadata:s:a:0",
-            "language=",
-            "-map_metadata",
-            "-1",
-            "-map_chapters",
-            "-1",
-            "-dn",
-            "-sn",
-            "-vn",
-            "-map",
-        ])
-        .arg(format!("0:{}", stream.index))
-        .args([
-            "-c:a",
-            "libopus",
-            "-ar",
-            "48000",
-            "-b:a",
-            &format!("{bitrate}k"),
-            "-application",
-            "audio",
-            "-frame_duration",
-            "120",
-            "-compression_level",
-            "10",
-            "-vbr",
-            "on",
-            "-mapping_family",
-            if stream.channels <= 2 { "0" } else { "255" },
-            "-apply_phase_inv",
-            "true",
-            "-packet_loss",
-            "0",
-            "-fflags",
-            "+genpts+igndts+discardcorrupt+bitexact",
-            "-bitexact",
-            "-err_detect",
-            "ignore_err",
-            "-ignore_unknown",
-        ])
-        .arg(output)
-        .status()
-        .ok()
-        .filter(std::process::ExitStatus::success)
-        .ok_or_else(|| format!("Failed to encode stream {}", stream.index))?;
+        .args(["-map_metadata", "-1", "-map_chapters", "-1", "-dn", "-sn", "-vn", "-map"])
+        .arg(format!("0:{}", stream.index));
+
+    if normalize {
+        cmd.args([
+            "-af",
+            "pan=stereo|FL=FL+0.707*FC+0.707*SL+0.5*BL+0.5*BC|FR=FR+0.707*FC+0.707*SR+0.5*BR+0.5*\
+             BC,loudnorm=I=-14:TP=-2.5:LRA=14",
+        ]);
+    }
+
+    cmd.args([
+        "-c:a",
+        "libopus",
+        "-ar",
+        "48000",
+        "-b:a",
+        &format!("{bitrate}k"),
+        "-application",
+        "audio",
+        "-frame_duration",
+        "120",
+        "-compression_level",
+        "10",
+        "-vbr",
+        "on",
+        "-mapping_family",
+        if normalize || stream.channels <= 2 { "0" } else { "1" },
+        "-apply_phase_inv",
+        "true",
+        "-packet_loss",
+        "0",
+        "-fflags",
+        "+genpts+igndts+discardcorrupt+bitexact",
+        "-bitexact",
+        "-err_detect",
+        "ignore_err",
+        "-ignore_unknown",
+    ])
+    .arg(output)
+    .status()
+    .ok()
+    .filter(std::process::ExitStatus::success)
+    .ok_or_else(|| format!("Failed to encode stream {}", stream.index))?;
     Ok(())
 }
 
@@ -223,7 +219,16 @@ fn mux_files(
     let mut cmd = Command::new("mkvmerge");
     cmd.args(["-q", "-o"])
         .arg(output)
-        .args(["-A", "-S", "-B", "-M", "-T", "--no-global-tags", "--no-chapters"])
+        .args([
+            "-A",
+            "-S",
+            "-B",
+            "-M",
+            "-T",
+            "--no-global-tags",
+            "--no-chapters",
+            "--disable-track-statistics-tags",
+        ])
         .arg(video);
 
     for (info, path) in files {
@@ -260,25 +265,35 @@ pub fn process_audio(
     };
 
     let work = input.parent().unwrap();
+    let (use_norm, base_bitrate) = match &spec.bitrate {
+        AudioBitrate::Norm => (true, 128),
+        AudioBitrate::Auto | AudioBitrate::Fixed(_) => (false, 0),
+    };
+
     let files: Vec<_> = sel
         .iter()
         .map(|s| {
-            let br = match &spec.bitrate {
-                AudioBitrate::Auto => {
-                    let cc = match s.channels {
-                        1 => 1.0,
-                        2 => 2.0,
-                        3 => 2.1,
-                        4 => 3.1,
-                        5 => 4.1,
-                        6 => 5.1,
-                        7 => 6.1,
-                        8 => 7.1,
-                        _ => f64::from(s.channels),
-                    };
-                    (128.0 * ((cc / 2.0) * 0.75)) as u32
+            let br = if use_norm {
+                base_bitrate
+            } else {
+                match &spec.bitrate {
+                    AudioBitrate::Auto => {
+                        let cc = match s.channels {
+                            1 => 1.0,
+                            2 => 2.0,
+                            3 => 2.1,
+                            4 => 3.1,
+                            5 => 4.1,
+                            6 => 5.1,
+                            7 => 6.1,
+                            8 => 7.1,
+                            _ => f64::from(s.channels),
+                        };
+                        (128.0 * ((cc / 2.0) * 0.75)) as u32
+                    }
+                    AudioBitrate::Fixed(b) => *b,
+                    AudioBitrate::Norm => unreachable!(),
                 }
-                AudioBitrate::Fixed(b) => *b,
             };
             let path = work.join(
                 s.lang
@@ -286,7 +301,7 @@ pub fn process_audio(
                     .map_or_else(|| format!("{:02}.opus", s.index), |l| format!("{l}.opus")),
             );
 
-            encode_stream(input, s, br, &path)?;
+            encode_stream(input, s, br, &path, use_norm)?;
             Ok::<_, Box<dyn std::error::Error>>(((*s).clone(), path))
         })
         .collect::<Result<Vec<_>, _>>()?;
