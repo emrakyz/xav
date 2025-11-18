@@ -14,6 +14,7 @@ struct Probe {
     frame_scores: Vec<f64>,
 }
 
+#[derive(Clone)]
 pub struct ProbeLog {
     pub chunk_idx: usize,
     pub probes: Vec<(f64, f64)>,
@@ -229,6 +230,18 @@ fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
     result.map(round_crf)
 }
 
+fn log_probe(
+    logger: Option<&ProbeLogger>,
+    log_path: Option<&Path>,
+    work_dir: Option<&Path>,
+    probe_log: ProbeLog,
+) {
+    if let (Some(log), Some(lp), Some(wd)) = (logger, log_path, work_dir) {
+        crate::svt::write_chunk_log(&probe_log, lp, wd);
+        log.lock().unwrap().push(probe_log);
+    }
+}
+
 pub fn find_target_quality(
     ctx: &mut QualityContext,
     tq_range: &str,
@@ -236,6 +249,8 @@ pub fn find_target_quality(
     probe_info: &ProbeInfoMap,
     metric_mode: &str,
     logger: Option<&ProbeLogger>,
+    log_path: Option<&Path>,
+    work_dir: Option<&Path>,
 ) -> Option<String> {
     let config = TQConfig::new(tq_range, qp_range);
     let mut probes = Vec::new();
@@ -272,16 +287,18 @@ pub fn find_target_quality(
         };
 
         if in_range {
-            if let Some(log) = logger {
-                let mut l = log.lock().unwrap();
-                l.push(ProbeLog {
+            log_probe(
+                logger,
+                log_path,
+                work_dir,
+                ProbeLog {
                     chunk_idx: ctx.chunk.idx,
                     probes: probes.iter().map(|p| (p.crf, p.score)).collect(),
                     final_crf: crf,
                     final_score: score,
                     round,
-                });
-            }
+                },
+            );
 
             if ctx.use_cvvdp {
                 crate::svt::TQ_SCORES
@@ -322,16 +339,18 @@ pub fn find_target_quality(
         diff_a.partial_cmp(&diff_b).unwrap()
     });
 
-    if let Some(log) = logger {
-        let mut l = log.lock().unwrap();
-        l.push(ProbeLog {
+    log_probe(
+        logger,
+        log_path,
+        work_dir,
+        ProbeLog {
             chunk_idx: ctx.chunk.idx,
             probes: probes.iter().map(|p| (p.crf, p.score)).collect(),
             final_crf: probes[0].crf,
             final_score: probes[0].score,
             round: 10,
-        });
-    }
+        },
+    );
 
     if ctx.use_cvvdp {
         crate::svt::TQ_SCORES
