@@ -217,6 +217,16 @@ pub struct VshipProcessor {
     butteraugli_handler: Option<VshipButteraugliHandler>,
 }
 
+pub fn init_device() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        let ret = Vship_SetDevice(0);
+        if ret as i32 != 0 {
+            return Err("Failed to set VSHIP device".into());
+        }
+        Ok(())
+    }
+}
+
 impl VshipProcessor {
     pub fn new(
         width: u32,
@@ -232,11 +242,6 @@ impl VshipProcessor {
         use_butteraugli: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
-            let ret = Vship_SetDevice(0);
-            if ret as i32 != 0 {
-                return Err("Failed to set VSHIP device".into());
-            }
-
             let src_colorspace = create_yuv_colorspace(
                 width,
                 height,
