@@ -834,6 +834,8 @@ fn encode_tq(
         })
     };
 
+    crate::vship::init_device().unwrap();
+
     let mut workers = Vec::new();
     for _ in 0..args.worker {
         let probe_info = Arc::clone(&probe_info);
