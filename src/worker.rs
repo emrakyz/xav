@@ -7,9 +7,11 @@ pub struct WorkPkg {
     pub frame_count: usize,
     pub width: u32,
     pub height: u32,
+    #[cfg(feature = "vship")]
     pub tq_state: Option<TQState>,
 }
 
+#[cfg(feature = "vship")]
 pub struct TQState {
     pub probes: Vec<crate::tq::Probe>,
     pub search_min: f64,
@@ -27,6 +29,14 @@ impl WorkPkg {
         width: u32,
         height: u32,
     ) -> Self {
-        Self { chunk, yuv, frame_count, width, height, tq_state: None }
+        Self {
+            chunk,
+            yuv,
+            frame_count,
+            width,
+            height,
+            #[cfg(feature = "vship")]
+            tq_state: None,
+        }
     }
 }
