@@ -385,6 +385,7 @@ pub fn extr_8bit(
     vid_src: *mut libc::c_void,
     frame_idx: usize,
     output: &mut [u8],
+    inf: &VidInf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
@@ -398,28 +399,18 @@ pub fn extr_8bit(
             return Err("Failed to get frame".into());
         }
 
-        let width = (*frame).encoded_width as usize;
-        let height = (*frame).encoded_height as usize;
-        let y_linesize = (*frame).linesize[0] as usize;
-        let mut pos = 0;
+        let width = inf.width as usize;
+        let height = inf.height as usize;
+        let y_size = width * height;
+        let uv_size = y_size / 4;
 
-        for row in 0..height {
-            let src = std::slice::from_raw_parts((*frame).data[0].add(row * y_linesize), width);
-            output[pos..pos + width].copy_from_slice(src);
-            pos += width;
-        }
-
-        let uv_width = width / 2;
-        let uv_height = height / 2;
-        for plane in 1..=2 {
-            let linesize = (*frame).linesize[plane] as usize;
-            for row in 0..uv_height {
-                let src =
-                    std::slice::from_raw_parts((*frame).data[plane].add(row * linesize), uv_width);
-                output[pos..pos + uv_width].copy_from_slice(src);
-                pos += uv_width;
-            }
-        }
+        std::ptr::copy_nonoverlapping((*frame).data[0], output.as_mut_ptr(), y_size);
+        std::ptr::copy_nonoverlapping((*frame).data[1], output.as_mut_ptr().add(y_size), uv_size);
+        std::ptr::copy_nonoverlapping(
+            (*frame).data[2],
+            output.as_mut_ptr().add(y_size + uv_size),
+            uv_size,
+        );
 
         Ok(())
     }
@@ -469,22 +460,8 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
     input.chunks_exact(8).zip(output.chunks_exact_mut(5)).for_each(|(i_chunk, o_chunk)| {
         let i_arr: &[u8; 8] = i_chunk.try_into().unwrap();
         let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
-
         pack_4_pix_10bit(*i_arr, o_arr);
     });
-
-    let remaining_in = input.len() % 8;
-    if remaining_in > 0 {
-        let processed_in = (input.len() / 8) * 8;
-        let processed_out = (output.len() / 5) * 5;
-        let mut temp = [0u8; 8];
-        temp[..remaining_in].copy_from_slice(&input[processed_in..]);
-
-        let output_chunk: &mut [u8; 5] =
-            unsafe { &mut *output.as_mut_ptr().add(processed_out).cast::<[u8; 5]>() };
-
-        pack_4_pix_10bit(temp, output_chunk);
-    }
 }
 
 pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
@@ -498,45 +475,35 @@ pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
 
 fn copy_plane_8to10(
     src: *const u8,
-    src_linesize: usize,
     width: usize,
     height: usize,
     output: &mut [u8],
     out_pos: &mut usize,
 ) {
     unsafe {
-        for row in 0..height {
-            let src_row = std::slice::from_raw_parts(src.add(row * src_linesize), width);
-            let out_start = *out_pos;
-            let out_end = out_start + width * 2;
-
-            src_row.iter().zip(output[out_start..out_end].chunks_exact_mut(2)).for_each(
-                |(&pixel, out_chunk)| {
-                    let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
-                    out_chunk.copy_from_slice(&pixel_10bit);
-                },
-            );
-
-            *out_pos = out_end;
+        let total_pixels = width * height;
+        for i in 0..total_pixels {
+            let pixel = *src.add(i);
+            let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
+            let out_idx = *out_pos + i * 2;
+            output[out_idx] = pixel_10bit[0];
+            output[out_idx + 1] = pixel_10bit[1];
         }
+        *out_pos += total_pixels * 2;
     }
 }
 
-fn copy_plane_10to10(
+const fn copy_plane_10to10(
     src: *const u8,
-    src_linesize: usize,
     width: usize,
     height: usize,
     output: &mut [u8],
     out_pos: &mut usize,
 ) {
     unsafe {
-        for row in 0..height {
-            let row_offset = row * src_linesize;
-            let src_row = std::slice::from_raw_parts(src.add(row_offset), width * 2);
-            output[*out_pos..*out_pos + width * 2].copy_from_slice(src_row);
-            *out_pos += width * 2;
-        }
+        let plane_size = width * 2 * height;
+        std::ptr::copy_nonoverlapping(src, output.as_mut_ptr().add(*out_pos), plane_size);
+        *out_pos += plane_size;
     }
 }
 
@@ -574,33 +541,31 @@ pub fn extr_10bit(
         }
 
         if is_10bit {
-            copy_plane_10to10(y_ptr, y_linesize, width, height, output, &mut out_pos);
+            copy_plane_10to10(y_ptr, width, height, output, &mut out_pos);
         } else {
-            copy_plane_8to10(y_ptr, y_linesize, width, height, output, &mut out_pos);
+            copy_plane_8to10(y_ptr, width, height, output, &mut out_pos);
         }
 
         let uv_width = width / 2;
         let uv_height = height / 2;
 
         let u_ptr = (*frame).data[1];
-        let u_linesize = (*frame).linesize[1] as usize;
 
         if !u_ptr.is_null() {
             if is_10bit {
-                copy_plane_10to10(u_ptr, u_linesize, uv_width, uv_height, output, &mut out_pos);
+                copy_plane_10to10(u_ptr, uv_width, uv_height, output, &mut out_pos);
             } else {
-                copy_plane_8to10(u_ptr, u_linesize, uv_width, uv_height, output, &mut out_pos);
+                copy_plane_8to10(u_ptr, uv_width, uv_height, output, &mut out_pos);
             }
         }
 
         let v_ptr = (*frame).data[2];
-        let v_linesize = (*frame).linesize[2] as usize;
 
         if !v_ptr.is_null() {
             if is_10bit {
-                copy_plane_10to10(v_ptr, v_linesize, uv_width, uv_height, output, &mut out_pos);
+                copy_plane_10to10(v_ptr, uv_width, uv_height, output, &mut out_pos);
             } else {
-                copy_plane_8to10(v_ptr, v_linesize, uv_width, uv_height, output, &mut out_pos);
+                copy_plane_8to10(v_ptr, uv_width, uv_height, output, &mut out_pos);
             }
         }
 

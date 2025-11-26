@@ -15,12 +15,14 @@ pub struct Chunk {
     pub end: usize,
 }
 
+#[derive(Clone)]
 pub struct ChunkComp {
     pub idx: usize,
     pub frames: usize,
     pub size: u64,
 }
 
+#[derive(Clone)]
 pub struct ResumeInf {
     pub chnks_done: Vec<ChunkComp>,
 }
