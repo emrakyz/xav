@@ -1,13 +1,10 @@
-use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-static DISPLAY_MUTEX: Mutex<()> = Mutex::new(());
-
-const BAR_WIDTH: usize = 32;
+const BAR_WIDTH: usize = 28;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
@@ -22,371 +19,368 @@ const G_HASH: &str = "\x1b[1;92m#";
 const R_DASH: &str = "\x1b[1;91m-";
 
 pub struct ProgsBar {
-    s_time: Instant,
-    last_up: Instant,
-    last_val: usize,
-    tot: usize,
+    start: Instant,
+    total: usize,
     quiet: bool,
+    last_update: Instant,
+}
+
+struct ProgState {
+    total_chunks: usize,
+    total_frames: usize,
+    fps_num: usize,
+    fps_den: usize,
+    completed: Arc<AtomicUsize>,
+    completions: Arc<Mutex<crate::chunk::ResumeInf>>,
 }
 
 impl ProgsBar {
     pub fn new(quiet: bool) -> Self {
-        Self { s_time: Instant::now(), last_up: Instant::now(), last_val: 0, tot: 0, quiet }
+        let now = Instant::now();
+        Self { start: now, total: 0, quiet, last_update: now }
     }
 
-    pub fn up_idx(&mut self, current: usize, tot: usize) {
+    pub fn up_idx(&mut self, current: usize, total: usize) {
         if self.quiet {
             return;
         }
-        self.tot = tot;
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.s_time);
 
-        let elapsed_secs = elapsed.as_secs() as usize;
-        let mb_processed = current / (1024 * 1024);
-        let mbps = mb_processed / elapsed_secs.max(1);
+        if self.last_update.elapsed() < Duration::from_millis(1000) {
+            return;
+        }
+        self.last_update = Instant::now();
 
-        let remaining = tot.saturating_sub(current);
-        let eta_secs = remaining * elapsed_secs / current.max(1);
-        let eta = Duration::from_secs(eta_secs as u64);
-
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-
+        self.total = total;
+        let elapsed = self.start.elapsed().as_secs() as usize;
+        let mb_current = current / (1024 * 1024);
+        let mb_total = total / (1024 * 1024);
+        let mbps = mb_current / elapsed.max(1);
+        let remaining = total.saturating_sub(current);
+        let eta_secs = remaining * elapsed / current.max(1);
+        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
         let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
-
-        let eta_str = fmt_dur_colored(eta);
-        let current_mb = current / (1024 * 1024);
-        let tot_mb = tot / (1024 * 1024);
-
-        let perc = (current * 100 / tot.max(1)).min(100);
+        let perc = (current * 100 / total.max(1)).min(100);
+        let (eta_h, eta_m, eta_s) = (eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60);
 
         print!(
-            "\r\x1b[2K{W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} MBs{C}, {W}{eta_str}{C}, \
-             {G}{current_mb}{C}/{R}{tot_mb}{N}"
+            "\r\x1b[2K{W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} MBs{C}, \
+             {W}{eta_h:02}{P}:{W}{eta_m:02}{P}:{W}{eta_s:02}{C}, \
+             {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
         std::io::stdout().flush().unwrap();
-
-        self.last_up = now;
-        self.last_val = current;
     }
 
-    pub fn up_scenes(&mut self, current: usize, tot: usize) {
+    pub fn up_scenes(&mut self, current: usize, total: usize) {
         if self.quiet {
             return;
         }
-        self.tot = tot;
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.s_time);
 
-        let elapsed_secs = elapsed.as_secs() as usize;
-        let fps = current / elapsed_secs.max(1);
+        if self.last_update.elapsed() < Duration::from_millis(1000) {
+            return;
+        }
+        self.last_update = Instant::now();
 
-        let remaining = tot.saturating_sub(current);
-        let eta_secs = remaining * elapsed_secs / current.max(1);
-        let eta = Duration::from_secs(eta_secs as u64);
-
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
+        self.total = total;
+        let elapsed = self.start.elapsed().as_secs() as usize;
+        let fps = current / elapsed.max(1);
+        let remaining = total.saturating_sub(current);
+        let eta_secs = remaining * elapsed / current.max(1);
+        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
         let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
-        let eta_str = fmt_dur_colored(eta);
-        let perc = (current * 100 / tot.max(1)).min(100);
+        let perc = (current * 100 / total.max(1)).min(100);
+        let (eta_h, eta_m, eta_s) = (eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60);
 
         print!(
-            "\r\x1b[2K{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} FPS{C}, {W}{eta_str}{C}, \
-             {G}{current}{C}/{R}{tot}{N}"
+            "\r\x1b[2K{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} FPS{C}, \
+             {W}{eta_h:02}{P}:{W}{eta_m:02}{P}:{W}{eta_s:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
         std::io::stdout().flush().unwrap();
-
-        self.last_up = now;
-        self.last_val = current;
     }
 
     pub fn finish(&self) {
-        if self.quiet {
-            return;
+        if !self.quiet {
+            print!("\r\x1b[2K");
+            std::io::stdout().flush().unwrap();
         }
-
-        print!("\r\x1b[2K");
-        std::io::stdout().flush().unwrap();
     }
 
     pub fn finish_scenes(&self) {
-        if self.quiet {
-            return;
+        if !self.quiet {
+            print!("\r\x1b[2K");
+            std::io::stdout().flush().unwrap();
         }
-
-        print!("\r\x1b[2K");
-        std::io::stdout().flush().unwrap();
     }
 }
 
-struct ProgsState {
-    start: Instant,
-    tot_chunks: usize,
-    tot_frames: usize,
-    init_frames: usize,
-    worker_cnt: usize,
-    completed: Arc<AtomicUsize>,
-    completions: Arc<Mutex<crate::chunk::ResumeInf>>,
-    fps_num: usize,
-    fps_den: usize,
+enum WorkerMsg {
+    Update { worker_id: usize, line: String, frames: Option<usize> },
+    Clear(usize),
 }
 
 pub struct ProgsTrack {
-    lines: Arc<Mutex<HashMap<usize, String>>>,
-    processed: Arc<AtomicUsize>,
-    state: Arc<ProgsState>,
+    tx: crossbeam_channel::Sender<WorkerMsg>,
 }
 
 impl ProgsTrack {
     pub fn new(
         chunks: &[crate::chunk::Chunk],
         inf: &crate::ffms::VidInf,
-        worker_cnt: usize,
+        worker_count: usize,
         init_frames: usize,
         completed: Arc<AtomicUsize>,
         completions: Arc<Mutex<crate::chunk::ResumeInf>>,
     ) -> Self {
+        let (tx, rx) = crossbeam_channel::unbounded();
+
         print!("\x1b[s");
         std::io::stdout().flush().unwrap();
 
-        Self {
-            lines: Arc::new(Mutex::new(HashMap::new())),
-            processed: Arc::new(AtomicUsize::new(init_frames)),
-            state: Arc::new(ProgsState {
-                start: Instant::now(),
-                tot_chunks: chunks.len(),
-                tot_frames: inf.frames,
-                init_frames,
-                worker_cnt,
-                completed,
-                completions,
-                fps_num: inf.fps_num as usize,
-                fps_den: inf.fps_den as usize,
-            }),
-        }
+        let total_chunks = chunks.len();
+        let total_frames = inf.frames;
+        let fps_num = inf.fps_num as usize;
+        let fps_den = inf.fps_den as usize;
+
+        let state =
+            ProgState { total_chunks, total_frames, fps_num, fps_den, completed, completions };
+
+        thread::spawn(move || {
+            display_loop(&rx, worker_count, init_frames, &state);
+        });
+
+        Self { tx }
     }
 
     pub fn watch_enc(
         &self,
         stderr: impl std::io::Read + Send + 'static,
+        worker_id: usize,
         chunk_idx: usize,
         track_frames: bool,
         crf_score: Option<(f32, Option<f64>)>,
     ) {
-        let lines = Arc::clone(&self.lines);
-        let processed = Arc::clone(&self.processed);
-        let state = Arc::clone(&self.state);
+        let tx = self.tx.clone();
 
         thread::spawn(move || {
-            let mut reader = BufReader::new(stderr);
-            let mut buffer = Vec::new();
+            let reader = BufReader::new(stderr);
+            let mut last_frames = 0;
 
-            loop {
-                buffer.clear();
-                let read = reader.read_until(b'\r', &mut buffer);
-                if read.is_err() || read.unwrap() == 0 {
-                    break;
-                }
+            for line in reader.split(b'\r').filter_map(Result::ok) {
+                let Ok(text) = std::str::from_utf8(&line) else { continue };
+                let text = text.trim();
 
-                let line = match std::str::from_utf8(&buffer) {
-                    Ok(s) => s.trim_end_matches('\r'),
-                    Err(_) => continue,
-                };
-
-                if line.contains("error") || line.contains("Error") {
+                if text.contains("error") || text.contains("Error") {
                     print!("\x1b[?1049l");
                     std::io::stdout().flush().unwrap();
-                    eprintln!("{line}");
+                    eprintln!("{text}");
                 }
 
-                if !line.contains("Encoding:") || line.contains("SUMMARY") {
+                if text.is_empty() || !text.contains("Encoding:") || text.contains("SUMMARY") {
                     continue;
                 }
 
-                Self::up_line(&lines, &processed, chunk_idx, line, track_frames, crf_score);
+                let content = text.strip_prefix("Encoding: ").unwrap_or(text);
 
-                Self::show_progs(&lines, &processed, &state);
+                let mut cleaned = content
+                    .replace(" Frames\x1b[0m @ ", " ")
+                    .replace(" kb/s", "")
+                    .replace("Size: ", "")
+                    .replace(" MB", "")
+                    .replace("Time: \u{1b}[36m0:", "")
+                    .replace("33m   ", "33m")
+                    .replace("33m  ", "33m")
+                    .replace("33m ", "33m")
+                    .replace("[-0:", "[");
+
+                if cleaned.contains("fpm") {
+                    let parts: Vec<&str> = cleaned.split_whitespace().collect();
+                    if let Some(fpm_pos) = parts.iter().position(|&s| s == "fpm")
+                        && fpm_pos > 0
+                    {
+                        let num_str = parts[fpm_pos - 1];
+                        let num_clean = num_str.replace("\u{1b}[32m", "").replace("\u{1b}[0m", "");
+                        if let Ok(fpm) = num_clean.parse::<f32>() {
+                            let fps = fpm / 60.0;
+                            cleaned = cleaned.replacen(
+                                &format!("{num_str} fpm"),
+                                &format!("\u{1b}[32m{fps:.2}\u{1b}[0m fps"),
+                                1,
+                            );
+                        }
+                    }
+                }
+
+                let prefix = match crf_score {
+                    Some((crf, Some(score))) => {
+                        format!("{C}[{chunk_idx:04} / F {crf:.2} / {score:.2}{C}]")
+                    }
+                    Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
+                    None => format!("{C}[{chunk_idx:04}{C}]"),
+                };
+
+                let display_line = format!("{prefix} {cleaned}");
+
+                let frames_delta = if track_frames {
+                    parse_frame_count(text).map(|current| {
+                        let delta = current.saturating_sub(last_frames);
+                        last_frames = current;
+                        delta
+                    })
+                } else {
+                    None
+                };
+
+                tx.send(WorkerMsg::Update { worker_id, line: display_line, frames: frames_delta })
+                    .ok();
             }
 
-            let mut map = lines.lock().unwrap();
-            map.remove(&chunk_idx);
+            tx.send(WorkerMsg::Clear(worker_id)).ok();
         });
     }
 
-    fn get_frame_cnt(line: &str) -> Option<usize> {
-        let frames_pos = line.find(" Frames")?;
-        let bytes = line.as_bytes();
-
-        let mut start = frames_pos;
-        while start > 0 {
-            let b = bytes[start - 1];
-            if b.is_ascii_digit() || b == b'/' {
-                start -= 1;
-            } else {
-                break;
-            }
-        }
-
-        let num_part = &line[start..frames_pos];
-        let first_num = num_part.split('/').next()?;
-        first_num.parse().ok()
-    }
-
-    fn up_line(
-        lines: &Arc<Mutex<HashMap<usize, String>>>,
-        processed: &Arc<AtomicUsize>,
+    pub fn show_metric_progress(
+        &self,
+        worker_id: usize,
         chunk_idx: usize,
-        line: &str,
-        track_frames: bool,
-        crf_score: Option<(f32, Option<f64>)>,
+        progress: (usize, usize),
+        fps: f32,
+        crf_score: (f32, Option<f64>),
     ) {
-        let mut map = lines.lock().unwrap();
+        let (current, total) = progress;
+        let (crf, last_score) = crf_score;
+        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
+        let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
+        let perc = (current * 100 / total.max(1)).min(100);
+        let score_str = last_score.map_or(String::new(), |s| format!(" / {s:.2}"));
 
-        let prev_frames =
-            map.get(&chunk_idx).map_or(0, |prev| Self::get_frame_cnt(prev).unwrap_or(0));
+        let line = format!(
+            "{C}[{chunk_idx:04} / F {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc}%{C}, {Y}{fps:.2} \
+             FPS{C}, {G}{current}{C}/{R}{total}"
+        );
 
-        let cleaned = line.strip_prefix("Encoding: ").unwrap_or(line).to_string();
+        self.tx.send(WorkerMsg::Update { worker_id, line, frames: None }).ok();
+    }
+}
 
-        let prefix = if let Some((crf, score_opt)) = crf_score {
-            score_opt.map_or_else(
-                || format!("{C}[{chunk_idx:04} / CRF {crf:.2}{C}]"),
-                |score| format!("{C}[{chunk_idx:04} / CRF {crf:.2} / {score:.2}{C}]"),
-            )
+fn parse_frame_count(line: &str) -> Option<usize> {
+    let frames_pos = line.find(" Frames")?;
+    let bytes = line.as_bytes();
+
+    let mut start = frames_pos;
+    while start > 0 {
+        let b = bytes[start - 1];
+        if b.is_ascii_digit() || b == b'/' {
+            start -= 1;
         } else {
-            format!("{C}[{chunk_idx:04}{C}]")
-        };
-        map.insert(chunk_idx, format!("{prefix} {cleaned}"));
-
-        drop(map);
-
-        if track_frames && let Some(current) = Self::get_frame_cnt(line) {
-            let diff = current.saturating_sub(prev_frames);
-            processed.fetch_add(diff, Ordering::Relaxed);
+            break;
         }
     }
 
-    fn show_progs(
-        lines: &Arc<Mutex<HashMap<usize, String>>>,
-        processed: &Arc<AtomicUsize>,
-        state: &Arc<ProgsState>,
-    ) {
-        let _guard = DISPLAY_MUTEX.lock().unwrap();
+    let num_part = &line[start..frames_pos];
+    let first_num = num_part.split('/').next()?;
+    first_num.parse().ok()
+}
 
-        let processed_frames = processed.load(Ordering::Relaxed);
+fn display_loop(
+    rx: &crossbeam_channel::Receiver<WorkerMsg>,
+    worker_count: usize,
+    init_frames: usize,
+    state: &ProgState,
+) {
+    let start = Instant::now();
+    let mut lines = vec![String::new(); worker_count];
+    let processed = Arc::new(AtomicUsize::new(0));
+    let mut last_draw = Instant::now();
 
-        let data = state.completions.lock().unwrap();
-        let completed_frames: usize = data.chnks_done.iter().map(|c| c.frames).sum();
-        drop(data);
+    loop {
+        match rx.recv_timeout(Duration::from_millis(1000)) {
+            Ok(WorkerMsg::Update { worker_id, line, frames }) => {
+                if worker_id < worker_count {
+                    lines[worker_id] = line;
+                    if let Some(delta) = frames {
+                        processed.fetch_add(delta, Ordering::Relaxed);
+                    }
+                }
+            }
+            Ok(WorkerMsg::Clear(worker_id)) => {
+                if worker_id < worker_count {
+                    lines[worker_id].clear();
+                }
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+        }
 
-        let frames_done =
-            if completed_frames > processed_frames { completed_frames } else { processed_frames };
+        if last_draw.elapsed() >= Duration::from_millis(1000) {
+            draw_screen(&lines, worker_count, &start, state, &processed, init_frames);
+            last_draw = Instant::now();
+        }
+    }
 
-        let elapsed = state.start.elapsed();
+    draw_screen(&lines, worker_count, &start, state, &processed, init_frames);
+}
 
-        let new_frames = frames_done.saturating_sub(state.init_frames);
-        let elapsed_secs = elapsed.as_secs() as usize;
-        let fps = new_frames as f32 / elapsed_secs.max(1) as f32;
+fn draw_screen(
+    lines: &[String],
+    worker_count: usize,
+    start: &Instant,
+    state: &ProgState,
+    processed: &Arc<AtomicUsize>,
+    init_frames: usize,
+) {
+    print!("\x1b[u");
 
-        let remaining = state.tot_frames.saturating_sub(frames_done);
-        let eta_secs = remaining * elapsed_secs / new_frames.max(1);
-
-        let chunks_done = state.completed.load(Ordering::Relaxed);
-        let (bitrate_str, est_str) = get_bitrate_estimates(state);
-
-        print!("\x1b[u");
-
-        let map = lines.lock().unwrap();
-        for line in map.values() {
+    for line in lines.iter().take(worker_count) {
+        if line.is_empty() {
+            print!("\r\x1b[2K\n");
+        } else {
             print!("\r\x1b[2K{line}\n");
         }
-        for _ in map.len()..=state.worker_cnt {
-            print!("\r\x1b[2K\n");
-        }
-        drop(map);
-
-        let (h, m, s) = (elapsed_secs / 3600, (elapsed_secs % 3600) / 60, elapsed_secs % 60);
-        let (eta_h, eta_m, eta_s) = (eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60);
-
-        let progs = (frames_done * BAR_WIDTH / state.tot_frames.max(1)).min(BAR_WIDTH);
-        let perc = (frames_done * 100 / state.tot_frames.max(1)).min(100) as u8;
-
-        let bar = format!("{}{}", G_HASH.repeat(progs), R_DASH.repeat(BAR_WIDTH - progs));
-
-        println!(
-            "{W}{h:02}{P}:{W}{m:02}{P}:{W}{s:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] \
-             {W}{perc}% {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2} FPS{C}, \
-             {W}{eta_h:02}{P}:{W}{eta_m:02}{P}:{W}{eta_s:02}{C}, {bitrate_str}{C}, \
-             {R}{est_str}{C}){N}",
-            state.tot_chunks, state.tot_frames
-        );
-
-        std::io::stdout().flush().unwrap();
     }
 
-    pub fn show_metric(
-        &self,
-        chunk_idx: usize,
-        current: usize,
-        tot: usize,
-        fps: f32,
-        crf: f32,
-        last_score: Option<f64>,
-    ) {
-        if current >= tot {
-            self.lines.lock().unwrap().remove(&chunk_idx);
-            return;
-        }
+    print!("\r\x1b[2K\n");
 
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
-        let perc = (current * 100 / tot.max(1)).min(100);
-
-        let score_str = last_score.map_or_else(String::new, |score| format!(" / {score:.2}"));
-
-        let mut map = self.lines.lock().unwrap();
-        map.insert(
-            chunk_idx,
-            format!(
-                "{C}[{chunk_idx:04} / CRF {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc}%{C}, \
-                 {Y}{fps:.2} FPS{C}, {G}{current}{C}/{R}{tot}"
-            ),
-        );
-        drop(map);
-
-        Self::show_progs(&self.lines, &self.processed, &self.state);
-    }
-
-    pub fn final_update(&self) {
-        Self::show_progs(&self.lines, &self.processed, &self.state);
-    }
-}
-
-fn get_bitrate_estimates(state: &ProgsState) -> (String, String) {
     let data = state.completions.lock().unwrap();
-    let tot_size: u64 = data.chnks_done.iter().map(|c| c.size).sum();
-    let tot_chunk_frames: usize = data.chnks_done.iter().map(|c| c.frames).sum();
+    let completed_frames: usize = data.chnks_done.iter().map(|c| c.frames).sum();
+    let total_size: u64 = data.chnks_done.iter().map(|c| c.size).sum();
     drop(data);
 
-    let dur_secs = tot_chunk_frames as f32 * state.fps_den as f32 / state.fps_num as f32;
-    let bitrate_kbps = tot_size as f32 * 8.0 / dur_secs / 1000.0;
+    let processed_frames = processed.load(Ordering::Relaxed);
+    let frames_done = completed_frames.max(init_frames + processed_frames);
 
-    let tot_dur = state.tot_frames as f32 * state.fps_den as f32 / state.fps_num as f32;
-    let est_size = bitrate_kbps * tot_dur * 1000.0 / 8.0;
+    let elapsed_secs = start.elapsed().as_secs() as usize;
+    let fps = (frames_done.saturating_sub(init_frames)) as f32 / elapsed_secs.max(1) as f32;
+    let remaining = state.total_frames.saturating_sub(frames_done);
+    let eta_secs = remaining * elapsed_secs / frames_done.max(1);
+    let chunks_done = state.completed.load(Ordering::Relaxed);
 
-    let est_str = if est_size > 1_000_000_000.0 {
-        format!("{:.1} GB", est_size / 1_000_000_000.0)
+    let (bitrate_str, est_str) = if completed_frames > 0 {
+        let dur = completed_frames as f32 * state.fps_den as f32 / state.fps_num as f32;
+        let kbps = total_size as f32 * 8.0 / dur / 1000.0;
+        let total_dur = state.total_frames as f32 * state.fps_den as f32 / state.fps_num as f32;
+        let est_size = kbps * total_dur * 1000.0 / 8.0;
+        let est = if est_size > 1_000_000_000.0 {
+            format!("{:.1} GB", est_size / 1_000_000_000.0)
+        } else {
+            format!("{:.1} MB", est_size / 1_000_000.0)
+        };
+        (format!("{B}{kbps:.0} kb"), format!("{R}{est}"))
     } else {
-        format!("{:.1} MB", est_size / 1_000_000.0)
+        (format!("{B}0 kb"), format!("{R}0 MB"))
     };
 
-    (format!("{B}{bitrate_kbps:.0} kb{C}/{B}s"), format!("{R}{est_str}"))
-}
+    let progress = (frames_done * BAR_WIDTH / state.total_frames.max(1)).min(BAR_WIDTH);
+    let perc = (frames_done * 100 / state.total_frames.max(1)).min(100);
+    let bar = format!("{}{}", G_HASH.repeat(progress), R_DASH.repeat(BAR_WIDTH - progress));
 
-fn fmt_dur_colored(d: Duration) -> String {
-    let tot_secs = d.as_secs();
-    let hours = tot_secs / 3600;
-    let mins = (tot_secs % 3600) / 60;
-    let secs = tot_secs % 60;
+    let (m, s) = (elapsed_secs / 60, elapsed_secs % 60);
+    let (eta_m, eta_s) = (eta_secs / 60, eta_secs % 60);
 
-    format!("{W}{hours:02}{P}:{W}{mins:02}{P}:{W}{secs:02}")
+    println!(
+        "{W}{m:02}{P}:{W}{s:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
+         {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2} FPS{C}, {W}{eta_m:02}{P}:{W}{eta_s:02}{C}, \
+         {bitrate_str}{C}, {est_str}{C}){N}",
+        state.total_chunks, state.total_frames
+    );
+
+    std::io::stdout().flush().unwrap();
 }

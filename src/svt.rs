@@ -3,29 +3,21 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use crossbeam_channel::{Receiver, Sender, bounded};
+use crossbeam_channel::{Sender, bounded, select};
 
-use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume};
+use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::ffms::{
     VidIdx, VidInf, calc_8bit_size, calc_10bit_size, calc_packed_size, conv_to_10bit,
-    destroy_vid_src, extr_8bit, extr_10bit, pack_10bit, thr_vid_src, unpack_10bit,
+    destroy_vid_src, extr_8bit, extr_10bit, pack_4_pix_10bit, pack_10bit, thr_vid_src,
+    unpack_10bit,
 };
 use crate::progs::ProgsTrack;
+use crate::worker::TQState;
 
 #[cfg(feature = "vship")]
 pub static TQ_SCORES: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
-
-struct ChunkData {
-    idx: usize,
-    frames: Vec<u8>,
-    frame_size: usize,
-    frame_count: usize,
-    width: u32,
-    height: u32,
-}
 
 struct EncConfig<'a> {
     inf: &'a VidInf,
@@ -125,123 +117,142 @@ fn colorize(cmd: &mut Command, inf: &VidInf) {
     }
 }
 
+struct CropCalc {
+    new_w: u32,
+    new_h: u32,
+    y_stride: usize,
+    uv_stride: usize,
+    y_start: usize,
+    u_start: usize,
+    v_start: usize,
+    y_len: usize,
+    uv_len: usize,
+}
+
+impl CropCalc {
+    const fn new(inf: &VidInf, crop: (u32, u32), pixel_sz: usize) -> Self {
+        let (crop_v, crop_h) = crop;
+        let new_w = inf.width - crop_h * 2;
+        let new_h = inf.height - crop_v * 2;
+
+        let y_stride = (inf.width * pixel_sz as u32) as usize;
+        let uv_stride = (inf.width / 2 * pixel_sz as u32) as usize;
+        let y_start = ((crop_v * inf.width + crop_h) as usize) * pixel_sz;
+        let y_plane_sz = (inf.width * inf.height) as usize * pixel_sz;
+        let uv_plane_sz = (inf.width / 2 * inf.height / 2) as usize * pixel_sz;
+        let u_start = y_plane_sz + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * pixel_sz);
+        let v_start = y_plane_sz
+            + uv_plane_sz
+            + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * pixel_sz);
+        let y_len = (new_w * pixel_sz as u32) as usize;
+        let uv_len = (new_w / 2 * pixel_sz as u32) as usize;
+
+        Self { new_w, new_h, y_stride, uv_stride, y_start, u_start, v_start, y_len, uv_len }
+    }
+
+    fn crop_frame(&self, src: &[u8], dst: &mut [u8]) {
+        let mut pos = 0;
+
+        for row in 0..self.new_h {
+            let src_off = self.y_start + row as usize * self.y_stride;
+            dst[pos..pos + self.y_len].copy_from_slice(&src[src_off..src_off + self.y_len]);
+            pos += self.y_len;
+        }
+
+        for row in 0..self.new_h / 2 {
+            let src_off = self.u_start + row as usize * self.uv_stride;
+            dst[pos..pos + self.uv_len].copy_from_slice(&src[src_off..src_off + self.uv_len]);
+            pos += self.uv_len;
+        }
+
+        for row in 0..self.new_h / 2 {
+            let src_off = self.v_start + row as usize * self.uv_stride;
+            dst[pos..pos + self.uv_len].copy_from_slice(&src[src_off..src_off + self.uv_len]);
+            pos += self.uv_len;
+        }
+    }
+}
+
+fn crop_and_pack_10bit(src: &[u8], dst: &mut [u8], calc: &CropCalc, temp: &mut [u8; 8]) {
+    let mut dst_pos = 0;
+    let mut temp_pos = 0;
+
+    for plane_idx in 0..3 {
+        let (rows, start, stride, len) = match plane_idx {
+            0 => (calc.new_h, calc.y_start, calc.y_stride, calc.y_len),
+            1 => (calc.new_h / 2, calc.u_start, calc.uv_stride, calc.uv_len),
+            _ => (calc.new_h / 2, calc.v_start, calc.uv_stride, calc.uv_len),
+        };
+
+        for row in 0..rows {
+            let src_off = start + row as usize * stride;
+            for i in (0..len).step_by(2) {
+                temp[temp_pos..temp_pos + 2].copy_from_slice(&src[src_off + i..src_off + i + 2]);
+                temp_pos += 2;
+                if temp_pos == 8 {
+                    pack_4_pix_10bit(*temp, unsafe {
+                        &mut *dst[dst_pos..dst_pos + 5].as_mut_ptr().cast::<[u8; 5]>()
+                    });
+                    dst_pos += 5;
+                    temp_pos = 0;
+                }
+            }
+        }
+    }
+
+    if temp_pos > 0 {
+        pack_4_pix_10bit(*temp, unsafe {
+            &mut *dst[dst_pos..dst_pos + 5].as_mut_ptr().cast::<[u8; 5]>()
+        });
+    }
+}
+
 fn dec_10bit(
     chunks: &[Chunk],
     source: *mut std::ffi::c_void,
     inf: &VidInf,
-    tx: &Sender<ChunkData>,
+    tx: &Sender<crate::worker::WorkPkg>,
     crop: (u32, u32),
 ) {
-    if crop == (0, 0) {
-        let frame_size = calc_10bit_size(inf);
-        let packed_size = calc_packed_size(inf);
-        let mut frame_buf = vec![0u8; frame_size];
+    let crop_calc = (crop != (0, 0)).then(|| CropCalc::new(inf, crop, 2));
+    let (width, height, packed_sz) = crop_calc.as_ref().map_or_else(
+        || (inf.width, inf.height, calc_packed_size(inf)),
+        |c| {
+            let new_y_sz = (c.new_w * c.new_h * 2) as usize;
+            let new_uv_sz = (c.new_w * c.new_h / 2) as usize;
+            let new_frame_sz = new_y_sz + new_uv_sz * 2;
+            (c.new_w, c.new_h, (new_frame_sz * 5).div_ceil(4))
+        },
+    );
 
-        for chunk in chunks {
-            let chunk_len = chunk.end - chunk.start;
-            let mut frames_data = vec![0u8; chunk_len * packed_size];
-            let mut valid = 0;
+    let mut frame_buf = vec![0u8; calc_10bit_size(inf)];
+    let mut pack_temp = [0u8; 8];
 
-            for (i, idx) in (chunk.start..chunk.end).enumerate() {
-                let start = i * packed_size;
-                let dest = &mut frames_data[start..start + packed_size];
+    for chunk in chunks {
+        let chunk_len = chunk.end - chunk.start;
+        let mut frames_data = vec![0u8; chunk_len * packed_sz];
+        let mut valid = 0;
 
-                if extr_10bit(source, idx, &mut frame_buf).is_err() {
-                    continue;
-                }
-
-                pack_10bit(&frame_buf, dest);
-                valid += 1;
+        for (i, idx) in (chunk.start..chunk.end).enumerate() {
+            if extr_10bit(source, idx, &mut frame_buf).is_err() {
+                continue;
             }
 
-            if valid > 0 {
-                frames_data.truncate(valid * packed_size);
-                tx.send(ChunkData {
-                    idx: chunk.idx,
-                    frames: frames_data,
-                    frame_size: packed_size,
-                    frame_count: valid,
-                    width: inf.width,
-                    height: inf.height,
-                })
-                .ok();
+            let start = i * packed_sz;
+            let dst = &mut frames_data[start..start + packed_sz];
+
+            if let Some(calc) = &crop_calc {
+                crop_and_pack_10bit(&frame_buf, dst, calc, &mut pack_temp);
+            } else {
+                pack_10bit(&frame_buf, dst);
             }
+            valid += 1;
         }
-    } else {
-        let (crop_v, crop_h) = crop;
-        let new_width = inf.width - crop_h * 2;
-        let new_height = inf.height - crop_v * 2;
 
-        let orig_frame_size = calc_10bit_size(inf);
-        let new_y_size = (new_width * new_height * 2) as usize;
-        let new_uv_size = (new_width * new_height / 2) as usize;
-        let new_frame_size = new_y_size + new_uv_size * 2;
-        let new_packed_size = (new_frame_size * 5).div_ceil(4);
-
-        let y_stride = (inf.width * 2) as usize;
-        let uv_stride = (inf.width / 2 * 2) as usize;
-        let y_start = ((crop_v * inf.width + crop_h) as usize) * 2;
-        let y_plane_size = (inf.width * inf.height) as usize * 2;
-        let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize * 2;
-        let u_start = y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
-        let v_start =
-            y_plane_size + uv_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize * 2);
-        let y_len = (new_width * 2) as usize;
-        let uv_len = (new_width / 2 * 2) as usize;
-
-        let mut frame_buf = vec![0u8; orig_frame_size];
-        let mut cropped_buf = vec![0u8; new_frame_size];
-
-        for chunk in chunks {
-            let chunk_len = chunk.end - chunk.start;
-            let mut frames_data = vec![0u8; chunk_len * new_packed_size];
-            let mut valid = 0;
-
-            for (i, idx) in (chunk.start..chunk.end).enumerate() {
-                if extr_10bit(source, idx, &mut frame_buf).is_err() {
-                    continue;
-                }
-
-                let mut pos = 0;
-
-                for row in 0..new_height {
-                    let src = y_start + row as usize * y_stride;
-                    cropped_buf[pos..pos + y_len].copy_from_slice(&frame_buf[src..src + y_len]);
-                    pos += y_len;
-                }
-
-                for row in 0..new_height / 2 {
-                    let src = u_start + row as usize * uv_stride;
-                    cropped_buf[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
-                    pos += uv_len;
-                }
-
-                for row in 0..new_height / 2 {
-                    let src = v_start + row as usize * uv_stride;
-                    cropped_buf[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
-                    pos += uv_len;
-                }
-
-                let dest_start = i * new_packed_size;
-                pack_10bit(
-                    &cropped_buf,
-                    &mut frames_data[dest_start..dest_start + new_packed_size],
-                );
-                valid += 1;
-            }
-
-            if valid > 0 {
-                frames_data.truncate(valid * new_packed_size);
-                tx.send(ChunkData {
-                    idx: chunk.idx,
-                    frames: frames_data,
-                    frame_size: new_packed_size,
-                    frame_count: valid,
-                    width: new_width,
-                    height: new_height,
-                })
-                .ok();
-            }
+        if valid > 0 {
+            frames_data.truncate(valid * packed_sz);
+            let pkg = crate::worker::WorkPkg::new(chunk.clone(), frames_data, valid, width, height);
+            tx.send(pkg).ok();
         }
     }
 }
@@ -250,108 +261,44 @@ fn dec_8bit(
     chunks: &[Chunk],
     source: *mut std::ffi::c_void,
     inf: &VidInf,
-    tx: &Sender<ChunkData>,
+    tx: &Sender<crate::worker::WorkPkg>,
     crop: (u32, u32),
 ) {
-    if crop == (0, 0) {
-        let frame_size = calc_8bit_size(inf);
+    let crop_calc = (crop != (0, 0)).then(|| CropCalc::new(inf, crop, 1));
+    let (width, height, frame_sz) = crop_calc.as_ref().map_or_else(
+        || (inf.width, inf.height, calc_8bit_size(inf)),
+        |c| {
+            let new_y_sz = (c.new_w * c.new_h) as usize;
+            let new_uv_sz = (c.new_w * c.new_h / 4) as usize;
+            (c.new_w, c.new_h, new_y_sz + new_uv_sz * 2)
+        },
+    );
 
-        for chunk in chunks {
-            let chunk_len = chunk.end - chunk.start;
-            let mut frames_data = vec![0u8; chunk_len * frame_size];
-            let mut valid = 0;
+    let mut frame_buf = vec![0u8; calc_8bit_size(inf)];
 
-            for (i, idx) in (chunk.start..chunk.end).enumerate() {
-                let start = i * frame_size;
-                let dest = &mut frames_data[start..start + frame_size];
+    for chunk in chunks {
+        let chunk_len = chunk.end - chunk.start;
+        let mut frames_data = vec![0u8; chunk_len * frame_sz];
+        let mut valid = 0;
 
-                if extr_8bit(source, idx, dest).is_ok() {
-                    valid += 1;
-                }
+        for (i, idx) in (chunk.start..chunk.end).enumerate() {
+            if extr_8bit(source, idx, &mut frame_buf, inf).is_err() {
+                continue;
             }
 
-            if valid > 0 {
-                frames_data.truncate(valid * frame_size);
-                tx.send(ChunkData {
-                    idx: chunk.idx,
-                    frames: frames_data,
-                    frame_size,
-                    frame_count: valid,
-                    width: inf.width,
-                    height: inf.height,
-                })
-                .ok();
+            let dest_start = i * frame_sz;
+            if let Some(calc) = &crop_calc {
+                calc.crop_frame(&frame_buf, &mut frames_data[dest_start..dest_start + frame_sz]);
+            } else {
+                frames_data[dest_start..dest_start + frame_sz].copy_from_slice(&frame_buf);
             }
+            valid += 1;
         }
-    } else {
-        let (crop_v, crop_h) = crop;
-        let new_width = inf.width - crop_h * 2;
-        let new_height = inf.height - crop_v * 2;
 
-        let orig_frame_size = calc_8bit_size(inf);
-        let new_y_size = (new_width * new_height) as usize;
-        let new_uv_size = (new_width * new_height / 4) as usize;
-        let new_frame_size = new_y_size + new_uv_size * 2;
-
-        let y_stride = inf.width as usize;
-        let uv_stride = (inf.width / 2) as usize;
-        let y_start = (crop_v * inf.width + crop_h) as usize;
-        let y_plane_size = (inf.width * inf.height) as usize;
-        let uv_plane_size = (inf.width / 2 * inf.height / 2) as usize;
-        let u_start = y_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
-        let v_start =
-            y_plane_size + uv_plane_size + ((crop_v / 2 * inf.width / 2 + crop_h / 2) as usize);
-        let y_len = new_width as usize;
-        let uv_len = (new_width / 2) as usize;
-
-        let mut frame_buf = vec![0u8; orig_frame_size];
-
-        for chunk in chunks {
-            let chunk_len = chunk.end - chunk.start;
-            let mut frames_data = vec![0u8; chunk_len * new_frame_size];
-            let mut valid = 0;
-
-            for (i, idx) in (chunk.start..chunk.end).enumerate() {
-                if extr_8bit(source, idx, &mut frame_buf).is_err() {
-                    continue;
-                }
-
-                let dest_start = i * new_frame_size;
-                let mut pos = dest_start;
-
-                for row in 0..new_height {
-                    let src = y_start + row as usize * y_stride;
-                    frames_data[pos..pos + y_len].copy_from_slice(&frame_buf[src..src + y_len]);
-                    pos += y_len;
-                }
-
-                for row in 0..new_height / 2 {
-                    let src = u_start + row as usize * uv_stride;
-                    frames_data[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
-                    pos += uv_len;
-                }
-
-                for row in 0..new_height / 2 {
-                    let src = v_start + row as usize * uv_stride;
-                    frames_data[pos..pos + uv_len].copy_from_slice(&frame_buf[src..src + uv_len]);
-                    pos += uv_len;
-                }
-
-                valid += 1;
-            }
-
-            if valid > 0 {
-                frames_data.truncate(valid * new_frame_size);
-                tx.send(ChunkData {
-                    idx: chunk.idx,
-                    frames: frames_data,
-                    frame_size: new_frame_size,
-                    frame_count: valid,
-                    width: new_width,
-                    height: new_height,
-                })
-                .ok();
-            }
+        if valid > 0 {
+            frames_data.truncate(valid * frame_sz);
+            let pkg = crate::worker::WorkPkg::new(chunk.clone(), frames_data, valid, width, height);
+            tx.send(pkg).ok();
         }
     }
 }
@@ -360,7 +307,7 @@ fn decode_chunks(
     chunks: &[Chunk],
     idx: &Arc<VidIdx>,
     inf: &VidInf,
-    tx: &Sender<ChunkData>,
+    tx: &Sender<crate::worker::WorkPkg>,
     skip_indices: &HashSet<usize>,
     crop: (u32, u32),
 ) {
@@ -433,129 +380,65 @@ fn write_frames(
     written
 }
 
-struct ProcConfig<'a> {
-    inf: &'a VidInf,
-    params: &'a str,
-    quiet: bool,
-    work_dir: &'a Path,
-    grain_table: Option<&'a Path>,
-}
-
-fn proc_chunk(
-    data: &ChunkData,
-    config: &ProcConfig,
-    prog: Option<&ProgsTrack>,
-    conversion_buf: &mut Option<Vec<u8>>,
-) -> (usize, Option<ChunkComp>) {
-    let output = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
-    let enc_cfg = EncConfig {
-        inf: config.inf,
-        params: config.params,
-        crf: -1.0,
-        output: &output,
-        grain_table: config.grain_table,
-    };
-    let mut cmd = make_enc_cmd(&enc_cfg, config.quiet, data.width, data.height);
-    let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
-
-    if !config.quiet
-        && let Some(stderr) = child.stderr.take()
-        && let Some(p) = prog
-    {
-        p.watch_enc(stderr, data.idx, true, None);
-    }
-
-    let frame_count = data.frame_count;
-    let written = write_frames(
-        &mut child,
-        &data.frames,
-        data.frame_size,
-        data.frame_count,
-        config.inf,
-        conversion_buf,
-    );
-
-    let status = child.wait().unwrap();
-    if !status.success() {
-        std::process::exit(1);
-    }
-
-    let completion = std::fs::metadata(&output).ok().map(|metadata| ChunkComp {
-        idx: data.idx,
-        frames: frame_count,
-        size: metadata.len(),
-    });
-
-    (written, completion)
-}
-
-struct WorkerCtx<'a> {
-    quiet: bool,
-    grain_table: Option<&'a Path>,
-}
-
-fn run_worker(
-    rx: &Arc<Receiver<ChunkData>>,
-    inf: &VidInf,
-    params: &str,
-    ctx: &WorkerCtx,
-    stats: Option<&Arc<WorkerStats>>,
-    prog: Option<&Arc<ProgsTrack>>,
-    work_dir: &Path,
-) {
-    let mut current_inf = inf.clone();
-    let mut conversion_buf = Some(vec![0u8; calc_10bit_size(&current_inf)]);
-    let mut first_chunk = true;
-
-    while let Ok(data) = rx.recv() {
-        if first_chunk || (data.width != current_inf.width || data.height != current_inf.height) {
-            current_inf.width = data.width;
-            current_inf.height = data.height;
-            conversion_buf = Some(vec![0u8; calc_10bit_size(&current_inf)]);
-            first_chunk = false;
-        }
-
-        let config = ProcConfig {
-            inf: &current_inf,
-            params,
-            quiet: ctx.quiet,
-            work_dir,
-            grain_table: ctx.grain_table,
-        };
-        let (written, completion) =
-            proc_chunk(&data, &config, prog.map(AsRef::as_ref), &mut conversion_buf);
-
-        if let Some(s) = stats {
-            s.completed.fetch_add(1, Ordering::Relaxed);
-            s.frames_done.fetch_add(written, Ordering::Relaxed);
-
-            if let Some(comp) = completion {
-                s.add_completion(comp, work_dir);
-            }
-        }
-    }
-}
-
 struct WorkerStats {
-    completed: Arc<AtomicUsize>,
-    frames_done: AtomicUsize,
+    completed: Arc<std::sync::atomic::AtomicUsize>,
     completions: Arc<std::sync::Mutex<ResumeInf>>,
 }
 
 impl WorkerStats {
-    fn new(initial_completed: usize, init_frames: usize, initial_data: ResumeInf) -> Self {
+    fn new(completed_count: usize, resume_data: ResumeInf) -> Self {
         Self {
-            completed: Arc::new(AtomicUsize::new(initial_completed)),
-            frames_done: AtomicUsize::new(init_frames),
-            completions: Arc::new(std::sync::Mutex::new(initial_data)),
+            completed: Arc::new(std::sync::atomic::AtomicUsize::new(completed_count)),
+            completions: Arc::new(std::sync::Mutex::new(resume_data)),
         }
     }
 
     fn add_completion(&self, completion: ChunkComp, work_dir: &Path) {
         let mut data = self.completions.lock().unwrap();
         data.chnks_done.push(completion);
-        let _ = save_resume(&data, work_dir);
+        let _ = crate::chunk::save_resume(&data, work_dir);
         drop(data);
+    }
+}
+
+fn load_resume_data(work_dir: &Path, resume: bool) -> ResumeInf {
+    if resume {
+        get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new() })
+    } else {
+        ResumeInf { chnks_done: Vec::new() }
+    }
+}
+
+fn build_skip_set(resume_data: &ResumeInf) -> (HashSet<usize>, usize, usize) {
+    let skip_indices: HashSet<usize> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
+    let completed_count = skip_indices.len();
+    let completed_frames: usize = resume_data.chnks_done.iter().map(|c| c.frames).sum();
+    (skip_indices, completed_count, completed_frames)
+}
+
+fn create_stats(completed_count: usize, resume_data: ResumeInf) -> Arc<WorkerStats> {
+    Arc::new(WorkerStats::new(completed_count, resume_data))
+}
+
+fn create_progress(
+    quiet: bool,
+    chunks: &[Chunk],
+    inf: &VidInf,
+    worker_count: usize,
+    completed_frames: usize,
+    stats: &Arc<WorkerStats>,
+) -> Option<Arc<ProgsTrack>> {
+    if quiet {
+        None
+    } else {
+        Some(Arc::new(ProgsTrack::new(
+            chunks,
+            inf,
+            worker_count,
+            completed_frames,
+            Arc::clone(&stats.completed),
+            Arc::clone(&stats.completions),
+        )))
     }
 }
 
@@ -567,11 +450,7 @@ pub fn encode_all(
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
 ) {
-    let resume_data = if args.resume {
-        get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new() })
-    } else {
-        ResumeInf { chnks_done: Vec::new() }
-    };
+    let resume_data = load_resume_data(work_dir, args.resume);
 
     #[cfg(feature = "vship")]
     {
@@ -582,34 +461,20 @@ pub fn encode_all(
         }
     }
 
-    let skip_indices: HashSet<usize> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
-    let completed_count = skip_indices.len();
-    let completed_frames: usize = resume_data.chnks_done.iter().map(|c| c.frames).sum();
-
-    let stats = if args.quiet {
-        None
-    } else {
-        Some(Arc::new(WorkerStats::new(completed_count, completed_frames, resume_data)))
-    };
-
-    let prog = if args.quiet {
-        None
-    } else {
-        Some(Arc::new(ProgsTrack::new(
-            chunks,
-            inf,
-            args.worker,
-            completed_frames,
-            Arc::clone(&stats.as_ref().unwrap().completed),
-            Arc::clone(&stats.as_ref().unwrap().completions),
-        )))
-    };
-
-    let buffer_size = 0;
-    let (tx, rx) = bounded::<ChunkData>(buffer_size);
-    let rx = Arc::new(rx);
-
+    let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
+    let stats = Some(create_stats(completed_count, resume_data));
+    let prog = create_progress(
+        args.quiet,
+        chunks,
+        inf,
+        args.worker,
+        completed_frames,
+        stats.as_ref().unwrap(),
+    );
     let crop = args.crop.unwrap_or((0, 0));
+
+    let (tx, rx) = bounded::<crate::worker::WorkPkg>(0);
+    let rx = Arc::new(rx);
 
     let decoder = {
         let chunks = chunks.to_vec();
@@ -619,19 +484,27 @@ pub fn encode_all(
     };
 
     let mut workers = Vec::new();
-    let quiet = args.quiet;
-    for _ in 0..args.worker {
-        let rx = Arc::clone(&rx);
+    for worker_id in 0..args.worker {
+        let rx_clone = Arc::clone(&rx);
         let inf = inf.clone();
         let params = args.params.clone();
-        let stats = stats.clone();
-        let prog = prog.clone();
+        let stats_clone = stats.clone();
         let grain = grain_table.cloned();
-        let work_dir = work_dir.to_path_buf();
+        let wd = work_dir.to_path_buf();
+        let prog_clone = prog.clone();
+        let wid = worker_id;
 
         let handle = thread::spawn(move || {
-            let ctx = WorkerCtx { quiet, grain_table: grain.as_deref() };
-            run_worker(&rx, &inf, &params, &ctx, stats.as_ref(), prog.as_ref(), &work_dir);
+            run_enc_worker(
+                &rx_clone,
+                &params,
+                &inf,
+                &wd,
+                grain.as_deref(),
+                stats_clone.as_ref(),
+                prog_clone.as_ref(),
+                wid,
+            );
         });
         workers.push(handle);
     }
@@ -641,141 +514,193 @@ pub fn encode_all(
     for handle in workers {
         handle.join().unwrap();
     }
+}
 
-    if let Some(ref p) = prog {
-        p.final_update();
+#[derive(Copy, Clone)]
+struct TQCtx {
+    target: f64,
+    tolerance: f64,
+    qp_min: f64,
+    qp_max: f64,
+    use_butteraugli: bool,
+    use_cvvdp: bool,
+}
+
+impl TQCtx {
+    #[inline]
+    fn converged(&self, score: f64) -> bool {
+        if self.use_butteraugli {
+            (self.target - score).abs() <= self.tolerance
+        } else {
+            (score - self.target).abs() <= self.tolerance
+        }
+    }
+
+    #[inline]
+    fn update_bounds_and_check(&self, state: &mut TQState, score: f64) -> bool {
+        if self.use_butteraugli {
+            if score > self.target + self.tolerance {
+                state.search_max = state.last_crf - 0.25;
+            } else if score < self.target - self.tolerance {
+                state.search_min = state.last_crf + 0.25;
+            }
+        } else if score < self.target - self.tolerance {
+            state.search_max = state.last_crf - 0.25;
+        } else if score > self.target + self.tolerance {
+            state.search_min = state.last_crf + 0.25;
+        }
+        state.search_min > state.search_max
     }
 }
 
-#[cfg(feature = "vship")]
-pub struct ProbeConfig<'a> {
-    pub yuv_frames: &'a [u8],
-    pub frame_count: usize,
-    pub inf: &'a VidInf,
-    pub params: &'a str,
-    pub crf: f32,
-    pub probe_name: &'a str,
-    pub work_dir: &'a Path,
-    pub idx: usize,
-    pub crf_score: Option<(f32, Option<f64>)>,
-    pub grain_table: Option<&'a Path>,
-}
-
-#[cfg(feature = "vship")]
-pub fn encode_single_probe(config: &ProbeConfig, prog: Option<&Arc<ProgsTrack>>) {
-    let output = config.work_dir.join("split").join(config.probe_name);
-    let enc_cfg = EncConfig {
-        inf: config.inf,
-        params: config.params,
-        crf: config.crf,
-        output: &output,
-        grain_table: config.grain_table,
-    };
-    let mut cmd = make_enc_cmd(&enc_cfg, false, config.inf.width, config.inf.height);
-    let mut child = cmd.spawn().unwrap_or_else(|_| std::process::exit(1));
-
-    if let Some(p) = prog
-        && let Some(stderr) = child.stderr.take()
-    {
-        p.watch_enc(stderr, config.idx, false, config.crf_score);
-    }
-
-    let mut buf = Some(vec![0u8; calc_10bit_size(config.inf)]);
-    let frame_size = config.yuv_frames.len() / config.frame_count;
-    write_frames(
-        &mut child,
-        config.yuv_frames,
-        frame_size,
-        config.frame_count,
-        config.inf,
-        &mut buf,
-    );
-    child.wait().unwrap();
-}
-
-#[cfg(feature = "vship")]
-fn create_tq_worker(
-    inf: &VidInf,
-    use_cvvdp: bool,
-    use_butteraugli: bool,
-) -> crate::vship::VshipProcessor {
-    let fps = inf.fps_num as f32 / inf.fps_den as f32;
-    crate::vship::VshipProcessor::new(
-        inf.width,
-        inf.height,
-        inf.is_10bit,
-        inf.matrix_coefficients,
-        inf.transfer_characteristics,
-        inf.color_primaries,
-        inf.color_range,
-        inf.chroma_sample_position,
-        fps,
-        use_cvvdp,
-        use_butteraugli,
-    )
-    .unwrap()
-}
-
-#[cfg(feature = "vship")]
-struct TQChunkConfig<'a> {
-    chunks: &'a [Chunk],
-    inf: &'a VidInf,
-    params: &'a str,
-    tq: &'a str,
-    qp: &'a str,
-    work_dir: &'a Path,
-    prog: Option<&'a Arc<ProgsTrack>>,
-    probe_info: &'a crate::tq::ProbeInfoMap,
-    stats: Option<&'a Arc<WorkerStats>>,
-    grain_table: Option<&'a Path>,
-    metric_mode: &'a str,
-    use_cvvdp: bool,
-    use_butteraugli: bool,
-}
-
-#[cfg(feature = "vship")]
-fn process_tq_chunk(
-    data: &ChunkData,
-    config: &TQChunkConfig,
-    vship: &crate::vship::VshipProcessor,
-    logger: Option<&crate::tq::ProbeLogger>,
-    log_path: &Path,
+#[inline]
+fn complete_chunk(
+    chunk_idx: usize,
+    chunk_frames: usize,
+    probe_path: &Path,
     work_dir: &Path,
+    done_tx: &crossbeam_channel::Sender<usize>,
+    resume_state: &Arc<std::sync::Mutex<crate::chunk::ResumeInf>>,
+    stats: Option<&Arc<WorkerStats>>,
+    tq_logger: &Arc<std::sync::Mutex<Vec<crate::tq::ProbeLog>>>,
+    log_path: &Path,
+    round: usize,
+    final_crf: f64,
+    final_score: f64,
+    probes: &[crate::tq::Probe],
+    use_cvvdp: bool,
 ) {
-    let mut ctx = crate::tq::QualityContext {
-        chunk: &config.chunks[data.idx],
-        yuv_frames: &data.frames,
-        frame_count: data.frame_count,
-        inf: config.inf,
-        params: config.params,
-        work_dir: config.work_dir,
-        prog: config.prog,
-        vship,
-        grain_table: config.grain_table,
-        use_cvvdp: config.use_cvvdp,
-        use_butteraugli: config.use_butteraugli,
+    let dst = work_dir.join("encode").join(format!("{chunk_idx:04}.ivf"));
+    std::fs::copy(probe_path, &dst).unwrap();
+    done_tx.send(chunk_idx).unwrap();
+
+    let file_size = std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+    let comp = crate::chunk::ChunkComp { idx: chunk_idx, frames: chunk_frames, size: file_size };
+
+    let mut resume = resume_state.lock().unwrap();
+    resume.chnks_done.push(comp.clone());
+    crate::chunk::save_resume(&resume, work_dir).ok();
+    drop(resume);
+
+    if let Some(s) = stats {
+        s.completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        s.completions.lock().unwrap().chnks_done.push(comp);
+    }
+
+    let log_entry = crate::tq::ProbeLog {
+        chunk_idx,
+        probes: probes.iter().map(|p| (p.crf, p.score)).collect(),
+        final_crf,
+        final_score,
+        round,
     };
+    write_chunk_log(&log_entry, log_path, work_dir);
+    tq_logger.lock().unwrap().push(log_entry);
 
-    if let Some(best) = crate::tq::find_target_quality(
-        &mut ctx,
-        config.tq,
-        config.qp,
-        config.probe_info,
-        config.metric_mode,
-        logger,
-        Some(log_path),
-        Some(work_dir),
-    ) {
-        let src = config.work_dir.join("split").join(&best);
-        let dst = config.work_dir.join("encode").join(format!("{:04}.ivf", data.idx));
-        std::fs::copy(&src, &dst).unwrap();
+    let mut tq_scores = TQ_SCORES.get_or_init(|| std::sync::Mutex::new(Vec::new())).lock().unwrap();
 
-        if let Some(s) = config.stats {
-            let meta = std::fs::metadata(&dst).unwrap();
-            let comp = ChunkComp { idx: data.idx, frames: data.frame_count, size: meta.len() };
-            s.frames_done.fetch_add(data.frames.len(), Ordering::Relaxed);
-            s.completed.fetch_add(1, Ordering::Relaxed);
-            s.add_completion(comp, config.work_dir);
+    if use_cvvdp {
+        tq_scores.push(final_score);
+    } else {
+        tq_scores.extend_from_slice(&probes.last().unwrap().frame_scores);
+    }
+}
+
+fn run_metrics_worker(
+    rx: &Arc<crossbeam_channel::Receiver<crate::worker::WorkPkg>>,
+    rework_tx: &crossbeam_channel::Sender<crate::worker::WorkPkg>,
+    done_tx: &crossbeam_channel::Sender<usize>,
+    inf: &crate::ffms::VidInf,
+    work_dir: &Path,
+    metric_mode: &str,
+    stats: Option<&Arc<WorkerStats>>,
+    resume_state: &Arc<std::sync::Mutex<crate::chunk::ResumeInf>>,
+    tq_logger: &Arc<std::sync::Mutex<Vec<crate::tq::ProbeLog>>>,
+    log_path: &Path,
+    prog: Option<&Arc<crate::progs::ProgsTrack>>,
+    worker_id: usize,
+    worker_count: usize,
+    tq_ctx: &TQCtx,
+) {
+    let mut vship: Option<crate::vship::VshipProcessor> = None;
+    let mut unpacked_buf: Option<Vec<u8>> = None;
+
+    while let Ok(mut pkg) = rx.recv() {
+        if vship.is_none() {
+            let fps = inf.fps_num as f32 / inf.fps_den as f32;
+            vship = Some(
+                crate::vship::VshipProcessor::new(
+                    pkg.width,
+                    pkg.height,
+                    inf.is_10bit,
+                    inf.matrix_coefficients,
+                    inf.transfer_characteristics,
+                    inf.color_primaries,
+                    inf.color_range,
+                    inf.chroma_sample_position,
+                    fps,
+                    tq_ctx.use_cvvdp,
+                    tq_ctx.use_butteraugli,
+                )
+                .unwrap(),
+            );
+
+            if inf.is_10bit {
+                let mut cropped_inf = inf.clone();
+                cropped_inf.width = pkg.width;
+                cropped_inf.height = pkg.height;
+                unpacked_buf = Some(vec![0u8; crate::ffms::calc_10bit_size(&cropped_inf)]);
+            }
+        }
+
+        let tq_st = pkg.tq_state.as_ref().unwrap();
+        let crf = tq_st.last_crf;
+        let probe_path =
+            work_dir.join("split").join(format!("{:04}_{:.2}.ivf", pkg.chunk.idx, crf));
+        let last_score = tq_st.probes.last().map(|probe| probe.score);
+        let metrics_slot = worker_count + worker_id;
+
+        let (score, frame_scores) = crate::tq::calc_metrics(
+            &pkg,
+            &probe_path,
+            inf,
+            vship.as_ref().unwrap(),
+            metric_mode,
+            tq_ctx.use_cvvdp,
+            tq_ctx.use_butteraugli,
+            unpacked_buf.as_mut(),
+            prog,
+            metrics_slot,
+            crf as f32,
+            last_score,
+        );
+
+        let tq_state = pkg.tq_state.as_mut().unwrap();
+        tq_state.probes.push(crate::tq::Probe { crf, score, frame_scores });
+
+        let should_complete = tq_ctx.converged(score)
+            || tq_state.round > 10
+            || tq_ctx.update_bounds_and_check(tq_state, score);
+
+        if should_complete {
+            complete_chunk(
+                pkg.chunk.idx,
+                pkg.frame_count,
+                &probe_path,
+                work_dir,
+                done_tx,
+                resume_state,
+                stats,
+                tq_logger,
+                log_path,
+                tq_state.round,
+                tq_state.last_crf,
+                score,
+                &tq_state.probes,
+                tq_ctx.use_cvvdp,
+            );
+        } else {
+            rework_tx.send(pkg).unwrap();
         }
     }
 }
@@ -789,130 +714,332 @@ fn encode_tq(
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
 ) {
-    let resume_data = if args.resume {
-        get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new() })
-    } else {
-        ResumeInf { chnks_done: Vec::new() }
+    let resume_data = load_resume_data(work_dir, args.resume);
+    let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
+
+    let tq_str = args.target_quality.as_ref().unwrap();
+    let qp_str = args.qp_range.as_ref().unwrap();
+    let tq_parts: Vec<f64> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
+    let qp_parts: Vec<f64> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
+    let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
+    let tq_tolerance = (tq_parts[1] - tq_parts[0]) / 2.0;
+
+    let tq_ctx = TQCtx {
+        target: tq_target,
+        tolerance: tq_tolerance,
+        qp_min: qp_parts[0],
+        qp_max: qp_parts[1],
+        use_butteraugli: tq_target < 8.0,
+        use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
     };
 
-    let skip_indices: HashSet<usize> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
-    let completed_count = skip_indices.len();
-    let completed_frames: usize = resume_data.chnks_done.iter().map(|c| c.frames).sum();
+    let (enc_tx, enc_rx) = bounded::<crate::worker::WorkPkg>(0);
+    let (met_tx, met_rx) = bounded::<crate::worker::WorkPkg>(0);
+    let (rework_tx, rework_rx) = bounded::<crate::worker::WorkPkg>(0);
+    let (done_tx, done_rx) = bounded::<usize>(0);
 
-    let stats = if args.quiet {
-        None
-    } else {
-        Some(Arc::new(WorkerStats::new(completed_count, completed_frames, resume_data)))
-    };
+    let enc_rx = Arc::new(enc_rx);
+    let met_rx = Arc::new(met_rx);
 
-    let prog = stats.as_ref().map(|s| {
-        Arc::new(ProgsTrack::new(
-            chunks,
-            inf,
-            args.worker,
-            completed_frames,
-            Arc::clone(&s.completed),
-            Arc::clone(&s.completions),
-        ))
-    });
+    let total_chunks = chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).count();
 
-    let probe_info = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    let logger = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let log_path = args.input.with_extension("log");
-
-    let (tx, rx) = bounded::<ChunkData>(0);
-    let rx = Arc::new(rx);
-
-    let crop = args.crop.unwrap_or((0, 0));
-
-    let dec = {
-        let c = chunks.to_vec();
-        let i = Arc::clone(idx);
+    let bg_thread = {
+        let chunks = chunks.to_vec();
+        let idx = Arc::clone(idx);
         let inf = inf.clone();
+        let enc_tx = enc_tx.clone();
+        let worker_count = args.worker;
+        let crop = args.crop.unwrap_or((0, 0));
+
         thread::spawn(move || {
-            decode_chunks(&c, &i, &inf, &tx, &skip_indices, crop);
+            let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(1);
+            let inf_decode = inf.clone();
+            let decoder_handle = thread::spawn(move || {
+                decode_chunks(&chunks, &idx, &inf_decode, &decode_tx, &skip_indices, crop);
+            });
+
+            let mut in_flight = 0;
+            let max_in_flight = worker_count + 1;
+            let mut completed = 0;
+
+            while completed < total_chunks {
+                if in_flight < max_in_flight {
+                    select! {
+                        recv(decode_rx) -> pkg => {
+                            if let Ok(pkg) = pkg {
+                                enc_tx.send(pkg).unwrap();
+                                in_flight += 1;
+                            }
+                        }
+                        recv(rework_rx) -> pkg => {
+                            if let Ok(pkg) = pkg {
+                                enc_tx.send(pkg).unwrap();
+                            }
+                        }
+                        recv(done_rx) -> result => {
+                            if result.is_ok() {
+                                in_flight -= 1;
+                                completed += 1;
+                            }
+                        }
+                    }
+                } else {
+                    select! {
+                        recv(rework_rx) -> pkg => {
+                            if let Ok(pkg) = pkg {
+                                enc_tx.send(pkg).unwrap();
+                            }
+                        }
+                        recv(done_rx) -> result => {
+                            if result.is_ok() {
+                                in_flight -= 1;
+                                completed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            decoder_handle.join().unwrap();
         })
     };
 
-    crate::vship::init_device().unwrap();
+    let resume_state = Arc::new(std::sync::Mutex::new(resume_data.clone()));
+    let tq_logger = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stats = Some(create_stats(completed_count, resume_data));
+    let prog = create_progress(
+        args.quiet,
+        chunks,
+        inf,
+        args.worker * 2,
+        completed_frames,
+        stats.as_ref().unwrap(),
+    );
+    let log_path = args.input.with_extension("log");
+
+    let mut metrics_workers = Vec::new();
+    for worker_id in 0..args.worker {
+        let rx = Arc::clone(&met_rx);
+        let rework_tx = rework_tx.clone();
+        let done_tx = done_tx.clone();
+        let inf = inf.clone();
+        let wd = work_dir.to_path_buf();
+        let metric_mode = args.metric_mode.clone();
+        let st = stats.clone();
+        let resume_state = Arc::clone(&resume_state);
+        let tq_logger = Arc::clone(&tq_logger);
+        let log_path = log_path.clone();
+        let prog_clone = prog.clone();
+        let worker_count = args.worker;
+
+        metrics_workers.push(thread::spawn(move || {
+            run_metrics_worker(
+                &rx,
+                &rework_tx,
+                &done_tx,
+                &inf,
+                &wd,
+                &metric_mode,
+                st.as_ref(),
+                &resume_state,
+                &tq_logger,
+                &log_path,
+                prog_clone.as_ref(),
+                worker_id,
+                worker_count,
+                &tq_ctx,
+            );
+        }));
+    }
 
     let mut workers = Vec::new();
-    for _ in 0..args.worker {
-        let probe_info = Arc::clone(&probe_info);
-        let logger = Arc::clone(&logger);
-        let rx = Arc::clone(&rx);
-        let lp = log_path.clone();
-        let c = chunks.to_vec();
+    for worker_id in 0..args.worker {
+        let rx = Arc::clone(&enc_rx);
+        let tx = met_tx.clone();
         let inf = inf.clone();
         let params = args.params.clone();
-        let tq = args.target_quality.clone().unwrap();
-        let qp = args.qp_range.clone().unwrap();
-        let stats = stats.clone();
-        let prog = prog.clone();
         let wd = work_dir.to_path_buf();
         let grain = grain_table.cloned();
-        let metric_mode = args.metric_mode.clone();
-
-        let use_cvvdp = {
-            let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-            let target = f64::midpoint(tq_parts[0], tq_parts[1]);
-            target > 8.0 && target <= 10.0
-        };
-
-        let use_butteraugli = {
-            let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-            let target = f64::midpoint(tq_parts[0], tq_parts[1]);
-            target < 8.0
-        };
+        let prog_clone = prog.clone();
+        let qp_min = tq_ctx.qp_min;
+        let qp_max = tq_ctx.qp_max;
+        let target = tq_ctx.target;
 
         workers.push(thread::spawn(move || {
-            let mut init = false;
-            let mut vship = None;
-            let mut working_inf = inf.clone();
+            let mut conv_buf: Option<Vec<u8>> = None;
 
-            while let Ok(data) = rx.recv() {
-                if !init {
-                    working_inf.width = data.width;
-                    working_inf.height = data.height;
-
-                    let vs = create_tq_worker(&working_inf, use_cvvdp, use_butteraugli);
-                    vship = Some(vs);
-                    init = true;
+            while let Ok(mut pkg) = rx.recv() {
+                if conv_buf.is_none() {
+                    let mut cropped_inf = inf.clone();
+                    cropped_inf.width = pkg.width;
+                    cropped_inf.height = pkg.height;
+                    conv_buf = Some(vec![0u8; crate::ffms::calc_10bit_size(&cropped_inf)]);
                 }
 
-                let config = TQChunkConfig {
-                    chunks: &c,
-                    inf: &working_inf,
-                    params: &params,
-                    tq: &tq,
-                    qp: &qp,
-                    work_dir: &wd,
-                    prog: prog.as_ref(),
-                    probe_info: &probe_info,
-                    stats: stats.as_ref(),
-                    grain_table: grain.as_deref(),
-                    metric_mode: &metric_mode,
-                    use_cvvdp,
-                    use_butteraugli,
-                };
+                if pkg.tq_state.is_none() {
+                    pkg.tq_state = Some(crate::worker::TQState {
+                        probes: Vec::new(),
+                        search_min: qp_min,
+                        search_max: qp_max,
+                        round: 1,
+                        target,
+                        last_crf: 0.0,
+                    });
+                } else {
+                    pkg.tq_state.as_mut().unwrap().round += 1;
+                }
 
-                process_tq_chunk(&data, &config, vship.as_ref().unwrap(), Some(&logger), &lp, &wd);
+                let current_round = pkg.tq_state.as_ref().unwrap().round;
+                let tq = pkg.tq_state.as_ref().unwrap();
+                let crf = if current_round <= 2 || current_round > 6 {
+                    crate::tq::binary_search(tq.search_min, tq.search_max)
+                } else {
+                    crate::tq::interpolate_crf(&tq.probes, tq.target, current_round)
+                        .unwrap_or_else(|| crate::tq::binary_search(tq.search_min, tq.search_max))
+                }
+                .clamp(tq.search_min, tq.search_max);
+
+                pkg.tq_state.as_mut().unwrap().last_crf = crf;
+
+                enc_tq_probe(
+                    &pkg,
+                    crf,
+                    &params,
+                    &inf,
+                    &wd,
+                    grain.as_deref(),
+                    &mut conv_buf,
+                    prog_clone.as_ref(),
+                    worker_id,
+                );
+
+                tx.send(pkg).unwrap();
             }
         }));
     }
 
-    dec.join().unwrap();
+    crate::vship::init_device().unwrap();
+
+    bg_thread.join().unwrap();
+    drop(enc_tx);
+
     for w in workers {
         w.join().unwrap();
     }
-    if let Some(p) = prog {
-        p.final_update();
+
+    drop(rework_tx);
+    drop(met_tx);
+
+    for mw in metrics_workers {
+        mw.join().unwrap();
     }
 
     write_tq_log(&args.input, work_dir);
 }
 
-#[cfg(feature = "vship")]
+fn enc_tq_probe(
+    pkg: &crate::worker::WorkPkg,
+    crf: f64,
+    params: &str,
+    inf: &VidInf,
+    work_dir: &Path,
+    grain: Option<&Path>,
+    conv_buf: &mut Option<Vec<u8>>,
+    prog: Option<&Arc<ProgsTrack>>,
+    worker_id: usize,
+) -> PathBuf {
+    let name = format!("{:04}_{:.2}.ivf", pkg.chunk.idx, crf);
+    let out = work_dir.join("split").join(&name);
+    let cfg = EncConfig { inf, params, crf: crf as f32, output: &out, grain_table: grain };
+    let mut cmd = make_enc_cmd(&cfg, false, pkg.width, pkg.height);
+    let mut child = cmd.spawn().unwrap();
+
+    if let Some(p) = prog {
+        let stderr = child.stderr.take().unwrap();
+        let last_score =
+            pkg.tq_state.as_ref().and_then(|tq| tq.probes.last().map(|probe| probe.score));
+        p.watch_enc(stderr, worker_id, pkg.chunk.idx, false, Some((crf as f32, last_score)));
+    }
+
+    let frame_size = pkg.yuv.len() / pkg.frame_count;
+
+    write_frames(&mut child, &pkg.yuv, frame_size, pkg.frame_count, inf, conv_buf);
+
+    let status = child.wait().unwrap();
+    if !status.success() {
+        std::process::exit(1);
+    }
+
+    out
+}
+
+fn run_enc_worker(
+    rx: &Arc<crossbeam_channel::Receiver<crate::worker::WorkPkg>>,
+    params: &str,
+    inf: &VidInf,
+    work_dir: &Path,
+    grain: Option<&Path>,
+    stats: Option<&Arc<WorkerStats>>,
+    prog: Option<&Arc<ProgsTrack>>,
+    worker_id: usize,
+) {
+    let mut conv_buf: Option<Vec<u8>> = None;
+
+    while let Ok(pkg) = rx.recv() {
+        if conv_buf.is_none() {
+            let mut cropped_inf = inf.clone();
+            cropped_inf.width = pkg.width;
+            cropped_inf.height = pkg.height;
+            conv_buf = Some(vec![0u8; calc_10bit_size(&cropped_inf)]);
+        }
+
+        enc_chunk(&pkg, -1.0, params, inf, work_dir, grain, &mut conv_buf, prog, worker_id);
+
+        if let Some(s) = stats {
+            s.completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let out = work_dir.join("encode").join(format!("{:04}.ivf", pkg.chunk.idx));
+            let file_size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            let comp = crate::chunk::ChunkComp {
+                idx: pkg.chunk.idx,
+                frames: pkg.frame_count,
+                size: file_size,
+            };
+            s.add_completion(comp, work_dir);
+        }
+    }
+}
+
+fn enc_chunk(
+    pkg: &crate::worker::WorkPkg,
+    crf: f32,
+    params: &str,
+    inf: &VidInf,
+    work_dir: &Path,
+    grain: Option<&Path>,
+    conv_buf: &mut Option<Vec<u8>>,
+    prog: Option<&Arc<ProgsTrack>>,
+    worker_id: usize,
+) {
+    let out = work_dir.join("encode").join(format!("{:04}.ivf", pkg.chunk.idx));
+    let cfg = EncConfig { inf, params, crf, output: &out, grain_table: grain };
+    let mut cmd = make_enc_cmd(&cfg, false, pkg.width, pkg.height);
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+
+    if let Some(p) = prog {
+        let stderr = child.stderr.take().unwrap();
+        p.watch_enc(stderr, worker_id, pkg.chunk.idx, true, None);
+    }
+
+    let frame_size = pkg.yuv.len() / pkg.frame_count;
+
+    write_frames(&mut child, &pkg.yuv, frame_size, pkg.frame_count, inf, conv_buf);
+
+    let status = child.wait().unwrap();
+    if !status.success() {
+        std::process::exit(1);
+    }
+}
+
 pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, log_path: &Path, work_dir: &Path) {
     use std::fmt::Write;
     use std::fs::OpenOptions;
@@ -952,7 +1079,6 @@ pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, log_path: &Path, work_di
     }
 }
 
-#[cfg(feature = "vship")]
 fn write_tq_log(input: &Path, work_dir: &Path) {
     use std::collections::HashMap;
     use std::fmt::Write;

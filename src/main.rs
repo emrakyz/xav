@@ -17,6 +17,7 @@ mod svt;
 mod tq;
 #[cfg(feature = "vship")]
 mod vship;
+mod worker;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
@@ -501,8 +502,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     unsafe {
         libc::atexit(restore);
-        libc::signal(libc::SIGINT, exit_restore as usize);
-        libc::signal(libc::SIGSEGV, exit_restore as usize);
+
+        libc::signal(libc::SIGINT, exit_restore as *const () as usize);
+        libc::signal(libc::SIGSEGV, exit_restore as *const () as usize);
     }
 
     if let Err(e) = main_with_args(&args) {
