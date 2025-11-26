@@ -573,6 +573,7 @@ pub fn extr_10bit(
     }
 }
 
+#[cfg(feature = "vship")]
 pub fn get_frame(
     vid_src: *mut libc::c_void,
     frame_idx: usize,

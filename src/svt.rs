@@ -5,7 +5,9 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::thread;
 
-use crossbeam_channel::{Sender, bounded, select};
+#[cfg(feature = "vship")]
+use crossbeam_channel::select;
+use crossbeam_channel::{Sender, bounded};
 
 use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::ffms::{
@@ -14,6 +16,7 @@ use crate::ffms::{
     unpack_10bit,
 };
 use crate::progs::ProgsTrack;
+#[cfg(feature = "vship")]
 use crate::worker::TQState;
 
 #[cfg(feature = "vship")]
@@ -517,6 +520,7 @@ pub fn encode_all(
 }
 
 #[derive(Copy, Clone)]
+#[cfg(feature = "vship")]
 struct TQCtx {
     target: f64,
     tolerance: f64,
@@ -526,6 +530,7 @@ struct TQCtx {
     use_cvvdp: bool,
 }
 
+#[cfg(feature = "vship")]
 impl TQCtx {
     #[inline]
     fn converged(&self, score: f64) -> bool {
@@ -554,6 +559,7 @@ impl TQCtx {
 }
 
 #[inline]
+#[cfg(feature = "vship")]
 fn complete_chunk(
     chunk_idx: usize,
     chunk_frames: usize,
@@ -606,6 +612,7 @@ fn complete_chunk(
     }
 }
 
+#[cfg(feature = "vship")]
 fn run_metrics_worker(
     rx: &Arc<crossbeam_channel::Receiver<crate::worker::WorkPkg>>,
     rework_tx: &crossbeam_channel::Sender<crate::worker::WorkPkg>,
@@ -936,6 +943,7 @@ fn encode_tq(
     write_tq_log(&args.input, work_dir);
 }
 
+#[cfg(feature = "vship")]
 fn enc_tq_probe(
     pkg: &crate::worker::WorkPkg,
     crf: f64,
@@ -1040,6 +1048,7 @@ fn enc_chunk(
     }
 }
 
+#[cfg(feature = "vship")]
 pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, log_path: &Path, work_dir: &Path) {
     use std::fmt::Write;
     use std::fs::OpenOptions;
@@ -1079,6 +1088,7 @@ pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, log_path: &Path, work_di
     }
 }
 
+#[cfg(feature = "vship")]
 fn write_tq_log(input: &Path, work_dir: &Path) {
     use std::collections::HashMap;
     use std::fmt::Write;
