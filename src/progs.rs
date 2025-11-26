@@ -237,6 +237,7 @@ impl ProgsTrack {
         });
     }
 
+    #[cfg(feature = "vship")]
     pub fn show_metric_progress(
         &self,
         worker_id: usize,
