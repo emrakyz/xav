@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::thread;
 
 #[cfg(feature = "vship")]
-use crossbeam_channel::{Sender, bounded, select};
+use crossbeam_channel::select;
+use crossbeam_channel::{Sender, bounded};
 
 use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::ffms::{
