@@ -65,7 +65,7 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Comman
         "--scm",
         "0",
         "--progress",
-        if quiet { "0" } else { "3" },
+        if quiet { "0" } else { "2" },
     ];
 
     for i in (0..base_args.len()).step_by(2) {
