@@ -458,6 +458,30 @@ pub fn extr_8bit_crop(
     }
 }
 
+pub fn extr_8bit_fast(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let width = inf.width as usize;
+        let height = inf.height as usize;
+        let y_size = width * height;
+        let uv_size = y_size / 4;
+
+        std::ptr::copy_nonoverlapping((*frame).data[0], output.as_mut_ptr(), y_size);
+        std::ptr::copy_nonoverlapping((*frame).data[1], output.as_mut_ptr().add(y_size), uv_size);
+        std::ptr::copy_nonoverlapping(
+            (*frame).data[2],
+            output.as_mut_ptr().add(y_size + uv_size),
+            uv_size,
+        );
+    }
+}
+
 pub const fn calc_10bit_size(inf: &VidInf) -> usize {
     let y_size = (inf.width * inf.height) as usize * 2;
     let uv_size = y_size / 4;
@@ -580,7 +604,6 @@ pub fn extr_pack_10bit_crop(
 #[derive(Clone, Copy)]
 pub struct FrameLayout {
     pub has_padding: bool,
-    pub is_contiguous: bool,
 }
 
 pub fn get_frame_layout(
@@ -611,15 +634,9 @@ pub fn get_frame_layout(
             if inf.is_10bit { inf.width as usize * 2 } else { inf.width as usize };
         let has_padding = y_linesize != expected_stride;
 
-        let y_size = expected_stride * inf.height as usize;
-        let uv_size = y_size / 4;
-        let expected_u = (*frame).data[0].add(y_size);
-        let expected_v = expected_u.add(uv_size);
-        let is_contiguous = (*frame).data[1] == expected_u && (*frame).data[2] == expected_v;
-
         FFMS_DestroyVideoSource(video);
 
-        Ok(FrameLayout { has_padding, is_contiguous })
+        Ok(FrameLayout { has_padding })
     }
 }
 

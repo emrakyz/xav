@@ -13,8 +13,9 @@ use crate::FrameLayout;
 use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::ffms::{
     VidIdx, VidInf, calc_8bit_size, calc_10bit_size, calc_packed_size, conv_to_10bit,
-    destroy_vid_src, extr_8bit, extr_8bit_crop, extr_8bit_stride, extr_10bit_crop_pack_stride,
-    extr_10bit_pack, extr_10bit_pack_stride, extr_pack_10bit_crop, thr_vid_src, unpack_10bit,
+    destroy_vid_src, extr_8bit, extr_8bit_crop, extr_8bit_fast, extr_8bit_stride,
+    extr_10bit_crop_pack_stride, extr_10bit_pack, extr_10bit_pack_stride, extr_pack_10bit_crop,
+    thr_vid_src, unpack_10bit,
 };
 use crate::progs::ProgsTrack;
 #[cfg(feature = "vship")]
@@ -197,7 +198,7 @@ fn dec_10bit(
     );
 
     match (crop == (0, 0), frame_layout) {
-        (true, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+        (true, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * packed_sz];
@@ -218,7 +219,7 @@ fn dec_10bit(
             }
         }
 
-        (false, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+        (false, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * packed_sz];
@@ -312,18 +313,14 @@ fn dec_8bit(
     );
 
     match (crop == (0, 0), frame_layout) {
-        (true, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+        (true, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
 
                 for (i, idx) in (chunk.start..chunk.end).enumerate() {
                     let dst = &mut frames_data[i * frame_sz..(i + 1) * frame_sz];
-                    unsafe {
-                        let frame = crate::ffms::get_raw_frame(source, idx);
-                        let total = inf.width as usize * inf.height as usize * 3 / 2;
-                        std::ptr::copy_nonoverlapping((*frame).data[0], dst.as_mut_ptr(), total);
-                    }
+                    extr_8bit_fast(source, idx, dst, inf);
                 }
 
                 let pkg = crate::worker::WorkPkg::new(
@@ -337,7 +334,7 @@ fn dec_8bit(
             }
         }
 
-        (false, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+        (false, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
