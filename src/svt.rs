@@ -18,6 +18,7 @@ use crate::ffms::{
     thr_vid_src, unpack_10bit,
 };
 use crate::progs::ProgsTrack;
+use crate::worker::Semaphore;
 #[cfg(feature = "vship")]
 use crate::worker::TQState;
 
@@ -185,6 +186,7 @@ fn dec_10bit(
     tx: &Sender<crate::worker::WorkPkg>,
     crop: (u32, u32),
     frame_layout: Option<FrameLayout>,
+    permits: Option<&Arc<Semaphore>>,
 ) {
     let crop_calc = (crop != (0, 0)).then(|| CropCalc::new(inf, crop, 2));
     let (width, height, packed_sz) = crop_calc.as_ref().map_or_else(
@@ -200,6 +202,10 @@ fn dec_10bit(
     match (crop == (0, 0), frame_layout) {
         (true, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * packed_sz];
 
@@ -221,6 +227,10 @@ fn dec_10bit(
 
         (false, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * packed_sz];
 
@@ -251,6 +261,10 @@ fn dec_10bit(
 
         (true, _) => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * packed_sz];
 
@@ -272,6 +286,10 @@ fn dec_10bit(
 
         (false, _) => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * packed_sz];
 
@@ -301,6 +319,7 @@ fn dec_8bit(
     tx: &Sender<crate::worker::WorkPkg>,
     crop: (u32, u32),
     frame_layout: Option<FrameLayout>,
+    permits: Option<&Arc<Semaphore>>,
 ) {
     let crop_calc = (crop != (0, 0)).then(|| CropCalc::new(inf, crop, 1));
     let (width, height, frame_sz) = crop_calc.as_ref().map_or_else(
@@ -315,6 +334,10 @@ fn dec_8bit(
     match (crop == (0, 0), frame_layout) {
         (true, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
 
@@ -336,6 +359,10 @@ fn dec_8bit(
 
         (false, Some(fl)) if !fl.has_padding => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
 
@@ -358,6 +385,10 @@ fn dec_8bit(
 
         (true, _) => {
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
 
@@ -381,6 +412,10 @@ fn dec_8bit(
             let mut frame_buf = vec![0u8; calc_8bit_size(inf)];
 
             for chunk in chunks {
+                if let Some(sem) = permits {
+                    sem.acquire();
+                }
+
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
 
@@ -412,6 +447,7 @@ fn decode_chunks(
     skip_indices: &HashSet<usize>,
     crop: (u32, u32),
     frame_layout: Option<FrameLayout>,
+    permits: Option<&Arc<Semaphore>>,
 ) {
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -420,9 +456,9 @@ fn decode_chunks(
         chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).cloned().collect();
 
     if inf.is_10bit {
-        dec_10bit(&filtered, source, inf, tx, crop, frame_layout);
+        dec_10bit(&filtered, source, inf, tx, crop, frame_layout, permits);
     } else {
-        dec_8bit(&filtered, source, inf, tx, crop, frame_layout);
+        dec_8bit(&filtered, source, inf, tx, crop, frame_layout, permits);
     }
 
     destroy_vid_src(source);
@@ -584,7 +620,7 @@ pub fn encode_all(
         let inf = inf.clone();
         let frame_layout = args.frame_layout;
         thread::spawn(move || {
-            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, crop, frame_layout);
+            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, crop, frame_layout, None);
         })
     };
 
@@ -842,28 +878,33 @@ fn encode_tq(
         use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
     };
 
-    let (enc_tx, enc_rx) = bounded::<crate::worker::WorkPkg>(0);
-    let (met_tx, met_rx) = bounded::<crate::worker::WorkPkg>(0);
-    let (rework_tx, rework_rx) = bounded::<crate::worker::WorkPkg>(0);
-    let (done_tx, done_rx) = bounded::<usize>(0);
+    let (enc_tx, enc_rx) = bounded::<crate::worker::WorkPkg>(2);
+    let (met_tx, met_rx) = bounded::<crate::worker::WorkPkg>(2);
+    let (rework_tx, rework_rx) = bounded::<crate::worker::WorkPkg>(2);
+    let (done_tx, done_rx) = bounded::<usize>(4);
 
     let enc_rx = Arc::new(enc_rx);
     let met_rx = Arc::new(met_rx);
 
     let total_chunks = chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).count();
 
+    let max_in_flight = args.chunk_buffer;
+    let permits = Arc::new(Semaphore::new(max_in_flight));
+
     let bg_thread = {
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
         let enc_tx = enc_tx.clone();
-        let worker_count = args.worker;
         let crop = args.crop.unwrap_or((0, 0));
         let frame_layout = args.frame_layout;
+        let permits_decoder = Arc::clone(&permits);
+        let permits_done = Arc::clone(&permits);
 
         thread::spawn(move || {
             let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(1);
             let inf_decode = inf.clone();
+
             let decoder_handle = thread::spawn(move || {
                 decode_chunks(
                     &chunks,
@@ -873,46 +914,28 @@ fn encode_tq(
                     &skip_indices,
                     crop,
                     frame_layout,
+                    Some(&permits_decoder),
                 );
             });
 
-            let mut in_flight = 0;
-            let max_in_flight = worker_count + 1;
             let mut completed = 0;
 
             while completed < total_chunks {
-                if in_flight < max_in_flight {
-                    select! {
-                        recv(decode_rx) -> pkg => {
-                            if let Ok(pkg) = pkg {
-                                enc_tx.send(pkg).unwrap();
-                                in_flight += 1;
-                            }
-                        }
-                        recv(rework_rx) -> pkg => {
-                            if let Ok(pkg) = pkg {
-                                enc_tx.send(pkg).unwrap();
-                            }
-                        }
-                        recv(done_rx) -> result => {
-                            if result.is_ok() {
-                                in_flight -= 1;
-                                completed += 1;
-                            }
+                select! {
+                    recv(decode_rx) -> pkg => {
+                        if let Ok(pkg) = pkg {
+                            enc_tx.send(pkg).unwrap();
                         }
                     }
-                } else {
-                    select! {
-                        recv(rework_rx) -> pkg => {
-                            if let Ok(pkg) = pkg {
-                                enc_tx.send(pkg).unwrap();
-                            }
+                    recv(rework_rx) -> pkg => {
+                        if let Ok(pkg) = pkg {
+                            enc_tx.send(pkg).unwrap();
                         }
-                        recv(done_rx) -> result => {
-                            if result.is_ok() {
-                                in_flight -= 1;
-                                completed += 1;
-                            }
+                    }
+                    recv(done_rx) -> result => {
+                        if result.is_ok() {
+                            permits_done.release();
+                            completed += 1;
                         }
                     }
                 }
@@ -928,14 +951,14 @@ fn encode_tq(
         args.quiet,
         chunks,
         inf,
-        args.worker * 2,
+        args.worker + args.metric_worker,
         completed_frames,
         stats.as_ref().unwrap(),
     );
     let log_path = args.input.with_extension("log");
 
     let mut metrics_workers = Vec::new();
-    for worker_id in 0..args.worker {
+    for worker_id in 0..args.metric_worker {
         let rx = Arc::clone(&met_rx);
         let rework_tx = rework_tx.clone();
         let done_tx = done_tx.clone();
