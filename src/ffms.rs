@@ -387,47 +387,31 @@ fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, 
     }
 }
 
-pub fn extr_8bit(
-    vid_src: *mut libc::c_void,
-    frame_idx: usize,
-    output: &mut [u8],
-    inf: &VidInf,
-    frame_layout: &FrameLayout,
-) {
+pub fn extr_8bit(vid_src: *mut libc::c_void, frame_idx: usize, output: &mut [u8], inf: &VidInf) {
     unsafe {
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
-        let frame = FFMS_GetFrame(
-            vid_src,
-            i32::try_from(frame_idx).unwrap_or(0),
-            std::ptr::addr_of_mut!(err),
-        );
+        let frame = get_raw_frame(vid_src, frame_idx);
 
         let width = inf.width as usize;
         let height = inf.height as usize;
         let y_size = width * height;
         let uv_size = y_size / 4;
-        let total = y_size + uv_size * 2;
 
-        if !frame_layout.has_padding && frame_layout.is_contiguous {
-            std::ptr::copy_nonoverlapping((*frame).data[0], output.as_mut_ptr(), total);
-        } else {
-            let y_linesize = (*frame).linesize[0] as usize;
-            copy_with_stride((*frame).data[0], y_linesize, width, height, output.as_mut_ptr());
-            copy_with_stride(
-                (*frame).data[1],
-                (*frame).linesize[1] as usize,
-                width / 2,
-                height / 2,
-                output.as_mut_ptr().add(y_size),
-            );
-            copy_with_stride(
-                (*frame).data[2],
-                (*frame).linesize[2] as usize,
-                width / 2,
-                height / 2,
-                output.as_mut_ptr().add(y_size + uv_size),
-            );
-        }
+        let y_linesize = (*frame).linesize[0] as usize;
+        copy_with_stride((*frame).data[0], y_linesize, width, height, output.as_mut_ptr());
+        copy_with_stride(
+            (*frame).data[1],
+            (*frame).linesize[1] as usize,
+            width / 2,
+            height / 2,
+            output.as_mut_ptr().add(y_size),
+        );
+        copy_with_stride(
+            (*frame).data[2],
+            (*frame).linesize[2] as usize,
+            width / 2,
+            height / 2,
+            output.as_mut_ptr().add(y_size + uv_size),
+        );
     }
 }
 
