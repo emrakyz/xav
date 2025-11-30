@@ -4,6 +4,8 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::ffms::FrameLayout;
+
 mod audio;
 mod chunk;
 mod ffms;
@@ -47,6 +49,7 @@ pub struct Args {
     pub audio: Option<audio::AudioSpec>,
     pub input: PathBuf,
     pub output: PathBuf,
+    pub frame_layout: Option<FrameLayout>,
 }
 
 extern "C" fn restore() {
@@ -264,6 +267,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         audio,
         input,
         output,
+        frame_layout: None,
     };
 
     apply_defaults(&mut result);
@@ -342,7 +346,7 @@ fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+fn main_with_args(args: &mut Args) -> Result<(), Box<dyn std::error::Error>> {
     if !args.quiet {
         print!("\x1b[?1049h\x1b[H\x1b[?25l");
         std::io::stdout().flush().unwrap();
@@ -372,6 +376,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let idx = ffms::VidIdx::new(&args.input, args.quiet)?;
     let inf = ffms::get_vidinf(&idx)?;
+    args.frame_layout = Some(ffms::get_frame_layout(&idx, &inf)?);
 
     let mut args = args.clone();
     if let Some(ref s) = args.crop_str {
@@ -490,7 +495,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = parse_args();
+    let mut args = parse_args();
     let output = args.output.clone();
 
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -507,7 +512,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         libc::signal(libc::SIGSEGV, exit_restore as *const () as usize);
     }
 
-    if let Err(e) = main_with_args(&args) {
+    if let Err(e) = main_with_args(&mut args) {
         print!("\x1b[?1049l");
         std::io::stdout().flush().unwrap();
         eprintln!("{}, FAIL", args.output.display());
