@@ -537,6 +537,19 @@ pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
 
         unpack_4_pix_10bit(*i_arr, o_arr);
     });
+
+    let remaining_in = input.len() % 8;
+    if remaining_in > 0 {
+        let processed_in = (input.len() / 8) * 8;
+        let processed_out = (output.len() / 5) * 5;
+        let mut temp = [0u8; 8];
+        temp[..remaining_in].copy_from_slice(&input[processed_in..]);
+
+        let output_chunk: &mut [u8; 5] =
+            unsafe { &mut *output.as_mut_ptr().add(processed_out).cast::<[u8; 5]>() };
+
+        pack_4_pix_10bit(temp, output_chunk);
+    }
 }
 
 fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) {
