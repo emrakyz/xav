@@ -338,7 +338,6 @@ fn dec_8bit(
         }
 
         (false, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
-            eprintln!("🚀 FASTEST PATH: no crop, no padding, contiguous");
             for chunk in chunks {
                 let chunk_len = chunk.end - chunk.start;
                 let mut frames_data = vec![0u8; chunk_len * frame_sz];
