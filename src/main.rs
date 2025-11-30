@@ -34,12 +34,6 @@ const N: &str = "\x1b[0m";
 pub struct Args {
     pub worker: usize,
     pub scene_file: PathBuf,
-    #[cfg(feature = "vship")]
-    pub target_quality: Option<String>,
-    #[cfg(feature = "vship")]
-    pub metric_mode: String,
-    #[cfg(feature = "vship")]
-    pub qp_range: Option<String>,
     pub params: String,
     pub resume: bool,
     pub quiet: bool,
@@ -50,6 +44,16 @@ pub struct Args {
     pub input: PathBuf,
     pub output: PathBuf,
     pub frame_layout: Option<FrameLayout>,
+    #[cfg(feature = "vship")]
+    pub qp_range: Option<String>,
+    #[cfg(feature = "vship")]
+    pub metric_worker: usize,
+    #[cfg(feature = "vship")]
+    pub chunk_buffer: usize,
+    #[cfg(feature = "vship")]
+    pub target_quality: Option<String>,
+    #[cfg(feature = "vship")]
+    pub metric_mode: String,
 }
 
 extern "C" fn restore() {
@@ -92,6 +96,13 @@ fn print_help() {
     println!("-r|--resume    Resume the encoding. Example below");
     println!("-q|--quiet     Do not run any code related to any progress");
     println!();
+    #[cfg(feature = "vship")]
+    {
+        println!("Advanced (TQ):");
+        println!("-b|--chunk-buffer   Number of chunks to pre-decode and hold in memory");
+        println!("-v|--metric-worker  Number of `vship` instances to run in parallel");
+        println!();
+    }
     println!("Examples:");
     println!("xav -r i.mkv");
     println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
@@ -133,8 +144,14 @@ fn apply_defaults(args: &mut Args) {
     }
 
     #[cfg(feature = "vship")]
-    if args.target_quality.is_some() && args.qp_range.is_none() {
-        args.qp_range = Some("8.0-48.0".to_string());
+    {
+        if args.target_quality.is_some() && args.qp_range.is_none() {
+            args.qp_range = Some("8.0-48.0".to_string());
+        }
+        if args.metric_worker == 0 {
+            args.metric_worker = args.worker;
+        }
+        args.chunk_buffer = args.worker + args.chunk_buffer;
     }
 }
 
@@ -160,6 +177,10 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut audio = None;
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
+    #[cfg(feature = "vship")]
+    let mut metric_worker = 0;
+    #[cfg(feature = "vship")]
+    let mut chunk_buffer = 1;
 
     let mut i = 1;
     while i < args.len() {
@@ -232,6 +253,21 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                 }
             }
 
+            #[cfg(feature = "vship")]
+            "-v" | "--metric-worker" => {
+                i += 1;
+                if i < args.len() {
+                    metric_worker = args[i].parse()?;
+                }
+            }
+            #[cfg(feature = "vship")]
+            "-b" | "--chunk-buffer" => {
+                i += 1;
+                if i < args.len() {
+                    chunk_buffer = args[i].parse()?;
+                }
+            }
+
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
                     input = PathBuf::from(arg);
@@ -268,6 +304,10 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         input,
         output,
         frame_layout: None,
+        #[cfg(feature = "vship")]
+        metric_worker,
+        #[cfg(feature = "vship")]
+        chunk_buffer,
     };
 
     apply_defaults(&mut result);

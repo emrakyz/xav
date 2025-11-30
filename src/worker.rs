@@ -1,4 +1,5 @@
-#[allow(dead_code)]
+use std::sync::{Condvar, Mutex};
+
 use crate::chunk::Chunk;
 
 pub struct WorkPkg {
@@ -38,5 +39,29 @@ impl WorkPkg {
             #[cfg(feature = "vship")]
             tq_state: None,
         }
+    }
+}
+
+pub struct Semaphore {
+    state: Mutex<usize>,
+    cvar: Condvar,
+}
+
+impl Semaphore {
+    pub const fn new(permits: usize) -> Self {
+        Self { state: Mutex::new(permits), cvar: Condvar::new() }
+    }
+
+    pub fn acquire(&self) {
+        let mut count = self.state.lock().unwrap();
+        while *count == 0 {
+            count = self.cvar.wait(count).unwrap();
+        }
+        *count -= 1;
+    }
+
+    pub fn release(&self) {
+        *self.state.lock().unwrap() += 1;
+        self.cvar.notify_one();
     }
 }
