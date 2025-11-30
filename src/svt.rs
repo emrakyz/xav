@@ -9,11 +9,12 @@ use std::thread;
 use crossbeam_channel::select;
 use crossbeam_channel::{Sender, bounded};
 
+use crate::FrameLayout;
 use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::ffms::{
     VidIdx, VidInf, calc_8bit_size, calc_10bit_size, calc_packed_size, conv_to_10bit,
-    destroy_vid_src, extr_8bit, extr_10bit, pack_4_pix_10bit, pack_10bit, thr_vid_src,
-    unpack_10bit,
+    destroy_vid_src, extr_8bit, extr_8bit_crop, extr_8bit_stride, extr_10bit_crop_pack_stride,
+    extr_10bit_pack, extr_10bit_pack_stride, extr_pack_10bit_crop, thr_vid_src, unpack_10bit,
 };
 use crate::progs::ProgsTrack;
 #[cfg(feature = "vship")]
@@ -120,16 +121,16 @@ fn colorize(cmd: &mut Command, inf: &VidInf) {
     }
 }
 
-struct CropCalc {
-    new_w: u32,
-    new_h: u32,
-    y_stride: usize,
-    uv_stride: usize,
-    y_start: usize,
-    u_start: usize,
-    v_start: usize,
-    y_len: usize,
-    uv_len: usize,
+pub struct CropCalc {
+    pub new_w: u32,
+    pub new_h: u32,
+    pub y_stride: usize,
+    pub uv_stride: usize,
+    pub y_start: usize,
+    pub u_start: usize,
+    pub v_start: usize,
+    pub y_len: usize,
+    pub uv_len: usize,
 }
 
 impl CropCalc {
@@ -176,46 +177,13 @@ impl CropCalc {
     }
 }
 
-fn crop_and_pack_10bit(src: &[u8], dst: &mut [u8], calc: &CropCalc, temp: &mut [u8; 8]) {
-    let mut dst_pos = 0;
-    let mut temp_pos = 0;
-
-    for plane_idx in 0..3 {
-        let (rows, start, stride, len) = match plane_idx {
-            0 => (calc.new_h, calc.y_start, calc.y_stride, calc.y_len),
-            1 => (calc.new_h / 2, calc.u_start, calc.uv_stride, calc.uv_len),
-            _ => (calc.new_h / 2, calc.v_start, calc.uv_stride, calc.uv_len),
-        };
-
-        for row in 0..rows {
-            let src_off = start + row as usize * stride;
-            for i in (0..len).step_by(2) {
-                temp[temp_pos..temp_pos + 2].copy_from_slice(&src[src_off + i..src_off + i + 2]);
-                temp_pos += 2;
-                if temp_pos == 8 {
-                    pack_4_pix_10bit(*temp, unsafe {
-                        &mut *dst[dst_pos..dst_pos + 5].as_mut_ptr().cast::<[u8; 5]>()
-                    });
-                    dst_pos += 5;
-                    temp_pos = 0;
-                }
-            }
-        }
-    }
-
-    if temp_pos > 0 {
-        pack_4_pix_10bit(*temp, unsafe {
-            &mut *dst[dst_pos..dst_pos + 5].as_mut_ptr().cast::<[u8; 5]>()
-        });
-    }
-}
-
 fn dec_10bit(
     chunks: &[Chunk],
     source: *mut std::ffi::c_void,
     inf: &VidInf,
     tx: &Sender<crate::worker::WorkPkg>,
     crop: (u32, u32),
+    frame_layout: Option<FrameLayout>,
 ) {
     let crop_calc = (crop != (0, 0)).then(|| CropCalc::new(inf, crop, 2));
     let (width, height, packed_sz) = crop_calc.as_ref().map_or_else(
@@ -228,34 +196,99 @@ fn dec_10bit(
         },
     );
 
-    let mut frame_buf = vec![0u8; calc_10bit_size(inf)];
-    let mut pack_temp = [0u8; 8];
+    match (crop == (0, 0), frame_layout) {
+        (true, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * packed_sz];
 
-    for chunk in chunks {
-        let chunk_len = chunk.end - chunk.start;
-        let mut frames_data = vec![0u8; chunk_len * packed_sz];
-        let mut valid = 0;
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * packed_sz..(i + 1) * packed_sz];
+                    extr_10bit_pack(source, idx, dst, inf);
+                }
 
-        for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            if extr_10bit(source, idx, &mut frame_buf).is_err() {
-                continue;
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
             }
-
-            let start = i * packed_sz;
-            let dst = &mut frames_data[start..start + packed_sz];
-
-            if let Some(calc) = &crop_calc {
-                crop_and_pack_10bit(&frame_buf, dst, calc, &mut pack_temp);
-            } else {
-                pack_10bit(&frame_buf, dst);
-            }
-            valid += 1;
         }
 
-        if valid > 0 {
-            frames_data.truncate(valid * packed_sz);
-            let pkg = crate::worker::WorkPkg::new(chunk.clone(), frames_data, valid, width, height);
-            tx.send(pkg).ok();
+        (false, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * packed_sz];
+
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * packed_sz..(i + 1) * packed_sz];
+                    let calc = crop_calc.as_ref().unwrap();
+                    extr_pack_10bit_crop(
+                        source,
+                        idx,
+                        calc.new_w,
+                        calc.new_h,
+                        calc.y_start,
+                        calc.u_start,
+                        dst,
+                    );
+                }
+
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
+            }
+        }
+
+        (true, _) => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * packed_sz];
+
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * packed_sz..(i + 1) * packed_sz];
+                    extr_10bit_pack_stride(source, idx, dst, inf);
+                }
+
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
+            }
+        }
+
+        (false, _) => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * packed_sz];
+
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * packed_sz..(i + 1) * packed_sz];
+                    let calc = crop_calc.as_ref().unwrap();
+                    extr_10bit_crop_pack_stride(source, idx, dst, calc);
+                }
+
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
+            }
         }
     }
 }
@@ -266,6 +299,7 @@ fn dec_8bit(
     inf: &VidInf,
     tx: &Sender<crate::worker::WorkPkg>,
     crop: (u32, u32),
+    frame_layout: Option<FrameLayout>,
 ) {
     let crop_calc = (crop != (0, 0)).then(|| CropCalc::new(inf, crop, 1));
     let (width, height, frame_sz) = crop_calc.as_ref().map_or_else(
@@ -277,31 +311,99 @@ fn dec_8bit(
         },
     );
 
-    let mut frame_buf = vec![0u8; calc_8bit_size(inf)];
+    match (crop == (0, 0), frame_layout) {
+        (true, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * frame_sz];
 
-    for chunk in chunks {
-        let chunk_len = chunk.end - chunk.start;
-        let mut frames_data = vec![0u8; chunk_len * frame_sz];
-        let mut valid = 0;
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * frame_sz..(i + 1) * frame_sz];
+                    unsafe {
+                        let frame = crate::ffms::get_raw_frame(source, idx);
+                        let total = inf.width as usize * inf.height as usize * 3 / 2;
+                        std::ptr::copy_nonoverlapping((*frame).data[0], dst.as_mut_ptr(), total);
+                    }
+                }
 
-        for (i, idx) in (chunk.start..chunk.end).enumerate() {
-            if extr_8bit(source, idx, &mut frame_buf, inf).is_err() {
-                continue;
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
             }
-
-            let dest_start = i * frame_sz;
-            if let Some(calc) = &crop_calc {
-                calc.crop_frame(&frame_buf, &mut frames_data[dest_start..dest_start + frame_sz]);
-            } else {
-                frames_data[dest_start..dest_start + frame_sz].copy_from_slice(&frame_buf);
-            }
-            valid += 1;
         }
 
-        if valid > 0 {
-            frames_data.truncate(valid * frame_sz);
-            let pkg = crate::worker::WorkPkg::new(chunk.clone(), frames_data, valid, width, height);
-            tx.send(pkg).ok();
+        (false, Some(fl)) if !fl.has_padding && fl.is_contiguous => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * frame_sz];
+
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * frame_sz..(i + 1) * frame_sz];
+                    let calc = crop_calc.as_ref().unwrap();
+                    extr_8bit_crop(source, idx, dst, calc);
+                }
+
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
+            }
+        }
+
+        (true, _) => {
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * frame_sz];
+
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    let dst = &mut frames_data[i * frame_sz..(i + 1) * frame_sz];
+                    extr_8bit_stride(source, idx, dst, inf);
+                }
+
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
+            }
+        }
+
+        (false, _) => {
+            let frame_layout_ref = frame_layout.as_ref().unwrap();
+            let mut frame_buf = vec![0u8; calc_8bit_size(inf)];
+
+            for chunk in chunks {
+                let chunk_len = chunk.end - chunk.start;
+                let mut frames_data = vec![0u8; chunk_len * frame_sz];
+
+                for (i, idx) in (chunk.start..chunk.end).enumerate() {
+                    extr_8bit(source, idx, &mut frame_buf, inf, frame_layout_ref);
+                    let dst = &mut frames_data[i * frame_sz..(i + 1) * frame_sz];
+                    let calc = crop_calc.as_ref().unwrap();
+                    calc.crop_frame(&frame_buf, dst);
+                }
+
+                let pkg = crate::worker::WorkPkg::new(
+                    chunk.clone(),
+                    frames_data,
+                    chunk_len,
+                    width,
+                    height,
+                );
+                tx.send(pkg).ok();
+            }
         }
     }
 }
@@ -313,6 +415,7 @@ fn decode_chunks(
     tx: &Sender<crate::worker::WorkPkg>,
     skip_indices: &HashSet<usize>,
     crop: (u32, u32),
+    frame_layout: Option<FrameLayout>,
 ) {
     let threads =
         std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -321,9 +424,9 @@ fn decode_chunks(
         chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).cloned().collect();
 
     if inf.is_10bit {
-        dec_10bit(&filtered, source, inf, tx, crop);
+        dec_10bit(&filtered, source, inf, tx, crop, frame_layout);
     } else {
-        dec_8bit(&filtered, source, inf, tx, crop);
+        dec_8bit(&filtered, source, inf, tx, crop, frame_layout);
     }
 
     destroy_vid_src(source);
@@ -483,7 +586,10 @@ pub fn encode_all(
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
-        thread::spawn(move || decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, crop))
+        let frame_layout = args.frame_layout;
+        thread::spawn(move || {
+            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, crop, frame_layout);
+        })
     };
 
     let mut workers = Vec::new();
@@ -757,12 +863,21 @@ fn encode_tq(
         let enc_tx = enc_tx.clone();
         let worker_count = args.worker;
         let crop = args.crop.unwrap_or((0, 0));
+        let frame_layout = args.frame_layout;
 
         thread::spawn(move || {
             let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(1);
             let inf_decode = inf.clone();
             let decoder_handle = thread::spawn(move || {
-                decode_chunks(&chunks, &idx, &inf_decode, &decode_tx, &skip_indices, crop);
+                decode_chunks(
+                    &chunks,
+                    &idx,
+                    &inf_decode,
+                    &decode_tx,
+                    &skip_indices,
+                    crop,
+                    frame_layout,
+                );
             });
 
             let mut in_flight = 0;

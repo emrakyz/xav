@@ -140,9 +140,7 @@ pub struct VidIdx {
 extern "C" fn idx_progs(current: i64, tot: i64, ic_private: *mut libc::c_void) -> i32 {
     unsafe {
         let progs = &mut *ic_private.cast::<crate::progs::ProgsBar>();
-        if current >= 0 && tot > 0 {
-            progs.up_idx(current as usize, tot as usize);
-        }
+        progs.up_idx(current as usize, tot as usize);
     }
     0
 }
@@ -381,12 +379,21 @@ pub const fn calc_packed_size(inf: &VidInf) -> usize {
     (tot_pixels * 5) / 4
 }
 
+fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, dst: *mut u8) {
+    unsafe {
+        for row in 0..height {
+            std::ptr::copy_nonoverlapping(src.add(row * stride), dst.add(row * width), width);
+        }
+    }
+}
+
 pub fn extr_8bit(
     vid_src: *mut libc::c_void,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
-) -> Result<(), Box<dyn std::error::Error>> {
+    frame_layout: &FrameLayout,
+) {
     unsafe {
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
         let frame = FFMS_GetFrame(
@@ -395,24 +402,75 @@ pub fn extr_8bit(
             std::ptr::addr_of_mut!(err),
         );
 
-        if frame.is_null() {
-            return Err("Failed to get frame".into());
-        }
-
         let width = inf.width as usize;
         let height = inf.height as usize;
         let y_size = width * height;
         let uv_size = y_size / 4;
+        let total = y_size + uv_size * 2;
 
-        std::ptr::copy_nonoverlapping((*frame).data[0], output.as_mut_ptr(), y_size);
-        std::ptr::copy_nonoverlapping((*frame).data[1], output.as_mut_ptr().add(y_size), uv_size);
-        std::ptr::copy_nonoverlapping(
-            (*frame).data[2],
-            output.as_mut_ptr().add(y_size + uv_size),
-            uv_size,
-        );
+        if !frame_layout.has_padding && frame_layout.is_contiguous {
+            std::ptr::copy_nonoverlapping((*frame).data[0], output.as_mut_ptr(), total);
+        } else {
+            let y_linesize = (*frame).linesize[0] as usize;
+            copy_with_stride((*frame).data[0], y_linesize, width, height, output.as_mut_ptr());
+            copy_with_stride(
+                (*frame).data[1],
+                (*frame).linesize[1] as usize,
+                width / 2,
+                height / 2,
+                output.as_mut_ptr().add(y_size),
+            );
+            copy_with_stride(
+                (*frame).data[2],
+                (*frame).linesize[2] as usize,
+                width / 2,
+                height / 2,
+                output.as_mut_ptr().add(y_size + uv_size),
+            );
+        }
+    }
+}
 
-        Ok(())
+pub fn extr_8bit_crop(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    crop_calc: &crate::svt::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let mut pos = 0;
+
+        for row in 0..crop_calc.new_h {
+            let src_off = crop_calc.y_start + row as usize * crop_calc.y_stride;
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[0].add(src_off),
+                output.as_mut_ptr().add(pos),
+                crop_calc.y_len,
+            );
+            pos += crop_calc.y_len;
+        }
+
+        for row in 0..crop_calc.new_h / 2 {
+            let src_off = crop_calc.u_start + row as usize * crop_calc.uv_stride;
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[1].add(src_off),
+                output.as_mut_ptr().add(pos),
+                crop_calc.uv_len,
+            );
+            pos += crop_calc.uv_len;
+        }
+
+        for row in 0..crop_calc.new_h / 2 {
+            let src_off = crop_calc.v_start + row as usize * crop_calc.uv_stride;
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[2].add(src_off),
+                output.as_mut_ptr().add(pos),
+                crop_calc.uv_len,
+            );
+            pos += crop_calc.uv_len;
+        }
     }
 }
 
@@ -473,103 +531,283 @@ pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
     });
 }
 
-fn copy_plane_8to10(
-    src: *const u8,
-    width: usize,
-    height: usize,
-    output: &mut [u8],
-    out_pos: &mut usize,
-) {
+fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) {
     unsafe {
-        let total_pixels = width * height;
-        for i in 0..total_pixels {
-            let pixel = *src.add(i);
-            let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
-            let out_idx = *out_pos + i * 2;
-            output[out_idx] = pixel_10bit[0];
-            output[out_idx + 1] = pixel_10bit[1];
+        let w_bytes = w * 2;
+        let pack_row = (w_bytes * 5) / 8;
+        let mut pos = 0;
+
+        for row in 0..h {
+            let src_row = std::slice::from_raw_parts(src.add(row * stride), w_bytes);
+            let dst_row = std::slice::from_raw_parts_mut(out.add(pos), pack_row);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            pos += pack_row;
         }
-        *out_pos += total_pixels * 2;
     }
 }
 
-const fn copy_plane_10to10(
-    src: *const u8,
-    width: usize,
-    height: usize,
-    output: &mut [u8],
-    out_pos: &mut usize,
-) {
-    unsafe {
-        let plane_size = width * 2 * height;
-        std::ptr::copy_nonoverlapping(src, output.as_mut_ptr().add(*out_pos), plane_size);
-        *out_pos += plane_size;
-    }
-}
-
-pub fn extr_10bit(
+pub fn extr_pack_10bit_crop(
     vid_src: *mut libc::c_void,
-    frame_idx: usize,
-    output: &mut [u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+    idx: usize,
+    w: u32,
+    h: u32,
+    y_off: usize,
+    uv_off: usize,
+    out: &mut [u8],
+) {
     unsafe {
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
-        let frame = FFMS_GetFrame(
-            vid_src,
-            i32::try_from(frame_idx).unwrap_or(0),
+        let frame =
+            FFMS_GetFrame(vid_src, i32::try_from(idx).unwrap_or(0), std::ptr::addr_of_mut!(err));
+
+        let w = w as usize;
+        let h = h as usize;
+        let y_pack = (w * h * 5) / 4;
+        let uv_pack = (w * h / 4 * 5) / 4;
+
+        pack_stride(
+            (*frame).data[0].add(y_off),
+            (*frame).linesize[0] as usize,
+            w,
+            h,
+            out.as_mut_ptr(),
+        );
+        pack_stride(
+            (*frame).data[1].add(uv_off),
+            (*frame).linesize[1] as usize,
+            w / 2,
+            h / 2,
+            out.as_mut_ptr().add(y_pack),
+        );
+        pack_stride(
+            (*frame).data[2].add(uv_off),
+            (*frame).linesize[2] as usize,
+            w / 2,
+            h / 2,
+            out.as_mut_ptr().add(y_pack + uv_pack),
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FrameLayout {
+    pub has_padding: bool,
+    pub is_contiguous: bool,
+}
+
+pub fn get_frame_layout(
+    idx: &Arc<VidIdx>,
+    inf: &VidInf,
+) -> Result<FrameLayout, Box<dyn std::error::Error>> {
+    unsafe {
+        let source = CString::new(idx.path.as_str())?;
+        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+
+        let video = FFMS_CreateVideoSource(
+            source.as_ptr(),
+            idx.track,
+            idx.idx_handle,
+            1,
+            1,
             std::ptr::addr_of_mut!(err),
         );
 
-        if frame.is_null() {
-            return Err("Failed to get frame".into());
+        if video.is_null() {
+            return Err("Failed to create vid src".into());
         }
 
-        let width = (*frame).encoded_width as usize;
-        let height = (*frame).encoded_height as usize;
-
-        if width == 0 || height == 0 {
-            return Err("Invalid frame dimensions".into());
-        }
+        let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
 
         let y_linesize = (*frame).linesize[0] as usize;
-        let is_10bit = y_linesize >= width * 2;
-        let mut out_pos = 0;
+        let expected_stride =
+            if inf.is_10bit { inf.width as usize * 2 } else { inf.width as usize };
+        let has_padding = y_linesize != expected_stride;
 
-        let y_ptr = (*frame).data[0];
-        if y_ptr.is_null() {
-            return Err("Null Y plane pointer".into());
+        let y_size = expected_stride * inf.height as usize;
+        let uv_size = y_size / 4;
+        let expected_u = (*frame).data[0].add(y_size);
+        let expected_v = expected_u.add(uv_size);
+        let is_contiguous = (*frame).data[1] == expected_u && (*frame).data[2] == expected_v;
+
+        FFMS_DestroyVideoSource(video);
+
+        Ok(FrameLayout { has_padding, is_contiguous })
+    }
+}
+
+pub fn get_raw_frame(vid_src: *mut libc::c_void, frame_idx: usize) -> *const FFMS_Frame {
+    unsafe {
+        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+        FFMS_GetFrame(vid_src, i32::try_from(frame_idx).unwrap_or(0), std::ptr::addr_of_mut!(err))
+    }
+}
+
+pub fn extr_10bit_pack(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+        let w_bytes = w * 2;
+        let y_size = w_bytes * h;
+        let uv_size = y_size / 4;
+        let total = y_size + uv_size * 2;
+
+        let src = std::slice::from_raw_parts((*frame).data[0], total);
+        pack_10bit(src, output);
+    }
+}
+
+pub fn extr_10bit_pack_stride(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+        let y_pack = (w * h * 5) / 4;
+        let uv_pack = (w * h / 4 * 5) / 4;
+
+        pack_stride((*frame).data[0], (*frame).linesize[0] as usize, w, h, output.as_mut_ptr());
+
+        pack_stride(
+            (*frame).data[1],
+            (*frame).linesize[1] as usize,
+            w / 2,
+            h / 2,
+            output.as_mut_ptr().add(y_pack),
+        );
+
+        pack_stride(
+            (*frame).data[2],
+            (*frame).linesize[2] as usize,
+            w / 2,
+            h / 2,
+            output.as_mut_ptr().add(y_pack + uv_pack),
+        );
+    }
+}
+
+pub fn extr_8bit_stride(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let width = inf.width as usize;
+        let height = inf.height as usize;
+
+        let y_linesize = (*frame).linesize[0] as usize;
+        let uv_linesize = (*frame).linesize[1] as usize;
+
+        let mut pos = 0;
+
+        for row in 0..height {
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[0].add(row * y_linesize),
+                output.as_mut_ptr().add(pos),
+                width,
+            );
+            pos += width;
         }
 
-        if is_10bit {
-            copy_plane_10to10(y_ptr, width, height, output, &mut out_pos);
-        } else {
-            copy_plane_8to10(y_ptr, width, height, output, &mut out_pos);
+        for row in 0..height / 2 {
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[1].add(row * uv_linesize),
+                output.as_mut_ptr().add(pos),
+                width / 2,
+            );
+            pos += width / 2;
         }
 
-        let uv_width = width / 2;
-        let uv_height = height / 2;
+        for row in 0..height / 2 {
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[2].add(row * uv_linesize),
+                output.as_mut_ptr().add(pos),
+                width / 2,
+            );
+            pos += width / 2;
+        }
+    }
+}
 
-        let u_ptr = (*frame).data[1];
+pub fn extr_10bit_crop_pack_stride(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    crop_calc: &crate::svt::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
 
-        if !u_ptr.is_null() {
-            if is_10bit {
-                copy_plane_10to10(u_ptr, uv_width, uv_height, output, &mut out_pos);
-            } else {
-                copy_plane_8to10(u_ptr, uv_width, uv_height, output, &mut out_pos);
-            }
+        let w = crop_calc.new_w as usize;
+        let h = crop_calc.new_h as usize;
+
+        let y_linesize = (*frame).linesize[0] as usize;
+        let uv_linesize = (*frame).linesize[1] as usize;
+
+        let mut dst_pos = 0;
+        let pack_row_y = (w * 2 * 5) / 8;
+
+        for row in 0..h {
+            let src_off = crop_calc.y_start + row * y_linesize;
+            let src_row =
+                std::slice::from_raw_parts((*frame).data[0].add(src_off), crop_calc.y_len);
+            let dst_row =
+                std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            dst_pos += pack_row_y;
         }
 
-        let v_ptr = (*frame).data[2];
+        let pack_row_uv = (w / 2 * 2 * 5) / 8;
 
-        if !v_ptr.is_null() {
-            if is_10bit {
-                copy_plane_10to10(v_ptr, uv_width, uv_height, output, &mut out_pos);
-            } else {
-                copy_plane_8to10(v_ptr, uv_width, uv_height, output, &mut out_pos);
-            }
+        for row in 0..h / 2 {
+            let src_off = crop_calc.u_start + row * uv_linesize;
+            let src_row =
+                std::slice::from_raw_parts((*frame).data[1].add(src_off), crop_calc.uv_len);
+            let dst_row =
+                std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            dst_pos += pack_row_uv;
         }
 
-        Ok(())
+        for row in 0..h / 2 {
+            let src_off = crop_calc.v_start + row * uv_linesize;
+            let src_row =
+                std::slice::from_raw_parts((*frame).data[2].add(src_off), crop_calc.uv_len);
+            let dst_row =
+                std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            dst_pos += pack_row_uv;
+        }
     }
 }
 
