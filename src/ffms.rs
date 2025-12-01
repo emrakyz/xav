@@ -2,6 +2,8 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::decode::CropCalc;
+
 #[repr(C)]
 pub struct FFMS_ErrorInfo {
     error_type: i32,
@@ -419,7 +421,7 @@ pub fn extr_8bit_crop(
     vid_src: *mut libc::c_void,
     frame_idx: usize,
     output: &mut [u8],
-    crop_calc: &crate::svt::CropCalc,
+    crop_calc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -765,7 +767,7 @@ pub fn extr_10bit_crop_pack_stride(
     vid_src: *mut libc::c_void,
     frame_idx: usize,
     output: &mut [u8],
-    crop_calc: &crate::svt::CropCalc,
+    crop_calc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);

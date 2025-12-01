@@ -8,6 +8,7 @@ use crate::ffms::FrameLayout;
 
 mod audio;
 mod chunk;
+mod decode;
 mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
@@ -20,6 +21,9 @@ mod tq;
 #[cfg(feature = "vship")]
 mod vship;
 mod worker;
+
+#[cfg(test)]
+mod tests;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
