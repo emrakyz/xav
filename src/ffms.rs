@@ -528,15 +528,6 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
         let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
         pack_4_pix_10bit(*i_arr, o_arr);
     });
-}
-
-pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
-    input.chunks_exact(5).zip(output.chunks_exact_mut(8)).for_each(|(i_chunk, o_chunk)| {
-        let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
-        let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
-
-        unpack_4_pix_10bit(*i_arr, o_arr);
-    });
 
     let remaining_in = input.len() % 8;
     if remaining_in > 0 {
@@ -550,6 +541,15 @@ pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
 
         pack_4_pix_10bit(temp, output_chunk);
     }
+}
+
+pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
+    input.chunks_exact(5).zip(output.chunks_exact_mut(8)).for_each(|(i_chunk, o_chunk)| {
+        let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
+        let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
+
+        unpack_4_pix_10bit(*i_arr, o_arr);
+    });
 }
 
 fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) {
