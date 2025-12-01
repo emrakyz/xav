@@ -2,6 +2,7 @@
 
 !/src/
 !/.cargo/
+!/test_files/
 !.rustfmt.toml
 !build.rs
 !build.sh
