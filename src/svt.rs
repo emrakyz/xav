@@ -37,6 +37,9 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Comman
     let fps_num_str = cfg.inf.fps_num.to_string();
     let fps_den_str = cfg.inf.fps_den.to_string();
 
+    // Older packaged SVT-AV1 (0.9.0 in Ubuntu 22.04) does not support newer options like
+    // --forced-max-frame-width/height or --chroma-sample-position, so we stick to a
+    // conservative, widely-supported argument set here.
     let base_args = [
         "-i",
         "stdin",
@@ -44,11 +47,7 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Comman
         "10",
         "--width",
         &width_str,
-        "--forced-max-frame-width",
-        &width_str,
         "--height",
-        &height_str,
-        "--forced-max-frame-height",
         &height_str,
         "--fps-num",
         &fps_num_str,
@@ -107,8 +106,9 @@ fn colorize(cmd: &mut Command, inf: &VidInf) {
     if let Some(cr) = inf.color_range {
         cmd.args(["--color-range", &cr.to_string()]);
     }
-    if let Some(csp) = inf.chroma_sample_position {
-        cmd.args(["--chroma-sample-position", &csp.to_string()]);
+    // Older SVT-AV1 builds may not support chroma-sample-position flag; skip it for compatibility.
+    if let Some(_csp) = inf.chroma_sample_position {
+        // cmd.args(["--chroma-sample-position", &csp.to_string()]);
     }
     if let Some(ref md) = inf.mastering_display {
         cmd.args(["--mastering-display", md]);
