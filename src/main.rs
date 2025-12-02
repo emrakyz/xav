@@ -46,12 +46,11 @@ pub struct Args {
     pub input: PathBuf,
     pub output: PathBuf,
     pub decode_strat: Option<ffms::DecodeStrat>,
+    pub chunk_buffer: usize,
     #[cfg(feature = "vship")]
     pub qp_range: Option<String>,
     #[cfg(feature = "vship")]
     pub metric_worker: usize,
-    #[cfg(feature = "vship")]
-    pub chunk_buffer: usize,
     #[cfg(feature = "vship")]
     pub target_quality: Option<String>,
     #[cfg(feature = "vship")]
@@ -98,10 +97,10 @@ fn print_help() {
     println!("-r|--resume    Resume the encoding. Example below");
     println!("-q|--quiet     Do not run any code related to any progress");
     println!();
+    println!("Advanced:");
+    println!("-b|--chunk-buffer   Number of chunks to pre-decode and hold in memory");
     #[cfg(feature = "vship")]
     {
-        println!("Advanced (TQ):");
-        println!("-b|--chunk-buffer   Number of chunks to pre-decode and hold in memory");
         println!("-v|--metric-worker  Number of `vship` instances to run in parallel");
         println!();
     }
@@ -153,8 +152,9 @@ fn apply_defaults(args: &mut Args) {
         if args.metric_worker == 0 {
             args.metric_worker = args.worker;
         }
-        args.chunk_buffer += args.worker;
     }
+
+    args.chunk_buffer += args.worker;
 }
 
 fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
@@ -181,7 +181,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut output = PathBuf::new();
     #[cfg(feature = "vship")]
     let mut metric_worker = 0;
-    #[cfg(feature = "vship")]
     let mut chunk_buffer = 1;
 
     let mut i = 1;
@@ -262,7 +261,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     metric_worker = args[i].parse()?;
                 }
             }
-            #[cfg(feature = "vship")]
             "-b" | "--chunk-buffer" => {
                 i += 1;
                 if i < args.len() {
@@ -308,7 +306,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         decode_strat: None,
         #[cfg(feature = "vship")]
         metric_worker,
-        #[cfg(feature = "vship")]
         chunk_buffer,
     };
 
@@ -388,7 +385,7 @@ fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main_with_args(args: &mut Args) -> Result<(), Box<dyn std::error::Error>> {
+fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if !args.quiet {
         print!("\x1b[?1049h\x1b[H\x1b[?25l");
         std::io::stdout().flush().unwrap();
@@ -539,7 +536,7 @@ fn main_with_args(args: &mut Args) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = parse_args();
+    let args = parse_args();
     let output = args.output.clone();
 
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -556,7 +553,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         libc::signal(libc::SIGSEGV, exit_restore as *const () as usize);
     }
 
-    if let Err(e) = main_with_args(&mut args) {
+    if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");
         std::io::stdout().flush().unwrap();
         eprintln!("{}, FAIL", args.output.display());
