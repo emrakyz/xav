@@ -62,7 +62,7 @@ pub fn calc_metrics(
     last_score: Option<f64>,
 ) -> (f64, Vec<f64>) {
     if use_cvvdp {
-        vship.reset_cvvdp().unwrap();
+        vship.reset_cvvdp();
     }
 
     let idx = crate::ffms::VidIdx::new(probe_path, true).unwrap();

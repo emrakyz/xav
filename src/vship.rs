@@ -354,15 +354,9 @@ impl VshipProcessor {
         }
     }
 
-    pub fn reset_cvvdp(&self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn reset_cvvdp(&self) {
         unsafe {
-            if let Some(handler) = self.cvvdp_handler {
-                let ret = Vship_ResetCVVDP(handler);
-                if ret as i32 != 0 {
-                    return Err("Failed to reset CVVDP".into());
-                }
-            }
-            Ok(())
+            Vship_ResetCVVDP(self.cvvdp_handler.unwrap_unchecked());
         }
     }
 
