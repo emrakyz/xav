@@ -81,6 +81,12 @@ unsafe extern "C" {
         ic: IndexCallback,
         ic_private: *mut libc::c_void,
     );
+    fn FFMS_TrackTypeIndexSettings(
+        idxer: *mut libc::c_void,
+        track_type: i32,
+        index: i32,
+        dump: i32,
+    );
     fn FFMS_DoIndexing2(
         idxer: *mut libc::c_void,
         error_handling: i32,
@@ -176,6 +182,9 @@ impl VidIdx {
                 if idxer.is_null() {
                     return Err("Failed to create idxer".into());
                 }
+
+                FFMS_TrackTypeIndexSettings(idxer, 1, 0, 0);
+                FFMS_TrackTypeIndexSettings(idxer, 2, 0, 0);
 
                 let mut progs = crate::progs::ProgsBar::new(quiet);
                 FFMS_SetProgressCallback(
@@ -363,10 +372,6 @@ pub fn thr_vid_src(
             0,
             std::ptr::addr_of_mut!(err),
         );
-
-        if video.is_null() {
-            return Err("Failed to create vid src".into());
-        }
 
         Ok(video)
     }
