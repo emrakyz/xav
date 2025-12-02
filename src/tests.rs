@@ -80,7 +80,7 @@ fn roundtrip_test_8bit_mod8() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -124,7 +124,7 @@ fn roundtrip_test_8bit_mod4w_mod8h() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -168,7 +168,7 @@ fn roundtrip_test_8bit_mod2w_mod8h() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -212,7 +212,7 @@ fn roundtrip_test_8bit_mod2w_mod2h() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -256,7 +256,7 @@ fn roundtrip_test_10bit_mod8() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -303,7 +303,7 @@ fn roundtrip_test_10bit_mod4w_mod8h() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -350,7 +350,7 @@ fn roundtrip_test_10bit_mod2w_mod8h() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();
@@ -397,7 +397,7 @@ fn roundtrip_test_10bit_mod2w_mod2h() {
             (0, 0),
             frame_layout,
             None,
-        )
+        );
     });
 
     let pkg = rx.recv().unwrap();

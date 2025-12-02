@@ -155,7 +155,7 @@ fn apply_defaults(args: &mut Args) {
         if args.metric_worker == 0 {
             args.metric_worker = args.worker;
         }
-        args.chunk_buffer = args.worker + args.chunk_buffer;
+        args.chunk_buffer += args.worker;
     }
 }
 
