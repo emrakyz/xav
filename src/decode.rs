@@ -22,6 +22,7 @@ pub struct CropCalc {
     pub v_start: usize,
     pub y_len: usize,
     pub uv_len: usize,
+    pub uv_off: usize,
 }
 
 impl CropCalc {
@@ -35,12 +36,13 @@ impl CropCalc {
         let y_start = ((cv * inf.width + ch) as usize) * pix_sz;
         let y_plane = (inf.width * inf.height) as usize * pix_sz;
         let uv_plane = (inf.width / 2 * inf.height / 2) as usize * pix_sz;
-        let u_start = y_plane + ((cv / 2 * inf.width / 2 + ch / 2) as usize * pix_sz);
-        let v_start = y_plane + uv_plane + ((cv / 2 * inf.width / 2 + ch / 2) as usize * pix_sz);
+        let uv_off = (cv / 2 * inf.width / 2 + ch / 2) as usize * pix_sz;
+        let u_start = y_plane + uv_off;
+        let v_start = y_plane + uv_plane + uv_off;
         let y_len = (new_w * pix_sz as u32) as usize;
         let uv_len = (new_w / 2 * pix_sz as u32) as usize;
 
-        Self { new_w, new_h, y_stride, uv_stride, y_start, u_start, v_start, y_len, uv_len }
+        Self { new_w, new_h, y_stride, uv_stride, y_start, u_start, v_start, y_len, uv_len, uv_off }
     }
 
     #[inline]
@@ -259,7 +261,7 @@ fn dec_10_crop(
             cc.new_w,
             cc.new_h,
             cc.y_start,
-            cc.u_start,
+            cc.uv_off,
             &mut dat[i * fsz..(i + 1) * fsz],
         );
     }
