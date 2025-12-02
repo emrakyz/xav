@@ -13,6 +13,7 @@ use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::decode::decode_chunks;
 use crate::ffms::{VidIdx, VidInf, calc_10bit_size, conv_to_10bit, unpack_10bit};
 use crate::progs::ProgsTrack;
+use crate::worker::Semaphore;
 #[cfg(feature = "vship")]
 use crate::worker::TQState;
 
@@ -118,7 +119,7 @@ fn colorize(cmd: &mut Command, inf: &VidInf) {
 }
 
 #[inline]
-pub(crate) fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
+pub fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
     let start = i * frame_size;
     let end = start + frame_size;
     &frames[start..end]
