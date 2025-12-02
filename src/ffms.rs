@@ -439,7 +439,7 @@ pub fn extr_8bit_crop(
         }
 
         for row in 0..crop_calc.new_h / 2 {
-            let src_off = crop_calc.u_start + row as usize * crop_calc.uv_stride;
+            let src_off = crop_calc.uv_off + row as usize * crop_calc.uv_stride;
             std::ptr::copy_nonoverlapping(
                 (*frame).data[1].add(src_off),
                 output.as_mut_ptr().add(pos),
@@ -449,7 +449,7 @@ pub fn extr_8bit_crop(
         }
 
         for row in 0..crop_calc.new_h / 2 {
-            let src_off = crop_calc.v_start + row as usize * crop_calc.uv_stride;
+            let src_off = crop_calc.uv_off + row as usize * crop_calc.uv_stride;
             std::ptr::copy_nonoverlapping(
                 (*frame).data[2].add(src_off),
                 output.as_mut_ptr().add(pos),
@@ -673,13 +673,17 @@ pub fn extr_10bit_pack(
 
         let w = inf.width as usize;
         let h = inf.height as usize;
-        let w_bytes = w * 2;
-        let y_size = w_bytes * h;
-        let uv_size = y_size / 4;
-        let total = y_size + uv_size * 2;
+        let y_pack = (w * h * 5) / 4;
+        let uv_pack = (w * h / 4 * 5) / 4;
 
-        let src = std::slice::from_raw_parts((*frame).data[0], total);
-        pack_10bit(src, output);
+        let y_src = std::slice::from_raw_parts((*frame).data[0], w * h * 2);
+        pack_10bit(y_src, &mut output[..y_pack]);
+
+        let u_src = std::slice::from_raw_parts((*frame).data[1], w * h / 2);
+        pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
+
+        let v_src = std::slice::from_raw_parts((*frame).data[2], w * h / 2);
+        pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
 
