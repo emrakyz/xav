@@ -5,9 +5,9 @@ use crossbeam_channel::Sender;
 
 use crate::chunk::Chunk;
 use crate::ffms::{
-    FrameLayout, VidIdx, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src, extr_8bit,
-    extr_8bit_crop, extr_8bit_fast, extr_8bit_stride, extr_10bit_crop_pack_stride, extr_10bit_pack,
-    extr_10bit_pack_stride, extr_pack_10bit_crop, thr_vid_src,
+    DecodeStrat, VidIdx, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src, extr_8bit_crop,
+    extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10bit_crop, extr_10bit_crop_fast,
+    extr_10bit_crop_pack_stride, extr_10bit_pack, extr_10bit_pack_stride, thr_vid_src,
 };
 use crate::worker::{Semaphore, WorkPkg};
 
@@ -75,8 +75,7 @@ pub fn decode_chunks(
     inf: &VidInf,
     tx: &Sender<WorkPkg>,
     skip: &HashSet<usize>,
-    crop: (u32, u32),
-    layout: Option<FrameLayout>,
+    strat: DecodeStrat,
     sem: Option<&Arc<Semaphore>>,
 ) {
     let thr = std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
@@ -84,143 +83,116 @@ pub fn decode_chunks(
 
     let filtered: Vec<Chunk> = chunks.iter().filter(|c| !skip.contains(&c.idx)).cloned().collect();
 
-    let has_pad = layout.is_none_or(|l| l.has_padding);
-    let has_crop = crop != (0, 0);
-
-    if inf.is_10bit {
-        dec_10(&filtered, src, inf, tx, crop, has_crop, has_pad, sem);
-    } else {
-        dec_8(&filtered, src, inf, tx, crop, has_crop, has_pad, sem);
+    match strat {
+        DecodeStrat::B10Fast => {
+            let fsz = calc_packed_size(inf);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_10_fast(ch, src, inf, inf.width, inf.height, fsz)).ok();
+            }
+        }
+        DecodeStrat::B10Stride => {
+            let fsz = calc_packed_size(inf);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_10_stride(ch, src, inf, inf.width, inf.height, fsz)).ok();
+            }
+        }
+        DecodeStrat::B10CropFast { cc } => {
+            let fsz = calc_packed_crop(cc.new_w, cc.new_h);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_10_crop_fast(ch, src, &cc, cc.new_w, cc.new_h, fsz)).ok();
+            }
+        }
+        DecodeStrat::B10Crop { cc } => {
+            let fsz = calc_packed_crop(cc.new_w, cc.new_h);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_10_crop(ch, src, &cc, cc.new_w, cc.new_h, fsz)).ok();
+            }
+        }
+        DecodeStrat::B10CropStride { cc } => {
+            let fsz = calc_packed_crop(cc.new_w, cc.new_h);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_10_crop_stride(ch, src, &cc, cc.new_w, cc.new_h, fsz)).ok();
+            }
+        }
+        DecodeStrat::B8Fast => {
+            let fsz = calc_8bit_size(inf);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_8_fast(ch, src, inf, inf.width, inf.height, fsz)).ok();
+            }
+        }
+        DecodeStrat::B8Stride => {
+            let fsz = calc_8bit_size(inf);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_8_stride(ch, src, inf, inf.width, inf.height, fsz)).ok();
+            }
+        }
+        DecodeStrat::B8CropFast { cc } => {
+            let fsz = calc_8bit_crop(cc.new_w, cc.new_h);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_8_crop_fast(ch, src, &cc, cc.new_w, cc.new_h, fsz)).ok();
+            }
+        }
+        DecodeStrat::B8Crop { cc } => {
+            let fsz = calc_8bit_crop(cc.new_w, cc.new_h);
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_8_crop(ch, src, &cc, cc.new_w, cc.new_h, fsz)).ok();
+            }
+        }
+        DecodeStrat::B8CropStride { cc } => {
+            let fsz = calc_8bit_crop(cc.new_w, cc.new_h);
+            let mut buf = vec![0u8; calc_8bit_size(inf)];
+            for ch in &filtered {
+                if let Some(s) = sem {
+                    s.acquire();
+                }
+                tx.send(dec_8_crop_stride(ch, src, inf, &cc, cc.new_w, cc.new_h, fsz, &mut buf))
+                    .ok();
+            }
+        }
     }
 
     destroy_vid_src(src);
 }
 
-fn dec_10(
-    chunks: &[Chunk],
-    src: *mut std::ffi::c_void,
-    inf: &VidInf,
-    tx: &Sender<WorkPkg>,
-    crop: (u32, u32),
-    has_crop: bool,
-    has_pad: bool,
-    sem: Option<&Arc<Semaphore>>,
-) {
-    let cc = has_crop.then(|| CropCalc::new(inf, crop, 2));
-
-    let (w, h, fsz) = cc.as_ref().map_or_else(
-        || (inf.width, inf.height, calc_packed_size(inf)),
-        |c| {
-            let y = (c.new_w * c.new_h * 2) as usize;
-            let uv = (c.new_w * c.new_h / 2) as usize;
-            (c.new_w, c.new_h, ((y + uv * 2) * 5).div_ceil(4))
-        },
-    );
-
-    match (has_crop, has_pad) {
-        (false, false) => {
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_10_fast(ch, src, inf, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-        (true, false) => {
-            let cc = cc.as_ref().unwrap();
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_10_crop(ch, src, cc, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-        (false, true) => {
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_10_stride(ch, src, inf, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-        (true, true) => {
-            let cc = cc.as_ref().unwrap();
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_10_crop_stride(ch, src, cc, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-    }
+#[inline]
+const fn calc_packed_crop(w: u32, h: u32) -> usize {
+    let y = (w * h * 2) as usize;
+    let uv = (w * h / 2) as usize;
+    ((y + uv * 2) * 5).div_ceil(4)
 }
 
-fn dec_8(
-    chunks: &[Chunk],
-    src: *mut std::ffi::c_void,
-    inf: &VidInf,
-    tx: &Sender<WorkPkg>,
-    crop: (u32, u32),
-    has_crop: bool,
-    has_pad: bool,
-    sem: Option<&Arc<Semaphore>>,
-) {
-    let cc = has_crop.then(|| CropCalc::new(inf, crop, 1));
-
-    let (w, h, fsz) = cc.as_ref().map_or_else(
-        || (inf.width, inf.height, calc_8bit_size(inf)),
-        |c| {
-            let y = (c.new_w * c.new_h) as usize;
-            let uv = (c.new_w * c.new_h / 4) as usize;
-            (c.new_w, c.new_h, y + uv * 2)
-        },
-    );
-
-    match (has_crop, has_pad) {
-        (false, false) => {
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_8_fast(ch, src, inf, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-        (true, false) => {
-            let cc = cc.as_ref().unwrap();
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_8_crop(ch, src, cc, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-        (false, true) => {
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_8_stride(ch, src, inf, w, h, fsz);
-                tx.send(pkg).ok();
-            }
-        }
-        (true, true) => {
-            let cc = cc.as_ref().unwrap();
-            let mut buf = vec![0u8; calc_8bit_size(inf)];
-            for ch in chunks {
-                if let Some(s) = sem {
-                    s.acquire();
-                }
-                let pkg = dec_8_crop_stride(ch, src, inf, cc, w, h, fsz, &mut buf);
-                tx.send(pkg).ok();
-            }
-        }
-    }
+#[inline]
+const fn calc_8bit_crop(w: u32, h: u32) -> usize {
+    let y = (w * h) as usize;
+    let uv = (w * h / 4) as usize;
+    y + uv * 2
 }
 
 #[inline]
@@ -234,38 +206,9 @@ fn dec_10_fast(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-
     for (i, idx) in (ch.start..ch.end).enumerate() {
         extr_10bit_pack(src, idx, &mut dat[i * fsz..(i + 1) * fsz], inf);
     }
-
-    WorkPkg::new(ch.clone(), dat, len, w, h)
-}
-
-#[inline]
-fn dec_10_crop(
-    ch: &Chunk,
-    src: *mut std::ffi::c_void,
-    cc: &CropCalc,
-    w: u32,
-    h: u32,
-    fsz: usize,
-) -> WorkPkg {
-    let len = ch.end - ch.start;
-    let mut dat = vec![0u8; len * fsz];
-
-    for (i, idx) in (ch.start..ch.end).enumerate() {
-        extr_pack_10bit_crop(
-            src,
-            idx,
-            cc.new_w,
-            cc.new_h,
-            cc.y_start,
-            cc.uv_off,
-            &mut dat[i * fsz..(i + 1) * fsz],
-        );
-    }
-
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
 
@@ -280,11 +223,43 @@ fn dec_10_stride(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-
     for (i, idx) in (ch.start..ch.end).enumerate() {
         extr_10bit_pack_stride(src, idx, &mut dat[i * fsz..(i + 1) * fsz], inf);
     }
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
 
+#[inline]
+fn dec_10_crop_fast(
+    ch: &Chunk,
+    src: *mut std::ffi::c_void,
+    cc: &CropCalc,
+    w: u32,
+    h: u32,
+    fsz: usize,
+) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    for (i, idx) in (ch.start..ch.end).enumerate() {
+        extr_10bit_crop_fast(src, idx, &mut dat[i * fsz..(i + 1) * fsz], cc);
+    }
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
+
+#[inline]
+fn dec_10_crop(
+    ch: &Chunk,
+    src: *mut std::ffi::c_void,
+    cc: &CropCalc,
+    w: u32,
+    h: u32,
+    fsz: usize,
+) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    for (i, idx) in (ch.start..ch.end).enumerate() {
+        extr_10bit_crop(src, idx, &mut dat[i * fsz..(i + 1) * fsz], cc);
+    }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
 
@@ -299,11 +274,9 @@ fn dec_10_crop_stride(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-
     for (i, idx) in (ch.start..ch.end).enumerate() {
         extr_10bit_crop_pack_stride(src, idx, &mut dat[i * fsz..(i + 1) * fsz], cc);
     }
-
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
 
@@ -318,30 +291,9 @@ fn dec_8_fast(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-
     for (i, idx) in (ch.start..ch.end).enumerate() {
         extr_8bit_fast(src, idx, &mut dat[i * fsz..(i + 1) * fsz], inf);
     }
-
-    WorkPkg::new(ch.clone(), dat, len, w, h)
-}
-
-#[inline]
-fn dec_8_crop(
-    ch: &Chunk,
-    src: *mut std::ffi::c_void,
-    cc: &CropCalc,
-    w: u32,
-    h: u32,
-    fsz: usize,
-) -> WorkPkg {
-    let len = ch.end - ch.start;
-    let mut dat = vec![0u8; len * fsz];
-
-    for (i, idx) in (ch.start..ch.end).enumerate() {
-        extr_8bit_crop(src, idx, &mut dat[i * fsz..(i + 1) * fsz], cc);
-    }
-
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
 
@@ -356,11 +308,43 @@ fn dec_8_stride(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-
     for (i, idx) in (ch.start..ch.end).enumerate() {
         extr_8bit_stride(src, idx, &mut dat[i * fsz..(i + 1) * fsz], inf);
     }
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
 
+#[inline]
+fn dec_8_crop_fast(
+    ch: &Chunk,
+    src: *mut std::ffi::c_void,
+    cc: &CropCalc,
+    w: u32,
+    h: u32,
+    fsz: usize,
+) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    for (i, idx) in (ch.start..ch.end).enumerate() {
+        extr_8bit_crop_fast(src, idx, &mut dat[i * fsz..(i + 1) * fsz], cc);
+    }
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
+
+#[inline]
+fn dec_8_crop(
+    ch: &Chunk,
+    src: *mut std::ffi::c_void,
+    cc: &CropCalc,
+    w: u32,
+    h: u32,
+    fsz: usize,
+) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    for (i, idx) in (ch.start..ch.end).enumerate() {
+        extr_8bit_crop(src, idx, &mut dat[i * fsz..(i + 1) * fsz], cc);
+    }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
 
@@ -377,11 +361,9 @@ fn dec_8_crop_stride(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-
     for (i, idx) in (ch.start..ch.end).enumerate() {
-        extr_8bit(src, idx, buf, inf);
+        crate::ffms::extr_8bit(src, idx, buf, inf);
         cc.crop(buf, &mut dat[i * fsz..(i + 1) * fsz]);
     }
-
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }

@@ -417,11 +417,11 @@ pub fn extr_8bit(vid_src: *mut libc::c_void, frame_idx: usize, output: &mut [u8]
     }
 }
 
-pub fn extr_8bit_crop(
+pub fn extr_8bit_crop_fast(
     vid_src: *mut libc::c_void,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &CropCalc,
+    cc: &crate::decode::CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -429,51 +429,56 @@ pub fn extr_8bit_crop(
         let y_sz = cc.new_w as usize * cc.new_h as usize;
         let uv_sz = y_sz / 4;
 
-        if cc.y_len == cc.y_stride {
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[0].add(cc.y_start),
-                output.as_mut_ptr(),
-                y_sz,
-            );
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[1].add(cc.uv_off),
-                output.as_mut_ptr().add(y_sz),
-                uv_sz,
-            );
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[2].add(cc.uv_off),
-                output.as_mut_ptr().add(y_sz + uv_sz),
-                uv_sz,
-            );
-        } else {
-            let mut pos = 0;
+        std::ptr::copy_nonoverlapping((*frame).data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
+        std::ptr::copy_nonoverlapping(
+            (*frame).data[1].add(cc.uv_off),
+            output.as_mut_ptr().add(y_sz),
+            uv_sz,
+        );
+        std::ptr::copy_nonoverlapping(
+            (*frame).data[2].add(cc.uv_off),
+            output.as_mut_ptr().add(y_sz + uv_sz),
+            uv_sz,
+        );
+    }
+}
 
-            for row in 0..cc.new_h as usize {
-                std::ptr::copy_nonoverlapping(
-                    (*frame).data[0].add(cc.y_start + row * cc.y_stride),
-                    output.as_mut_ptr().add(pos),
-                    cc.y_len,
-                );
-                pos += cc.y_len;
-            }
+pub fn extr_8bit_crop(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
 
-            for row in 0..cc.new_h as usize / 2 {
-                std::ptr::copy_nonoverlapping(
-                    (*frame).data[1].add(cc.uv_off + row * cc.uv_stride),
-                    output.as_mut_ptr().add(pos),
-                    cc.uv_len,
-                );
-                pos += cc.uv_len;
-            }
+        let mut pos = 0;
 
-            for row in 0..cc.new_h as usize / 2 {
-                std::ptr::copy_nonoverlapping(
-                    (*frame).data[2].add(cc.uv_off + row * cc.uv_stride),
-                    output.as_mut_ptr().add(pos),
-                    cc.uv_len,
-                );
-                pos += cc.uv_len;
-            }
+        for row in 0..cc.new_h as usize {
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[0].add(cc.y_start + row * cc.y_stride),
+                output.as_mut_ptr().add(pos),
+                cc.y_len,
+            );
+            pos += cc.y_len;
+        }
+
+        for row in 0..cc.new_h as usize / 2 {
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[1].add(cc.uv_off + row * cc.uv_stride),
+                output.as_mut_ptr().add(pos),
+                cc.uv_len,
+            );
+            pos += cc.uv_len;
+        }
+
+        for row in 0..cc.new_h as usize / 2 {
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[2].add(cc.uv_off + row * cc.uv_stride),
+                output.as_mut_ptr().add(pos),
+                cc.uv_len,
+            );
+            pos += cc.uv_len;
         }
     }
 }
@@ -591,58 +596,88 @@ fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) 
     }
 }
 
-pub fn extr_pack_10bit_crop(
+pub fn extr_10bit_crop_fast(
     vid_src: *mut libc::c_void,
-    idx: usize,
-    w: u32,
-    h: u32,
-    y_off: usize,
-    uv_off: usize,
-    out: &mut [u8],
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
 ) {
     unsafe {
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
-        let frame =
-            FFMS_GetFrame(vid_src, i32::try_from(idx).unwrap_or(0), std::ptr::addr_of_mut!(err));
+        let frame = get_raw_frame(vid_src, frame_idx);
 
-        let w = w as usize;
-        let h = h as usize;
+        let w = cc.new_w as usize;
+        let h = cc.new_h as usize;
+        let y_pack = (w * h * 5) / 4;
+        let uv_pack = (w * h / 4 * 5) / 4;
+
+        let y_src = std::slice::from_raw_parts((*frame).data[0].add(cc.y_start), w * h * 2);
+        pack_10bit(y_src, &mut output[..y_pack]);
+
+        let u_src = std::slice::from_raw_parts((*frame).data[1].add(cc.uv_off), w * h / 2);
+        pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
+
+        let v_src = std::slice::from_raw_parts((*frame).data[2].add(cc.uv_off), w * h / 2);
+        pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
+    }
+}
+
+pub fn extr_10bit_crop(
+    vid_src: *mut libc::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = cc.new_w as usize;
+        let h = cc.new_h as usize;
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
         pack_stride(
-            (*frame).data[0].add(y_off),
+            (*frame).data[0].add(cc.y_start),
             (*frame).linesize[0] as usize,
             w,
             h,
-            out.as_mut_ptr(),
+            output.as_mut_ptr(),
         );
         pack_stride(
-            (*frame).data[1].add(uv_off),
+            (*frame).data[1].add(cc.uv_off),
             (*frame).linesize[1] as usize,
             w / 2,
             h / 2,
-            out.as_mut_ptr().add(y_pack),
+            output.as_mut_ptr().add(y_pack),
         );
         pack_stride(
-            (*frame).data[2].add(uv_off),
+            (*frame).data[2].add(cc.uv_off),
             (*frame).linesize[2] as usize,
             w / 2,
             h / 2,
-            out.as_mut_ptr().add(y_pack + uv_pack),
+            output.as_mut_ptr().add(y_pack + uv_pack),
         );
     }
 }
 
 #[derive(Clone, Copy)]
-pub struct FrameLayout {
-    pub has_padding: bool,
+pub enum DecodeStrat {
+    B10Fast,
+    B10Stride,
+    B10Crop { cc: crate::decode::CropCalc },
+    B10CropFast { cc: crate::decode::CropCalc },
+    B10CropStride { cc: crate::decode::CropCalc },
+    B8Fast,
+    B8Stride,
+    B8Crop { cc: crate::decode::CropCalc },
+    B8CropFast { cc: crate::decode::CropCalc },
+    B8CropStride { cc: crate::decode::CropCalc },
 }
 
-pub fn get_frame_layout(
+pub fn get_decode_strat(
     idx: &Arc<VidIdx>,
     inf: &VidInf,
-) -> Result<FrameLayout, Box<dyn std::error::Error>> {
+    crop: (u32, u32),
+) -> Result<DecodeStrat, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
@@ -661,15 +696,41 @@ pub fn get_frame_layout(
         }
 
         let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
-
-        let y_linesize = (*frame).linesize[0] as usize;
-        let expected_stride =
-            if inf.is_10bit { inf.width as usize * 2 } else { inf.width as usize };
-        let has_padding = y_linesize != expected_stride;
-
+        let y_ls = (*frame).linesize[0] as usize;
         FFMS_DestroyVideoSource(video);
 
-        Ok(FrameLayout { has_padding })
+        let pix_sz = if inf.is_10bit { 2 } else { 1 };
+        let expected = inf.width as usize * pix_sz;
+        let has_pad = y_ls != expected;
+        let has_crop = crop != (0, 0);
+        let h_crop = crop.1 != 0;
+
+        let strat = match (inf.is_10bit, has_crop, has_pad, h_crop) {
+            (true, false, false, _) => DecodeStrat::B10Fast,
+            (true, false, true, _) => DecodeStrat::B10Stride,
+            (true, true, false, false) => {
+                DecodeStrat::B10CropFast { cc: crate::decode::CropCalc::new(inf, crop, 2) }
+            }
+            (true, true, false, true) => {
+                DecodeStrat::B10Crop { cc: crate::decode::CropCalc::new(inf, crop, 2) }
+            }
+            (true, true, true, _) => {
+                DecodeStrat::B10CropStride { cc: crate::decode::CropCalc::new(inf, crop, 2) }
+            }
+            (false, false, false, _) => DecodeStrat::B8Fast,
+            (false, false, true, _) => DecodeStrat::B8Stride,
+            (false, true, false, false) => {
+                DecodeStrat::B8CropFast { cc: crate::decode::CropCalc::new(inf, crop, 1) }
+            }
+            (false, true, false, true) => {
+                DecodeStrat::B8Crop { cc: crate::decode::CropCalc::new(inf, crop, 1) }
+            }
+            (false, true, true, _) => {
+                DecodeStrat::B8CropStride { cc: crate::decode::CropCalc::new(inf, crop, 1) }
+            }
+        };
+
+        Ok(strat)
     }
 }
 

@@ -263,7 +263,8 @@ pub fn encode_all(
         completed_frames,
         stats.as_ref().unwrap(),
     );
-    let crop = args.crop.unwrap_or((0, 0));
+
+    let strat = args.decode_strat.unwrap();
 
     let (tx, rx) = bounded::<crate::worker::WorkPkg>(0);
     let rx = Arc::new(rx);
@@ -272,9 +273,8 @@ pub fn encode_all(
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
-        let frame_layout = args.frame_layout;
         thread::spawn(move || {
-            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, crop, frame_layout, None);
+            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, None);
         })
     };
 
@@ -550,8 +550,7 @@ fn encode_tq(
         let idx = Arc::clone(idx);
         let inf = inf.clone();
         let enc_tx = enc_tx.clone();
-        let crop = args.crop.unwrap_or((0, 0));
-        let frame_layout = args.frame_layout;
+        let strat = args.decode_strat.unwrap();
         let permits_decoder = Arc::clone(&permits);
         let permits_done = Arc::clone(&permits);
 
@@ -566,8 +565,7 @@ fn encode_tq(
                     &inf_decode,
                     &decode_tx,
                     &skip_indices,
-                    crop,
-                    frame_layout,
+                    strat,
                     Some(&permits_decoder),
                 );
             });

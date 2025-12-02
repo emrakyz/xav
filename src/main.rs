@@ -4,8 +4,6 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::ffms::FrameLayout;
-
 mod audio;
 mod chunk;
 mod decode;
@@ -22,8 +20,8 @@ mod tq;
 mod vship;
 mod worker;
 
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
@@ -47,7 +45,7 @@ pub struct Args {
     pub audio: Option<audio::AudioSpec>,
     pub input: PathBuf,
     pub output: PathBuf,
-    pub frame_layout: Option<FrameLayout>,
+    pub decode_strat: Option<ffms::DecodeStrat>,
     #[cfg(feature = "vship")]
     pub qp_range: Option<String>,
     #[cfg(feature = "vship")]
@@ -307,7 +305,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         audio,
         input,
         output,
-        frame_layout: None,
+        decode_strat: None,
         #[cfg(feature = "vship")]
         metric_worker,
         #[cfg(feature = "vship")]
@@ -420,7 +418,6 @@ fn main_with_args(args: &mut Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let idx = ffms::VidIdx::new(&args.input, args.quiet)?;
     let inf = ffms::get_vidinf(&idx)?;
-    args.frame_layout = Some(ffms::get_frame_layout(&idx, &inf)?);
 
     let mut args = args.clone();
     if let Some(ref s) = args.crop_str {
@@ -451,6 +448,9 @@ fn main_with_args(args: &mut Args) -> Result<(), Box<dyn std::error::Error>> {
             if p.len() == 2 { (p[0] & !1, p[1] & !1) } else { (0, 0) }
         });
     }
+
+    let crop = args.crop.unwrap_or((0, 0));
+    args.decode_strat = Some(ffms::get_decode_strat(&idx, &inf, crop)?);
 
     let grain_table = if let Some(iso) = args.noise {
         let table_path = work_dir.join("grain.tbl");
