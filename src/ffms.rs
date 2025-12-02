@@ -421,41 +421,59 @@ pub fn extr_8bit_crop(
     vid_src: *mut libc::c_void,
     frame_idx: usize,
     output: &mut [u8],
-    crop_calc: &CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
 
-        let mut pos = 0;
+        let y_sz = cc.new_w as usize * cc.new_h as usize;
+        let uv_sz = y_sz / 4;
 
-        for row in 0..crop_calc.new_h {
-            let src_off = crop_calc.y_start + row as usize * crop_calc.y_stride;
+        if cc.y_len == cc.y_stride {
             std::ptr::copy_nonoverlapping(
-                (*frame).data[0].add(src_off),
-                output.as_mut_ptr().add(pos),
-                crop_calc.y_len,
+                (*frame).data[0].add(cc.y_start),
+                output.as_mut_ptr(),
+                y_sz,
             );
-            pos += crop_calc.y_len;
-        }
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[1].add(cc.uv_off),
+                output.as_mut_ptr().add(y_sz),
+                uv_sz,
+            );
+            std::ptr::copy_nonoverlapping(
+                (*frame).data[2].add(cc.uv_off),
+                output.as_mut_ptr().add(y_sz + uv_sz),
+                uv_sz,
+            );
+        } else {
+            let mut pos = 0;
 
-        for row in 0..crop_calc.new_h / 2 {
-            let src_off = crop_calc.uv_off + row as usize * crop_calc.uv_stride;
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[1].add(src_off),
-                output.as_mut_ptr().add(pos),
-                crop_calc.uv_len,
-            );
-            pos += crop_calc.uv_len;
-        }
+            for row in 0..cc.new_h as usize {
+                std::ptr::copy_nonoverlapping(
+                    (*frame).data[0].add(cc.y_start + row * cc.y_stride),
+                    output.as_mut_ptr().add(pos),
+                    cc.y_len,
+                );
+                pos += cc.y_len;
+            }
 
-        for row in 0..crop_calc.new_h / 2 {
-            let src_off = crop_calc.uv_off + row as usize * crop_calc.uv_stride;
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[2].add(src_off),
-                output.as_mut_ptr().add(pos),
-                crop_calc.uv_len,
-            );
-            pos += crop_calc.uv_len;
+            for row in 0..cc.new_h as usize / 2 {
+                std::ptr::copy_nonoverlapping(
+                    (*frame).data[1].add(cc.uv_off + row * cc.uv_stride),
+                    output.as_mut_ptr().add(pos),
+                    cc.uv_len,
+                );
+                pos += cc.uv_len;
+            }
+
+            for row in 0..cc.new_h as usize / 2 {
+                std::ptr::copy_nonoverlapping(
+                    (*frame).data[2].add(cc.uv_off + row * cc.uv_stride),
+                    output.as_mut_ptr().add(pos),
+                    cc.uv_len,
+                );
+                pos += cc.uv_len;
+            }
         }
     }
 }
