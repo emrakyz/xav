@@ -1,3 +1,5 @@
+use std::cmp::min;
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
@@ -12,7 +14,7 @@ pub fn fd_scenes(
     vid_path: &Path,
     scene_file: &Path,
     quiet: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<BTreeMap<usize, (f64, f64)>, Box<dyn std::error::Error>> {
     let idx = ffms::VidIdx::new(vid_path, quiet)?;
     let inf = ffms::get_vidinf(&idx)?;
 
@@ -25,10 +27,10 @@ pub fn fd_scenes(
 
     let opts = DetectionOptions {
         analysis_speed: SceneDetectionSpeed::Standard,
-        detect_flashes: false,
+        detect_flashes: true,
         min_scenecut_distance: Some(min_dist as usize),
-        max_scenecut_distance: Some(max_dist as usize),
-        lookahead_distance: 1,
+        max_scenecut_distance: None,
+        lookahead_distance: 5,
     };
 
     let progs = if quiet { None } else { Some(Arc::new(Mutex::new(ProgsBar::new(false)))) };
@@ -60,11 +62,55 @@ pub fn fd_scenes(
         pb.finish_scenes();
     }
 
+    let scores: BTreeMap<usize, (f64, f64)> =
+        results.scores.into_iter().map(|(k, v)| (k, (v.inter_cost, v.threshold))).collect();
+
+    let mut scenes = Vec::new();
+    for i in 0..results.scene_changes.len() {
+        let s = results.scene_changes[i];
+        let e = results.scene_changes.get(i + 1).copied().unwrap_or(tot_frames);
+        scenes.push((s, e));
+    }
+
+    let mut new_scenes = Vec::new();
+    for (s_frame, e_frame) in scenes {
+        let mut distance = e_frame - s_frame;
+        let split_size = max_dist as usize;
+        while distance > split_size {
+            let minimum_split_count = distance / split_size;
+            let middle_point = distance / (minimum_split_count + 1);
+            let min_size = middle_point / 2;
+            let max_size = min(split_size, middle_point + min_size);
+            let range_size = max_size - min_size;
+
+            let start_frame = new_scenes.last().copied().unwrap_or(s_frame);
+
+            let split_point = (min_size..=max_size)
+                .filter_map(|size| {
+                    scores.get(&(start_frame + size)).map(|(inter_cost, threshold)| {
+                        let inter_score = inter_cost / threshold;
+                        let distance_from_mid =
+                            (middle_point.max(size) - middle_point.min(size)) as f64;
+                        let distance_weighting = 1.0 - distance_from_mid / range_size as f64;
+                        (size, inter_score * distance_weighting)
+                    })
+                })
+                .max_by_key(|(_, score)| (*score * 10000.0).round() as u64)
+                .expect("split scores is not empty")
+                .0;
+
+            distance = e_frame - (start_frame + split_point);
+            new_scenes.push(start_frame + split_point);
+        }
+        new_scenes.push(e_frame);
+    }
+
     let mut content = String::new();
-    for &scene_frame in &results.scene_changes {
+    for &scene_frame in &new_scenes {
         writeln!(content, "{scene_frame}").unwrap();
     }
 
     fs::write(scene_file, content)?;
-    Ok(())
+
+    Ok(scores)
 }
