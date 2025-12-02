@@ -266,7 +266,7 @@ pub fn encode_all(
 
     let strat = args.decode_strat.unwrap();
 
-    let (tx, rx) = bounded::<crate::worker::WorkPkg>(0);
+    let (tx, rx) = bounded::<crate::worker::WorkPkg>(args.chunk_buffer);
     let rx = Arc::new(rx);
 
     let decoder = {
