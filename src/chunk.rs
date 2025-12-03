@@ -50,16 +50,19 @@ pub fn validate_scenes(
     fps_den: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let min_len = (fps_num + fps_den / 2) / fps_den;
+        // Allow the final scene to be arbitrarily long; only enforce a minimum length
+    // for non-final scenes to avoid pathological tiny scenes.
     let max_len = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
 
     for (i, scene) in scenes.iter().enumerate() {
         let len = scene.e_frame.saturating_sub(scene.s_frame);
         let is_last = i == scenes.len() - 1;
 
-        if (!is_last && len < min_len as usize) || len > max_len as usize {
+        // Only enforce a minimum length for non-final scenes; permit long final scenes.
+        if !is_last && len < min_len as usize {
             return Err(format!(
-                "Scene {} (frames {}-{}) has invalid length {}: must be between {} and {} frames",
-                i, scene.s_frame, scene.e_frame, len, min_len, max_len
+                "Scene {} (frames {}-{}) has invalid length {}: must be at least {} frames",
+                i, scene.s_frame, scene.e_frame, len, min_len
             )
             .into());
         }
