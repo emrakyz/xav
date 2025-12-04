@@ -380,8 +380,7 @@ fn run_metrics_worker(
     tq_ctx: &TQCtx,
 ) {
     let mut vship: Option<crate::vship::VshipProcessor> = None;
-    let mut unpacked_buf: Option<Vec<u8>> =
-        if inf.is_10bit { Some(vec![0u8; pipe.conv_buf_size]) } else { None };
+    let mut unpacked_buf = vec![0u8; if inf.is_10bit { pipe.conv_buf_size } else { 0 }];
 
     while let Ok(mut pkg) = rx.recv() {
         if vship.is_none() {
@@ -418,7 +417,7 @@ fn run_metrics_worker(
             pipe,
             vship.as_ref().unwrap(),
             metric_mode,
-            unpacked_buf.as_mut().unwrap(),
+            &mut unpacked_buf,
             prog,
             metrics_slot,
             crf as f32,
