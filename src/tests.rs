@@ -4,17 +4,16 @@ use std::sync::Arc;
 use std::thread;
 
 use crossbeam_channel::bounded;
+use ffms2_sys::FFMS_VideoSource;
 
 use crate::chunk::Chunk;
 use crate::decode::decode_chunks;
-use crate::ffms::{
-    self, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src, get_raw_frame, thr_vid_src,
-};
+use crate::ffms::{self, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, thr_vid_src};
 use crate::pipeline::Pipeline;
 use crate::svt::get_frame;
 
 fn extr_raw_data(
-    vid_src: *mut std::ffi::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -31,9 +30,9 @@ fn extr_raw_data(
         let cropped_width = width - crop_h * 2;
         let cropped_height = height - crop_v * 2;
 
-        let y_linesize = (*frame).linesize[0] as usize;
-        let u_linesize = (*frame).linesize[1] as usize;
-        let v_linesize = (*frame).linesize[2] as usize;
+        let y_linesize = (*frame).Linesize[0] as usize;
+        let u_linesize = (*frame).Linesize[1] as usize;
+        let v_linesize = (*frame).Linesize[2] as usize;
 
         let mut pos = 0;
 
@@ -41,7 +40,7 @@ fn extr_raw_data(
             let src_off = (crop_h * pix_sz) + ((row + crop_v) * y_linesize);
             let len = cropped_width * pix_sz;
             std::ptr::copy_nonoverlapping(
-                (*frame).data[0].add(src_off),
+                (*frame).Data[0].add(src_off),
                 output.as_mut_ptr().add(pos),
                 len,
             );
@@ -52,7 +51,7 @@ fn extr_raw_data(
             let src_off = (crop_h / 2 * pix_sz) + ((row + crop_v / 2) * u_linesize);
             let len = cropped_width / 2 * pix_sz;
             std::ptr::copy_nonoverlapping(
-                (*frame).data[1].add(src_off),
+                (*frame).Data[1].add(src_off),
                 output.as_mut_ptr().add(pos),
                 len,
             );
@@ -63,7 +62,7 @@ fn extr_raw_data(
             let src_off = (crop_h / 2 * pix_sz) + ((row + crop_v / 2) * v_linesize);
             let len = cropped_width / 2 * pix_sz;
             std::ptr::copy_nonoverlapping(
-                (*frame).data[2].add(src_off),
+                (*frame).Data[2].add(src_off),
                 output.as_mut_ptr().add(pos),
                 len,
             );
