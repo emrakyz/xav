@@ -421,6 +421,8 @@ main() {
 
                 export PKG_CONFIG_ALL_STATIC=1
                 export FFMPEG_DIR="${BUILD_DIR}/FFmpeg/install"
+                export FFMS_INCLUDE_DIR="${BUILD_DIR}/ffms2/include"
+                export FFMS_LIB_DIR="${BUILD_DIR}/ffms2/src/core/.libs"
         }
 
         cd "${XAV_DIR}"
