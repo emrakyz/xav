@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -11,7 +10,8 @@ use crossbeam_channel::select;
 
 use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
 use crate::decode::decode_chunks;
-use crate::ffms::{VidIdx, VidInf, calc_10bit_size, conv_to_10bit, unpack_10bit};
+use crate::ffms::{VidIdx, VidInf};
+use crate::pipeline::Pipeline;
 use crate::progs::ProgsTrack;
 use crate::worker::Semaphore;
 #[cfg(feature = "vship")]
@@ -33,7 +33,6 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Comman
 
     let width_str = width.to_string();
     let height_str = height.to_string();
-
     let fps_num_str = cfg.inf.fps_num.to_string();
     let fps_den_str = cfg.inf.fps_den.to_string();
 
@@ -71,8 +70,7 @@ fn make_enc_cmd(cfg: &EncConfig, quiet: bool, width: u32, height: u32) -> Comman
     }
 
     if cfg.crf >= 0.0 {
-        let crf_str = format!("{:.2}", cfg.crf);
-        cmd.arg("--crf").arg(crf_str);
+        cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
     }
 
     colorize(&mut cmd, cfg.inf);
@@ -121,55 +119,7 @@ fn colorize(cmd: &mut Command, inf: &VidInf) {
 #[inline]
 pub fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
     let start = i * frame_size;
-    let end = start + frame_size;
-    &frames[start..end]
-}
-
-fn write_frames(
-    child: &mut std::process::Child,
-    frames: &[u8],
-    frame_size: usize,
-    frame_count: usize,
-    inf: &VidInf,
-    conversion_buf: &mut Option<Vec<u8>>,
-) -> usize {
-    let Some(mut stdin) = child.stdin.take() else {
-        return 0;
-    };
-
-    let mut written = 0;
-
-    if let Some(buf) = conversion_buf {
-        if inf.is_10bit {
-            for i in 0..frame_count {
-                let frame = get_frame(frames, i, frame_size);
-                unpack_10bit(frame, buf);
-                if stdin.write_all(buf).is_err() {
-                    break;
-                }
-                written += 1;
-            }
-        } else {
-            for i in 0..frame_count {
-                let frame = get_frame(frames, i, frame_size);
-                conv_to_10bit(frame, buf);
-                if stdin.write_all(buf).is_err() {
-                    break;
-                }
-                written += 1;
-            }
-        }
-    } else {
-        for i in 0..frame_count {
-            let frame = get_frame(frames, i, frame_size);
-            if stdin.write_all(frame).is_err() {
-                break;
-            }
-            written += 1;
-        }
-    }
-
-    written
+    &frames[start..start + frame_size]
 }
 
 struct WorkerStats {
@@ -186,10 +136,12 @@ impl WorkerStats {
     }
 
     fn add_completion(&self, completion: ChunkComp, work_dir: &Path) {
-        let mut data = self.completions.lock().unwrap();
-        data.chnks_done.push(completion);
+        {
+            let mut data = self.completions.lock().unwrap();
+            data.chnks_done.push(completion);
+        }
+        let data = self.completions.lock().unwrap();
         let _ = crate::chunk::save_resume(&data, work_dir);
-        drop(data);
     }
 }
 
@@ -265,6 +217,12 @@ pub fn encode_all(
     );
 
     let strat = args.decode_strat.unwrap();
+    let pipe = Pipeline::new(
+        inf,
+        strat,
+        #[cfg(feature = "vship")]
+        None,
+    );
 
     let (tx, rx) = bounded::<crate::worker::WorkPkg>(args.chunk_buffer);
     let rx = Arc::new(rx);
@@ -282,30 +240,30 @@ pub fn encode_all(
     for worker_id in 0..args.worker {
         let rx_clone = Arc::clone(&rx);
         let inf = inf.clone();
+        let pipe = pipe.clone();
         let params = args.params.clone();
         let stats_clone = stats.clone();
         let grain = grain_table.cloned();
         let wd = work_dir.to_path_buf();
         let prog_clone = prog.clone();
-        let wid = worker_id;
 
         let handle = thread::spawn(move || {
             run_enc_worker(
                 &rx_clone,
                 &params,
                 &inf,
+                &pipe,
                 &wd,
                 grain.as_deref(),
                 stats_clone.as_ref(),
                 prog_clone.as_ref(),
-                wid,
+                worker_id,
             );
         });
         workers.push(handle);
     }
 
     decoder.join().unwrap();
-
     for handle in workers {
         handle.join().unwrap();
     }
@@ -396,7 +354,6 @@ fn complete_chunk(
     tq_logger.lock().unwrap().push(log_entry);
 
     let mut tq_scores = TQ_SCORES.get_or_init(|| std::sync::Mutex::new(Vec::new())).lock().unwrap();
-
     if use_cvvdp {
         tq_scores.push(final_score);
     } else {
@@ -410,6 +367,7 @@ fn run_metrics_worker(
     rework_tx: &crossbeam_channel::Sender<crate::worker::WorkPkg>,
     done_tx: &crossbeam_channel::Sender<usize>,
     inf: &crate::ffms::VidInf,
+    pipe: &Pipeline,
     work_dir: &Path,
     metric_mode: &str,
     stats: Option<&Arc<WorkerStats>>,
@@ -422,7 +380,8 @@ fn run_metrics_worker(
     tq_ctx: &TQCtx,
 ) {
     let mut vship: Option<crate::vship::VshipProcessor> = None;
-    let mut unpacked_buf: Option<Vec<u8>> = None;
+    let mut unpacked_buf: Option<Vec<u8>> =
+        if inf.is_10bit { Some(vec![0u8; pipe.conv_buf_size]) } else { None };
 
     while let Ok(mut pkg) = rx.recv() {
         if vship.is_none() {
@@ -443,13 +402,6 @@ fn run_metrics_worker(
                 )
                 .unwrap(),
             );
-
-            if inf.is_10bit {
-                let mut cropped_inf = inf.clone();
-                cropped_inf.width = pkg.width;
-                cropped_inf.height = pkg.height;
-                unpacked_buf = Some(vec![0u8; crate::ffms::calc_10bit_size(&cropped_inf)]);
-            }
         }
 
         let tq_st = pkg.tq_state.as_ref().unwrap();
@@ -459,15 +411,14 @@ fn run_metrics_worker(
         let last_score = tq_st.probes.last().map(|probe| probe.score);
         let metrics_slot = worker_count + worker_id;
 
-        let (score, frame_scores) = crate::tq::calc_metrics(
+        let (score, frame_scores) = (pipe.calc_metrics)(
             &pkg,
             &probe_path,
             inf,
+            pipe,
             vship.as_ref().unwrap(),
             metric_mode,
-            tq_ctx.use_cvvdp,
-            tq_ctx.use_butteraugli,
-            unpacked_buf.as_mut(),
+            unpacked_buf.as_mut().unwrap(),
             prog,
             metrics_slot,
             crf as f32,
@@ -532,6 +483,9 @@ fn encode_tq(
         use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
     };
 
+    let strat = args.decode_strat.unwrap();
+    let pipe = Pipeline::new(inf, strat, args.target_quality.as_deref());
+
     let (enc_tx, enc_rx) = bounded::<crate::worker::WorkPkg>(2);
     let (met_tx, met_rx) = bounded::<crate::worker::WorkPkg>(2);
     let (rework_tx, rework_rx) = bounded::<crate::worker::WorkPkg>(2);
@@ -541,7 +495,6 @@ fn encode_tq(
     let met_rx = Arc::new(met_rx);
 
     let total_chunks = chunks.iter().filter(|c| !skip_indices.contains(&c.idx)).count();
-
     let max_in_flight = args.chunk_buffer;
     let permits = Arc::new(Semaphore::new(max_in_flight));
 
@@ -550,7 +503,6 @@ fn encode_tq(
         let idx = Arc::clone(idx);
         let inf = inf.clone();
         let enc_tx = enc_tx.clone();
-        let strat = args.decode_strat.unwrap();
         let permits_decoder = Arc::clone(&permits);
         let permits_done = Arc::clone(&permits);
 
@@ -571,7 +523,6 @@ fn encode_tq(
             });
 
             let mut completed = 0;
-
             while completed < total_chunks {
                 select! {
                     recv(decode_rx) -> pkg => {
@@ -615,6 +566,7 @@ fn encode_tq(
         let rework_tx = rework_tx.clone();
         let done_tx = done_tx.clone();
         let inf = inf.clone();
+        let pipe = pipe.clone();
         let wd = work_dir.to_path_buf();
         let metric_mode = args.metric_mode.clone();
         let st = stats.clone();
@@ -630,6 +582,7 @@ fn encode_tq(
                 &rework_tx,
                 &done_tx,
                 &inf,
+                &pipe,
                 &wd,
                 &metric_mode,
                 st.as_ref(),
@@ -649,6 +602,7 @@ fn encode_tq(
         let rx = Arc::clone(&enc_rx);
         let tx = met_tx.clone();
         let inf = inf.clone();
+        let pipe = pipe.clone();
         let params = args.params.clone();
         let wd = work_dir.to_path_buf();
         let grain = grain_table.cloned();
@@ -658,16 +612,9 @@ fn encode_tq(
         let target = tq_ctx.target;
 
         workers.push(thread::spawn(move || {
-            let mut conv_buf: Option<Vec<u8>> = None;
+            let mut conv_buf = vec![0u8; pipe.conv_buf_size];
 
             while let Ok(mut pkg) = rx.recv() {
-                if conv_buf.is_none() {
-                    let mut cropped_inf = inf.clone();
-                    cropped_inf.width = pkg.width;
-                    cropped_inf.height = pkg.height;
-                    conv_buf = Some(vec![0u8; crate::ffms::calc_10bit_size(&cropped_inf)]);
-                }
-
                 if pkg.tq_state.is_none() {
                     pkg.tq_state = Some(crate::worker::TQState {
                         probes: Vec::new(),
@@ -698,6 +645,7 @@ fn encode_tq(
                     crf,
                     &params,
                     &inf,
+                    &pipe,
                     &wd,
                     grain.as_deref(),
                     &mut conv_buf,
@@ -735,9 +683,10 @@ fn enc_tq_probe(
     crf: f64,
     params: &str,
     inf: &VidInf,
+    pipe: &Pipeline,
     work_dir: &Path,
     grain: Option<&Path>,
-    conv_buf: &mut Option<Vec<u8>>,
+    conv_buf: &mut [u8],
     prog: Option<&Arc<ProgsTrack>>,
     worker_id: usize,
 ) -> PathBuf {
@@ -754,9 +703,7 @@ fn enc_tq_probe(
         p.watch_enc(stderr, worker_id, pkg.chunk.idx, false, Some((crf as f32, last_score)));
     }
 
-    let frame_size = pkg.yuv.len() / pkg.frame_count;
-
-    write_frames(&mut child, &pkg.yuv, frame_size, pkg.frame_count, inf, conv_buf);
+    (pipe.write_frames)(child.stdin.as_mut().unwrap(), &pkg.yuv, pkg.frame_count, conv_buf, pipe);
 
     let status = child.wait().unwrap();
     if !status.success() {
@@ -770,23 +717,17 @@ fn run_enc_worker(
     rx: &Arc<crossbeam_channel::Receiver<crate::worker::WorkPkg>>,
     params: &str,
     inf: &VidInf,
+    pipe: &Pipeline,
     work_dir: &Path,
     grain: Option<&Path>,
     stats: Option<&Arc<WorkerStats>>,
     prog: Option<&Arc<ProgsTrack>>,
     worker_id: usize,
 ) {
-    let mut conv_buf: Option<Vec<u8>> = None;
+    let mut conv_buf = vec![0u8; pipe.conv_buf_size];
 
     while let Ok(pkg) = rx.recv() {
-        if conv_buf.is_none() {
-            let mut cropped_inf = inf.clone();
-            cropped_inf.width = pkg.width;
-            cropped_inf.height = pkg.height;
-            conv_buf = Some(vec![0u8; calc_10bit_size(&cropped_inf)]);
-        }
-
-        enc_chunk(&pkg, -1.0, params, inf, work_dir, grain, &mut conv_buf, prog, worker_id);
+        enc_chunk(&pkg, -1.0, params, inf, pipe, work_dir, grain, &mut conv_buf, prog, worker_id);
 
         if let Some(s) = stats {
             s.completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -807,9 +748,10 @@ fn enc_chunk(
     crf: f32,
     params: &str,
     inf: &VidInf,
+    pipe: &Pipeline,
     work_dir: &Path,
     grain: Option<&Path>,
-    conv_buf: &mut Option<Vec<u8>>,
+    conv_buf: &mut [u8],
     prog: Option<&Arc<ProgsTrack>>,
     worker_id: usize,
 ) {
@@ -824,9 +766,7 @@ fn enc_chunk(
         p.watch_enc(stderr, worker_id, pkg.chunk.idx, true, None);
     }
 
-    let frame_size = pkg.yuv.len() / pkg.frame_count;
-
-    write_frames(&mut child, &pkg.yuv, frame_size, pkg.frame_count, inf, conv_buf);
+    (pipe.write_frames)(child.stdin.as_mut().unwrap(), &pkg.yuv, pkg.frame_count, conv_buf, pipe);
 
     let status = child.wait().unwrap();
     if !status.success() {

@@ -377,13 +377,19 @@ pub fn thr_vid_src(
     }
 }
 
-pub const fn calc_8bit_size(inf: &VidInf) -> usize {
-    (inf.width * inf.height * 3 / 2) as usize
+#[inline]
+const fn packed_row_size(w: usize) -> usize {
+    (w * 2 * 5).div_ceil(8).next_multiple_of(5)
 }
 
-pub const fn calc_packed_size(inf: &VidInf) -> usize {
-    let tot_pixels = (inf.width * inf.height * 3 / 2) as usize;
-    (tot_pixels * 5) / 4
+pub const fn calc_8bit_size(w: u32, h: u32) -> usize {
+    (w * h * 3 / 2) as usize
+}
+
+pub const fn calc_packed_size(w: u32, h: u32) -> usize {
+    let y_row = packed_row_size(w as usize);
+    let uv_row = packed_row_size(w as usize / 2);
+    y_row * h as usize + uv_row * h as usize
 }
 
 fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, dst: *mut u8) {
@@ -512,12 +518,6 @@ pub fn extr_8bit_fast(
     }
 }
 
-pub const fn calc_10bit_size(inf: &VidInf) -> usize {
-    let y_size = (inf.width * inf.height) as usize * 2;
-    let uv_size = y_size / 4;
-    y_size + uv_size * 2
-}
-
 pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
     input.iter().zip(output.chunks_exact_mut(2)).for_each(|(&pixel, out_chunk)| {
         let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
@@ -558,28 +558,54 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
         let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
         pack_4_pix_10bit(*i_arr, o_arr);
     });
-
-    let remaining_in = input.len() % 8;
-    if remaining_in > 0 {
-        let processed_in = (input.len() / 8) * 8;
-        let processed_out = (output.len() / 5) * 5;
-        let mut temp = [0u8; 8];
-        temp[..remaining_in].copy_from_slice(&input[processed_in..]);
-
-        let output_chunk: &mut [u8; 5] =
-            unsafe { &mut *output.as_mut_ptr().add(processed_out).cast::<[u8; 5]>() };
-
-        pack_4_pix_10bit(temp, output_chunk);
-    }
 }
 
-pub fn unpack_10bit(input: &[u8], output: &mut [u8]) {
+pub fn unpack_10bit(input: &[u8], output: &mut [u8], _w: usize, _h: usize) {
     input.chunks_exact(5).zip(output.chunks_exact_mut(8)).for_each(|(i_chunk, o_chunk)| {
         let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
         let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
-
         unpack_4_pix_10bit(*i_arr, o_arr);
     });
+}
+
+pub fn unpack_10bit_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
+    let y_packed = packed_row_size(w) * h;
+    let uv_packed = packed_row_size(w / 2) * (h / 2);
+
+    unpack_plane_rem(&input[..y_packed], &mut output[..w * h * 2], w, h);
+    unpack_plane_rem(
+        &input[y_packed..y_packed + uv_packed],
+        &mut output[w * h * 2..w * h * 2 + w * h / 2],
+        w / 2,
+        h / 2,
+    );
+    unpack_plane_rem(
+        &input[y_packed + uv_packed..],
+        &mut output[w * h * 2 + w * h / 2..],
+        w / 2,
+        h / 2,
+    );
+}
+
+fn unpack_plane_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
+    let unpacked_row = w * 2;
+    let packed_row = packed_row_size(w);
+
+    for row in 0..h {
+        let src = &input[row * packed_row..row * packed_row + packed_row];
+        let dst = &mut output[row * unpacked_row..row * unpacked_row + unpacked_row];
+
+        src.chunks_exact(5).zip(dst.chunks_exact_mut(8)).for_each(|(i, o)| {
+            unpack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+        });
+
+        let rem = unpacked_row % 8;
+        if rem > 0 {
+            let mut tmp = [0u8; 8];
+            unpack_4_pix_10bit((&src[packed_row - 5..]).try_into().unwrap(), &mut tmp);
+            dst[unpacked_row - rem..].copy_from_slice(&tmp[..rem]);
+        }
+    }
 }
 
 fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) {
@@ -667,15 +693,20 @@ pub fn extr_10bit_crop(
 #[derive(Clone, Copy)]
 pub enum DecodeStrat {
     B10Fast,
+    B10FastRem,
     B10Stride,
-    B10Crop { cc: crate::decode::CropCalc },
-    B10CropFast { cc: crate::decode::CropCalc },
-    B10CropStride { cc: crate::decode::CropCalc },
+    B10StrideRem,
+    B10Crop { cc: CropCalc },
+    B10CropRem { cc: CropCalc },
+    B10CropFast { cc: CropCalc },
+    B10CropFastRem { cc: CropCalc },
+    B10CropStride { cc: CropCalc },
+    B10CropStrideRem { cc: CropCalc },
     B8Fast,
     B8Stride,
-    B8Crop { cc: crate::decode::CropCalc },
-    B8CropFast { cc: crate::decode::CropCalc },
-    B8CropStride { cc: crate::decode::CropCalc },
+    B8Crop { cc: CropCalc },
+    B8CropFast { cc: CropCalc },
+    B8CropStride { cc: CropCalc },
 }
 
 pub fn get_decode_strat(
@@ -710,28 +741,42 @@ pub fn get_decode_strat(
         let has_crop = crop != (0, 0);
         let h_crop = crop.1 != 0;
 
-        let strat = match (inf.is_10bit, has_crop, has_pad, h_crop) {
-            (true, false, false, _) => DecodeStrat::B10Fast,
-            (true, false, true, _) => DecodeStrat::B10Stride,
-            (true, true, false, false) => {
-                DecodeStrat::B10CropFast { cc: crate::decode::CropCalc::new(inf, crop, 2) }
+        let final_w = if has_crop { inf.width - crop.1 * 2 } else { inf.width };
+        let has_rem = inf.is_10bit && (final_w % 8) != 0;
+
+        let strat = match (inf.is_10bit, has_crop, has_pad, h_crop, has_rem) {
+            (true, false, false, _, false) => DecodeStrat::B10Fast,
+            (true, false, false, _, true) => DecodeStrat::B10FastRem,
+            (true, false, true, _, false) => DecodeStrat::B10Stride,
+            (true, false, true, _, true) => DecodeStrat::B10StrideRem,
+            (true, true, false, false, false) => {
+                DecodeStrat::B10CropFast { cc: CropCalc::new(inf, crop, 2) }
             }
-            (true, true, false, true) => {
-                DecodeStrat::B10Crop { cc: crate::decode::CropCalc::new(inf, crop, 2) }
+            (true, true, false, false, true) => {
+                DecodeStrat::B10CropFastRem { cc: CropCalc::new(inf, crop, 2) }
             }
-            (true, true, true, _) => {
-                DecodeStrat::B10CropStride { cc: crate::decode::CropCalc::new(inf, crop, 2) }
+            (true, true, false, true, false) => {
+                DecodeStrat::B10Crop { cc: CropCalc::new(inf, crop, 2) }
             }
-            (false, false, false, _) => DecodeStrat::B8Fast,
-            (false, false, true, _) => DecodeStrat::B8Stride,
-            (false, true, false, false) => {
-                DecodeStrat::B8CropFast { cc: crate::decode::CropCalc::new(inf, crop, 1) }
+            (true, true, false, true, true) => {
+                DecodeStrat::B10CropRem { cc: CropCalc::new(inf, crop, 2) }
             }
-            (false, true, false, true) => {
-                DecodeStrat::B8Crop { cc: crate::decode::CropCalc::new(inf, crop, 1) }
+            (true, true, true, _, false) => {
+                DecodeStrat::B10CropStride { cc: CropCalc::new(inf, crop, 2) }
             }
-            (false, true, true, _) => {
-                DecodeStrat::B8CropStride { cc: crate::decode::CropCalc::new(inf, crop, 1) }
+            (true, true, true, _, true) => {
+                DecodeStrat::B10CropStrideRem { cc: CropCalc::new(inf, crop, 2) }
+            }
+            (false, false, false, _, _) => DecodeStrat::B8Fast,
+            (false, false, true, _, _) => DecodeStrat::B8Stride,
+            (false, true, false, false, _) => {
+                DecodeStrat::B8CropFast { cc: CropCalc::new(inf, crop, 1) }
+            }
+            (false, true, false, true, _) => {
+                DecodeStrat::B8Crop { cc: CropCalc::new(inf, crop, 1) }
+            }
+            (false, true, true, _, _) => {
+                DecodeStrat::B8CropStride { cc: CropCalc::new(inf, crop, 1) }
             }
         };
 
@@ -862,6 +907,7 @@ pub fn extr_10bit_crop_pack_stride(
 
         let w = crop_calc.new_w as usize;
         let h = crop_calc.new_h as usize;
+        let pix_sz = 2;
 
         let y_linesize = (*frame).linesize[0] as usize;
         let uv_linesize = (*frame).linesize[1] as usize;
@@ -870,7 +916,8 @@ pub fn extr_10bit_crop_pack_stride(
         let pack_row_y = (w * 2 * 5) / 8;
 
         for row in 0..h {
-            let src_off = crop_calc.y_start + row * y_linesize;
+            let src_off = (crop_calc.crop_h as usize * pix_sz)
+                + (row + crop_calc.crop_v as usize) * y_linesize;
             let src_row =
                 std::slice::from_raw_parts((*frame).data[0].add(src_off), crop_calc.y_len);
             let dst_row =
@@ -886,7 +933,8 @@ pub fn extr_10bit_crop_pack_stride(
         let pack_row_uv = (w / 2 * 2 * 5) / 8;
 
         for row in 0..h / 2 {
-            let src_off = crop_calc.u_start + row * uv_linesize;
+            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
+                + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
             let src_row =
                 std::slice::from_raw_parts((*frame).data[1].add(src_off), crop_calc.uv_len);
             let dst_row =
@@ -900,7 +948,8 @@ pub fn extr_10bit_crop_pack_stride(
         }
 
         for row in 0..h / 2 {
-            let src_off = crop_calc.v_start + row * uv_linesize;
+            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
+                + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
             let src_row =
                 std::slice::from_raw_parts((*frame).data[2].add(src_off), crop_calc.uv_len);
             let dst_row =
@@ -911,6 +960,268 @@ pub fn extr_10bit_crop_pack_stride(
             });
 
             dst_pos += pack_row_uv;
+        }
+    }
+}
+
+fn pack_stride_rem(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) {
+    let w_bytes = w * 2;
+    let y_row = packed_row_size(w);
+
+    unsafe {
+        for row in 0..h {
+            let src_row = std::slice::from_raw_parts(src.add(row * stride), w_bytes);
+            let dst_row = std::slice::from_raw_parts_mut(out.add(row * y_row), y_row);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            let rem = w_bytes % 8;
+            if rem > 0 {
+                let mut tmp = [0u8; 8];
+                tmp[..rem].copy_from_slice(&src_row[w_bytes - rem..]);
+                pack_4_pix_10bit(tmp, (&mut dst_row[y_row - 5..]).try_into().unwrap());
+            }
+        }
+    }
+}
+
+pub fn pack_10bit_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
+    let unpacked_row = w * 2;
+    let y_row = packed_row_size(w);
+
+    for row in 0..h {
+        let src = &input[row * unpacked_row..][..unpacked_row];
+        let dst = &mut output[row * y_row..][..y_row];
+
+        src.chunks_exact(8).zip(dst.chunks_exact_mut(5)).for_each(|(i, o)| {
+            pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+        });
+
+        let rem = unpacked_row % 8;
+        if rem > 0 {
+            let mut tmp = [0u8; 8];
+            tmp[..rem].copy_from_slice(&src[unpacked_row - rem..]);
+            pack_4_pix_10bit(tmp, (&mut dst[y_row - 5..]).try_into().unwrap());
+        }
+    }
+}
+
+pub fn extr_10bit_pack_rem(
+    vid_src: *mut std::ffi::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+
+        let y_row = packed_row_size(w);
+        let uv_row = packed_row_size(w / 2);
+        let y_pack = y_row * h;
+        let uv_pack = uv_row * h / 2;
+
+        let y_src = std::slice::from_raw_parts((*frame).data[0], w * h * 2);
+        pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
+
+        let u_src = std::slice::from_raw_parts((*frame).data[1], w * h / 2);
+        pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
+
+        let v_src = std::slice::from_raw_parts((*frame).data[2], w * h / 2);
+        pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
+    }
+}
+
+pub fn extr_10bit_pack_stride_rem(
+    vid_src: *mut std::ffi::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+
+        let y_row = packed_row_size(w);
+        let uv_row = packed_row_size(w / 2);
+        let y_pack = y_row * h;
+        let uv_pack = uv_row * h / 2;
+
+        pack_stride_rem((*frame).data[0], (*frame).linesize[0] as usize, w, h, output.as_mut_ptr());
+        pack_stride_rem(
+            (*frame).data[1],
+            (*frame).linesize[1] as usize,
+            w / 2,
+            h / 2,
+            output.as_mut_ptr().add(y_pack),
+        );
+        pack_stride_rem(
+            (*frame).data[2],
+            (*frame).linesize[2] as usize,
+            w / 2,
+            h / 2,
+            output.as_mut_ptr().add(y_pack + uv_pack),
+        );
+    }
+}
+
+pub fn extr_10bit_crop_fast_rem(
+    vid_src: *mut std::ffi::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = cc.new_w as usize;
+        let h = cc.new_h as usize;
+
+        let y_row = packed_row_size(w);
+        let uv_row = packed_row_size(w / 2);
+        let y_pack = y_row * h;
+        let uv_pack = uv_row * h / 2;
+
+        let y_src = std::slice::from_raw_parts((*frame).data[0].add(cc.y_start), w * h * 2);
+        pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
+
+        let u_src = std::slice::from_raw_parts((*frame).data[1].add(cc.uv_off), w * h / 2);
+        pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
+
+        let v_src = std::slice::from_raw_parts((*frame).data[2].add(cc.uv_off), w * h / 2);
+        pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
+    }
+}
+
+pub fn extr_10bit_crop_rem(
+    vid_src: *mut std::ffi::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = cc.new_w as usize;
+        let h = cc.new_h as usize;
+
+        let y_row = packed_row_size(w);
+        let uv_row = packed_row_size(w / 2);
+        let y_pack = y_row * h;
+        let uv_pack = uv_row * h / 2;
+
+        pack_stride_rem(
+            (*frame).data[0].add(cc.y_start),
+            (*frame).linesize[0] as usize,
+            w,
+            h,
+            output.as_mut_ptr(),
+        );
+        pack_stride_rem(
+            (*frame).data[1].add(cc.uv_off),
+            (*frame).linesize[1] as usize,
+            w / 2,
+            h / 2,
+            output.as_mut_ptr().add(y_pack),
+        );
+        pack_stride_rem(
+            (*frame).data[2].add(cc.uv_off),
+            (*frame).linesize[2] as usize,
+            w / 2,
+            h / 2,
+            output.as_mut_ptr().add(y_pack + uv_pack),
+        );
+    }
+}
+
+pub fn extr_10bit_crop_pack_stride_rem(
+    vid_src: *mut std::ffi::c_void,
+    frame_idx: usize,
+    output: &mut [u8],
+    crop_calc: &CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let w = crop_calc.new_w as usize;
+        let h = crop_calc.new_h as usize;
+        let pix_sz = 2;
+
+        let y_linesize = (*frame).linesize[0] as usize;
+        let uv_linesize = (*frame).linesize[1] as usize;
+
+        let y_row = packed_row_size(w);
+        let uv_row = packed_row_size(w / 2);
+
+        let mut dst_pos = 0;
+
+        for row in 0..h {
+            let src_off = (crop_calc.crop_h as usize * pix_sz)
+                + (row + crop_calc.crop_v as usize) * y_linesize;
+            let src_row =
+                std::slice::from_raw_parts((*frame).data[0].add(src_off), crop_calc.y_len);
+            let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            let rem = crop_calc.y_len % 8;
+            if rem > 0 {
+                let mut tmp = [0u8; 8];
+                tmp[..rem].copy_from_slice(&src_row[crop_calc.y_len - rem..]);
+                pack_4_pix_10bit(tmp, (&mut dst_row[y_row - 5..]).try_into().unwrap());
+            }
+
+            dst_pos += y_row;
+        }
+
+        for row in 0..h / 2 {
+            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
+                + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
+            let src_row =
+                std::slice::from_raw_parts((*frame).data[1].add(src_off), crop_calc.uv_len);
+            let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            let rem = crop_calc.uv_len % 8;
+            if rem > 0 {
+                let mut tmp = [0u8; 8];
+                tmp[..rem].copy_from_slice(&src_row[crop_calc.uv_len - rem..]);
+                pack_4_pix_10bit(tmp, (&mut dst_row[uv_row - 5..]).try_into().unwrap());
+            }
+
+            dst_pos += uv_row;
+        }
+
+        for row in 0..h / 2 {
+            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
+                + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
+            let src_row =
+                std::slice::from_raw_parts((*frame).data[2].add(src_off), crop_calc.uv_len);
+            let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
+
+            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
+
+            let rem = crop_calc.uv_len % 8;
+            if rem > 0 {
+                let mut tmp = [0u8; 8];
+                tmp[..rem].copy_from_slice(&src_row[crop_calc.uv_len - rem..]);
+                pack_4_pix_10bit(tmp, (&mut dst_row[uv_row - 5..]).try_into().unwrap());
+            }
+
+            dst_pos += uv_row;
         }
     }
 }

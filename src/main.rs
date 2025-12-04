@@ -11,6 +11,7 @@ mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
 mod noise;
+pub mod pipeline;
 mod progs;
 mod scd;
 mod svt;
@@ -20,8 +21,8 @@ mod tq;
 mod vship;
 mod worker;
 
-// #[cfg(test)]
-// mod tests;
+#[cfg(test)]
+mod tests;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
