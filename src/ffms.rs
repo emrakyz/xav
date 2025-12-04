@@ -2,125 +2,14 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::Arc;
 
+use ffms2_sys::{
+    FFMS_CreateIndexer, FFMS_CreateVideoSource, FFMS_DestroyIndex, FFMS_DestroyVideoSource,
+    FFMS_DoIndexing2, FFMS_ErrorInfo, FFMS_Frame, FFMS_GetFirstIndexedTrackOfType, FFMS_GetFrame,
+    FFMS_GetVideoProperties, FFMS_Index, FFMS_IndexBelongsToFile, FFMS_Init, FFMS_ReadIndex,
+    FFMS_SetProgressCallback, FFMS_TrackTypeIndexSettings, FFMS_VideoSource, FFMS_WriteIndex,
+};
+
 use crate::decode::CropCalc;
-
-#[repr(C)]
-pub struct FFMS_ErrorInfo {
-    error_type: i32,
-    sub_type: i32,
-    buffer: *mut i8,
-    buffer_size: i32,
-}
-
-#[repr(C)]
-struct FFMS_VideoProperties {
-    fps_denominator: i32,
-    fps_numerator: i32,
-    _rff_denominator: i32,
-    _rff_numerator: i32,
-    num_frames: i32,
-    _sar_num: i32,
-    _sar_den: i32,
-    _crop_top: i32,
-    _crop_bottom: i32,
-    _crop_left: i32,
-    _crop_right: i32,
-    _top_field_first: i32,
-    color_space: i32,
-    _color_range: i32,
-    _first_time: f64,
-    _last_time: f64,
-    _rotation: i32,
-    _stereo3d_type: i32,
-    _stereo3d_flags: i32,
-    _last_end_time: f64,
-    has_mastering_display_primaries: i32,
-    mastering_display_primaries_x: [f64; 3],
-    mastering_display_primaries_y: [f64; 3],
-    mastering_display_white_point_x: f64,
-    mastering_display_white_point_y: f64,
-    has_mastering_display_luminance: i32,
-    mastering_display_min_luminance: f64,
-    mastering_display_max_luminance: f64,
-    has_content_light_level: i32,
-    content_light_level_max: u32,
-    content_light_level_average: u32,
-    _flip: i32,
-}
-
-#[repr(C)]
-pub struct FFMS_Frame {
-    pub data: [*const u8; 4],
-    pub linesize: [i32; 4],
-    pub encoded_width: i32,
-    pub encoded_height: i32,
-    _encoded_pixel_format: i32,
-    _scaled_width: i32,
-    _scaled_height: i32,
-    _converted_pixel_format: i32,
-    _key_frame: i32,
-    _repeat_pict: i32,
-    _interlaced_frame: i32,
-    _top_field_first: i32,
-    _pict_type: i8,
-    _color_space: i32,
-    color_range: i32,
-    pub color_primaries: i32,
-    pub transfer_characteristics: i32,
-    pub matrix_coefficients: i32,
-    pub chroma_location: i32,
-}
-
-type IndexCallback = extern "C" fn(current: i64, tot: i64, ic_private: *mut libc::c_void) -> i32;
-
-unsafe extern "C" {
-    fn FFMS_Init(unused: i32, use_utf8: i32);
-    fn FFMS_CreateIndexer(source: *const i8, err: *mut FFMS_ErrorInfo) -> *mut libc::c_void;
-    fn FFMS_SetProgressCallback(
-        idxer: *mut libc::c_void,
-        ic: IndexCallback,
-        ic_private: *mut libc::c_void,
-    );
-    fn FFMS_TrackTypeIndexSettings(
-        idxer: *mut libc::c_void,
-        track_type: i32,
-        index: i32,
-        dump: i32,
-    );
-    fn FFMS_DoIndexing2(
-        idxer: *mut libc::c_void,
-        error_handling: i32,
-        err: *mut FFMS_ErrorInfo,
-    ) -> *mut libc::c_void;
-    fn FFMS_GetFirstIndexedTrackOfType(
-        idx: *mut libc::c_void,
-        track_type: i32,
-        err: *mut FFMS_ErrorInfo,
-    ) -> i32;
-    fn FFMS_CreateVideoSource(
-        source: *const i8,
-        track: i32,
-        idx: *mut libc::c_void,
-        threads: i32,
-        seekmode: i32,
-        err: *mut FFMS_ErrorInfo,
-    ) -> *mut libc::c_void;
-    fn FFMS_GetVideoProperties(v: *mut libc::c_void) -> *const FFMS_VideoProperties;
-    fn FFMS_GetFrame(v: *mut libc::c_void, n: i32, err: *mut FFMS_ErrorInfo) -> *const FFMS_Frame;
-    fn FFMS_DestroyVideoSource(v: *mut libc::c_void);
-    fn FFMS_DestroyIndex(idx: *mut libc::c_void);
-    fn FFMS_WriteIndex(
-        idx_file: *const i8,
-        idx: *mut libc::c_void,
-        err: *mut FFMS_ErrorInfo,
-    ) -> i32;
-    fn FFMS_ReadIndex(idx_file: *const i8, err: *mut FFMS_ErrorInfo) -> *mut libc::c_void;
-    fn FFMS_IndexBelongsToFile(
-        idx: *mut libc::c_void,
-        source: *const i8,
-        err: *mut FFMS_ErrorInfo,
-    ) -> i32;
-}
 
 #[derive(Clone)]
 pub struct VidInf {
@@ -142,13 +31,17 @@ pub struct VidInf {
 pub struct VidIdx {
     pub path: String,
     pub track: i32,
-    pub idx_handle: *mut libc::c_void,
+    pub idx_handle: *mut FFMS_Index,
 }
 
-extern "C" fn idx_progs(current: i64, tot: i64, ic_private: *mut libc::c_void) -> i32 {
+extern "C" fn idx_progs(
+    current: i64,
+    total: i64,
+    ic_private: *mut ::std::os::raw::c_void,
+) -> ::std::os::raw::c_int {
     unsafe {
         let progs = &mut *ic_private.cast::<crate::progs::ProgsBar>();
-        progs.up_idx(current as usize, tot as usize);
+        progs.up_idx(current as usize, total as usize);
     }
     0
 }
@@ -189,7 +82,7 @@ impl VidIdx {
                 let mut progs = crate::progs::ProgsBar::new(quiet);
                 FFMS_SetProgressCallback(
                     idxer,
-                    idx_progs,
+                    Some(idx_progs),
                     std::ptr::addr_of_mut!(progs).cast::<libc::c_void>(),
                 );
 
@@ -282,54 +175,50 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
         let props = FFMS_GetVideoProperties(video);
         let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
 
-        let matrix_coeff = match if (*frame).matrix_coefficients == 3 {
-            (*props).color_space
+        let matrix_coeff = match if (*frame).ColorSpace == 3 {
+            (*props).ColorSpace
         } else {
-            (*frame).matrix_coefficients
+            (*frame).ColorSpace
         } {
             0 => 2,
             x => x,
         };
 
-        let width = (*frame).encoded_width as u32;
-        let height = (*frame).encoded_height as u32;
-        let y_linesize = (*frame).linesize[0] as usize;
+        let width = (*frame).EncodedWidth as u32;
+        let height = (*frame).EncodedHeight as u32;
+        let y_linesize = (*frame).Linesize[0] as usize;
         let is_10bit = y_linesize >= (width as usize) * 2;
 
-        let color_range = match (*frame).color_range {
+        let color_range = match (*frame).ColorRange {
             1 => Some(0),
             2 => Some(1),
             _ => None,
         };
 
-        let chroma_sample_position = get_chroma_loc(&idx.path, (*frame).chroma_location);
+        let chroma_sample_position = get_chroma_loc(&idx.path, (*frame).ChromaLocation);
 
-        let mastering_display = if (*props).has_mastering_display_primaries != 0
-            && (*props).has_mastering_display_luminance != 0
+        let mastering_display = if (*props).HasMasteringDisplayPrimaries != 0
+            && (*props).HasMasteringDisplayLuminance != 0
         {
             Some(format!(
                 "G({:.4},{:.4})B({:.4},{:.4})R({:.4},{:.4})WP({:.4},{:.4})L({:.4},{:.4})",
-                (*props).mastering_display_primaries_x[1],
-                (*props).mastering_display_primaries_y[1],
-                (*props).mastering_display_primaries_x[2],
-                (*props).mastering_display_primaries_y[2],
-                (*props).mastering_display_primaries_x[0],
-                (*props).mastering_display_primaries_y[0],
-                (*props).mastering_display_white_point_x,
-                (*props).mastering_display_white_point_y,
-                (*props).mastering_display_max_luminance,
-                (*props).mastering_display_min_luminance
+                (*props).MasteringDisplayPrimariesX[1],
+                (*props).MasteringDisplayPrimariesY[1],
+                (*props).MasteringDisplayPrimariesX[2],
+                (*props).MasteringDisplayPrimariesY[2],
+                (*props).MasteringDisplayPrimariesX[0],
+                (*props).MasteringDisplayPrimariesY[0],
+                (*props).MasteringDisplayWhitePointX,
+                (*props).MasteringDisplayWhitePointY,
+                (*props).MasteringDisplayMaxLuminance,
+                (*props).MasteringDisplayMinLuminance
             ))
         } else {
             None
         };
 
-        let content_light = if (*props).has_content_light_level != 0 {
-            Some(format!(
-                "{},{}",
-                (*props).content_light_level_max,
-                (*props).content_light_level_average
-            ))
+        let content_light = if (*props).HasContentLightLevel != 0 {
+            Some(format!("{},{}", (*props).ContentLightLevelMax, (*props).ContentLightLevelAverage))
         } else {
             None
         };
@@ -337,11 +226,11 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
         let inf = VidInf {
             width,
             height,
-            fps_num: (*props).fps_numerator as u32,
-            fps_den: (*props).fps_denominator as u32,
-            frames: (*props).num_frames as usize,
-            color_primaries: Some((*frame).color_primaries),
-            transfer_characteristics: Some((*frame).transfer_characteristics),
+            fps_num: (*props).FPSNumerator as u32,
+            fps_den: (*props).FPSDenominator as u32,
+            frames: (*props).NumFrames as usize,
+            color_primaries: Some((*frame).ColorPrimaries),
+            transfer_characteristics: Some((*frame).TransferCharateristics),
             matrix_coefficients: Some(matrix_coeff),
             is_10bit,
             color_range,
@@ -359,7 +248,7 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
 pub fn thr_vid_src(
     idx: &Arc<VidIdx>,
     threads: i32,
-) -> Result<*mut libc::c_void, Box<dyn std::error::Error>> {
+) -> Result<*mut FFMS_VideoSource, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
@@ -400,102 +289,8 @@ fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, 
     }
 }
 
-pub fn extr_8bit(vid_src: *mut libc::c_void, frame_idx: usize, output: &mut [u8], inf: &VidInf) {
-    unsafe {
-        let frame = get_raw_frame(vid_src, frame_idx);
-
-        let width = inf.width as usize;
-        let height = inf.height as usize;
-        let y_size = width * height;
-        let uv_size = y_size / 4;
-
-        let y_linesize = (*frame).linesize[0] as usize;
-        copy_with_stride((*frame).data[0], y_linesize, width, height, output.as_mut_ptr());
-        copy_with_stride(
-            (*frame).data[1],
-            (*frame).linesize[1] as usize,
-            width / 2,
-            height / 2,
-            output.as_mut_ptr().add(y_size),
-        );
-        copy_with_stride(
-            (*frame).data[2],
-            (*frame).linesize[2] as usize,
-            width / 2,
-            height / 2,
-            output.as_mut_ptr().add(y_size + uv_size),
-        );
-    }
-}
-
-pub fn extr_8bit_crop_fast(
-    vid_src: *mut libc::c_void,
-    frame_idx: usize,
-    output: &mut [u8],
-    cc: &crate::decode::CropCalc,
-) {
-    unsafe {
-        let frame = get_raw_frame(vid_src, frame_idx);
-
-        let y_sz = cc.new_w as usize * cc.new_h as usize;
-        let uv_sz = y_sz / 4;
-
-        std::ptr::copy_nonoverlapping((*frame).data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
-        std::ptr::copy_nonoverlapping(
-            (*frame).data[1].add(cc.uv_off),
-            output.as_mut_ptr().add(y_sz),
-            uv_sz,
-        );
-        std::ptr::copy_nonoverlapping(
-            (*frame).data[2].add(cc.uv_off),
-            output.as_mut_ptr().add(y_sz + uv_sz),
-            uv_sz,
-        );
-    }
-}
-
-pub fn extr_8bit_crop(
-    vid_src: *mut libc::c_void,
-    frame_idx: usize,
-    output: &mut [u8],
-    cc: &crate::decode::CropCalc,
-) {
-    unsafe {
-        let frame = get_raw_frame(vid_src, frame_idx);
-
-        let mut pos = 0;
-
-        for row in 0..cc.new_h as usize {
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[0].add(cc.y_start + row * cc.y_stride),
-                output.as_mut_ptr().add(pos),
-                cc.y_len,
-            );
-            pos += cc.y_len;
-        }
-
-        for row in 0..cc.new_h as usize / 2 {
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[1].add(cc.uv_off + row * cc.uv_stride),
-                output.as_mut_ptr().add(pos),
-                cc.uv_len,
-            );
-            pos += cc.uv_len;
-        }
-
-        for row in 0..cc.new_h as usize / 2 {
-            std::ptr::copy_nonoverlapping(
-                (*frame).data[2].add(cc.uv_off + row * cc.uv_stride),
-                output.as_mut_ptr().add(pos),
-                cc.uv_len,
-            );
-            pos += cc.uv_len;
-        }
-    }
-}
-
-pub fn extr_8bit_fast(
-    vid_src: *mut libc::c_void,
+pub fn extr_8bit(
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -508,10 +303,109 @@ pub fn extr_8bit_fast(
         let y_size = width * height;
         let uv_size = y_size / 4;
 
-        std::ptr::copy_nonoverlapping((*frame).data[0], output.as_mut_ptr(), y_size);
-        std::ptr::copy_nonoverlapping((*frame).data[1], output.as_mut_ptr().add(y_size), uv_size);
+        let y_linesize = (*frame).Linesize[0] as usize;
+        copy_with_stride((*frame).Data[0], y_linesize, width, height, output.as_mut_ptr());
+        copy_with_stride(
+            (*frame).Data[1],
+            (*frame).Linesize[1] as usize,
+            width / 2,
+            height / 2,
+            output.as_mut_ptr().add(y_size),
+        );
+        copy_with_stride(
+            (*frame).Data[2],
+            (*frame).Linesize[2] as usize,
+            width / 2,
+            height / 2,
+            output.as_mut_ptr().add(y_size + uv_size),
+        );
+    }
+}
+
+pub fn extr_8bit_crop_fast(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let y_sz = cc.new_w as usize * cc.new_h as usize;
+        let uv_sz = y_sz / 4;
+
+        std::ptr::copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
         std::ptr::copy_nonoverlapping(
-            (*frame).data[2],
+            (*frame).Data[1].add(cc.uv_off),
+            output.as_mut_ptr().add(y_sz),
+            uv_sz,
+        );
+        std::ptr::copy_nonoverlapping(
+            (*frame).Data[2].add(cc.uv_off),
+            output.as_mut_ptr().add(y_sz + uv_sz),
+            uv_sz,
+        );
+    }
+}
+
+pub fn extr_8bit_crop(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &crate::decode::CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let mut pos = 0;
+
+        for row in 0..cc.new_h as usize {
+            std::ptr::copy_nonoverlapping(
+                (*frame).Data[0].add(cc.y_start + row * cc.y_stride),
+                output.as_mut_ptr().add(pos),
+                cc.y_len,
+            );
+            pos += cc.y_len;
+        }
+
+        for row in 0..cc.new_h as usize / 2 {
+            std::ptr::copy_nonoverlapping(
+                (*frame).Data[1].add(cc.uv_off + row * cc.uv_stride),
+                output.as_mut_ptr().add(pos),
+                cc.uv_len,
+            );
+            pos += cc.uv_len;
+        }
+
+        for row in 0..cc.new_h as usize / 2 {
+            std::ptr::copy_nonoverlapping(
+                (*frame).Data[2].add(cc.uv_off + row * cc.uv_stride),
+                output.as_mut_ptr().add(pos),
+                cc.uv_len,
+            );
+            pos += cc.uv_len;
+        }
+    }
+}
+
+pub fn extr_8bit_fast(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+
+        let width = inf.width as usize;
+        let height = inf.height as usize;
+        let y_size = width * height;
+        let uv_size = y_size / 4;
+
+        std::ptr::copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
+        std::ptr::copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
+        std::ptr::copy_nonoverlapping(
+            (*frame).Data[2],
             output.as_mut_ptr().add(y_size + uv_size),
             uv_size,
         );
@@ -628,7 +522,7 @@ fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) 
 }
 
 pub fn extr_10bit_crop_fast(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     cc: &crate::decode::CropCalc,
@@ -641,19 +535,19 @@ pub fn extr_10bit_crop_fast(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        let y_src = std::slice::from_raw_parts((*frame).data[0].add(cc.y_start), w * h * 2);
+        let y_src = std::slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
         pack_10bit(y_src, &mut output[..y_pack]);
 
-        let u_src = std::slice::from_raw_parts((*frame).data[1].add(cc.uv_off), w * h / 2);
+        let u_src = std::slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
         pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
 
-        let v_src = std::slice::from_raw_parts((*frame).data[2].add(cc.uv_off), w * h / 2);
+        let v_src = std::slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
         pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
 
 pub fn extr_10bit_crop(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     cc: &crate::decode::CropCalc,
@@ -667,22 +561,22 @@ pub fn extr_10bit_crop(
         let uv_pack = (w * h / 4 * 5) / 4;
 
         pack_stride(
-            (*frame).data[0].add(cc.y_start),
-            (*frame).linesize[0] as usize,
+            (*frame).Data[0].add(cc.y_start),
+            (*frame).Linesize[0] as usize,
             w,
             h,
             output.as_mut_ptr(),
         );
         pack_stride(
-            (*frame).data[1].add(cc.uv_off),
-            (*frame).linesize[1] as usize,
+            (*frame).Data[1].add(cc.uv_off),
+            (*frame).Linesize[1] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack),
         );
         pack_stride(
-            (*frame).data[2].add(cc.uv_off),
-            (*frame).linesize[2] as usize,
+            (*frame).Data[2].add(cc.uv_off),
+            (*frame).Linesize[2] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack + uv_pack),
@@ -732,7 +626,7 @@ pub fn get_decode_strat(
         }
 
         let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
-        let y_ls = (*frame).linesize[0] as usize;
+        let y_ls = (*frame).Linesize[0] as usize;
         FFMS_DestroyVideoSource(video);
 
         let pix_sz = if inf.is_10bit { 2 } else { 1 };
@@ -784,7 +678,7 @@ pub fn get_decode_strat(
     }
 }
 
-pub fn get_raw_frame(vid_src: *mut libc::c_void, frame_idx: usize) -> *const FFMS_Frame {
+pub fn get_raw_frame(vid_src: *mut FFMS_VideoSource, frame_idx: usize) -> *const FFMS_Frame {
     unsafe {
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
         FFMS_GetFrame(vid_src, i32::try_from(frame_idx).unwrap_or(0), std::ptr::addr_of_mut!(err))
@@ -792,7 +686,7 @@ pub fn get_raw_frame(vid_src: *mut libc::c_void, frame_idx: usize) -> *const FFM
 }
 
 pub fn extr_10bit_pack(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -805,19 +699,19 @@ pub fn extr_10bit_pack(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        let y_src = std::slice::from_raw_parts((*frame).data[0], w * h * 2);
+        let y_src = std::slice::from_raw_parts((*frame).Data[0], w * h * 2);
         pack_10bit(y_src, &mut output[..y_pack]);
 
-        let u_src = std::slice::from_raw_parts((*frame).data[1], w * h / 2);
+        let u_src = std::slice::from_raw_parts((*frame).Data[1], w * h / 2);
         pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
 
-        let v_src = std::slice::from_raw_parts((*frame).data[2], w * h / 2);
+        let v_src = std::slice::from_raw_parts((*frame).Data[2], w * h / 2);
         pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
 
 pub fn extr_10bit_pack_stride(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -830,19 +724,19 @@ pub fn extr_10bit_pack_stride(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        pack_stride((*frame).data[0], (*frame).linesize[0] as usize, w, h, output.as_mut_ptr());
+        pack_stride((*frame).Data[0], (*frame).Linesize[0] as usize, w, h, output.as_mut_ptr());
 
         pack_stride(
-            (*frame).data[1],
-            (*frame).linesize[1] as usize,
+            (*frame).Data[1],
+            (*frame).Linesize[1] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack),
         );
 
         pack_stride(
-            (*frame).data[2],
-            (*frame).linesize[2] as usize,
+            (*frame).Data[2],
+            (*frame).Linesize[2] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack + uv_pack),
@@ -851,7 +745,7 @@ pub fn extr_10bit_pack_stride(
 }
 
 pub fn extr_8bit_stride(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -862,14 +756,14 @@ pub fn extr_8bit_stride(
         let width = inf.width as usize;
         let height = inf.height as usize;
 
-        let y_linesize = (*frame).linesize[0] as usize;
-        let uv_linesize = (*frame).linesize[1] as usize;
+        let y_linesize = (*frame).Linesize[0] as usize;
+        let uv_linesize = (*frame).Linesize[1] as usize;
 
         let mut pos = 0;
 
         for row in 0..height {
             std::ptr::copy_nonoverlapping(
-                (*frame).data[0].add(row * y_linesize),
+                (*frame).Data[0].add(row * y_linesize),
                 output.as_mut_ptr().add(pos),
                 width,
             );
@@ -878,7 +772,7 @@ pub fn extr_8bit_stride(
 
         for row in 0..height / 2 {
             std::ptr::copy_nonoverlapping(
-                (*frame).data[1].add(row * uv_linesize),
+                (*frame).Data[1].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 width / 2,
             );
@@ -887,7 +781,7 @@ pub fn extr_8bit_stride(
 
         for row in 0..height / 2 {
             std::ptr::copy_nonoverlapping(
-                (*frame).data[2].add(row * uv_linesize),
+                (*frame).Data[2].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 width / 2,
             );
@@ -897,7 +791,7 @@ pub fn extr_8bit_stride(
 }
 
 pub fn extr_10bit_crop_pack_stride(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     crop_calc: &CropCalc,
@@ -909,8 +803,8 @@ pub fn extr_10bit_crop_pack_stride(
         let h = crop_calc.new_h as usize;
         let pix_sz = 2;
 
-        let y_linesize = (*frame).linesize[0] as usize;
-        let uv_linesize = (*frame).linesize[1] as usize;
+        let y_linesize = (*frame).Linesize[0] as usize;
+        let uv_linesize = (*frame).Linesize[1] as usize;
 
         let mut dst_pos = 0;
         let pack_row_y = (w * 2 * 5) / 8;
@@ -919,7 +813,7 @@ pub fn extr_10bit_crop_pack_stride(
             let src_off = (crop_calc.crop_h as usize * pix_sz)
                 + (row + crop_calc.crop_v as usize) * y_linesize;
             let src_row =
-                std::slice::from_raw_parts((*frame).data[0].add(src_off), crop_calc.y_len);
+                std::slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
             let dst_row =
                 std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
 
@@ -936,7 +830,7 @@ pub fn extr_10bit_crop_pack_stride(
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
             let src_row =
-                std::slice::from_raw_parts((*frame).data[1].add(src_off), crop_calc.uv_len);
+                std::slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
             let dst_row =
                 std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
@@ -951,7 +845,7 @@ pub fn extr_10bit_crop_pack_stride(
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
             let src_row =
-                std::slice::from_raw_parts((*frame).data[2].add(src_off), crop_calc.uv_len);
+                std::slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
             let dst_row =
                 std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
@@ -1009,7 +903,7 @@ pub fn pack_10bit_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
 }
 
 pub fn extr_10bit_pack_rem(
-    vid_src: *mut std::ffi::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -1025,19 +919,19 @@ pub fn extr_10bit_pack_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        let y_src = std::slice::from_raw_parts((*frame).data[0], w * h * 2);
+        let y_src = std::slice::from_raw_parts((*frame).Data[0], w * h * 2);
         pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
 
-        let u_src = std::slice::from_raw_parts((*frame).data[1], w * h / 2);
+        let u_src = std::slice::from_raw_parts((*frame).Data[1], w * h / 2);
         pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
 
-        let v_src = std::slice::from_raw_parts((*frame).data[2], w * h / 2);
+        let v_src = std::slice::from_raw_parts((*frame).Data[2], w * h / 2);
         pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
     }
 }
 
 pub fn extr_10bit_pack_stride_rem(
-    vid_src: *mut std::ffi::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     inf: &VidInf,
@@ -1053,17 +947,17 @@ pub fn extr_10bit_pack_stride_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        pack_stride_rem((*frame).data[0], (*frame).linesize[0] as usize, w, h, output.as_mut_ptr());
+        pack_stride_rem((*frame).Data[0], (*frame).Linesize[0] as usize, w, h, output.as_mut_ptr());
         pack_stride_rem(
-            (*frame).data[1],
-            (*frame).linesize[1] as usize,
+            (*frame).Data[1],
+            (*frame).Linesize[1] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack),
         );
         pack_stride_rem(
-            (*frame).data[2],
-            (*frame).linesize[2] as usize,
+            (*frame).Data[2],
+            (*frame).Linesize[2] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack + uv_pack),
@@ -1072,7 +966,7 @@ pub fn extr_10bit_pack_stride_rem(
 }
 
 pub fn extr_10bit_crop_fast_rem(
-    vid_src: *mut std::ffi::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     cc: &crate::decode::CropCalc,
@@ -1088,19 +982,19 @@ pub fn extr_10bit_crop_fast_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        let y_src = std::slice::from_raw_parts((*frame).data[0].add(cc.y_start), w * h * 2);
+        let y_src = std::slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
         pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
 
-        let u_src = std::slice::from_raw_parts((*frame).data[1].add(cc.uv_off), w * h / 2);
+        let u_src = std::slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
         pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
 
-        let v_src = std::slice::from_raw_parts((*frame).data[2].add(cc.uv_off), w * h / 2);
+        let v_src = std::slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
         pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
     }
 }
 
 pub fn extr_10bit_crop_rem(
-    vid_src: *mut std::ffi::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     cc: &crate::decode::CropCalc,
@@ -1117,22 +1011,22 @@ pub fn extr_10bit_crop_rem(
         let uv_pack = uv_row * h / 2;
 
         pack_stride_rem(
-            (*frame).data[0].add(cc.y_start),
-            (*frame).linesize[0] as usize,
+            (*frame).Data[0].add(cc.y_start),
+            (*frame).Linesize[0] as usize,
             w,
             h,
             output.as_mut_ptr(),
         );
         pack_stride_rem(
-            (*frame).data[1].add(cc.uv_off),
-            (*frame).linesize[1] as usize,
+            (*frame).Data[1].add(cc.uv_off),
+            (*frame).Linesize[1] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack),
         );
         pack_stride_rem(
-            (*frame).data[2].add(cc.uv_off),
-            (*frame).linesize[2] as usize,
+            (*frame).Data[2].add(cc.uv_off),
+            (*frame).Linesize[2] as usize,
             w / 2,
             h / 2,
             output.as_mut_ptr().add(y_pack + uv_pack),
@@ -1141,7 +1035,7 @@ pub fn extr_10bit_crop_rem(
 }
 
 pub fn extr_10bit_crop_pack_stride_rem(
-    vid_src: *mut std::ffi::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
     crop_calc: &CropCalc,
@@ -1153,8 +1047,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         let h = crop_calc.new_h as usize;
         let pix_sz = 2;
 
-        let y_linesize = (*frame).linesize[0] as usize;
-        let uv_linesize = (*frame).linesize[1] as usize;
+        let y_linesize = (*frame).Linesize[0] as usize;
+        let uv_linesize = (*frame).Linesize[1] as usize;
 
         let y_row = packed_row_size(w);
         let uv_row = packed_row_size(w / 2);
@@ -1165,7 +1059,7 @@ pub fn extr_10bit_crop_pack_stride_rem(
             let src_off = (crop_calc.crop_h as usize * pix_sz)
                 + (row + crop_calc.crop_v as usize) * y_linesize;
             let src_row =
-                std::slice::from_raw_parts((*frame).data[0].add(src_off), crop_calc.y_len);
+                std::slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
             let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
 
             src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
@@ -1186,7 +1080,7 @@ pub fn extr_10bit_crop_pack_stride_rem(
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
             let src_row =
-                std::slice::from_raw_parts((*frame).data[1].add(src_off), crop_calc.uv_len);
+                std::slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
             let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
             src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
@@ -1207,7 +1101,7 @@ pub fn extr_10bit_crop_pack_stride_rem(
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
             let src_row =
-                std::slice::from_raw_parts((*frame).data[2].add(src_off), crop_calc.uv_len);
+                std::slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
             let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
             src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
@@ -1228,7 +1122,7 @@ pub fn extr_10bit_crop_pack_stride_rem(
 
 #[cfg(feature = "vship")]
 pub fn get_frame(
-    vid_src: *mut libc::c_void,
+    vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
 ) -> Result<*const FFMS_Frame, Box<dyn std::error::Error>> {
     unsafe {
@@ -1247,7 +1141,7 @@ pub fn get_frame(
     }
 }
 
-pub fn destroy_vid_src(vid_src: *mut libc::c_void) {
+pub fn destroy_vid_src(vid_src: *mut FFMS_VideoSource) {
     unsafe {
         FFMS_DestroyVideoSource(vid_src);
     }
