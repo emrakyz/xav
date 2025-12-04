@@ -13,6 +13,7 @@ use crate::decode::decode_chunks;
 use crate::ffms::{VidIdx, VidInf};
 use crate::pipeline::Pipeline;
 use crate::progs::ProgsTrack;
+#[cfg(feature = "vship")]
 use crate::worker::Semaphore;
 #[cfg(feature = "vship")]
 use crate::worker::TQState;

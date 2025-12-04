@@ -48,6 +48,7 @@ pub struct Semaphore {
 }
 
 impl Semaphore {
+    #[cfg(feature = "vship")]
     pub const fn new(permits: usize) -> Self {
         Self { state: Mutex::new(permits), cvar: Condvar::new() }
     }
@@ -60,6 +61,7 @@ impl Semaphore {
         *count -= 1;
     }
 
+    #[cfg(feature = "vship")]
     pub fn release(&self) {
         *self.state.lock().unwrap() += 1;
         self.cvar.notify_one();

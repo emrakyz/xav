@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
+use ffms2_sys::FFMS_VideoSource;
 
 use crate::chunk::Chunk;
 use crate::ffms::{
@@ -246,7 +247,7 @@ pub fn decode_chunks(
 #[inline]
 fn dec_10_fast(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     w: u32,
     h: u32,
@@ -263,7 +264,7 @@ fn dec_10_fast(
 #[inline]
 fn dec_10_stride(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     w: u32,
     h: u32,
@@ -280,7 +281,7 @@ fn dec_10_stride(
 #[inline]
 fn dec_10_crop_fast(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -297,7 +298,7 @@ fn dec_10_crop_fast(
 #[inline]
 fn dec_10_crop(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -314,7 +315,7 @@ fn dec_10_crop(
 #[inline]
 fn dec_10_crop_stride(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -331,7 +332,7 @@ fn dec_10_crop_stride(
 #[inline]
 fn dec_8_fast(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     w: u32,
     h: u32,
@@ -348,7 +349,7 @@ fn dec_8_fast(
 #[inline]
 fn dec_8_stride(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     w: u32,
     h: u32,
@@ -365,7 +366,7 @@ fn dec_8_stride(
 #[inline]
 fn dec_8_crop_fast(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -382,7 +383,7 @@ fn dec_8_crop_fast(
 #[inline]
 fn dec_8_crop(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -399,7 +400,7 @@ fn dec_8_crop(
 #[inline]
 fn dec_8_crop_stride(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     cc: &CropCalc,
     w: u32,
@@ -419,7 +420,7 @@ fn dec_8_crop_stride(
 #[inline]
 fn dec_10_fast_rem(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     w: u32,
     h: u32,
@@ -436,7 +437,7 @@ fn dec_10_fast_rem(
 #[inline]
 fn dec_10_stride_rem(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     inf: &VidInf,
     w: u32,
     h: u32,
@@ -453,7 +454,7 @@ fn dec_10_stride_rem(
 #[inline]
 fn dec_10_crop_fast_rem(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -470,7 +471,7 @@ fn dec_10_crop_fast_rem(
 #[inline]
 fn dec_10_crop_rem(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
@@ -487,7 +488,7 @@ fn dec_10_crop_rem(
 #[inline]
 fn dec_10_crop_stride_rem(
     ch: &Chunk,
-    src: *mut std::ffi::c_void,
+    src: *mut FFMS_VideoSource,
     cc: &CropCalc,
     w: u32,
     h: u32,
