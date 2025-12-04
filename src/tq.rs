@@ -112,13 +112,13 @@ macro_rules! calc_metrics_impl {
                 ];
 
                 let output_planes = unsafe {
-                    [(*output_frame).data[0], (*output_frame).data[1], (*output_frame).data[2]]
+                    [(*output_frame).Data[0], (*output_frame).Data[1], (*output_frame).Data[2]]
                 };
                 let output_strides = unsafe {
                     [
-                        i64::from((*output_frame).linesize[0]),
-                        i64::from((*output_frame).linesize[1]),
-                        i64::from((*output_frame).linesize[2]),
+                        i64::from((*output_frame).Linesize[0]),
+                        i64::from((*output_frame).Linesize[1]),
+                        i64::from((*output_frame).Linesize[2]),
                     ]
                 };
 
