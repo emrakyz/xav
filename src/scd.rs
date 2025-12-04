@@ -105,6 +105,10 @@ pub fn fd_scenes(
         new_scenes.push(e_frame);
     }
 
+    if new_scenes.last() == Some(&tot_frames) {
+        new_scenes.pop();
+    }
+
     let mut content = String::new();
     for &scene_frame in &new_scenes {
         writeln!(content, "{scene_frame}").unwrap();
