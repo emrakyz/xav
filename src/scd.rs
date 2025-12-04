@@ -72,10 +72,17 @@ pub fn fd_scenes(
         scenes.push((s, e));
     }
 
-    let mut new_scenes = Vec::new();
-    for (s_frame, e_frame) in scenes {
+    let mut new_scenes = vec![0];
+
+    for (scene_idx, &(s_frame, e_frame)) in scenes.iter().enumerate() {
+        if scene_idx == 0 {
+            new_scenes.push(e_frame);
+            continue;
+        }
+
         let mut distance = e_frame - s_frame;
         let split_size = max_dist as usize;
+
         while distance > split_size {
             let minimum_split_count = distance / split_size;
             let middle_point = distance / (minimum_split_count + 1);
@@ -83,7 +90,7 @@ pub fn fd_scenes(
             let max_size = min(split_size, middle_point + min_size);
             let range_size = max_size - min_size;
 
-            let start_frame = new_scenes.last().copied().unwrap_or(s_frame);
+            let start_frame = *new_scenes.last().unwrap();
 
             let split_point = (min_size..=max_size)
                 .filter_map(|size| {
