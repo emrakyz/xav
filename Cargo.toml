@@ -20,7 +20,7 @@ vship = []
 libc = "0.2.178"
 crossbeam-channel = "0.5.15"
 ffms2-sys = { git = "https://github.com/emrakyz/ffms2-rs", features = ["static"] }
-av-scenechange = { version = "0.19.0", default-features = false, features = ["ffms2", "asm", "nasm-rs", "cc", "libc"] }
+av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", default-features = false, features = ["ffms2", "asm", "nasm-rs", "cc", "libc"] }
 av1-grain = "0.2.5"
 
 [profile.release]
