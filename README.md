@@ -19,6 +19,8 @@ Building this tool is extremely complicated. Support should not be expected and 
 
 Intended for Linux-only usage. It technically works on other platforms but I do not care and handle any specific cases for compilation or runtime.
 
+It uses much more RAM/VRAM than other similar tools and is only possibly slightly faster for some niche usecases.
+
 For normal use; use better, safer, more stable, less opinionated, more featureful and professional tools:
 - [Av1an](https://github.com/rust-av/Av1an)
 - [HandBrake](https://handbrake.fr)
