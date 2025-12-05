@@ -74,13 +74,9 @@ pub fn fd_scenes(
 
     let mut new_scenes = vec![0];
 
-    for (scene_idx, &(s_frame, e_frame)) in scenes.iter().enumerate() {
-        if scene_idx == 0 {
-            new_scenes.push(e_frame);
-            continue;
-        }
-
-        let mut distance = e_frame - s_frame;
+    for &(s_frame, e_frame) in &scenes {
+        let mut current_start = s_frame.max(*new_scenes.last().unwrap());
+        let mut distance = e_frame - current_start;
         let split_size = max_dist as usize;
 
         while distance > split_size {
@@ -90,11 +86,9 @@ pub fn fd_scenes(
             let max_size = min(split_size, middle_point + min_size);
             let range_size = max_size - min_size;
 
-            let start_frame = *new_scenes.last().unwrap();
-
             let split_point = (min_size..=max_size)
                 .filter_map(|size| {
-                    scores.get(&(start_frame + size)).map(|(inter_cost, threshold)| {
+                    scores.get(&(current_start + size)).map(|(inter_cost, threshold)| {
                         let inter_score = inter_cost / threshold;
                         let distance_from_mid =
                             (middle_point.max(size) - middle_point.min(size)) as f64;
@@ -106,8 +100,9 @@ pub fn fd_scenes(
                 .expect("split scores is not empty")
                 .0;
 
-            distance = e_frame - (start_frame + split_point);
-            new_scenes.push(start_frame + split_point);
+            current_start += split_point;
+            new_scenes.push(current_start);
+            distance = e_frame - current_start;
         }
         new_scenes.push(e_frame);
     }
