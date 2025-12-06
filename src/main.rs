@@ -71,46 +71,28 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("Format: xav [options] <INPUT> [<OUTPUT>]");
     println!();
-    println!("<INPUT>        Input path");
-    println!("<OUTPUT>       Output path. Adds `_av1` to the input name if not specified");
-    println!();
-    println!("Options:");
-    println!("-p|--param     SVT AV1 parameters inside quotes");
-    println!("-w|--worker    Number of `svt-av1` instances to run");
-    println!();
+    println!("<INPUT>      Input path");
+    println!("<OUTPUT>     Output path");
+    println!("-p|--param   Encoder params: `-p \"--scm 1\"`");
+    println!("-w|--worker  Worker count");
     #[cfg(feature = "vship")]
     {
-        println!("TQ:");
-        println!("-t|--tq        Target quality range. Metric: <8=Butter5pn, 8-10=CVVDP, >10=SSIMU2");
-        println!("               SSIMU2: `74.00-76.00`, Butter: `1.5-2.0`, CVVDP: `9.45-9.55`");
-        println!("-m|--mode      Metric evaluation: `mean` or `pN` for mean of worst N%. Example: `p15`");
-        println!("-f|--qp        CRF/QP search range. Example: `12.25-44.75`");
-        println!();
+        println!("-t|--tq      TQ Range: <8=Butter5pn, 8-10=CVVDP, >10=SSIMU2: `9.00-9.01`");
+        println!("-m|--mode    Metric aggregation: `mean` or mean of worst N%: `p0.1`");
+        println!("-f|--qp      CRF range: `-f 0.25-69.75`");
     }
-    println!("Misc:");
-    println!("-n|--noise     Apply photon noise [1-64]: 1=ISO100, 64=ISO6400");
-    println!("-c|--crop      Auto crop by original AR: `1.37` OR crop horizontal,vertical: `0,220`");
-    println!("-s|--sc        SCD file to use. Runs SCD and creates the file if not specified");
-    println!("-a|--audio     Encode with Opus: `-a \"<auto|norm|bitrate> <all|stream_ids>\"`");
-    println!("               Examples: `-a \"auto all\"`, `-a \"norm 1\"`, `-a \"128 1,2,3\"`");
-    println!("               `norm`: downmix to stereo + loudnorm + 128k bitrate");
-    println!("               If enabled, subtitles/chapters are preserved in output");
-    println!("-r|--resume    Resume the encoding. Example below");
-    println!("-q|--quiet     Do not run any code related to any progress");
-    println!();
-    println!("Advanced:");
-    println!("-b|--chunk-buffer   Number of chunks to pre-decode and hold in memory");
+    println!("-n|--noise   Add noise [1-64]: 1=ISO100, 64=ISO6400");
+    println!("-c|--crop    Crop by AR: `1.37` OR crop y,x: `0,220`");
+    println!("-s|--sc      Specify SCD file. Auto gen if not specified");
+    println!("-b|--buffer  No of chunks to hold in front buffer");
     #[cfg(feature = "vship")]
     {
-        println!("-v|--metric-worker  Number of `vship` instances to run in parallel");
-        println!();
+        println!("-v|--vship   No of vship instances");
     }
-    println!("Examples:");
-    println!("xav -r i.mkv");
-    println!("xav -w 8 -s sc.txt -p \"--lp 3 --tune 0\" i.mkv o.mkv");
-    println!("xav -q -w 8 -s sc.txt -t 75-76 -f 6-63 -m p15 -p \"--lp 3 --tune 0\" i.mkv o.mkv");
-    println!("xav -t 1.5-2.0 -f 20-50 -m mean i.mkv  # Butteraugli target");
-    println!("xav i.mkv  # Uses all defaults, creates `i_scd.txt` and output will be `i_av1.mkv`");
+    println!("-a|--audio   Encode to Opus: `-a \"<auto|norm|bitrate> <all|stream_ids>\"`");
+    println!("             `-a \"auto all\"`, `-a \"norm 1\"`, `-a \"128 1,2\"`");
+    println!("-r|--resume");
+    println!("-q|--quiet");
 }
 
 fn parse_args() -> Args {
@@ -123,16 +105,8 @@ fn parse_args() -> Args {
 
 fn apply_defaults(args: &mut Args) {
     if args.worker == 0 {
-        let threads = std::thread::available_parallelism().map_or(8, std::num::NonZero::get);
-        args.worker = match threads {
-            32.. => 8,
-            24..32 => 6,
-            16..24 => 4,
-            12..16 => 3,
-            8..12 => 2,
-            _ => 1,
-        };
-        args.params = format!("--lp 3 {}", args.params).trim().to_string();
+        args.worker = 5;
+        args.params = format!("--lp 5 {}", args.params).trim().to_string();
     }
 
     if args.output == PathBuf::new() {
@@ -151,7 +125,7 @@ fn apply_defaults(args: &mut Args) {
             args.qp_range = Some("8.0-48.0".to_string());
         }
         if args.metric_worker == 0 {
-            args.metric_worker = args.worker;
+            args.metric_worker = 3;
         }
     }
 
@@ -276,7 +250,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     output = PathBuf::from(arg);
                 }
             }
-            _ => return Err(format!("Unknown argument: {}", args[i]).into()),
+            _ => return Err(format!("Unknown arg: {}", args[i]).into()),
         }
         i += 1;
     }
@@ -317,7 +291,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         || result.input == PathBuf::new()
         || result.output == PathBuf::new()
     {
-        return Err("Missing required arguments".into());
+        return Err("Missing args".into());
     }
 
     Ok(result)
@@ -350,7 +324,7 @@ fn get_saved_args(input: &Path) -> Result<Args, Box<dyn std::error::Error>> {
         let saved_args = parse_quoted_args(&cmd_line);
         get_args(&saved_args)
     } else {
-        Err("No saved encoding found for this input file".into())
+        Err("No tmp dir found".into())
     }
 }
 
