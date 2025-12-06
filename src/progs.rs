@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const BAR_WIDTH: usize = 28;
+const BAR_WIDTH: usize = 20;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
@@ -45,7 +45,7 @@ impl ProgsBar {
             return;
         }
 
-        if self.last_update.elapsed() < Duration::from_millis(1000) {
+        if self.last_update.elapsed() < Duration::from_millis(2000) {
             return;
         }
         self.last_update = Instant::now();
@@ -75,7 +75,7 @@ impl ProgsBar {
             return;
         }
 
-        if self.last_update.elapsed() < Duration::from_millis(1000) {
+        if self.last_update.elapsed() < Duration::from_millis(2000) {
             return;
         }
         self.last_update = Instant::now();
@@ -185,11 +185,21 @@ impl ProgsTrack {
                     .replace(" kb/s", "")
                     .replace("Size: ", "")
                     .replace(" MB", "")
+                    .replace(" fps", "")
                     .replace("Time: \u{1b}[36m0:", "")
                     .replace("33m   ", "33m")
                     .replace("33m  ", "33m")
-                    .replace("33m ", "33m")
-                    .replace("[-0:", "[");
+                    .replace("33m ", "33m");
+
+                let parts: Vec<&str> = cleaned.split("\u{1b}[38;5;248m").collect();
+                if parts.len() > 1 {
+                    cleaned = parts[0].to_string();
+                }
+
+                let parts: Vec<&str> = cleaned.rsplitn(2, '|').collect();
+                if parts.len() > 1 && parts[0].trim().contains(':') {
+                    cleaned = parts[1].to_string();
+                }
 
                 if cleaned.contains("fpm") {
                     let parts: Vec<&str> = cleaned.split_whitespace().collect();
@@ -202,7 +212,7 @@ impl ProgsTrack {
                             let fps = fpm / 60.0;
                             cleaned = cleaned.replacen(
                                 &format!("{num_str} fpm"),
-                                &format!("\u{1b}[32m{fps:.2}\u{1b}[0m fps"),
+                                &format!("\u{1b}[32m{fps:.2}\u{1b}[0m"),
                                 1,
                             );
                         }
@@ -254,8 +264,8 @@ impl ProgsTrack {
         let score_str = last_score.map_or(String::new(), |s| format!(" / {s:.2}"));
 
         let line = format!(
-            "{C}[{chunk_idx:04} / F {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc}%{C}, {Y}{fps:.2} \
-             FPS{C}, {G}{current}{C}/{R}{total}"
+            "{C}[{chunk_idx:04} / F {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc}%{C}, \
+             {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
         );
 
         self.tx.send(WorkerMsg::Update { worker_id, line, frames: None }).ok();
@@ -293,7 +303,7 @@ fn display_loop(
     let mut last_draw = Instant::now();
 
     loop {
-        match rx.recv_timeout(Duration::from_millis(1000)) {
+        match rx.recv_timeout(Duration::from_millis(2000)) {
             Ok(WorkerMsg::Update { worker_id, line, frames }) => {
                 if worker_id < worker_count {
                     lines[worker_id] = line;
@@ -311,7 +321,7 @@ fn display_loop(
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
 
-        if last_draw.elapsed() >= Duration::from_millis(1000) {
+        if last_draw.elapsed() >= Duration::from_millis(2000) {
             draw_screen(&lines, worker_count, &start, state, &processed, init_frames);
             last_draw = Instant::now();
         }
@@ -360,28 +370,26 @@ fn draw_screen(
         let total_dur = state.total_frames as f32 * state.fps_den as f32 / state.fps_num as f32;
         let est_size = kbps * total_dur * 1000.0 / 8.0;
         let est = if est_size > 1_000_000_000.0 {
-            format!("{:.1} GB", est_size / 1_000_000_000.0)
+            format!("{:.1}g", est_size / 1_000_000_000.0)
         } else {
-            format!("{:.1} MB", est_size / 1_000_000.0)
+            format!("{:.1}m", est_size / 1_000_000.0)
         };
-        (format!("{B}{kbps:.0} kb"), format!("{R}{est}"))
+        (format!("{B}{kbps:.0}k"), format!("{R}{est}"))
     } else {
-        (format!("{B}0 kb"), format!("{R}0 MB"))
+        (format!("{B}0k"), format!("{R}0m"))
     };
 
     let progress = (frames_done * BAR_WIDTH / state.total_frames.max(1)).min(BAR_WIDTH);
     let perc = (frames_done * 100 / state.total_frames.max(1)).min(100);
     let bar = format!("{}{}", G_HASH.repeat(progress), R_DASH.repeat(BAR_WIDTH - progress));
 
-    let (m, s) = (elapsed_secs / 60, elapsed_secs % 60);
-    let (eta_m, eta_s) = (eta_secs / 60, eta_secs % 60);
+    let (h, m) = (elapsed_secs / 3600, (elapsed_secs % 3600) / 60);
+    let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
 
-    println!(
-        "{W}{m:02}{P}:{W}{s:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
-         {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2} FPS{C}, {W}{eta_m:02}{P}:{W}{eta_s:02}{C}, \
-         {bitrate_str}{C}, {est_str}{C}){N}",
+    print!(
+        "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
+         {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2}{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
+         {bitrate_str}{C}, {est_str}{C}{N})\n",
         state.total_chunks, state.total_frames
     );
-
-    std::io::stdout().flush().unwrap();
 }
