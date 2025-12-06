@@ -19,7 +19,7 @@ Building this tool is extremely complicated. Support should not be expected and 
 
 Intended for Linux-only usage. It technically works on other platforms but I do not care and handle any specific cases for compilation or runtime.
 
-It uses much more RAM/VRAM than other similar tools and is only possibly slightly faster for some niche usecases.
+It uses much more RAM/VRAM than other similar tools and is possibly slower.
 
 For normal use; use better, safer, more stable, less opinionated, more featureful and professional tools:
 - [Av1an](https://github.com/rust-av/Av1an)
@@ -40,20 +40,18 @@ For normal use; use better, safer, more stable, less opinionated, more featurefu
 
 ## Usage
 
-<img width="1522" height="1076" alt="image" src="https://github.com/user-attachments/assets/890dffee-a05a-4a20-a7c8-49aa5f871cfb" />
+Refer to the help page.
 
 ## Building
 
 Build script is only for Linux. You are on your own otherwise.
 
-Run the `build.sh` script: It will guide you. You can select static or dynamic.
+Run the `build.sh` script: Select static or dynamic build.
 
-Building dependencies statically (handled by the script) and building the main tool with them, is the intended way for maximum performance but it's **ONLY** for advanced users due to compiler complexities.
-
-**NOTE:** Building this tool statically requires you to have static libraries in your system for the C library (glibc), CXX library (libstdc++), llvm-libunwind, compiler-rt. They are usually found with `-static`, `-dev`, `-git` suffixes in package managers. Some package managers do not provide them, in this case; they need to be compiled manually.
+Building statically requires you to have static libraries: glibc, libstdc++, llvm-libunwind, compiler-rt.
 
 ## Credits
 
-Huge thanks to [Soda](https://github.com/GreatValueCreamSoda) for the tremendous help & motivation & support to build this tool, and more importantly, for his friendship along the way. He is the partner in crime.
+Thanks to [Soda](https://github.com/GreatValueCreamSoda) for the help & motivation & support to build this tool, and more importantly, for his friendship along the way.
 
-Also thanks [Lumen](https://github.com/Line-fr) for her great contributions on GPU based accessible state-of-the-art metric implementations and general help around the tooling.
+Thanks [Lumen](https://github.com/Line-fr) for her contributions on GPU based state-of-the-art metric implementations and help around the tooling.
