@@ -172,7 +172,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                 i += 1;
                 if i < args.len() {
                     target_quality = Some(args[i].clone());
-                    chunk_buffer = 1;
+                    chunk_buffer += worker;
                 }
             }
             #[cfg(feature = "vship")]
