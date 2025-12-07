@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 mod audio;
 mod chunk;
+mod crop;
 mod decode;
 mod ffms;
 #[cfg(feature = "vship")]
@@ -41,8 +42,6 @@ pub struct Args {
     pub resume: bool,
     pub quiet: bool,
     pub noise: Option<u32>,
-    pub crop: Option<(u32, u32)>,
-    pub crop_str: Option<String>,
     pub audio: Option<audio::AudioSpec>,
     pub input: PathBuf,
     pub output: PathBuf,
@@ -82,7 +81,6 @@ fn print_help() {
         println!("-f|--qp      CRF range: `-f 0.25-69.75`");
     }
     println!("-n|--noise   Add noise [1-64]: 1=ISO100, 64=ISO6400");
-    println!("-c|--crop    Crop by AR: `1.37` OR crop y,x: `0,220`");
     println!("-s|--sc      Specify SCD file. Auto gen if not specified");
     println!("-b|--buffer  No of chunks to hold in front buffer");
     #[cfg(feature = "vship")]
@@ -149,8 +147,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut resume = false;
     let mut quiet = false;
     let mut noise = None;
-    let crop = None;
-    let mut crop_str = None;
     let mut audio = None;
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
@@ -216,12 +212,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     noise = Some(val * 100);
                 }
             }
-            "-c" | "--crop" => {
-                i += 1;
-                if i < args.len() {
-                    crop_str = Some(args[i].clone());
-                }
-            }
             "-a" | "--audio" => {
                 i += 1;
                 if i < args.len() {
@@ -273,8 +263,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         resume,
         quiet,
         noise,
-        crop,
-        crop_str,
         audio,
         input,
         output,
@@ -392,36 +380,16 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let inf = ffms::get_vidinf(&idx)?;
 
     let mut args = args.clone();
-    if let Some(ref s) = args.crop_str {
-        args.crop = Some(if let Ok(ar) = s.parse::<f64>() {
-            let (cur_dim, new_exact, is_vert) = if ar > f64::from(inf.width) / f64::from(inf.height)
-            {
-                (inf.height, f64::from(inf.width) / ar, true)
-            } else {
-                (inf.width, f64::from(inf.height) * ar, false)
-            };
 
-            let mut new_dim = new_exact as u32;
-            let cur_mod4 = cur_dim % 4;
-            let new_mod4 = new_dim % 4;
+    let crop = {
+        let config = crop::CropDetectConfig { sample_count: 16, min_black_pixels: 2 };
 
-            if new_mod4 != cur_mod4 || new_exact.fract() != 0.0 {
-                let mut adj = (cur_mod4 + 4 - new_mod4) % 4;
-                if adj == 0 {
-                    adj = 4;
-                }
-                new_dim += adj;
-            }
+        match crop::detect_crop(&idx, &inf, &config) {
+            Ok(detected) if detected.has_crop() => detected.to_tuple(),
+            _ => (0, 0),
+        }
+    };
 
-            let crop = ((cur_dim - new_dim) / 2) & !1;
-            if is_vert { (crop, 0) } else { (0, crop) }
-        } else {
-            let p: Vec<u32> = s.split(',').filter_map(|x| x.parse().ok()).collect();
-            if p.len() == 2 { (p[0] & !1, p[1] & !1) } else { (0, 0) }
-        });
-    }
-
-    let crop = args.crop.unwrap_or((0, 0));
     args.decode_strat = Some(ffms::get_decode_strat(&idx, &inf, crop)?);
 
     let grain_table = if let Some(iso) = args.noise {
@@ -474,11 +442,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let dur_secs = duration as u64;
     let (dh, dm, ds) = (dur_secs / 3600, (dur_secs % 3600) / 60, dur_secs % 60);
 
-    let (final_width, final_height) = if let Some((crop_v, crop_h)) = args.crop {
-        (inf.width - crop_h * 2, inf.height - crop_v * 2)
-    } else {
-        (inf.width, inf.height)
-    };
+    let (final_width, final_height) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
 
     eprintln!(
     "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
