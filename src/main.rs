@@ -103,8 +103,8 @@ fn parse_args() -> Args {
 
 fn apply_defaults(args: &mut Args) {
     if args.worker == 0 {
-        args.worker = 5;
-        args.params = format!("--lp 5 {}", args.params).trim().to_string();
+        args.worker = 1;
+        args.params = format!("--lp 1 {}", args.params).trim().to_string();
     }
 
     if args.output == PathBuf::new() {
@@ -126,8 +126,6 @@ fn apply_defaults(args: &mut Args) {
             args.metric_worker = 3;
         }
     }
-
-    args.chunk_buffer += args.worker;
 }
 
 fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
@@ -152,7 +150,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut output = PathBuf::new();
     #[cfg(feature = "vship")]
     let mut metric_worker = 0;
-    let mut chunk_buffer = 1;
+    let mut chunk_buffer = 0;
 
     let mut i = 1;
     while i < args.len() {
