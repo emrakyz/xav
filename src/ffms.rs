@@ -1120,7 +1120,6 @@ pub fn extr_10bit_crop_pack_stride_rem(
     }
 }
 
-#[cfg(feature = "vship")]
 pub fn get_frame(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,

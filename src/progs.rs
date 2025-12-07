@@ -384,7 +384,8 @@ fn draw_screen(
     let bar = format!("{}{}", G_HASH.repeat(progress), R_DASH.repeat(BAR_WIDTH - progress));
 
     let (h, m) = (elapsed_secs / 3600, (elapsed_secs % 3600) / 60);
-    let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
+    let eta_h = (eta_secs / 3600).min(99);
+    let eta_m = (eta_secs % 3600) / 60;
 
     print!(
         "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
