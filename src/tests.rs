@@ -127,7 +127,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
 
         extr_raw_data(source, i, &mut decoded_frame, &inf, crop);
 
-        assert_eq!(roundtrip_frame.len(), decoded_frame.len(), "Frame {} length mismatch", i);
+        assert_eq!(roundtrip_frame.len(), decoded_frame.len(), "Frame {i} length mismatch");
 
         let row_size = final_w * if inf.is_10bit { 2 } else { 1 };
         for row in 0..final_h {
@@ -136,9 +136,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
             assert_eq!(
                 &roundtrip_frame[start..end],
                 &decoded_frame[start..end],
-                "Frame {} Y plane row {} mismatch",
-                i,
-                row
+                "Frame {i} Y plane row {row} mismatch",
             );
         }
     }
