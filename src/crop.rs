@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ffms2_sys::FFMS_VideoSource;
 
-use crate::ffms::{VidIdx, VidInf, destroy_vid_src, thr_vid_src};
+use crate::ffms::{VidIdx, VidInf, destroy_vid_src};
 
 #[derive(Debug, Clone)]
 pub struct CropDetectConfig {
@@ -27,10 +27,14 @@ impl CropResult {
         self.top > 0 || self.bottom > 0 || self.left > 0 || self.right > 0
     }
 
-    pub fn to_tuple(&self) -> (u32, u32) {
-        let v = if self.top > self.bottom { self.top } else { self.bottom };
-        let h = if self.left > self.right { self.left } else { self.right };
-        (v, h)
+    pub const fn to_tuple(self) -> (u32, u32) {
+        let v = if self.top < self.bottom { self.top } else { self.bottom };
+        let h = if self.left < self.right { self.left } else { self.right };
+
+        let v_even = v & !1;
+        let h_even = h & !1;
+
+        (v_even, h_even)
     }
 }
 
@@ -97,9 +101,8 @@ fn detect_frame_crop(
     inf: &VidInf,
     min_pixels: usize,
 ) -> CropResult {
-    let frame = match crate::ffms::get_frame(src, frame_idx) {
-        Ok(f) => f,
-        Err(_) => return CropResult::no_crop(),
+    let Ok(frame) = crate::ffms::get_frame(src, frame_idx) else {
+        return CropResult::no_crop();
     };
 
     unsafe {
@@ -136,14 +139,14 @@ unsafe fn detect_top_crop(
 
             for col in 0..width {
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
-                sum += pixel_value as u64;
+                sum += u64::from(pixel_value);
             }
 
             let avg = (sum / width as u64) as u16;
@@ -153,15 +156,15 @@ unsafe fn detect_top_crop(
 
             for col in 0..width {
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
 
-                let diff = if pixel_value > avg { pixel_value - avg } else { avg - pixel_value };
+                let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
                     return row as u32;
                 }
@@ -191,14 +194,14 @@ unsafe fn detect_bottom_crop(
 
             for col in 0..width {
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
-                sum += pixel_value as u64;
+                sum += u64::from(pixel_value);
             }
 
             let avg = (sum / width as u64) as u16;
@@ -208,15 +211,15 @@ unsafe fn detect_bottom_crop(
 
             for col in 0..width {
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
 
-                let diff = if pixel_value > avg { pixel_value - avg } else { avg - pixel_value };
+                let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
                     return (height - 1 - row) as u32;
                 }
@@ -246,14 +249,14 @@ unsafe fn detect_left_crop(
             unsafe {
                 let row_start = data.add(row * stride);
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
-                sum += pixel_value as u64;
+                sum += u64::from(pixel_value);
             }
         }
 
@@ -266,15 +269,15 @@ unsafe fn detect_left_crop(
             unsafe {
                 let row_start = data.add(row * stride);
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
 
-                let diff = if pixel_value > avg { pixel_value - avg } else { avg - pixel_value };
+                let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
                     return col as u32;
                 }
@@ -304,14 +307,14 @@ unsafe fn detect_right_crop(
             unsafe {
                 let row_start = data.add(row * stride);
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
-                sum += pixel_value as u64;
+                sum += u64::from(pixel_value);
             }
         }
 
@@ -324,15 +327,15 @@ unsafe fn detect_right_crop(
             unsafe {
                 let row_start = data.add(row * stride);
                 let pixel_value = if is_10bit {
-                    let ptr = row_start.add(col * 2) as *const u16;
-                    let val = *ptr;
+                    let val =
+                        u16::from_le_bytes([*row_start.add(col * 2), *row_start.add(col * 2 + 1)]);
                     if val < black_clamp { black_clamp } else { val }
                 } else {
-                    let val = *row_start.add(col) as u16;
+                    let val = u16::from(*row_start.add(col));
                     if val < black_clamp { black_clamp } else { val }
                 };
 
-                let diff = if pixel_value > avg { pixel_value - avg } else { avg - pixel_value };
+                let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
                     return (width - 1 - col) as u32;
                 }
