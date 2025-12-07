@@ -196,10 +196,15 @@ fn encode_stream(
         "0",
         "-fflags",
         "+genpts+igndts+discardcorrupt+bitexact",
+        "-avoid_negative_ts",
+        "make_zero",
         "-bitexact",
         "-err_detect",
         "ignore_err",
         "-ignore_unknown",
+        "-reset_timestamps",
+        "1",
+        "-start_at_zero",
     ])
     .arg(output)
     .status()
