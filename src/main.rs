@@ -149,7 +149,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
     #[cfg(feature = "vship")]
-    let mut metric_worker = 0;
+    let mut metric_worker = 1;
     let mut chunk_buffer = 0;
 
     let mut i = 1;
