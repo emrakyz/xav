@@ -150,7 +150,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     let mut output = PathBuf::new();
     #[cfg(feature = "vship")]
     let mut metric_worker = 1;
-    let mut chunk_buffer = 0;
+    let mut chunk_buffer = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -172,7 +172,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                 i += 1;
                 if i < args.len() {
                     target_quality = Some(args[i].clone());
-                    chunk_buffer += worker;
                 }
             }
             #[cfg(feature = "vship")]
@@ -228,7 +227,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
             "-b" | "--chunk-buffer" => {
                 i += 1;
                 if i < args.len() {
-                    chunk_buffer = args[i].parse()?;
+                    chunk_buffer = Some(args[i].parse()?);
                 }
             }
 
@@ -249,6 +248,24 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         return Ok(saved_args);
     }
 
+    let chunk_buffer = {
+        #[cfg(feature = "vship")]
+        {
+            if target_quality.is_some() {
+                match chunk_buffer {
+                    None | Some(0) => worker,
+                    Some(n) => worker + n,
+                }
+            } else {
+                chunk_buffer.unwrap_or(0)
+            }
+        }
+        #[cfg(not(feature = "vship"))]
+        {
+            chunk_buffer.unwrap_or(0)
+        }
+    };
+
     let mut result = Args {
         worker,
         scene_file,
@@ -266,9 +283,9 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         input,
         output,
         decode_strat: None,
+        chunk_buffer,
         #[cfg(feature = "vship")]
         metric_worker,
-        chunk_buffer,
     };
 
     apply_defaults(&mut result);
