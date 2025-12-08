@@ -515,7 +515,7 @@ fn encode_tq(
         let permits_done = Arc::clone(&permits);
 
         thread::spawn(move || {
-            let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(1);
+            let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(2);
             let inf_decode = inf.clone();
 
             let decoder_handle = thread::spawn(move || {

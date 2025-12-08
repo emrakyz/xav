@@ -45,7 +45,7 @@ impl ProgsBar {
             return;
         }
 
-        if self.last_update.elapsed() < Duration::from_millis(2000) {
+        if self.last_update.elapsed() < Duration::from_millis(750) {
             return;
         }
         self.last_update = Instant::now();
@@ -75,7 +75,7 @@ impl ProgsBar {
             return;
         }
 
-        if self.last_update.elapsed() < Duration::from_millis(2000) {
+        if self.last_update.elapsed() < Duration::from_millis(750) {
             return;
         }
         self.last_update = Instant::now();
@@ -303,7 +303,7 @@ fn display_loop(
     let mut last_draw = Instant::now();
 
     loop {
-        match rx.recv_timeout(Duration::from_millis(2000)) {
+        match rx.recv_timeout(Duration::from_millis(750)) {
             Ok(WorkerMsg::Update { worker_id, line, frames }) => {
                 if worker_id < worker_count {
                     lines[worker_id] = line;
@@ -321,7 +321,7 @@ fn display_loop(
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
 
-        if last_draw.elapsed() >= Duration::from_millis(2000) {
+        if last_draw.elapsed() >= Duration::from_millis(750) {
             draw_screen(&lines, worker_count, &start, state, &processed, init_frames);
             last_draw = Instant::now();
         }
