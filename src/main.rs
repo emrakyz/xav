@@ -398,7 +398,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut args = args.clone();
 
     let crop = {
-        let config = crop::CropDetectConfig { sample_count: 8, min_black_pixels: 2 };
+        let config = crop::CropDetectConfig { sample_count: 13, min_black_pixels: 2 };
 
         match crop::detect_crop(&idx, &inf, &config) {
             Ok(detected) if detected.has_crop() => detected.to_tuple(),

@@ -73,7 +73,8 @@ pub fn detect_crop(
 
         destroy_vid_src(src);
 
-        let result = median_crop(&crop_samples);
+        // let result = median_crop(&crop_samples);
+        let result = min_crop(&crop_samples);
 
         Ok(result)
     }
@@ -346,6 +347,7 @@ unsafe fn detect_right_crop(
     0
 }
 
+#[allow(dead_code)]
 fn median_crop(samples: &[CropResult]) -> CropResult {
     if samples.is_empty() {
         return CropResult::no_crop();
@@ -364,4 +366,17 @@ fn median_crop(samples: &[CropResult]) -> CropResult {
     let mid = samples.len() / 2;
 
     CropResult { top: tops[mid], bottom: bottoms[mid], left: lefts[mid], right: rights[mid] }
+}
+
+fn min_crop(samples: &[CropResult]) -> CropResult {
+    if samples.is_empty() {
+        return CropResult::no_crop();
+    }
+
+    CropResult {
+        top: samples.iter().map(|c| c.top).min().unwrap_or(0),
+        bottom: samples.iter().map(|c| c.bottom).min().unwrap_or(0),
+        left: samples.iter().map(|c| c.left).min().unwrap_or(0),
+        right: samples.iter().map(|c| c.right).min().unwrap_or(0),
+    }
 }
