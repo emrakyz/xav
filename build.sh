@@ -165,7 +165,6 @@ build_ffmpeg() {
         cd "${BUILD_DIR}"
         git clone "https://github.com/FFmpeg/FFmpeg" > "${logfile}" 2>&1
         cd "FFmpeg"
-        git checkout n8.0 >> "${logfile}" 2>&1
 
         ./configure \
                 --cc="${CC}" \
