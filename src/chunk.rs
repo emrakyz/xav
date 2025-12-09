@@ -188,6 +188,12 @@ fn run_merge(
         }
     }
 
+    if let (Some(dw), Some(dh)) = (inf.display_width, inf.display_height)
+        && (dw != inf.width || dh != inf.height)
+    {
+        cmd.arg("--aspect-ratio").arg(format!("0:{dw}/{dh}"));
+    }
+
     cmd.arg("--default-duration").arg(format!("0:{}/{}fps", inf.fps_num, inf.fps_den));
     cmd.status()?;
     Ok(())
