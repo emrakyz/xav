@@ -15,6 +15,8 @@ use crate::decode::CropCalc;
 pub struct VidInf {
     pub width: u32,
     pub height: u32,
+    pub display_width: Option<u32>,
+    pub display_height: Option<u32>,
     pub fps_num: u32,
     pub fps_den: u32,
     pub frames: usize,
@@ -154,6 +156,34 @@ fn get_chroma_loc(path: &str, frame_chroma: i32) -> Option<i32> {
     }
 }
 
+fn get_disp_res(path: &str) -> Option<(u32, u32)> {
+    let output = std::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=display_aspect_ratio",
+            "-of",
+            "csv=p=0",
+            path,
+        ])
+        .output()
+        .ok()?;
+
+    let dar = String::from_utf8_lossy(&output.stdout);
+    let dar = dar.trim();
+    if let Some((num_str, den_str)) = dar.split_once(':')
+        && let (Ok(num), Ok(den)) = (num_str.parse::<u32>(), den_str.parse::<u32>())
+        && num > 0
+        && den > 0
+    {
+        return Some((num, den));
+    }
+    None
+}
+
 pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
@@ -223,9 +253,14 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
             None
         };
 
+        let (display_width, display_height) =
+            get_disp_res(&idx.path).map_or((None, None), |(w, h)| (Some(w), Some(h)));
+
         let inf = VidInf {
             width,
             height,
+            display_width,
+            display_height,
             fps_num: (*props).FPSNumerator as u32,
             fps_den: (*props).FPSDenominator as u32,
             frames: (*props).NumFrames as usize,
