@@ -426,13 +426,19 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let enc_time = enc_start.elapsed();
 
     let video_mkv = work_dir.join("encode").join("video.mkv");
-    chunk::merge_out(&work_dir.join("encode"), &video_mkv, &inf)?;
+
+    chunk::merge_out(
+        &work_dir.join("encode"),
+        if args.audio.is_some() { &video_mkv } else { &args.output },
+        &inf,
+        if args.audio.is_some() { None } else { Some(&args.input) },
+    )?;
 
     print!("\x1b[?25h\x1b[?1049l");
     std::io::stdout().flush().unwrap();
 
     let input_size = fs::metadata(&args.input)?.len();
-    let output_size = fs::metadata(&video_mkv)?.len();
+    let output_size = fs::metadata(&args.output)?.len();
     let duration = inf.frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
     let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
     let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
@@ -481,8 +487,6 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref audio_spec) = args.audio {
         audio::process_audio(audio_spec, &args.input, &video_mkv, &args.output)?;
         fs::remove_file(&video_mkv)?;
-    } else {
-        fs::rename(&video_mkv, &args.output)?;
     }
 
     fs::remove_dir_all(&work_dir)?;

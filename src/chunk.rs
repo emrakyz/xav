@@ -124,6 +124,7 @@ pub fn merge_out(
     encode_dir: &Path,
     output: &Path,
     inf: &crate::ffms::VidInf,
+    input: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut files: Vec<_> = fs::read_dir(encode_dir)?
         .filter_map(Result::ok)
@@ -139,7 +140,12 @@ pub fn merge_out(
     });
 
     if files.len() <= 1024 {
-        return run_merge(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), output, inf);
+        return run_merge(
+            &files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
+            output,
+            inf,
+            input,
+        );
     }
 
     let temp_dir = encode_dir.join("temp_merge");
@@ -150,12 +156,12 @@ pub fn merge_out(
         .enumerate()
         .map(|(i, chunk)| {
             let path = temp_dir.join(format!("batch_{i}.ivf"));
-            run_merge(&chunk.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &path, inf)?;
+            run_merge(&chunk.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &path, inf, None)?;
             Ok(path)
         })
         .collect::<Result<_, Box<dyn std::error::Error>>>()?;
 
-    run_merge(&batches, output, inf)?;
+    run_merge(&batches, output, inf, input)?;
     fs::remove_dir_all(&temp_dir)?;
     Ok(())
 }
@@ -164,18 +170,16 @@ fn run_merge(
     files: &[std::path::PathBuf],
     output: &Path,
     inf: &crate::ffms::VidInf,
+    input: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("mkvmerge");
-    cmd.arg("-q")
-        .arg("-o")
-        .arg(output)
-        .arg("-A")
-        .arg("-S")
-        .arg("-B")
-        .arg("-M")
-        .arg("-T")
-        .arg("--no-global-tags")
-        .arg("--no-chapters")
+    cmd.arg("-q").arg("-o").arg(output).arg("-B").arg("-T");
+
+    if input.is_none() {
+        cmd.arg("-A");
+    }
+
+    cmd.arg("--no-global-tags")
         .arg("--no-date")
         .arg("--disable-language-ietf")
         .arg("--disable-track-statistics-tags");
@@ -195,6 +199,11 @@ fn run_merge(
     }
 
     cmd.arg("--default-duration").arg(format!("0:{}/{}fps", inf.fps_num, inf.fps_den));
+
+    if let Some(input) = input {
+        cmd.arg("-D").arg(input);
+    }
+
     cmd.status()?;
     Ok(())
 }

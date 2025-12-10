@@ -231,8 +231,10 @@ fn mux_files(
             "-M",
             "-T",
             "--no-global-tags",
-            "--no-chapters",
+            "--no-date",
+            "--disable-language-ietf",
             "--disable-track-statistics-tags",
+            "--no-chapters",
         ])
         .arg(video);
 
@@ -245,7 +247,15 @@ fn mux_files(
             .arg(path);
     }
 
-    cmd.args(["-D", "-B", "-M", "-T", "--no-global-tags"]);
+    cmd.args([
+        "-D",
+        "-B",
+        "-T",
+        "--no-global-tags",
+        "--no-date",
+        "--disable-language-ietf",
+        "--disable-track-statistics-tags",
+    ]);
     if !keep_all {
         cmd.arg("-A");
     }
