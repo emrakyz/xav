@@ -374,9 +374,9 @@ fn min_crop(samples: &[CropResult]) -> CropResult {
     }
 
     CropResult {
-        top: samples.iter().map(|c| c.top).min().unwrap_or(0),
-        bottom: samples.iter().map(|c| c.bottom).min().unwrap_or(0),
-        left: samples.iter().map(|c| c.left).min().unwrap_or(0),
-        right: samples.iter().map(|c| c.right).min().unwrap_or(0),
+        top: samples.iter().map(|c| c.top).min().unwrap_or(0).next_multiple_of(2),
+        bottom: samples.iter().map(|c| c.bottom).min().unwrap_or(0).next_multiple_of(2),
+        left: samples.iter().map(|c| c.left).min().unwrap_or(0).next_multiple_of(2),
+        right: samples.iter().map(|c| c.right).min().unwrap_or(0).next_multiple_of(2),
     }
 }
