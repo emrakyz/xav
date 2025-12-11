@@ -67,8 +67,9 @@ pub fn detect_crop(
 
         let mut crop_samples = Vec::with_capacity(frame_indices.len());
         for &frame_idx in &frame_indices {
-            let crop = detect_frame_crop(src, frame_idx, inf, config.min_black_pixels);
-            crop_samples.push(crop);
+            if let Some(crop) = detect_frame_crop(src, frame_idx, inf, config.min_black_pixels) {
+                crop_samples.push(crop);
+            }
         }
 
         destroy_vid_src(src);
@@ -101,9 +102,9 @@ fn detect_frame_crop(
     frame_idx: usize,
     inf: &VidInf,
     min_pixels: usize,
-) -> CropResult {
+) -> Option<CropResult> {
     let Ok(frame) = crate::ffms::get_frame(src, frame_idx) else {
-        return CropResult::no_crop();
+        return None;
     };
 
     unsafe {
@@ -116,8 +117,16 @@ fn detect_frame_crop(
         let bottom = detect_bottom_crop(y_data, width, height, y_stride, min_pixels, inf.is_10bit);
         let left = detect_left_crop(y_data, width, height, y_stride, min_pixels, inf.is_10bit);
         let right = detect_right_crop(y_data, width, height, y_stride, min_pixels, inf.is_10bit);
+        if top.is_none() || bottom.is_none() || left.is_none() || right.is_none() {
+            return None;
+        }
 
-        CropResult { top, bottom, left, right }
+        Some(CropResult {
+            top: top.unwrap(),
+            bottom: bottom.unwrap(),
+            left: left.unwrap(),
+            right: right.unwrap(),
+        })
     }
 }
 
@@ -128,7 +137,7 @@ unsafe fn detect_top_crop(
     stride: usize,
     _min_pixels: usize,
     is_10bit: bool,
-) -> u32 {
+) -> Option<u32> {
     let dark_threshold = if is_10bit { 128 } else { 32 };
     let variance_threshold = if is_10bit { 64 } else { 16 };
     let black_clamp = if is_10bit { 64 } else { 16 };
@@ -152,7 +161,7 @@ unsafe fn detect_top_crop(
 
             let avg = (sum / width as u64) as u16;
             if avg >= dark_threshold {
-                return row as u32;
+                return Some(row as u32);
             }
 
             for col in 0..width {
@@ -167,13 +176,13 @@ unsafe fn detect_top_crop(
 
                 let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
-                    return row as u32;
+                    return Some(row as u32);
                 }
             }
         }
     }
 
-    0
+    None
 }
 
 unsafe fn detect_bottom_crop(
@@ -183,7 +192,7 @@ unsafe fn detect_bottom_crop(
     stride: usize,
     _min_pixels: usize,
     is_10bit: bool,
-) -> u32 {
+) -> Option<u32> {
     let dark_threshold = if is_10bit { 128 } else { 32 };
     let variance_threshold = if is_10bit { 64 } else { 16 };
     let black_clamp = if is_10bit { 64 } else { 16 };
@@ -207,7 +216,7 @@ unsafe fn detect_bottom_crop(
 
             let avg = (sum / width as u64) as u16;
             if avg >= dark_threshold {
-                return (height - 1 - row) as u32;
+                return Some((height - 1 - row) as u32);
             }
 
             for col in 0..width {
@@ -222,13 +231,13 @@ unsafe fn detect_bottom_crop(
 
                 let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
-                    return (height - 1 - row) as u32;
+                    return Some((height - 1 - row) as u32);
                 }
             }
         }
     }
 
-    0
+    None
 }
 
 unsafe fn detect_left_crop(
@@ -238,7 +247,7 @@ unsafe fn detect_left_crop(
     stride: usize,
     _min_pixels: usize,
     is_10bit: bool,
-) -> u32 {
+) -> Option<u32> {
     let dark_threshold = if is_10bit { 128 } else { 32 };
     let variance_threshold = if is_10bit { 64 } else { 16 };
     let black_clamp = if is_10bit { 64 } else { 16 };
@@ -263,7 +272,7 @@ unsafe fn detect_left_crop(
 
         let avg = (sum / height as u64) as u16;
         if avg >= dark_threshold {
-            return col as u32;
+            return Some(col as u32);
         }
 
         for row in 0..height {
@@ -280,13 +289,13 @@ unsafe fn detect_left_crop(
 
                 let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
-                    return col as u32;
+                    return Some(col as u32);
                 }
             }
         }
     }
 
-    0
+    None
 }
 
 unsafe fn detect_right_crop(
@@ -296,7 +305,7 @@ unsafe fn detect_right_crop(
     stride: usize,
     _min_pixels: usize,
     is_10bit: bool,
-) -> u32 {
+) -> Option<u32> {
     let dark_threshold = if is_10bit { 128 } else { 32 };
     let variance_threshold = if is_10bit { 64 } else { 16 };
     let black_clamp = if is_10bit { 64 } else { 16 };
@@ -321,7 +330,7 @@ unsafe fn detect_right_crop(
 
         let avg = (sum / height as u64) as u16;
         if avg >= dark_threshold {
-            return (width - 1 - col) as u32;
+            return Some((width - 1 - col) as u32);
         }
 
         for row in 0..height {
@@ -338,13 +347,13 @@ unsafe fn detect_right_crop(
 
                 let diff = pixel_value.abs_diff(avg);
                 if diff > variance_threshold {
-                    return (width - 1 - col) as u32;
+                    return Some((width - 1 - col) as u32);
                 }
             }
         }
     }
 
-    0
+    None
 }
 
 #[allow(dead_code)]
