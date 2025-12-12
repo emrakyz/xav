@@ -78,9 +78,11 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
     let inf = ffms::get_vidinf(&idx).unwrap();
     let decode_strat = ffms::get_decode_strat(&idx, &inf, crop).unwrap();
     let (tx, rx) = bounded::<crate::worker::WorkPkg>(1);
+    let sem = Arc::new(crate::worker::Semaphore::new(1));
 
     let idx_c = Arc::clone(&idx);
     let inf_c = inf.clone();
+    let sem_c = Arc::clone(&sem);
     thread::spawn(move || {
         decode_chunks(
             &[Chunk { idx: 0, start: 0, end: 10 }],
@@ -89,7 +91,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
             &tx,
             &HashSet::new(),
             decode_strat,
-            None,
+            &sem_c,
         );
     });
 
