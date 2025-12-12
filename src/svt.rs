@@ -13,7 +13,6 @@ use crate::decode::decode_chunks;
 use crate::ffms::{VidIdx, VidInf};
 use crate::pipeline::Pipeline;
 use crate::progs::ProgsTrack;
-#[cfg(feature = "vship")]
 use crate::worker::Semaphore;
 #[cfg(feature = "vship")]
 use crate::worker::TQState;
@@ -235,13 +234,15 @@ pub fn encode_all(
 
     let (tx, rx) = bounded::<crate::worker::WorkPkg>(args.chunk_buffer);
     let rx = Arc::new(rx);
+    let sem = Arc::new(Semaphore::new(args.chunk_buffer));
 
     let decoder = {
         let chunks = chunks.to_vec();
         let idx = Arc::clone(idx);
         let inf = inf.clone();
+        let sem = Arc::clone(&sem);
         thread::spawn(move || {
-            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, None);
+            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, &sem);
         })
     };
 
@@ -255,6 +256,7 @@ pub fn encode_all(
         let grain = grain_table.cloned();
         let wd = work_dir.to_path_buf();
         let prog_clone = prog.clone();
+        let sem_clone = Arc::clone(&sem);
 
         let handle = thread::spawn(move || {
             run_enc_worker(
@@ -267,6 +269,7 @@ pub fn encode_all(
                 stats_clone.as_ref(),
                 prog_clone.as_ref(),
                 worker_id,
+                &sem_clone,
             );
         });
         workers.push(handle);
@@ -526,7 +529,7 @@ fn encode_tq(
                     &decode_tx,
                     &skip_indices,
                     strat,
-                    Some(&permits_decoder),
+                    &permits_decoder,
                 );
             });
 
@@ -731,6 +734,7 @@ fn run_enc_worker(
     stats: Option<&Arc<WorkerStats>>,
     prog: Option<&Arc<ProgsTrack>>,
     worker_id: usize,
+    sem: &Arc<Semaphore>,
 ) {
     let mut conv_buf = vec![0u8; pipe.conv_buf_size];
 
@@ -748,6 +752,8 @@ fn run_enc_worker(
             };
             s.add_completion(comp, work_dir);
         }
+
+        sem.release();
     }
 }
 

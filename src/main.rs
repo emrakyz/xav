@@ -248,23 +248,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         return Ok(saved_args);
     }
 
-    let chunk_buffer = {
-        #[cfg(feature = "vship")]
-        {
-            if target_quality.is_some() {
-                match chunk_buffer {
-                    None | Some(0) => worker,
-                    Some(n) => worker + n,
-                }
-            } else {
-                chunk_buffer.unwrap_or(0)
-            }
-        }
-        #[cfg(not(feature = "vship"))]
-        {
-            chunk_buffer.unwrap_or(0)
-        }
-    };
+    let chunk_buffer = worker + chunk_buffer.unwrap_or(0);
 
     let mut result = Args {
         worker,
