@@ -295,12 +295,10 @@ setup_toolchain() {
 -mllvm -polly-pragma-based-opts \
 -mllvm -polly-pattern-matching-based-opts=true \
 -mllvm -polly-reschedule=true \
--mllvm -polly-process-unprofitable \
 -mllvm -enable-loop-distribute \
 -mllvm -enable-unroll-and-jam \
 -mllvm -polly-ast-use-context \
 -mllvm -polly-invariant-load-hoisting \
--mllvm -polly-loopfusion-greedy \
 -mllvm -polly-run-inliner \
 -mllvm -polly-run-dce"
 
