@@ -24,6 +24,7 @@ pub fn fd_scenes(
     drop(idx);
 
     let mut decoder = av_decoders::Decoder::from_file(vid_path)?;
+    decoder.set_luma_only(true);
 
     let opts = DetectionOptions {
         analysis_speed: SceneDetectionSpeed::Standard,
