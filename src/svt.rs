@@ -838,6 +838,7 @@ pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, work_dir: &Path) {
 #[cfg(feature = "vship")]
 fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
     use std::collections::BTreeMap;
+    use std::fmt::Write;
     use std::fs::OpenOptions;
     use std::io::{BufRead, Write as IoWrite};
 
@@ -900,65 +901,88 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
         _ => "binary",
     };
 
-    let mut rounds_map: BTreeMap<String, crate::tq::RoundStats> = BTreeMap::new();
-    for (round, count) in &round_counts {
-        let pct = (*count as f64 / total as f64 * 100.0 * 100.0).round() / 100.0;
-        rounds_map.insert(
-            round.to_string(),
-            crate::tq::RoundStats { count: *count, method: method_name(*round), pct },
+    all_logs.sort_by_key(|l| l.id);
+
+    let mut out = String::new();
+    let _ = writeln!(out, "{{");
+    let _ = writeln!(out, "  \"chunks_{metric_name}\": [");
+
+    for (i, l) in all_logs.iter().enumerate() {
+        let mut sorted_probes: Vec<_> = l.p.iter().collect();
+        sorted_probes.sort_by(|(a, _, _), (b, _, _)| a.partial_cmp(b).unwrap());
+
+        let _ = writeln!(out, "    {{");
+        let _ = writeln!(out, "      \"id\": {},", l.id);
+        let _ = writeln!(out, "      \"probes\": [");
+
+        for (j, (c, s, sz)) in sorted_probes.iter().enumerate() {
+            let comma = if j + 1 < sorted_probes.len() { "," } else { "" };
+            let _ = writeln!(
+                out,
+                "        {{ \"crf\": {c:.2}, \"score\": {s:.3}, \"kbs\": {:.0} }}{comma}",
+                calc_kbs(*sz, l.f)
+            );
+        }
+
+        let _ = writeln!(out, "      ],");
+        let _ = writeln!(
+            out,
+            "      \"final\": {{ \"crf\": {:.2}, \"score\": {:.3}, \"kbs\": {:.0} }}",
+            l.fc,
+            l.fs,
+            calc_kbs(l.fz, l.f)
+        );
+
+        let comma = if i + 1 < all_logs.len() { "," } else { "" };
+        let _ = writeln!(out, "    }}{comma}");
+
+        if i + 1 < all_logs.len() {
+            let _ = writeln!(out);
+        }
+    }
+
+    let _ = writeln!(out, "  ],");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  \"average_probes\": {:.1},", (avg_probes * 10.0).round() / 10.0);
+    let _ = writeln!(out, "  \"in_range\": {in_range},");
+    let _ = writeln!(out, "  \"out_range\": {out_range},");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  \"rounds\": {{");
+
+    let rounds_vec: Vec<_> = round_counts.iter().collect();
+    for (i, (round, count)) in rounds_vec.iter().enumerate() {
+        let pct = (**count as f64 / total as f64 * 100.0 * 100.0).round() / 100.0;
+        let comma = if i + 1 < rounds_vec.len() { "," } else { "" };
+        let _ = writeln!(
+            out,
+            "    \"{round}\": {{ \"count\": {count}, \"method\": \"{}\", \"%\": {pct:.2} }}{comma}",
+            method_name(**round)
         );
     }
 
+    let _ = writeln!(out, "  }},");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "  \"common_crfs\": [");
+
     let mut crf_vec: Vec<_> = crf_counts.iter().collect();
     crf_vec.sort_by(|(_, a), (_, b)| b.cmp(a));
-    let common_crfs: Vec<crate::tq::CrfCount> = crf_vec
-        .iter()
-        .take(20)
-        .map(|(crf, count)| crate::tq::CrfCount { crf: **crf as f64 / 100.0, count: **count })
-        .collect();
+    let top_crfs: Vec<_> = crf_vec.iter().take(25).collect();
 
-    all_logs.sort_by_key(|l| l.id);
+    for (i, (crf, count)) in top_crfs.iter().enumerate() {
+        let comma = if i + 1 < top_crfs.len() { "," } else { "" };
+        let _ = writeln!(
+            out,
+            "    {{ \"crf\": {:.2}, \"count\": {} }}{comma}",
+            **crf as f64 / 100.0,
+            **count
+        );
+    }
 
-    let chunks: Vec<crate::tq::ChunkEntry> = all_logs
-        .iter()
-        .map(|l| {
-            let mut sorted_probes: Vec<_> = l.p.iter().collect();
-            sorted_probes.sort_by(|(a, _, _), (b, _, _)| a.partial_cmp(b).unwrap());
-            crate::tq::ChunkEntry {
-                id: l.id,
-                probes: sorted_probes
-                    .iter()
-                    .map(|(c, s, sz)| crate::tq::ProbeEntry {
-                        crf: *c,
-                        score: *s,
-                        kbs: calc_kbs(*sz, l.f),
-                    })
-                    .collect(),
-                final_probe: crate::tq::ProbeEntry {
-                    crf: l.fc,
-                    score: l.fs,
-                    kbs: calc_kbs(l.fz, l.f),
-                },
-            }
-        })
-        .collect();
+    let _ = writeln!(out, "  ]");
+    let _ = write!(out, "}}");
 
-    let mut chunks_map = BTreeMap::new();
-    chunks_map.insert(format!("chunks_{metric_name}"), chunks);
-
-    let tq_log = crate::tq::TQLog {
-        chunks_map,
-        average_probes: (avg_probes * 10.0).round() / 10.0,
-        in_range,
-        out_range,
-        rounds: rounds_map,
-        common_crfs,
-    };
-
-    if let Ok(json) = sonic_rs::to_string_pretty(&tq_log)
-        && let Ok(mut file) =
-            OpenOptions::new().create(true).write(true).truncate(true).open(&log_path)
+    if let Ok(mut file) = OpenOptions::new().create(true).write(true).truncate(true).open(&log_path)
     {
-        let _ = file.write_all(json.as_bytes());
+        let _ = file.write_all(out.as_bytes());
     }
 }
