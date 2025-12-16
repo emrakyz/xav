@@ -10,10 +10,54 @@ pub struct Probe {
 #[derive(Clone)]
 pub struct ProbeLog {
     pub chunk_idx: usize,
-    pub probes: Vec<(f64, f64)>,
+    pub probes: Vec<(f64, f64, u64)>,
     pub final_crf: f64,
     pub final_score: f64,
+    pub final_size: u64,
     pub round: usize,
+    pub frames: usize,
+}
+
+use serde::Serialize;
+
+#[derive(Clone, Serialize)]
+pub struct ProbeEntry {
+    pub crf: f64,
+    pub score: f64,
+    pub kbs: f64,
+}
+
+#[derive(Clone, Serialize)]
+pub struct ChunkEntry {
+    pub id: usize,
+    pub probes: Vec<ProbeEntry>,
+    #[serde(rename = "final")]
+    pub final_probe: ProbeEntry,
+}
+
+#[derive(Serialize)]
+pub struct RoundStats {
+    pub count: usize,
+    pub method: &'static str,
+    #[serde(rename = "%")]
+    pub pct: f64,
+}
+
+#[derive(Serialize)]
+pub struct CrfCount {
+    pub crf: f64,
+    pub count: usize,
+}
+
+#[derive(Serialize)]
+pub struct TQLog {
+    #[serde(flatten)]
+    pub chunks_map: std::collections::BTreeMap<String, Vec<ChunkEntry>>,
+    pub average_probes: f64,
+    pub in_range: usize,
+    pub out_range: usize,
+    pub rounds: std::collections::BTreeMap<String, RoundStats>,
+    pub common_crfs: Vec<CrfCount>,
 }
 
 fn round_crf(crf: f64) -> f64 {
