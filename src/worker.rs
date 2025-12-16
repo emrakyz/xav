@@ -15,6 +15,7 @@ pub struct WorkPkg {
 #[cfg(feature = "vship")]
 pub struct TQState {
     pub probes: Vec<crate::tq::Probe>,
+    pub probe_sizes: Vec<(f64, u64)>,
     pub search_min: f64,
     pub search_max: f64,
     pub round: usize,
