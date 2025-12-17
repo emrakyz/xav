@@ -130,7 +130,11 @@ pub fn pchip(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     Some(h00.mul_add(y[k], (h10 * h).mul_add(d[k], (h11 * h).mul_add(d[k + 1], h01 * y[k + 1]))))
 }
 
-pub fn akima(x: &[f64; 5], y: &[f64; 5], xi: f64) -> Option<f64> {
+pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
+    if x.len() < 5 || y.len() < 5 {
+        return None;
+    }
+
     for i in 0..4 {
         if x[i + 1] <= x[i] {
             return None;
