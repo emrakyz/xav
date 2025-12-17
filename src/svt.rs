@@ -652,7 +652,7 @@ fn encode_tq(
 
                 let current_round = pkg.tq_state.as_ref().unwrap().round;
                 let tq = pkg.tq_state.as_ref().unwrap();
-                let crf = if current_round <= 2 || current_round > 6 {
+                let crf = if current_round <= 2 {
                     crate::tq::binary_search(tq.search_min, tq.search_max)
                 } else {
                     crate::tq::interpolate_crf(&tq.probes, tq.target, current_round)
@@ -894,11 +894,11 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
     }
 
     let method_name = |round: usize| match round {
+        1 | 2 => "binary",
         3 => "linear",
         4 => "natural",
         5 => "pchip",
-        6 => "akima",
-        _ => "binary",
+        _ => "akima",
     };
 
     all_logs.sort_by_key(|l| l.id);

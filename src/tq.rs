@@ -30,18 +30,15 @@ pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f6
     let mut sorted = probes.to_vec();
     sorted.sort_unstable_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
 
-    let n = sorted.len();
     let x: Vec<f64> = sorted.iter().map(|p| p.score).collect();
     let y: Vec<f64> = sorted.iter().map(|p| p.crf).collect();
 
     let result = match round {
-        3 if n >= 2 => lerp(&[x[0], x[1]], &[y[0], y[1]], target),
-        4 if n >= 3 => natural_cubic(&x, &y, target),
-        5 if n >= 4 => pchip(&[x[0], x[1], x[2], x[3]], &[y[0], y[1], y[2], y[3]], target),
-        6 if n >= 5 => {
-            akima(&[x[0], x[1], x[2], x[3], x[4]], &[y[0], y[1], y[2], y[3], y[4]], target)
-        }
-        _ => None,
+        1 | 2 => None,
+        3 => lerp(&[x[0], x[1]], &[y[0], y[1]], target),
+        4 => natural_cubic(&x, &y, target),
+        5 => pchip(&[x[0], x[1], x[2], x[3]], &[y[0], y[1], y[2], y[3]], target),
+        _ => akima(&[x[0], x[1], x[2], x[3], x[4]], &[y[0], y[1], y[2], y[3], y[4]], target),
     };
 
     result.map(round_crf)
