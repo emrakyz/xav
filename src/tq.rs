@@ -38,7 +38,7 @@ pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f6
         3 => lerp(&[x[0], x[1]], &[y[0], y[1]], target),
         4 => natural_cubic(&x, &y, target),
         5 => pchip(&[x[0], x[1], x[2], x[3]], &[y[0], y[1], y[2], y[3]], target),
-        _ => akima(&[x[0], x[1], x[2], x[3], x[4]], &[y[0], y[1], y[2], y[3], y[4]], target),
+        _ => akima(&x, &y, target),
     };
 
     result.map(round_crf)

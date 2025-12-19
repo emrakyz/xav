@@ -131,32 +131,33 @@ pub fn pchip(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
 }
 
 pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
-    if x.len() < 5 || y.len() < 5 {
+    let n = x.len();
+    if n < 5 || y.len() != n {
         return None;
     }
 
-    for i in 0..4 {
+    for i in 0..n - 1 {
         if x[i + 1] <= x[i] {
             return None;
         }
     }
 
-    if xi < x[0] || xi > x[4] {
+    if xi < x[0] || xi > x[n - 1] {
         return None;
     }
 
-    let k = (0..4).find(|&i| xi >= x[i] && xi <= x[i + 1]).unwrap_or(0);
+    let k = (0..n - 1).rev().find(|&i| xi >= x[i]).unwrap_or(0);
 
-    let mut m = [0.0; 6];
-    for i in 0..4 {
+    let mut m = vec![0.0; n + 1];
+    for i in 0..n - 1 {
         m[i + 1] = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
     }
 
     m[0] = 2.0f64.mul_add(m[1], -m[2]);
-    m[5] = 2.0f64.mul_add(m[4], -m[3]);
+    m[n] = 2.0f64.mul_add(m[n - 1], -m[n - 2]);
 
-    let mut t = [0.0; 5];
-    for i in 0..4 {
+    let mut t = vec![0.0; n];
+    for i in 0..n - 1 {
         let w1 = (m[i + 2] - m[i + 1]).abs();
         let w2 = (m[i] - m[i + 1]).abs();
 
@@ -167,7 +168,7 @@ pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
         }
     }
 
-    t[4] = m[4];
+    t[n - 1] = m[n - 1];
 
     let h = x[k + 1] - x[k];
     let s = (xi - x[k]) / h;
