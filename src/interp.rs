@@ -8,7 +8,7 @@ pub fn lerp(x: &[f64; 2], y: &[f64; 2], xi: f64) -> Option<f64> {
     Some(t.mul_add(y[1] - y[0], y[0]))
 }
 
-pub fn natural_cubic(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
+pub fn _natural_cubic(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
     let n = x.len();
     if n < 3 || n != y.len() || xi < x[0] || xi > x[n - 1] {
         return None;
@@ -181,4 +181,43 @@ pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
     let h11 = s3 - s2;
 
     Some(h00.mul_add(y[k], (h10 * h).mul_add(t[k], (h11 * h).mul_add(t[k + 1], h01 * y[k + 1]))))
+}
+
+pub fn fritsch_carlson(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
+    let n = x.len();
+    if n != 3 || xi < x[0] || xi > x[n - 1] {
+        return None;
+    }
+
+    let k = (0..2).find(|&i| xi >= x[i] && xi <= x[i + 1]).unwrap_or(0);
+
+    let d0 = (y[1] - y[0]) / (x[1] - x[0]);
+    let d1 = (y[2] - y[1]) / (x[2] - x[1]);
+
+    let mut m = [0.0; 3];
+
+    m[0] = d0;
+    m[2] = d1;
+
+    if d0 * d1 <= 0.0 {
+        m[1] = 0.0;
+    } else {
+        let h0 = x[1] - x[0];
+        let h1 = x[2] - x[1];
+        let w1 = 2.0 * h1 + h0;
+        let w2 = h1 + 2.0 * h0;
+        m[1] = (w1 + w2) / (w1 / d0 + w2 / d1);
+    }
+
+    let h = x[k + 1] - x[k];
+    let t = (xi - x[k]) / h;
+    let t2 = t * t;
+    let t3 = t2 * t;
+
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+
+    Some(h00 * y[k] + h10 * h * m[k] + h01 * y[k + 1] + h11 * h * m[k + 1])
 }

@@ -896,7 +896,7 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
     let method_name = |round: usize| match round {
         1 | 2 => "binary",
         3 => "linear",
-        4 => "natural",
+        4 => "fritsch_carlson",
         5 => "pchip",
         _ => "akima",
     };
