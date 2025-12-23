@@ -21,7 +21,6 @@ const R_DASH: &str = "\x1b[1;91m-";
 pub struct ProgsBar {
     start: Instant,
     total: usize,
-    quiet: bool,
     last_update: Instant,
 }
 
@@ -35,16 +34,12 @@ struct ProgState {
 }
 
 impl ProgsBar {
-    pub fn new(quiet: bool) -> Self {
+    pub fn new() -> Self {
         let now = Instant::now();
-        Self { start: now, total: 0, quiet, last_update: now }
+        Self { start: now, total: 0, last_update: now }
     }
 
     pub fn up_idx(&mut self, current: usize, total: usize) {
-        if self.quiet {
-            return;
-        }
-
         if self.last_update.elapsed() < Duration::from_millis(750) {
             return;
         }
@@ -71,10 +66,6 @@ impl ProgsBar {
     }
 
     pub fn up_scenes(&mut self, current: usize, total: usize) {
-        if self.quiet {
-            return;
-        }
-
         if self.last_update.elapsed() < Duration::from_millis(750) {
             return;
         }
@@ -97,18 +88,14 @@ impl ProgsBar {
         std::io::stdout().flush().unwrap();
     }
 
-    pub fn finish(&self) {
-        if !self.quiet {
-            print!("\r\x1b[2K");
-            std::io::stdout().flush().unwrap();
-        }
+    pub fn finish() {
+        print!("\r\x1b[2K");
+        std::io::stdout().flush().unwrap();
     }
 
-    pub fn finish_scenes(&self) {
-        if !self.quiet {
-            print!("\r\x1b[2K");
-            std::io::stdout().flush().unwrap();
-        }
+    pub fn finish_scenes() {
+        print!("\r\x1b[2K");
+        std::io::stdout().flush().unwrap();
     }
 }
 

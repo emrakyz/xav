@@ -39,8 +39,6 @@ pub struct Args {
     pub worker: usize,
     pub scene_file: PathBuf,
     pub params: String,
-    pub resume: bool,
-    pub quiet: bool,
     pub noise: Option<u32>,
     pub audio: Option<audio::AudioSpec>,
     pub input: PathBuf,
@@ -68,34 +66,50 @@ extern "C" fn exit_restore(_: i32) {
 
 #[rustfmt::skip]
 fn print_help() {
-    println!("Format: xav [options] <INPUT> [<OUTPUT>]");
+    println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("<INPUT>      Input path");
-    println!("<OUTPUT>     Output path");
-    println!("-p|--param   Encoder params: `-p \"--scm 1\"`");
-    println!("-w|--worker  Worker count");
+    println!("{C}-p {P}┃ {C}--param   {W}Encoder params: {Y}-p {G}\"--scm 0\"{W}");
+    println!("{C}-w {P}┃ {C}--worker  {W}Encoder count{W}");
+    println!("{C}-b {P}┃ {C}--buffer  {W}No of chunks to hold in front buffer{W}");
+    println!("{C}-s {P}┃ {C}--sc      {W}Specify SCD file. Auto gen if not specified{W}");
+    println!("{C}-n {P}┃ {C}--noise   {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
+    println!("{C}-a {P}┃ {C}--audio   {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
+    println!("               {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
     #[cfg(feature = "vship")]
     {
-        println!("-t|--tq      TQ Range: <8=Butter5pn, 8-10=CVVDP, >10=SSIMU2: `9.00-9.01`");
-        println!("-m|--mode    Metric aggregation: `mean` or mean of worst N%: `p0.1`");
-        println!("-f|--qp      CRF range: `-f 0.25-69.75`");
+        println!("{C}-t {P}┃ {C}--tq      {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2: {Y}-t {G}9.00-9.01");
+        println!("{C}-m {P}┃ {C}--mode    {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
+        println!("{C}-f {P}┃ {C}--qp      {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
+        println!("{C}-v {P}┃ {C}--vship   {W}Metric worker count");
     }
-    println!("-n|--noise   Add noise [1-64]: 1=ISO100, 64=ISO6400");
-    println!("-s|--sc      Specify SCD file. Auto gen if not specified");
-    println!("-b|--buffer  No of chunks to hold in front buffer");
+
+    println!();
+    println!("{P}Example:{W}");
+    println!("  {Y}xav {P}\\{W}");
+    println!("    {C}-p {G}\"--scm 0 --lp 5\" {P}\\ {B}# {W}Params (after defaults) used by the encoder");
+    println!("    {C}-w {R}5 {P}\\ {B}# {W}Spawn {R}5 {W}encoder instances simultaneously");
+    println!("    {C}-b {R}1 {P}\\ {B}# {W}Decode {R}1 {W}more extra chunk in memory for less waiting");
+    println!("    {C}-s {G}my_scenes.txt {P}\\ {B}# {W}Optionally use a scene file from external SCD tools");
+    println!("    {C}-n {R}4 {P}\\ {B}# {W}Add ISO-{R}400 {W}photon noise");
+    println!("    {C}-a {G}\"norm 1,2\" {P}\\ {B}# {W}Encode {R}2 {W}streams using Opus with stereo downmixing");
     #[cfg(feature = "vship")]
     {
-        println!("-v|--vship   No of vship instances");
+        println!("    {C}-t {G}9.444-9.555 {P}\\ {B}# {W}Enable TQ mode with CVVDP using this allowed range");
+        println!("    {C}-m {G}p1.25 {P}\\ {B}# {W}Use the mean of worst {R}1.25% {W}of frames for TQ scoring");
+        println!("    {C}-f {G}4.25-63.75 {P}\\ {B}# {W}Allowed CRF range for target quality mode");
+        println!("    {C}-v {R}3 {P}\\ {B}# {W}Spawn {R}3 {W}vship/metric workers");
     }
-    println!("-a|--audio   Encode to Opus: `-a \"<auto|norm|bitrate> <all|stream_ids>\"`");
-    println!("             `-a \"auto all\"`, `-a \"norm 1\"`, `-a \"128 1,2\"`");
-    println!("-r|--resume");
-    println!("-q|--quiet");
+    println!("    {G}input.mkv {P}\\ {B}# {W}Name or path of the input file");
+    println!("    {G}output.mkv {B}# {W}Optional output name");
+    println!();
+    println!("{Y}Worker {P}| {Y}Buffer {P}| {Y}Metric worker count {W}depend on the OS,");
+    println!("hardware, content, parameters and other variables.");
+    println!("Experiment and use the sweet spot values for your case.");
 }
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
-    get_args(&args).unwrap_or_else(|_| {
+    get_args(&args, true).unwrap_or_else(|_| {
         print_help();
         std::process::exit(1);
     })
@@ -128,7 +142,7 @@ fn apply_defaults(args: &mut Args) {
     }
 }
 
-fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
+fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::error::Error>> {
     if args.len() < 2 {
         return Err("Usage: xav [options] <input> <output>".into());
     }
@@ -142,8 +156,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
     #[cfg(feature = "vship")]
     let mut qp_range = None;
     let mut params = String::new();
-    let mut resume = false;
-    let mut quiet = false;
     let mut noise = None;
     let mut audio = None;
     let mut input = PathBuf::new();
@@ -194,12 +206,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
                     params.clone_from(&args[i]);
                 }
             }
-            "-r" | "--resume" => {
-                resume = true;
-            }
-            "-q" | "--quiet" => {
-                quiet = true;
-            }
             "-n" | "--noise" => {
                 i += 1;
                 if i < args.len() {
@@ -243,8 +249,7 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         i += 1;
     }
 
-    if resume && let Ok(mut saved_args) = get_saved_args(&input) {
-        saved_args.resume = true;
+    if allow_resume && let Ok(saved_args) = get_saved_args(&input) {
         return Ok(saved_args);
     }
 
@@ -260,8 +265,6 @@ fn get_args(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
         #[cfg(feature = "vship")]
         qp_range,
         params,
-        resume,
-        quiet,
         noise,
         audio,
         input,
@@ -292,8 +295,7 @@ fn hash_input(path: &Path) -> String {
 }
 
 fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let cmd: Vec<String> =
-        std::env::args().filter(|arg| arg != "-r" && arg != "--resume").collect();
+    let cmd: Vec<String> = std::env::args().collect();
     let quoted_cmd: Vec<String> = cmd
         .iter()
         .map(|arg| if arg.contains(' ') { format!("\"{arg}\"") } else { arg.clone() })
@@ -310,7 +312,7 @@ fn get_saved_args(input: &Path) -> Result<Args, Box<dyn std::error::Error>> {
     if cmd_path.exists() {
         let cmd_line = fs::read_to_string(cmd_path)?;
         let saved_args = parse_quoted_args(&cmd_line);
-        get_args(&saved_args)
+        get_args(&saved_args, false)
     } else {
         Err("No tmp dir found".into())
     }
@@ -343,31 +345,23 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
 
 fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     if !args.scene_file.exists() {
-        scd::fd_scenes(&args.input, &args.scene_file, args.quiet)?;
+        scd::fd_scenes(&args.input, &args.scene_file)?;
     }
     Ok(())
 }
 
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    if !args.quiet {
-        print!("\x1b[?1049h\x1b[H\x1b[?25l");
-        std::io::stdout().flush().unwrap();
-    }
+    print!("\x1b[?1049h\x1b[H\x1b[?25l");
+    std::io::stdout().flush().unwrap();
 
     ensure_scene_file(args)?;
 
-    if !args.quiet {
-        println!();
-    }
+    println!();
 
     let hash = hash_input(&args.input);
     let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
 
     let is_new_encode = !work_dir.exists();
-
-    if !args.resume && work_dir.exists() {
-        fs::remove_dir_all(&work_dir)?;
-    }
 
     fs::create_dir_all(work_dir.join("split"))?;
     fs::create_dir_all(work_dir.join("encode"))?;
@@ -376,7 +370,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         save_args(&work_dir)?;
     }
 
-    let idx = ffms::VidIdx::new(&args.input, args.quiet)?;
+    let idx = ffms::VidIdx::new(&args.input, true)?;
     let inf = ffms::get_vidinf(&idx)?;
 
     let mut args = args.clone();
@@ -525,6 +519,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let m = s.iter().sum::<f64>() / s.len() as f64;
+        eprintln!("\nBelow stats are only for the last run if resume was used");
         eprintln!("\n{Y}Mean: {W}{m:.4}");
         for p in [25.0, 10.0, 5.0, 1.0, 0.1] {
             let i = ((s.len() as f64 * p / 100.0).ceil() as usize).min(s.len());

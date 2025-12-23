@@ -10,6 +10,7 @@ use ffms2_sys::{
 };
 
 use crate::decode::CropCalc;
+use crate::progs::ProgsBar;
 
 #[derive(Clone)]
 pub struct VidInf {
@@ -49,7 +50,7 @@ extern "C" fn idx_progs(
 }
 
 impl VidIdx {
-    pub fn new(path: &Path, quiet: bool) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         unsafe {
             FFMS_Init(0, 0);
 
@@ -81,16 +82,19 @@ impl VidIdx {
                 FFMS_TrackTypeIndexSettings(idxer, 1, 0, 0);
                 FFMS_TrackTypeIndexSettings(idxer, 2, 0, 0);
 
-                let mut progs = crate::progs::ProgsBar::new(quiet);
-                FFMS_SetProgressCallback(
-                    idxer,
-                    Some(idx_progs),
-                    std::ptr::addr_of_mut!(progs).cast::<libc::c_void>(),
-                );
-
-                let idx = FFMS_DoIndexing2(idxer, 0, std::ptr::addr_of_mut!(err));
-
-                progs.finish();
+                let idx = if progs {
+                    let mut progs = crate::progs::ProgsBar::new();
+                    FFMS_SetProgressCallback(
+                        idxer,
+                        Some(idx_progs),
+                        std::ptr::addr_of_mut!(progs).cast::<libc::c_void>(),
+                    );
+                    let idx = FFMS_DoIndexing2(idxer, 0, std::ptr::addr_of_mut!(err));
+                    ProgsBar::finish();
+                    idx
+                } else {
+                    FFMS_DoIndexing2(idxer, 0, std::ptr::addr_of_mut!(err))
+                };
 
                 if idx.is_null() {
                     return Err("Failed to idx file".into());

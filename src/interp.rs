@@ -8,68 +8,6 @@ pub fn lerp(x: &[f64; 2], y: &[f64; 2], xi: f64) -> Option<f64> {
     Some(t.mul_add(y[1] - y[0], y[0]))
 }
 
-pub fn _natural_cubic(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
-    let n = x.len();
-    if n < 3 || n != y.len() || xi < x[0] || xi > x[n - 1] {
-        return None;
-    }
-
-    let mut h = vec![0.0; n - 1];
-    for i in 0..n - 1 {
-        h[i] = x[i + 1] - x[i];
-        if h[i] <= 0.0 {
-            return None;
-        }
-    }
-
-    let mut a = vec![0.0; n];
-    let mut b = vec![2.0; n];
-    let mut c = vec![0.0; n];
-    let mut d = vec![0.0; n];
-
-    b[0] = 1.0;
-    b[n - 1] = 1.0;
-
-    for i in 1..n - 1 {
-        a[i] = h[i - 1];
-        b[i] = 2.0 * (h[i - 1] + h[i]);
-        c[i] = h[i];
-        d[i] = 3.0 * ((y[i + 1] - y[i]) / h[i] - (y[i] - y[i - 1]) / h[i - 1]);
-    }
-
-    let mut m = vec![0.0; n];
-    let mut l = vec![0.0; n];
-    let mut z = vec![0.0; n];
-
-    l[0] = b[0];
-    if l[0] == 0.0 {
-        return None;
-    }
-    for i in 1..n {
-        l[i] = b[i] - a[i] * c[i - 1] / l[i - 1];
-        if l[i] == 0.0 {
-            return None;
-        }
-        z[i] = a[i].mul_add(-z[i - 1], d[i]) / l[i];
-    }
-
-    m[n - 1] = z[n - 1];
-    for i in (0..n - 1).rev() {
-        m[i] = z[i] - c[i] * m[i + 1] / l[i];
-    }
-
-    let k = (0..n - 1).find(|&i| xi >= x[i] && xi <= x[i + 1]).unwrap_or(0);
-
-    let dx = xi - x[k];
-    let h_k = h[k];
-    let a_coeff = y[k];
-    let b_coeff = (y[k + 1] - y[k]) / h_k - h_k * 2.0f64.mul_add(m[k], m[k + 1]) / 3.0;
-    let c_coeff = m[k];
-    let d_coeff = (m[k + 1] - m[k]) / (3.0 * h_k);
-
-    Some(d_coeff.mul_add(dx, c_coeff).mul_add(dx, b_coeff).mul_add(dx, a_coeff))
-}
-
 pub fn pchip(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     for i in 0..3 {
         if x[i + 1] <= x[i] {
@@ -204,8 +142,8 @@ pub fn fritsch_carlson(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
     } else {
         let h0 = x[1] - x[0];
         let h1 = x[2] - x[1];
-        let w1 = 2.0 * h1 + h0;
-        let w2 = h1 + 2.0 * h0;
+        let w1 = 2.0f64.mul_add(h1, h0);
+        let w2 = 2.0f64.mul_add(h0, h1);
         m[1] = (w1 + w2) / (w1 / d0 + w2 / d1);
     }
 
@@ -214,10 +152,10 @@ pub fn fritsch_carlson(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
     let t2 = t * t;
     let t3 = t2 * t;
 
-    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-    let h10 = t3 - 2.0 * t2 + t;
-    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h00 = 2.0f64.mul_add(t3, 3.0f64.mul_add(-t2, 1.0));
+    let h10 = 2.0f64.mul_add(-t2, t3.mul_add(1.0, t));
+    let h01 = (-2.0f64).mul_add(t3, 3.0 * t2);
     let h11 = t3 - t2;
 
-    Some(h00 * y[k] + h10 * h * m[k] + h01 * y[k + 1] + h11 * h * m[k + 1])
+    Some((h11 * h).mul_add(m[k + 1], h00.mul_add(y[k], h10.mul_add(h * m[k], h01 * y[k + 1]))))
 }
