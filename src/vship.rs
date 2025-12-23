@@ -170,13 +170,14 @@ unsafe extern "C" {
         lineSize: *const i64,
         lineSize2: *const i64,
     ) -> VshipException;
-    fn Vship_CVVDPInit(
+    fn Vship_CVVDPInit2(
         handler: *mut VshipCVVDPHandler,
         src_colorspace: VshipColorspace,
         dis_colorspace: VshipColorspace,
         fps: f32,
         resize_to_display: bool,
         model_key: *const i8,
+        model_config_json: *const i8,
     ) -> VshipException;
     fn Vship_CVVDPFree(handler: VshipCVVDPHandler) -> VshipException;
     fn Vship_ResetCVVDP(handler: VshipCVVDPHandler) -> VshipException;
@@ -240,6 +241,8 @@ impl VshipProcessor {
         fps: f32,
         use_cvvdp: bool,
         use_butteraugli: bool,
+        cvvdp_model: Option<&str>,
+        cvvdp_config: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         unsafe {
             let src_colorspace = create_yuv_colorspace(
@@ -281,14 +284,20 @@ impl VshipProcessor {
 
             let cvvdp_handler = if use_cvvdp {
                 let mut handler = std::mem::zeroed::<VshipCVVDPHandler>();
-                let model_key = std::ffi::CString::new("standard_hdr_pq").unwrap();
-                let ret = Vship_CVVDPInit(
+                let model_key =
+                    std::ffi::CString::new(cvvdp_model.unwrap_or("xav_screen")).unwrap();
+                let config_cstr = std::ffi::CString::new(
+                    cvvdp_config.ok_or("CVVDP requires -d/--display <json_file> argument")?,
+                )
+                .unwrap();
+                let ret = Vship_CVVDPInit2(
                     ptr::from_mut(&mut handler),
                     src_colorspace,
                     dis_colorspace,
                     fps,
                     true,
                     model_key.as_ptr(),
+                    config_cstr.as_ptr(),
                 );
                 if ret as i32 != 0 {
                     let mut err_msg = vec![0i8; 1024];

@@ -260,6 +260,7 @@ struct TQCtx {
     qp_max: f64,
     use_butteraugli: bool,
     use_cvvdp: bool,
+    cvvdp_config: Option<&'static str>,
 }
 
 #[cfg(feature = "vship")]
@@ -390,6 +391,8 @@ fn run_metrics_worker(
                     fps,
                     tq_ctx.use_cvvdp,
                     tq_ctx.use_butteraugli,
+                    Some("xav_screen"),
+                    tq_ctx.cvvdp_config,
                 )
                 .unwrap(),
             );
@@ -468,6 +471,9 @@ fn encode_tq(
     let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
     let tq_tolerance = (tq_parts[1] - tq_parts[0]) / 2.0;
 
+    let cvvdp_config_static: Option<&'static str> =
+        args.cvvdp_config.as_ref().map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str);
+
     let tq_ctx = TQCtx {
         target: tq_target,
         tolerance: tq_tolerance,
@@ -475,6 +481,7 @@ fn encode_tq(
         qp_max: qp_parts[1],
         use_butteraugli: tq_target < 8.0,
         use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
+        cvvdp_config: cvvdp_config_static,
     };
 
     let strat = args.decode_strat.unwrap();

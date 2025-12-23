@@ -53,6 +53,8 @@ pub struct Args {
     pub target_quality: Option<String>,
     #[cfg(feature = "vship")]
     pub metric_mode: String,
+    #[cfg(feature = "vship")]
+    pub cvvdp_config: Option<String>,
 }
 
 extern "C" fn restore() {
@@ -81,6 +83,7 @@ fn print_help() {
         println!("{C}-m {P}┃ {C}--mode    {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
         println!("{C}-f {P}┃ {C}--qp      {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
         println!("{C}-v {P}┃ {C}--vship   {W}Metric worker count");
+        println!("{C}-d {P}┃ {C}--display {W}Display JSON name/path for CVVDP. The screen name must be {R}xav_screen{W}");
     }
 
     println!();
@@ -98,6 +101,7 @@ fn print_help() {
         println!("    {C}-m {G}p1.25 {P}\\ {B}# {W}Use the mean of worst {R}1.25% {W}of frames for TQ scoring");
         println!("    {C}-f {G}4.25-63.75 {P}\\ {B}# {W}Allowed CRF range for target quality mode");
         println!("    {C}-v {R}3 {P}\\ {B}# {W}Spawn {R}3 {W}vship/metric workers");
+        println!("    {C}-d {G}display.json {P}\\ {B}# {W}Uses {G}display.json {W}for CVVDP screen specification");
     }
     println!("    {G}input.mkv {P}\\ {B}# {W}Name or path of the input file");
     println!("    {G}output.mkv {B}# {W}Optional output name");
@@ -155,6 +159,8 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     #[cfg(feature = "vship")]
     let mut metric_worker = 1;
     let mut chunk_buffer = None;
+    #[cfg(feature = "vship")]
+    let mut cvvdp_config = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -222,10 +228,17 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
                     metric_worker = args[i].parse()?;
                 }
             }
-            "-b" | "--chunk-buffer" => {
+            "-b" | "--buffer" => {
                 i += 1;
                 if i < args.len() {
                     chunk_buffer = Some(args[i].parse()?);
+                }
+            }
+            #[cfg(feature = "vship")]
+            "-d" | "--display" => {
+                i += 1;
+                if i < args.len() {
+                    cvvdp_config = Some(args[i].clone());
                 }
             }
 
@@ -265,6 +278,8 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
         chunk_buffer,
         #[cfg(feature = "vship")]
         metric_worker,
+        #[cfg(feature = "vship")]
+        cvvdp_config,
     };
 
     apply_defaults(&mut result);
