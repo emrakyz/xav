@@ -70,43 +70,43 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-p {P}┃ {C}--param   {W}Encoder params: {Y}-p {G}\"--scm 0\"{W}");
-    println!("{C}-w {P}┃ {C}--worker  {W}Encoder count{W}");
-    println!("{C}-b {P}┃ {C}--buffer  {W}No of chunks to hold in front buffer{W}");
-    println!("{C}-s {P}┃ {C}--sc      {W}Specify SCD file. Auto gen if not specified{W}");
-    println!("{C}-n {P}┃ {C}--noise   {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
-    println!("{C}-a {P}┃ {C}--audio   {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
-    println!("               {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
+    println!("{C}-p {P}┃ {C}--param    {W}Encoder params");
+    println!("{C}-w {P}┃ {C}--worker   {W}Encoder count");
+    println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
+    println!("{C}-s {P}┃ {C}--sc       {W}Specify SCD file. Auto gen if not specified");
+    println!("{C}-n {P}┃ {C}--noise    {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
+    println!("{C}-a {P}┃ {C}--audio    {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
+    println!("                {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
     #[cfg(feature = "vship")]
     {
-        println!("{C}-t {P}┃ {C}--tq      {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2: {Y}-t {G}9.00-9.01");
-        println!("{C}-m {P}┃ {C}--mode    {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
-        println!("{C}-f {P}┃ {C}--qp      {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
-        println!("{C}-v {P}┃ {C}--vship   {W}Metric worker count");
-        println!("{C}-d {P}┃ {C}--display {W}Display JSON name/path for CVVDP. The screen name must be {R}xav_screen{W}");
+        println!("{C}-t {P}┃ {C}--tq       {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2: {Y}-t {G}9.00-9.01");
+        println!("{C}-m {P}┃ {C}--mode     {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
+        println!("{C}-f {P}┃ {C}--qp       {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
+        println!("{C}-v {P}┃ {C}--vship    {W}Metric worker count");
+        println!("{C}-d {P}┃ {C}--display  {W}Display JSON file for CVVDP. Screen name must be {R}xav_screen{W}");
     }
 
     println!();
     println!("{P}Example:{W}");
-    println!("  {Y}xav {P}\\{W}");
-    println!("    {C}-p {G}\"--scm 0 --lp 5\" {P}\\ {B}# {W}Params (after defaults) used by the encoder");
-    println!("    {C}-w {R}5 {P}\\ {B}# {W}Spawn {R}5 {W}encoder instances simultaneously");
-    println!("    {C}-b {R}1 {P}\\ {B}# {W}Decode {R}1 {W}more extra chunk in memory for less waiting");
-    println!("    {C}-s {G}my_scenes.txt {P}\\ {B}# {W}Optionally use a scene file from external SCD tools");
-    println!("    {C}-n {R}4 {P}\\ {B}# {W}Add ISO-{R}400 {W}photon noise");
-    println!("    {C}-a {G}\"norm 1,2\" {P}\\ {B}# {W}Encode {R}2 {W}streams using Opus with stereo downmixing");
+    println!("{Y}xav {P}\\{W}");
+    println!("  {C}-p {G}\"--scm 0 --lp 5\" {P}\\  {B}# {W}Params (after defaults) used by the encoder");
+    println!("  {C}-w {R}5                {P}\\  {B}# {W}Spawn {R}5 {W}encoder instances simultaneously");
+    println!("  {C}-b {R}1                {P}\\  {B}# {W}Decode {R}1 {W}extra chunk in memory for less waiting");
+    println!("  {C}-s {G}scd.txt          {P}\\  {B}# {W}Optionally use a scene file from external SCD tools");
+    println!("  {C}-n {R}4                {P}\\  {B}# {W}Add ISO-{R}400 {W}photon noise");
+    println!("  {C}-a {G}\"norm 1,2\"       {P}\\  {B}# {W}Encode {R}2 {W}streams using Opus with stereo downmixing");
     #[cfg(feature = "vship")]
     {
-        println!("    {C}-t {G}9.444-9.555 {P}\\ {B}# {W}Enable TQ mode with CVVDP using this allowed range");
-        println!("    {C}-m {G}p1.25 {P}\\ {B}# {W}Use the mean of worst {R}1.25% {W}of frames for TQ scoring");
-        println!("    {C}-f {G}4.25-63.75 {P}\\ {B}# {W}Allowed CRF range for target quality mode");
-        println!("    {C}-v {R}3 {P}\\ {B}# {W}Spawn {R}3 {W}vship/metric workers");
-        println!("    {C}-d {G}display.json {P}\\ {B}# {W}Uses {G}display.json {W}for CVVDP screen specification");
+        println!("  {C}-t {G}9.444-9.555      {P}\\  {B}# {W}Enable TQ mode with CVVDP using this allowed range");
+        println!("  {C}-m {G}p1.25            {P}\\  {B}# {W}Use the mean of worst {R}1.25% {W}of frames for TQ scoring");
+        println!("  {C}-f {G}4.25-63.75       {P}\\  {B}# {W}Allowed CRF range for target quality mode");
+        println!("  {C}-v {R}3                {P}\\  {B}# {W}Spawn {R}3 {W}vship/metric workers");
+        println!("  {C}-d {G}display.json     {P}\\  {B}# {W}Uses {G}display.json {W}for CVVDP screen specification");
     }
-    println!("    {G}input.mkv {P}\\ {B}# {W}Name or path of the input file");
-    println!("    {G}output.mkv {B}# {W}Optional output name");
+    println!("  {G}input.mkv           {P}\\  {B}# {W}Name or path of the input file");
+    println!("  {G}output.mkv             {B}# {W}Optional output name");
     println!();
-    println!("{Y}Worker {P}| {Y}Buffer {P}| {Y}Metric worker count {W}depend on the OS,");
+    println!("{Y}Worker {P}┃ {Y}Buffer {P}┃ {Y}Metric worker count {W}depend on the OS,");
     println!("hardware, content, parameters and other variables.");
     println!("Experiment and use the sweet spot values for your case.");
 }
