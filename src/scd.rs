@@ -13,9 +13,8 @@ use crate::progs::ProgsBar;
 pub fn fd_scenes(
     vid_path: &Path,
     scene_file: &Path,
-    quiet: bool,
 ) -> Result<BTreeMap<usize, (f64, f64)>, Box<dyn std::error::Error>> {
-    let idx = ffms::VidIdx::new(vid_path, quiet)?;
+    let idx = ffms::VidIdx::new(vid_path, true)?;
     let inf = ffms::get_vidinf(&idx)?;
 
     let min_dist = (inf.fps_num + inf.fps_den / 2) / inf.fps_den;
@@ -34,34 +33,24 @@ pub fn fd_scenes(
         lookahead_distance: 5,
     };
 
-    let progs = if quiet { None } else { Some(Arc::new(Mutex::new(ProgsBar::new(false)))) };
+    let progs = Arc::new(Mutex::new(ProgsBar::new()));
 
-    let results = if let Some(p) = &progs {
-        let progs_callback = {
-            let progs_clone = Arc::clone(p);
-            move |current: usize, _keyframes: usize| {
-                if let Ok(mut pb) = progs_clone.lock() {
-                    pb.up_scenes(current, tot_frames);
-                }
+    let progs_callback = {
+        let progs_clone = Arc::clone(&progs);
+        move |current: usize, _keyframes: usize| {
+            if let Ok(mut pb) = progs_clone.lock() {
+                pb.up_scenes(current, tot_frames);
             }
-        };
-
-        if inf.is_10bit {
-            detect_scene_changes::<u16>(&mut decoder, opts, None, Some(&progs_callback))?
-        } else {
-            detect_scene_changes::<u8>(&mut decoder, opts, None, Some(&progs_callback))?
         }
-    } else if inf.is_10bit {
-        detect_scene_changes::<u16>(&mut decoder, opts, None, None)?
-    } else {
-        detect_scene_changes::<u8>(&mut decoder, opts, None, None)?
     };
 
-    if let Some(p) = progs
-        && let Ok(pb) = p.lock()
-    {
-        pb.finish_scenes();
-    }
+    let results = if inf.is_10bit {
+        detect_scene_changes::<u16>(&mut decoder, opts, None, Some(&progs_callback))?
+    } else {
+        detect_scene_changes::<u8>(&mut decoder, opts, None, Some(&progs_callback))?
+    };
+
+    ProgsBar::finish_scenes();
 
     let scores: BTreeMap<usize, (f64, f64)> =
         results.scores.into_iter().map(|(k, v)| (k, (v.inter_cost, v.threshold))).collect();

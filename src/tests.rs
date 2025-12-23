@@ -74,7 +74,7 @@ fn extr_raw_data(
 fn test_roundtrip(filename: &str, crop: (u32, u32)) {
     let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_files").join(filename);
 
-    let idx = ffms::VidIdx::new(&input, true).unwrap();
+    let idx = ffms::VidIdx::new(&input, false).unwrap();
     let inf = ffms::get_vidinf(&idx).unwrap();
     let decode_strat = ffms::get_decode_strat(&idx, &inf, crop).unwrap();
     let (tx, rx) = bounded::<crate::worker::WorkPkg>(1);
