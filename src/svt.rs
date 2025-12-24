@@ -613,22 +613,18 @@ fn encode_tq(
             let mut conv_buf = vec![0u8; pipe.conv_buf_size];
 
             while let Ok(mut pkg) = rx.recv() {
-                if pkg.tq_state.is_none() {
-                    pkg.tq_state = Some(crate::worker::TQState {
-                        probes: Vec::new(),
-                        probe_sizes: Vec::new(),
-                        search_min: qp_min,
-                        search_max: qp_max,
-                        round: 1,
-                        target,
-                        last_crf: 0.0,
-                    });
-                } else {
-                    pkg.tq_state.as_mut().unwrap().round += 1;
-                }
+                let tq = pkg.tq_state.get_or_insert_with(|| crate::worker::TQState {
+                    probes: Vec::new(),
+                    probe_sizes: Vec::new(),
+                    search_min: qp_min,
+                    search_max: qp_max,
+                    round: 0,
+                    target,
+                    last_crf: 0.0,
+                });
+                tq.round += 1;
 
-                let current_round = pkg.tq_state.as_ref().unwrap().round;
-                let tq = pkg.tq_state.as_ref().unwrap();
+                let current_round = tq.round;
                 let crf = if current_round <= 2 {
                     crate::tq::binary_search(tq.search_min, tq.search_max)
                 } else {
@@ -637,7 +633,7 @@ fn encode_tq(
                 }
                 .clamp(tq.search_min, tq.search_max);
 
-                pkg.tq_state.as_mut().unwrap().last_crf = crf;
+                tq.last_crf = crf;
 
                 enc_tq_probe(
                     &pkg,
