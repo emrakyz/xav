@@ -655,9 +655,9 @@ fn run_enc_worker(
 ) {
     let mut conv_buf = vec![0u8; pipe.conv_buf_size];
 
-    while let Ok(pkg) = rx.recv() {
+    while let Ok(mut pkg) = rx.recv() {
         enc_chunk(
-            &pkg,
+            &mut pkg,
             -1.0,
             params,
             inf,
@@ -687,7 +687,7 @@ fn run_enc_worker(
 }
 
 fn enc_chunk(
-    pkg: &crate::worker::WorkPkg,
+    pkg: &mut crate::worker::WorkPkg,
     crf: f32,
     params: &str,
     inf: &VidInf,
@@ -732,6 +732,7 @@ fn enc_chunk(
     }
 
     (pipe.write_frames)(child.stdin.as_mut().unwrap(), &pkg.yuv, pkg.frame_count, conv_buf, pipe);
+    pkg.yuv = Vec::new();
 
     let status = child.wait().unwrap();
     if !status.success() {
