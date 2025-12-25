@@ -8,6 +8,8 @@ mod audio;
 mod chunk;
 mod crop;
 mod decode;
+mod encode;
+mod encoder;
 mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
@@ -15,7 +17,6 @@ mod noise;
 pub mod pipeline;
 mod progs;
 mod scd;
-mod svt;
 #[cfg(feature = "vship")]
 mod tq;
 #[cfg(feature = "vship")]
@@ -36,6 +37,7 @@ const N: &str = "\x1b[0m";
 
 #[derive(Clone)]
 pub struct Args {
+    pub encoder: crate::encoder::Encoder,
     pub worker: usize,
     pub scene_file: PathBuf,
     pub params: String,
@@ -70,6 +72,7 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
+    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{R}>");
     println!("{C}-p {P}┃ {C}--param    {W}Encoder params");
     println!("{C}-w {P}┃ {C}--worker   {W}Encoder count");
     println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
@@ -89,6 +92,7 @@ fn print_help() {
     println!();
     println!("{P}Example:{W}");
     println!("{Y}xav {P}\\{W}");
+    println!("  {C}-e {G}svt-av1          {P}\\  {B}# {W}Use svt-av1 as the encoder");
     println!("  {C}-p {G}\"--scm 0 --lp 5\" {P}\\  {B}# {W}Params (after defaults) used by the encoder");
     println!("  {C}-w {R}5                {P}\\  {B}# {W}Spawn {R}5 {W}encoder instances simultaneously");
     println!("  {C}-b {R}1                {P}\\  {B}# {W}Decode {R}1 {W}extra chunk in memory for less waiting");
@@ -122,7 +126,7 @@ fn parse_args() -> Args {
 fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
-        args.output = args.input.with_file_name(format!("{stem}_av1.mkv"));
+        args.output = args.input.with_file_name(format!("{stem}_xav.mkv"));
     }
 
     if args.scene_file == PathBuf::new() {
@@ -154,6 +158,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     let mut params = String::new();
     let mut noise = None;
     let mut audio = None;
+    let mut encoder = crate::encoder::Encoder::default();
     let mut input = PathBuf::new();
     let mut output = PathBuf::new();
     #[cfg(feature = "vship")]
@@ -165,6 +170,13 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "-e" | "--encoder" => {
+                i += 1;
+                if i < args.len() {
+                    encoder = crate::encoder::Encoder::from_str(&args[i])
+                        .ok_or_else(|| format!("Unknown encoder: {}", args[i]))?;
+                }
+            }
             "-w" | "--worker" => {
                 i += 1;
                 if i < args.len() {
@@ -261,6 +273,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     let chunk_buffer = worker + chunk_buffer.unwrap_or(0);
 
     let mut result = Args {
+        encoder,
         worker,
         scene_file,
         #[cfg(feature = "vship")]
@@ -406,19 +419,30 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let chunks = chunk::chunkify(&scenes);
 
     let enc_start = std::time::Instant::now();
-    svt::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref());
+    encode::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref());
     let enc_time = enc_start.elapsed();
 
     let video_mkv = work_dir.join("encode").join("video.mkv");
 
     chunk::merge_out(
         &work_dir.join("encode"),
-        if args.audio.is_some() { &video_mkv } else { &args.output },
+        if args.audio.is_some() && args.encoder == encoder::Encoder::SvtAv1 {
+            &video_mkv
+        } else {
+            &args.output
+        },
         &inf,
-        if args.audio.is_some() { None } else { Some(&args.input) },
+        if args.audio.is_some() || args.encoder == encoder::Encoder::Avm {
+            None
+        } else {
+            Some(&args.input)
+        },
+        args.encoder,
     )?;
 
-    if let Some(ref audio_spec) = args.audio {
+    if let Some(ref audio_spec) = args.audio
+        && args.encoder == encoder::Encoder::SvtAv1
+    {
         audio::process_audio(audio_spec, &args.input, &video_mkv, &args.output)?;
         fs::remove_file(&video_mkv)?;
     }
@@ -461,7 +485,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
 {P}┃ {Y}Size      {P}┃ {R}{:<98} {P}┃\n\
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
-{P}┃ {Y}Video     {P}┃ {W}{}x{:<4} {P}┃ {B}{:.3} fps {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02}{:<30} {P}┃\n\
+{P}┃ {Y}Video     {P}┃ {W}{:<4}x{:<4} {P}┃ {B}{:.3} fps {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02}{:<30} {P}┃\n\
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━┻━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
 {P}┃ {Y}Time      {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02} {B}@ {:>6.2} fps{:<42} {P}┃\n\
 {P}┗━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{N}",
@@ -505,7 +529,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(feature = "vship")]
     if args.target_quality.is_some()
-        && let Some(v) = crate::svt::TQ_SCORES.get()
+        && let Some(v) = crate::encode::TQ_SCORES.get()
     {
         let mut s = v.lock().unwrap().clone();
 

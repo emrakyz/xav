@@ -1,10 +1,10 @@
 use std::process::ChildStdin;
 
+use crate::encode::get_frame;
 use crate::ffms::{
     DecodeStrat, VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, unpack_10bit,
     unpack_10bit_rem,
 };
-use crate::svt::get_frame;
 
 pub type UnpackFn = fn(&[u8], &mut [u8], &Pipeline);
 pub type WriteFn = fn(&mut ChildStdin, &[u8], usize, &mut [u8], &Pipeline);
