@@ -8,9 +8,9 @@ use ffms2_sys::FFMS_VideoSource;
 
 use crate::chunk::Chunk;
 use crate::decode::decode_chunks;
+use crate::encode::get_frame;
 use crate::ffms::{self, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, thr_vid_src};
 use crate::pipeline::Pipeline;
-use crate::svt::get_frame;
 
 fn extr_raw_data(
     vid_src: *mut FFMS_VideoSource,

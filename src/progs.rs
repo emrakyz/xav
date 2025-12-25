@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::encoder::Encoder;
+
 const BAR_WIDTH: usize = 20;
 
 const G: &str = "\x1b[1;92m";
@@ -144,93 +146,15 @@ impl ProgsTrack {
         chunk_idx: usize,
         track_frames: bool,
         crf_score: Option<(f32, Option<f64>)>,
+        encoder: Encoder,
     ) {
         let tx = self.tx.clone();
 
-        thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            let mut last_frames = 0;
-
-            for line in reader.split(b'\r').filter_map(Result::ok) {
-                let Ok(text) = std::str::from_utf8(&line) else { continue };
-                let text = text.trim();
-
-                if text.contains("error") || text.contains("Error") {
-                    print!("\x1b[?1049l");
-                    std::io::stdout().flush().unwrap();
-                    eprintln!("{text}");
-                }
-
-                if text.is_empty() || !text.contains("Encoding:") || text.contains("SUMMARY") {
-                    continue;
-                }
-
-                let content = text.strip_prefix("Encoding: ").unwrap_or(text);
-
-                let mut cleaned = content
-                    .replace(" Frames\x1b[0m @ ", " ")
-                    .replace(" kb/s", "")
-                    .replace("Size: ", "")
-                    .replace(" MB", "")
-                    .replace(" fps", "")
-                    .replace("Time: \u{1b}[36m0:", "")
-                    .replace("33m   ", "33m")
-                    .replace("33m  ", "33m")
-                    .replace("33m ", "33m");
-
-                let parts: Vec<&str> = cleaned.split("\u{1b}[38;5;248m").collect();
-                if parts.len() > 1 {
-                    cleaned = parts[0].to_string();
-                }
-
-                let parts: Vec<&str> = cleaned.rsplitn(2, '|').collect();
-                if parts.len() > 1 && parts[0].trim().contains(':') {
-                    cleaned = parts[1].to_string();
-                }
-
-                if cleaned.contains("fpm") {
-                    let parts: Vec<&str> = cleaned.split_whitespace().collect();
-                    if let Some(fpm_pos) = parts.iter().position(|&s| s == "fpm")
-                        && fpm_pos > 0
-                    {
-                        let num_str = parts[fpm_pos - 1];
-                        let num_clean = num_str.replace("\u{1b}[32m", "").replace("\u{1b}[0m", "");
-                        if let Ok(fpm) = num_clean.parse::<f32>() {
-                            let fps = fpm / 60.0;
-                            cleaned = cleaned.replacen(
-                                &format!("{num_str} fpm"),
-                                &format!("\u{1b}[32m{fps:.2}\u{1b}[0m"),
-                                1,
-                            );
-                        }
-                    }
-                }
-
-                let prefix = match crf_score {
-                    Some((crf, Some(score))) => {
-                        format!("{C}[{chunk_idx:04} / F {crf:.2} / {score:.2}{C}]")
-                    }
-                    Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
-                    None => format!("{C}[{chunk_idx:04}{C}]"),
-                };
-
-                let display_line = format!("{prefix} {cleaned}");
-
-                let frames_delta = if track_frames {
-                    parse_frame_count(text).map(|current| {
-                        let delta = current.saturating_sub(last_frames);
-                        last_frames = current;
-                        delta
-                    })
-                } else {
-                    None
-                };
-
-                tx.send(WorkerMsg::Update { worker_id, line: display_line, frames: frames_delta })
-                    .ok();
+        thread::spawn(move || match encoder {
+            Encoder::SvtAv1 => {
+                watch_svt(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
-
-            tx.send(WorkerMsg::Clear(worker_id)).ok();
+            Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
         });
     }
 
@@ -259,7 +183,120 @@ impl ProgsTrack {
     }
 }
 
-fn parse_frame_count(line: &str) -> Option<usize> {
+fn watch_svt(
+    tx: &crossbeam_channel::Sender<WorkerMsg>,
+    stderr: impl std::io::Read,
+    worker_id: usize,
+    chunk_idx: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let reader = BufReader::new(stderr);
+    let mut last_frames = 0;
+
+    for line in reader.split(b'\r').filter_map(Result::ok) {
+        let Ok(text) = std::str::from_utf8(&line) else { continue };
+        let text = text.trim();
+
+        if text.contains("error") || text.contains("Error") {
+            print!("\x1b[?1049l");
+            std::io::stdout().flush().unwrap();
+            eprintln!("{text}");
+        }
+
+        if text.is_empty() || !text.contains("Encoding:") || text.contains("SUMMARY") {
+            continue;
+        }
+
+        let content = text.strip_prefix("Encoding: ").unwrap_or(text);
+
+        let mut cleaned = content
+            .replace(" Frames\x1b[0m @ ", " ")
+            .replace(" kb/s", "")
+            .replace("Size: ", "")
+            .replace(" MB", "")
+            .replace(" fps", "")
+            .replace("Time: \u{1b}[36m0:", "")
+            .replace("33m   ", "33m")
+            .replace("33m  ", "33m")
+            .replace("33m ", "33m");
+
+        let parts: Vec<&str> = cleaned.split("\u{1b}[38;5;248m").collect();
+        if parts.len() > 1 {
+            cleaned = parts[0].to_string();
+        }
+
+        let parts: Vec<&str> = cleaned.rsplitn(2, '|').collect();
+        if parts.len() > 1 && parts[0].trim().contains(':') {
+            cleaned = parts[1].to_string();
+        }
+
+        if cleaned.contains("fpm") {
+            let parts: Vec<&str> = cleaned.split_whitespace().collect();
+            if let Some(fpm_pos) = parts.iter().position(|&s| s == "fpm")
+                && fpm_pos > 0
+            {
+                let num_str = parts[fpm_pos - 1];
+                let num_clean = num_str.replace("\u{1b}[32m", "").replace("\u{1b}[0m", "");
+                if let Ok(fpm) = num_clean.parse::<f32>() {
+                    let fps = fpm / 60.0;
+                    cleaned = cleaned.replacen(
+                        &format!("{num_str} fpm"),
+                        &format!("\u{1b}[32m{fps:.2}\u{1b}[0m"),
+                        1,
+                    );
+                }
+            }
+        }
+
+        let prefix = match crf_score {
+            Some((crf, Some(score))) => {
+                format!("{C}[{chunk_idx:04} / F {crf:.2} / {score:.2}{C}]")
+            }
+            Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
+            None => format!("{C}[{chunk_idx:04}{C}]"),
+        };
+
+        let display_line = format!("{prefix} {cleaned}");
+
+        let frames_delta = if track_frames {
+            parse_svt_frames(text).map(|current| {
+                let delta = current.saturating_sub(last_frames);
+                last_frames = current;
+                delta
+            })
+        } else {
+            None
+        };
+
+        tx.send(WorkerMsg::Update { worker_id, line: display_line, frames: frames_delta }).ok();
+    }
+
+    tx.send(WorkerMsg::Clear(worker_id)).ok();
+}
+
+fn watch_avm(
+    tx: &crossbeam_channel::Sender<WorkerMsg>,
+    mut stdout: impl std::io::Read,
+    worker_id: usize,
+    chunk_idx: usize,
+    _track_frames: bool,
+    _crf_score: Option<(f32, Option<f64>)>,
+) {
+    tx.send(WorkerMsg::Update {
+        worker_id,
+        line: format!("{C}[{chunk_idx:04}]{W} Encoding: Progress updates when chunk finishes"),
+        frames: None,
+    })
+    .ok();
+
+    let mut buf = [0u8; 4096];
+    while stdout.read(&mut buf).unwrap_or(0) > 0 {}
+
+    tx.send(WorkerMsg::Clear(worker_id)).ok();
+}
+
+fn parse_svt_frames(line: &str) -> Option<usize> {
     let frames_pos = line.find(" Frames")?;
     let bytes = line.as_bytes();
 

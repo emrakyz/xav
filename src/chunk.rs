@@ -2,6 +2,8 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use crate::encoder::Encoder;
+
 #[derive(Clone)]
 pub struct Scene {
     pub s_frame: usize,
@@ -49,17 +51,15 @@ pub fn validate_scenes(
     fps_num: u32,
     fps_den: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let min_len = (fps_num + fps_den / 2) / fps_den;
     let max_len = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
 
     for (i, scene) in scenes.iter().enumerate() {
         let len = scene.e_frame.saturating_sub(scene.s_frame);
-        let is_last = i == scenes.len() - 1;
 
-        if len == 0 || (!is_last && len < min_len as usize) || len > max_len as usize {
+        if len == 0 || len > max_len as usize {
             return Err(format!(
-                "Scene {} (frames {}-{}) has invalid length {}: must be between {} and {} frames",
-                i, scene.s_frame, scene.e_frame, len, min_len, max_len
+                "Scene {} (frames {}-{}) has invalid length {}: must be up to {} frames",
+                i, scene.s_frame, scene.e_frame, len, max_len
             )
             .into());
         }
@@ -120,11 +120,32 @@ pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Box<dyn std:
     Ok(())
 }
 
+fn concat_ivf(
+    files: &[std::path::PathBuf],
+    output: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Read;
+
+    let mut out = fs::File::create(output)?;
+
+    for (i, file) in files.iter().enumerate() {
+        let mut f = fs::File::open(file)?;
+        if i != 0 {
+            let mut buf = [0u8; 32];
+            f.read_exact(&mut buf)?;
+        }
+        std::io::copy(&mut f, &mut out)?;
+    }
+
+    Ok(())
+}
+
 pub fn merge_out(
     encode_dir: &Path,
     output: &Path,
     inf: &crate::ffms::VidInf,
     input: Option<&Path>,
+    encoder: Encoder,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut files: Vec<_> = fs::read_dir(encode_dir)?
         .filter_map(Result::ok)
@@ -139,7 +160,11 @@ pub fn merge_out(
             .unwrap_or(0)
     });
 
-    if files.len() <= 1024 {
+    if encoder == Encoder::Avm {
+        return concat_ivf(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), output);
+    }
+
+    if files.len() <= 960 {
         return run_merge(
             &files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
             output,
@@ -152,7 +177,7 @@ pub fn merge_out(
     fs::create_dir_all(&temp_dir)?;
 
     let batches: Vec<_> = files
-        .chunks(1024)
+        .chunks(960)
         .enumerate()
         .map(|(i, chunk)| {
             let path = temp_dir.join(format!("batch_{i}.ivf"));
