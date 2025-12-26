@@ -152,8 +152,6 @@ fn make_avm_cmd(cfg: &EncConfig) -> Command {
         "--disable-warning-prompt",
         "--test-decode=off",
         "--enable-fwd-kf=1",
-        "--kf-min-dist=9999",
-        "--kf-max-dist=9999",
         "--disable-kf",
     ]);
 
