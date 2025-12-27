@@ -126,7 +126,8 @@ fn parse_args() -> Args {
 fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
-        args.output = args.input.with_file_name(format!("{stem}_xav.mkv"));
+        let ext = if args.encoder == crate::encoder::Encoder::Avm { "ivf" } else { "mkv" };
+        args.output = args.input.with_file_name(format!("{stem}_xav.{ext}"));
     }
 
     if args.scene_file == PathBuf::new() {
