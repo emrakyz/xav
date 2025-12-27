@@ -123,8 +123,9 @@ pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Box<dyn std:
 fn concat_ivf(
     files: &[std::path::PathBuf],
     output: &Path,
+    total_frames: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Read;
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     let mut out = fs::File::create(output)?;
 
@@ -136,6 +137,9 @@ fn concat_ivf(
         }
         std::io::copy(&mut f, &mut out)?;
     }
+
+    out.seek(SeekFrom::Start(24))?;
+    out.write_all(&total_frames.to_le_bytes())?;
 
     Ok(())
 }
@@ -161,7 +165,11 @@ pub fn merge_out(
     });
 
     if encoder == Encoder::Avm {
-        return concat_ivf(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), output);
+        return concat_ivf(
+            &files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
+            output,
+            inf.frames as u32,
+        );
     }
 
     if files.len() <= 960 {
