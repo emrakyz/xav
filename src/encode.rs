@@ -191,6 +191,16 @@ impl TQCtx {
         }
         state.search_min > state.search_max
     }
+
+    #[inline]
+    fn best_probe<'a>(&self, probes: &'a [crate::tq::Probe]) -> &'a crate::tq::Probe {
+        probes
+            .iter()
+            .min_by(|a, b| {
+                (a.score - self.target).abs().partial_cmp(&(b.score - self.target).abs()).unwrap()
+            })
+            .unwrap()
+    }
 }
 
 #[inline]
@@ -332,6 +342,10 @@ fn run_metrics_worker(
             || tq_ctx.update_bounds_and_check(tq_state, score);
 
         if should_complete {
+            let best = tq_ctx.best_probe(&tq_state.probes);
+            let probe_path =
+                work_dir.join("split").join(format!("{:04}_{:.2}.ivf", pkg.chunk.idx, best.crf));
+
             complete_chunk(
                 pkg.chunk.idx,
                 pkg.frame_count,
@@ -342,8 +356,8 @@ fn run_metrics_worker(
                 stats,
                 tq_logger,
                 tq_state.round,
-                tq_state.last_crf,
-                score,
+                best.crf,
+                best.score,
                 &tq_state.probes,
                 &tq_state.probe_sizes,
                 tq_ctx.use_cvvdp,
