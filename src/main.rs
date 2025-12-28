@@ -35,6 +35,9 @@ const C: &str = "\x1b[1;96m";
 const W: &str = "\x1b[1;97m";
 const N: &str = "\x1b[0m";
 
+#[cfg(feature = "vship")]
+static TQ_RESUMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
 #[derive(Clone)]
 pub struct Args {
     pub encoder: crate::encoder::Encoder,
@@ -382,6 +385,8 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
 
     let is_new_encode = !work_dir.exists();
+    #[cfg(feature = "vship")]
+    TQ_RESUMED.get_or_init(|| !is_new_encode);
 
     fs::create_dir_all(work_dir.join("split"))?;
     fs::create_dir_all(work_dir.join("encode"))?;
@@ -541,7 +546,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .split('-')
             .filter_map(|s| s.parse().ok())
             .collect();
-        let is_butteraugli = f64::midpoint(tq_parts[0], tq_parts[1]) < 8.0;
+        let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
+        let is_butteraugli = tq_target < 8.0;
+        let cvvdp_per_frame =
+            tq_target > 8.0 && tq_target <= 10.0 && args.metric_mode.starts_with('p');
 
         if is_butteraugli {
             s.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
@@ -549,12 +557,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
         }
 
-        let m = s.iter().sum::<f64>() / s.len() as f64;
-        eprintln!("\nBelow stats are only for the last run if resume was used");
-        eprintln!("\n{Y}Mean: {W}{m:.4}");
+        let jod_mean = |scores: &[f64]| -> f64 {
+            let q = scores.iter().map(|&x| crate::tq::inverse_jod(x)).sum::<f64>()
+                / scores.len() as f64;
+            crate::tq::jod(q)
+        };
+
+        let m = if cvvdp_per_frame { jod_mean(&s) } else { s.iter().sum::<f64>() / s.len() as f64 };
+
+        if TQ_RESUMED.get().copied().unwrap_or(false) {
+            eprintln!("\nBelow stats are only for the last run when resume used\n");
+            eprintln!("{Y}Mean: {W}{m:.4}");
+        } else {
+            eprintln!("\n{Y}Mean: {W}{m:.4}");
+        }
         for p in [25.0, 10.0, 5.0, 1.0, 0.1] {
             let i = ((s.len() as f64 * p / 100.0).ceil() as usize).min(s.len());
-            eprintln!("{Y}Mean of worst {p}%: {W}{:.4}", s[..i].iter().sum::<f64>() / i as f64);
+            let pct_mean = if cvvdp_per_frame {
+                jod_mean(&s[..i])
+            } else {
+                s[..i].iter().sum::<f64>() / i as f64
+            };
+            eprintln!("{Y}Mean of worst {p}%: {W}{pct_mean:.4}");
         }
         eprintln!(
             "{Y}STDDEV: {W}{:.4}{N}",

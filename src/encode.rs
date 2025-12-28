@@ -162,6 +162,7 @@ struct TQCtx {
     qp_max: f64,
     use_butteraugli: bool,
     use_cvvdp: bool,
+    cvvdp_per_frame: bool,
     cvvdp_config: Option<&'static str>,
 }
 
@@ -220,6 +221,7 @@ fn complete_chunk(
     probes: &[crate::tq::Probe],
     probe_sizes: &[(f64, u64)],
     use_cvvdp: bool,
+    cvvdp_per_frame: bool,
 ) {
     let dst = work_dir.join("encode").join(format!("{chunk_idx:04}.ivf"));
     std::fs::copy(probe_path, &dst).unwrap();
@@ -260,7 +262,7 @@ fn complete_chunk(
     tq_logger.lock().unwrap().push(log_entry);
 
     let mut tq_scores = TQ_SCORES.get_or_init(|| std::sync::Mutex::new(Vec::new())).lock().unwrap();
-    if use_cvvdp {
+    if use_cvvdp && !cvvdp_per_frame {
         tq_scores.push(final_score);
     } else {
         tq_scores.extend_from_slice(&probes.last().unwrap().frame_scores);
@@ -328,7 +330,7 @@ fn run_metrics_worker(
             vship.as_ref().unwrap(),
             metric_mode,
             &mut unpacked_buf,
-            Some(prog),
+            prog,
             metrics_slot,
             crf as f32,
             last_score,
@@ -361,6 +363,7 @@ fn run_metrics_worker(
                 &tq_state.probes,
                 &tq_state.probe_sizes,
                 tq_ctx.use_cvvdp,
+                tq_ctx.cvvdp_per_frame,
             );
         } else {
             rework_tx.send(pkg).unwrap();
@@ -397,6 +400,7 @@ fn encode_tq(
         qp_max: qp_parts[1],
         use_butteraugli: tq_target < 8.0,
         use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
+        cvvdp_per_frame: tq_target > 8.0 && tq_target <= 10.0 && args.metric_mode.starts_with('p'),
         cvvdp_config: cvvdp_config_static,
     };
 
