@@ -1,5 +1,16 @@
 use crate::interp::{akima, fritsch_carlson, lerp, pchip};
 
+pub const JOD_A: f64 = 0.043_956_939_131_021_5;
+pub const JOD_EXP: f64 = 0.930_204_272_270_202_6;
+
+pub fn inverse_jod(score: f64) -> f64 {
+    ((10.0 - score) / JOD_A).powf(1.0 / JOD_EXP)
+}
+
+pub fn jod(q: f64) -> f64 {
+    JOD_A.mul_add(-q.powf(JOD_EXP), 10.0)
+}
+
 #[derive(Clone)]
 pub struct Probe {
     pub crf: f64,
@@ -54,11 +65,12 @@ macro_rules! calc_metrics_impl {
             vship: &crate::vship::VshipProcessor,
             metric_mode: &str,
             unpacked_buf: &mut [u8],
-            prog: Option<&std::sync::Arc<crate::progs::ProgsTrack>>,
+            prog: &std::sync::Arc<crate::progs::ProgsTrack>,
             worker_id: usize,
             crf: f32,
             last_score: Option<f64>,
         ) -> (f64, Vec<f64>) {
+            let cvvdp_per_frame = pipe.reset_cvvdp && metric_mode.starts_with('p');
             if pipe.reset_cvvdp {
                 vship.reset_cvvdp();
             }
@@ -76,65 +88,84 @@ macro_rules! calc_metrics_impl {
             let y_size = pipe.final_w * pipe.final_h * pixel_size;
             let uv_size = y_size / 4;
 
-            for frame_idx in 0..pkg.frame_count {
-                if let Some(p) = prog {
+            macro_rules! process_frame {
+                ($frame_idx: expr) => {{
                     let elapsed = start.elapsed().as_secs_f32().max(0.001);
-                    let fps = (frame_idx + 1) as f32 / elapsed;
-                    p.show_metric_progress(
+                    let fps = ($frame_idx + 1) as f32 / elapsed;
+                    prog.show_metric_progress(
                         worker_id,
                         pkg.chunk.idx,
-                        (frame_idx + 1, pkg.frame_count),
+                        ($frame_idx + 1, pkg.frame_count),
                         fps,
                         (crf, last_score),
                     );
+
+                    let input_frame =
+                        &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
+                    let output_frame = crate::ffms::get_frame(src, $frame_idx).unwrap();
+
+                    let input_yuv: &[u8] = if $is_10bit {
+                        (pipe.unpack)(input_frame, unpacked_buf, pipe);
+                        unpacked_buf
+                    } else {
+                        input_frame
+                    };
+
+                    let input_planes = [
+                        input_yuv.as_ptr(),
+                        input_yuv[y_size..].as_ptr(),
+                        input_yuv[y_size + uv_size..].as_ptr(),
+                    ];
+                    let input_strides = [
+                        i64::try_from(pipe.final_w * pixel_size).unwrap(),
+                        i64::try_from(pipe.final_w / 2 * pixel_size).unwrap(),
+                        i64::try_from(pipe.final_w / 2 * pixel_size).unwrap(),
+                    ];
+
+                    let output_planes = unsafe {
+                        [(*output_frame).Data[0], (*output_frame).Data[1], (*output_frame).Data[2]]
+                    };
+                    let output_strides = unsafe {
+                        [
+                            i64::from((*output_frame).Linesize[0]),
+                            i64::from((*output_frame).Linesize[1]),
+                            i64::from((*output_frame).Linesize[2]),
+                        ]
+                    };
+
+                    let score = (pipe.compute_metric)(
+                        vship,
+                        input_planes,
+                        output_planes,
+                        input_strides,
+                        output_strides,
+                    );
+                    scores.push(score);
+                }};
+            }
+
+            if cvvdp_per_frame {
+                for frame_idx in 0..pkg.frame_count {
+                    process_frame!(frame_idx);
+                    vship.reset_cvvdp_score();
                 }
-
-                let input_frame = &pkg.yuv[frame_idx * frame_size..(frame_idx + 1) * frame_size];
-                let output_frame = crate::ffms::get_frame(src, frame_idx).unwrap();
-
-                let input_yuv: &[u8] = if $is_10bit {
-                    (pipe.unpack)(input_frame, unpacked_buf, pipe);
-                    unpacked_buf
-                } else {
-                    input_frame
-                };
-
-                let input_planes = [
-                    input_yuv.as_ptr(),
-                    input_yuv[y_size..].as_ptr(),
-                    input_yuv[y_size + uv_size..].as_ptr(),
-                ];
-                let input_strides = [
-                    i64::try_from(pipe.final_w * pixel_size).unwrap(),
-                    i64::try_from(pipe.final_w / 2 * pixel_size).unwrap(),
-                    i64::try_from(pipe.final_w / 2 * pixel_size).unwrap(),
-                ];
-
-                let output_planes = unsafe {
-                    [(*output_frame).Data[0], (*output_frame).Data[1], (*output_frame).Data[2]]
-                };
-                let output_strides = unsafe {
-                    [
-                        i64::from((*output_frame).Linesize[0]),
-                        i64::from((*output_frame).Linesize[1]),
-                        i64::from((*output_frame).Linesize[2]),
-                    ]
-                };
-
-                let score = (pipe.compute_metric)(
-                    vship,
-                    input_planes,
-                    output_planes,
-                    input_strides,
-                    output_strides,
-                );
-                scores.push(score);
+            } else {
+                for frame_idx in 0..pkg.frame_count {
+                    process_frame!(frame_idx);
+                }
             }
 
             crate::ffms::destroy_vid_src(src);
 
-            let result = if pipe.reset_cvvdp {
+            let result = if pipe.reset_cvvdp && !cvvdp_per_frame {
                 scores.last().copied().unwrap_or(0.0)
+            } else if cvvdp_per_frame {
+                let percentile: f64 =
+                    metric_mode.strip_prefix('p').and_then(|p| p.parse().ok()).unwrap_or(15.0);
+                let mut q: Vec<f64> = scores.iter().map(|&s| inverse_jod(s)).collect();
+                q.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
+                let cutoff = ((q.len() as f64 * percentile / 100.0).ceil() as usize).min(q.len());
+                jod(q[..cutoff].iter().sum::<f64>() / cutoff as f64)
             } else if metric_mode == "mean" {
                 scores.iter().sum::<f64>() / scores.len() as f64
             } else if let Some(p) = metric_mode.strip_prefix('p') {

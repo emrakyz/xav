@@ -181,6 +181,7 @@ unsafe extern "C" {
     ) -> VshipException;
     fn Vship_CVVDPFree(handler: VshipCVVDPHandler) -> VshipException;
     fn Vship_ResetCVVDP(handler: VshipCVVDPHandler) -> VshipException;
+    fn Vship_ResetScoreCVVDP(handler: VshipCVVDPHandler) -> VshipException;
     fn Vship_ComputeCVVDP(
         handler: VshipCVVDPHandler,
         score: *mut f64,
@@ -366,6 +367,12 @@ impl VshipProcessor {
     pub fn reset_cvvdp(&self) {
         unsafe {
             Vship_ResetCVVDP(self.cvvdp_handler.unwrap_unchecked());
+        }
+    }
+
+    pub fn reset_cvvdp_score(&self) {
+        unsafe {
+            Vship_ResetScoreCVVDP(self.cvvdp_handler.unwrap_unchecked());
         }
     }
 

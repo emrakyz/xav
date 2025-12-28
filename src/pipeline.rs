@@ -20,7 +20,7 @@ pub type CalcMetricsFn = fn(
     &crate::vship::VshipProcessor,
     &str,
     &mut [u8],
-    Option<&std::sync::Arc<crate::progs::ProgsTrack>>,
+    &std::sync::Arc<crate::progs::ProgsTrack>,
     usize,
     f32,
     Option<f64>,
