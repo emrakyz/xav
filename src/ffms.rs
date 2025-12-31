@@ -57,7 +57,7 @@ impl VidIdx {
             let source = CString::new(path.to_str().unwrap())?;
             let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
 
-            let idx_path = format!("{}.ffidx", path.display());
+            let idx_path = format!("{}.ffindex", path.display());
             let idx_cstr = CString::new(idx_path.as_str())?;
 
             let mut idx = if std::path::Path::new(&idx_path).exists() {
