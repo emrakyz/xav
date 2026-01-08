@@ -28,6 +28,7 @@ pub struct EncConfig<'a> {
     pub grain_table: Option<&'a Path>,
     pub width: u32,
     pub height: u32,
+    pub frames: usize,
 }
 
 pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
@@ -44,6 +45,7 @@ fn make_svt_cmd(cfg: &EncConfig) -> Command {
     let height_str = cfg.height.to_string();
     let fps_num_str = cfg.inf.fps_num.to_string();
     let fps_den_str = cfg.inf.fps_den.to_string();
+    let frames_str = cfg.frames.to_string();
 
     let base_args = [
         "-i",
@@ -80,6 +82,8 @@ fn make_svt_cmd(cfg: &EncConfig) -> Command {
         "0",
         "--progress",
         "2",
+        "--frames",
+        &frames_str,
     ];
 
     for i in (0..base_args.len()).step_by(2) {
@@ -160,6 +164,7 @@ fn make_avm_cmd(cfg: &EncConfig) -> Command {
     cmd.arg(format!("--forced_max_frame_width={width_str}"));
     cmd.arg(format!("--forced_max_frame_height={height_str}"));
     cmd.arg(format!("--fps={fps_str}"));
+    cmd.arg(format!("--limit={}", cfg.frames));
     cmd.arg(format!("--output={}", cfg.output.display()));
 
     colorize_avm(&mut cmd, cfg.inf);

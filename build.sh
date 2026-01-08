@@ -201,6 +201,8 @@ build_ffmpeg() {
                 --enable-demuxer=avi \
                 --enable-demuxer=flv \
                 --enable-demuxer=ivf \
+                --enable-demuxer=yuv4mpegpipe \
+                --enable-decoder=rawvideo \
                 --enable-decoder=h264 \
                 --enable-decoder=hevc \
                 --enable-decoder=mpeg2video \

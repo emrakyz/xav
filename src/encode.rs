@@ -625,6 +625,7 @@ fn enc_tq_probe(
         grain_table: grain,
         width: pkg.width,
         height: pkg.height,
+        frames: pkg.frame_count,
     };
     let mut cmd = make_enc_cmd(encoder, &cfg);
     let mut child = cmd.spawn().unwrap();
@@ -726,6 +727,7 @@ fn enc_chunk(
         grain_table: grain,
         width: pkg.width,
         height: pkg.height,
+        frames: pkg.frame_count,
     };
     let mut cmd = make_enc_cmd(encoder, &cfg);
     let mut child = cmd.spawn().unwrap();
