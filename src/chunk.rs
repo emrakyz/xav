@@ -144,6 +144,11 @@ fn concat_ivf(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+const BATCH_SIZE: usize = usize::MAX;
+#[cfg(not(target_os = "windows"))]
+const BATCH_SIZE: usize = 960;
+
 pub fn merge_out(
     encode_dir: &Path,
     output: &Path,
@@ -172,7 +177,7 @@ pub fn merge_out(
         );
     }
 
-    if files.len() <= 960 {
+    if files.len() <= BATCH_SIZE {
         return run_merge(
             &files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
             output,
@@ -185,7 +190,7 @@ pub fn merge_out(
     fs::create_dir_all(&temp_dir)?;
 
     let batches: Vec<_> = files
-        .chunks(960)
+        .chunks(BATCH_SIZE)
         .enumerate()
         .map(|(i, chunk)| {
             let path = temp_dir.join(format!("batch_{i}.ivf"));
@@ -237,6 +242,16 @@ fn run_merge(
         cmd.arg("-D").arg(input);
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let f = output.with_extension("opts.json");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        fs::write(&f, sonic_rs::to_string(&args)?)?;
+        let r = Command::new("mkvmerge").arg(format!("@{}", f.display())).status();
+        let _ = fs::remove_file(&f);
+        r?;
+    }
+    #[cfg(not(target_os = "windows"))]
     cmd.status()?;
     Ok(())
 }
