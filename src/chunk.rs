@@ -210,48 +210,67 @@ fn run_merge(
     inf: &crate::ffms::VidInf,
     input: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new("mkvmerge");
-    cmd.arg("-q").arg("-o").arg(output).arg("-B").arg("-T");
+    let concat_list = output.with_extension("txt");
+    let mut content = String::new();
+    for file in files {
+        use std::fmt::Write;
+        let abs_path = file.canonicalize()?;
+        let _ = writeln!(content, "file '{}'", abs_path.display());
+    }
+    fs::write(&concat_list, content)?;
 
-    if input.is_none() {
-        cmd.arg("-A");
+    let ff_flags = [
+        "-fflags",
+        "+genpts+igndts+discardcorrupt+bitexact",
+        "-bitexact",
+        "-avoid_negative_ts",
+        "make_zero",
+        "-err_detect",
+        "ignore_err",
+        "-ignore_unknown",
+        "-reset_timestamps",
+        "1",
+        "-start_at_zero",
+    ];
+
+    let video =
+        if input.is_some() { output.with_extension("video.mkv") } else { output.to_path_buf() };
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-f", "concat", "-safe", "0", "-i"])
+        .arg(&concat_list)
+        .args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
+        .args(["-c", "copy"])
+        .args(ff_flags)
+        .arg(&video);
+
+    let status = cmd.status()?;
+    let _ = fs::remove_file(&concat_list);
+
+    if !status.success() {
+        if input.is_some() {
+            let _ = fs::remove_file(&video);
+        }
+        return Err("FFmpeg video concat failed".into());
     }
 
-    cmd.arg("--no-global-tags")
-        .arg("--no-date")
-        .arg("--disable-language-ietf")
-        .arg("--disable-track-statistics-tags");
+    if let Some(input) = input {
+        let mut cmd2 = Command::new("ffmpeg");
+        cmd2.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
+            .args(["-i", &video.to_string_lossy(), "-i"])
+            .arg(input)
+            .args(["-map", "0:v", "-map", "1"])
+            .args(["-c", "copy"])
+            .args(ff_flags)
+            .arg(output);
 
-    for (i, file) in files.iter().enumerate() {
-        if i == 0 {
-            cmd.arg(file);
-        } else {
-            cmd.arg("+").arg(file);
+        let status2 = cmd2.status()?;
+        let _ = fs::remove_file(&video);
+
+        if !status2.success() {
+            return Err("FFmpeg mux failed".into());
         }
     }
 
-    if let (Some(dw), Some(dh)) = (inf.display_width, inf.display_height)
-        && (dw != inf.width || dh != inf.height)
-    {
-        cmd.arg("--aspect-ratio").arg(format!("0:{dw}/{dh}"));
-    }
-
-    cmd.arg("--default-duration").arg(format!("0:{}/{}fps", inf.fps_num, inf.fps_den));
-
-    if let Some(input) = input {
-        cmd.arg("-D").arg(input);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let f = output.with_extension("opts.json");
-        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        fs::write(&f, sonic_rs::to_string(&args)?)?;
-        let r = Command::new("mkvmerge").arg(format!("@{}", f.display())).status();
-        let _ = fs::remove_file(&f);
-        r?;
-    }
-    #[cfg(not(target_os = "windows"))]
-    cmd.status()?;
     Ok(())
 }
