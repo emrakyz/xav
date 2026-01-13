@@ -219,47 +219,46 @@ fn mux_files(
     files: &[(AudioStream, std::path::PathBuf)],
     input: &Path,
     output: &Path,
-    keep_all: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new("mkvmerge");
-    cmd.args(["-q", "-o"])
-        .arg(output)
-        .args([
-            "-A",
-            "-S",
-            "-B",
-            "-M",
-            "-T",
-            "--no-global-tags",
-            "--no-date",
-            "--disable-language-ietf",
-            "--disable-track-statistics-tags",
-            "--no-chapters",
-        ])
-        .arg(video);
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"]).arg(video);
 
-    for (info, path) in files {
+    for (_, path) in files {
+        cmd.arg("-i").arg(path);
+    }
+
+    cmd.arg("-i").arg(input);
+
+    cmd.args(["-map", "0:v"]);
+
+    for i in 0..files.len() {
+        cmd.args(["-map", &format!("{}:a", i + 1)]);
+    }
+
+    let input_idx = files.len() + 1;
+    cmd.args(["-map", &format!("{input_idx}:s?"), "-map", &format!("{input_idx}:t?")]);
+
+    for (i, (info, _)) in files.iter().enumerate() {
         let code = info.lang.as_deref().unwrap_or("und");
-        cmd.arg("--language")
-            .arg(format!("0:{code}"))
-            .arg("--track-name")
-            .arg(format!("0:{}", lang_name(code)))
-            .arg(path);
+        cmd.args([&format!("-metadata:s:a:{i}"), &format!("language={code}")]);
+        cmd.args([&format!("-metadata:s:a:{i}"), &format!("title={}", lang_name(code))]);
     }
 
-    cmd.args([
-        "-D",
-        "-B",
-        "-T",
-        "--no-global-tags",
-        "--no-date",
-        "--disable-language-ietf",
-        "--disable-track-statistics-tags",
-    ]);
-    if !keep_all {
-        cmd.arg("-A");
-    }
-    cmd.arg(input)
+    cmd.args(["-c", "copy"])
+        .args([
+            "-fflags",
+            "+genpts+igndts+discardcorrupt+bitexact",
+            "-bitexact",
+            "-avoid_negative_ts",
+            "make_zero",
+            "-err_detect",
+            "ignore_err",
+            "-ignore_unknown",
+            "-reset_timestamps",
+            "1",
+            "-start_at_zero",
+        ])
+        .arg(output)
         .status()
         .ok()
         .filter(std::process::ExitStatus::success)
@@ -321,7 +320,7 @@ pub fn process_audio(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    mux_files(video, &files, input, output, matches!(&spec.streams, AudioStreams::All))?;
+    mux_files(video, &files, input, output)?;
 
     for (_, p) in &files {
         let _ = fs::remove_file(p);
