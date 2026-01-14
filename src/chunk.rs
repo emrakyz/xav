@@ -231,16 +231,20 @@ fn run_merge(
         "-reset_timestamps",
         "1",
         "-start_at_zero",
+        "-output_ts_offset",
+        "0",
     ];
 
-    let video =
-        if input.is_some() { output.with_extension("video.mkv") } else { output.to_path_buf() };
+    let temp_dir = output.parent().unwrap();
+    let video = if input.is_some() { temp_dir.join("video.mkv") } else { output.to_path_buf() };
+
+    let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-f", "concat", "-safe", "0", "-i"])
         .arg(&concat_list)
         .args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
-        .args(["-c", "copy"])
+        .args(["-c", "copy", "-r", &fps])
         .args(ff_flags)
         .arg(&video);
 
@@ -255,17 +259,45 @@ fn run_merge(
     }
 
     if let Some(input) = input {
+        let temp_audio = temp_dir.join("audio.mka");
+        let mut cmd_audio = Command::new("ffmpeg");
+        cmd_audio
+            .args(["-loglevel", "quiet", "-hide_banner", "-nostdin", "-stats", "-y"])
+            .args(["-i"])
+            .arg(input)
+            .args(["-vn", "-sn", "-dn", "-map", "0:a", "-c", "copy"])
+            .args(["-map_metadata", "-1", "-map_chapters", "-1"])
+            .args(ff_flags)
+            .arg(&temp_audio);
+
+        let _ = cmd_audio.status();
+        let has_audio =
+            temp_audio.exists() && fs::metadata(&temp_audio).map(|m| m.len() > 0).unwrap_or(false);
+
         let mut cmd2 = Command::new("ffmpeg");
         cmd2.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
-            .args(["-i", &video.to_string_lossy(), "-i"])
-            .arg(input)
-            .args(["-map", "0:v", "-map", "1"])
-            .args(["-c", "copy"])
+            .args(["-i", &video.to_string_lossy()]);
+
+        if has_audio {
+            cmd2.args(["-i", &temp_audio.to_string_lossy()]);
+        }
+
+        cmd2.args(["-i"]).arg(input);
+
+        let idx = if has_audio { "2" } else { "1" };
+
+        cmd2.args(["-map", "0:v"]);
+        if has_audio {
+            cmd2.args(["-map", "1:a"]);
+        }
+        cmd2.args(["-map", &format!("{idx}:s?"), "-map", &format!("{idx}:t?")])
+            .args(["-map_chapters", idx, "-c", "copy"])
             .args(ff_flags)
             .arg(output);
 
         let status2 = cmd2.status()?;
         let _ = fs::remove_file(&video);
+        let _ = fs::remove_file(&temp_audio);
 
         if !status2.success() {
             return Err("FFmpeg mux failed".into());
