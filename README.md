@@ -30,8 +30,7 @@
 
 ## Dependencies
 
-- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) or a fork of it
-- [mkvmerge](https://mkvtoolnix.download/source.html)
+- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) or a fork of it or [AVM](https://gitlab.com/AOMediaCodec/avm) (the reference AV2 encoder)
 - [FFMS2](https://github.com/FFMS/ffms2)
 - [VSHIP](https://github.com/Line-fr/Vship) (optional for GPU based target quality encoding)
 - Rust Nightly, NASM, Clang (build-time)
