@@ -446,16 +446,25 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let (inf, crop, pipe_reader) = if let Some((y, reader)) = pipe_init {
-        let scaled_crop = if crop == (0, 0) {
-            crop
-        } else {
+        let (cv, ch) = crop;
+        let target_w = inf.width - ch * 2;
+        let target_h = inf.height - cv * 2;
+
+        let matches_original_ar = y.width * inf.height == y.height * inf.width;
+        let matches_cropped_ar = y.width * target_h == y.height * target_w;
+
+        let new_crop = if matches_cropped_ar {
+            (0, 0)
+        } else if matches_original_ar {
             scale_crop(crop, inf.width, inf.height, y.width, y.height)
+        } else {
+            (0, 0)
         };
         let mut inf = inf;
         inf.width = y.width;
         inf.height = y.height;
         inf.is_10bit = y.is_10bit;
-        (inf, scaled_crop, Some(reader))
+        (inf, new_crop, Some(reader))
     } else {
         (inf, crop, None)
     };
