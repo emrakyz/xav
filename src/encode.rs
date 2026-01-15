@@ -71,6 +71,7 @@ pub fn encode_all(
     idx: &Arc<VidIdx>,
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
+    pipe_reader: Option<crate::y4m::PipeReader>,
 ) {
     let resume_data = load_resume_data(work_dir);
 
@@ -78,7 +79,7 @@ pub fn encode_all(
     {
         let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
         if is_tq {
-            encode_tq(chunks, inf, args, idx, work_dir, grain_table);
+            encode_tq(chunks, inf, args, idx, work_dir, grain_table, pipe_reader);
             return;
         }
     }
@@ -111,12 +112,8 @@ pub fn encode_all(
         let idx = Arc::clone(idx);
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
-        let is_pipe = crate::y4m::is_pipe();
-        let raw_fsz =
-            crate::ffms::calc_8bit_size(inf.width, inf.height) * if inf.is_10bit { 2 } else { 1 };
         thread::spawn(move || {
-            if is_pipe {
-                let mut reader = crate::y4m::PipeReader::new(raw_fsz);
+            if let Some(mut reader) = pipe_reader {
                 decode_pipe(&chunks, &mut reader, &inf, &tx, &skip_indices, strat, &sem);
             } else {
                 decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, &sem);
@@ -387,6 +384,7 @@ fn encode_tq(
     idx: &Arc<VidIdx>,
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
+    pipe_reader: Option<crate::y4m::PipeReader>,
 ) {
     let resume_data = load_resume_data(work_dir);
     let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
@@ -434,17 +432,13 @@ fn encode_tq(
         let enc_tx = enc_tx.clone();
         let permits_decoder = Arc::clone(&permits);
         let permits_done = Arc::clone(&permits);
-        let is_pipe = crate::y4m::is_pipe();
-        let raw_fsz =
-            crate::ffms::calc_8bit_size(inf.width, inf.height) * if inf.is_10bit { 2 } else { 1 };
 
         thread::spawn(move || {
             let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(2);
             let inf_decode = inf.clone();
 
             let decoder_handle = thread::spawn(move || {
-                if is_pipe {
-                    let mut reader = crate::y4m::PipeReader::new(raw_fsz);
+                if let Some(mut reader) = pipe_reader {
                     decode_pipe(
                         &chunks,
                         &mut reader,

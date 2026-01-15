@@ -394,6 +394,19 @@ fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+const fn scale_crop(
+    crop: (u32, u32),
+    orig_w: u32,
+    orig_h: u32,
+    pipe_w: u32,
+    pipe_h: u32,
+) -> (u32, u32) {
+    let (cv, ch) = crop;
+    let scaled_v = (cv * pipe_h / orig_h) & !1;
+    let scaled_h = (ch * pipe_w / orig_w) & !1;
+    (scaled_v, scaled_h)
+}
+
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     std::io::stdout().flush().unwrap();
@@ -421,6 +434,8 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = args.clone();
 
+    let pipe_init = y4m::init_pipe();
+
     let crop = {
         let config = crop::CropDetectConfig { sample_count: 13, min_black_pixels: 2 };
 
@@ -428,6 +443,21 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             Ok(detected) if detected.has_crop() => detected.to_tuple(),
             _ => (0, 0),
         }
+    };
+
+    let (inf, crop, pipe_reader) = if let Some((y, reader)) = pipe_init {
+        let scaled_crop = if crop == (0, 0) {
+            crop
+        } else {
+            scale_crop(crop, inf.width, inf.height, y.width, y.height)
+        };
+        let mut inf = inf;
+        inf.width = y.width;
+        inf.height = y.height;
+        inf.is_10bit = y.is_10bit;
+        (inf, scaled_crop, Some(reader))
+    } else {
+        (inf, crop, None)
     };
 
     args.decode_strat = Some(ffms::get_decode_strat(&idx, &inf, crop)?);
@@ -450,7 +480,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let chunks = chunk::chunkify(&scenes);
 
     let enc_start = std::time::Instant::now();
-    encode::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref());
+    encode::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref(), pipe_reader);
     let enc_time = enc_start.elapsed();
 
     let video_mkv = work_dir.join("encode").join("video.mkv");
