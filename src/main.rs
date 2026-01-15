@@ -22,6 +22,7 @@ mod tq;
 #[cfg(feature = "vship")]
 mod vship;
 mod worker;
+mod y4m;
 
 #[cfg(test)]
 mod tests;
@@ -50,6 +51,7 @@ pub struct Args {
     pub output: PathBuf,
     pub decode_strat: Option<ffms::DecodeStrat>,
     pub chunk_buffer: usize,
+    pub ranges: Option<Vec<(usize, usize)>>,
     #[cfg(feature = "vship")]
     pub qp_range: Option<String>,
     #[cfg(feature = "vship")]
@@ -81,6 +83,7 @@ fn print_help() {
     println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
     println!("{C}-s {P}┃ {C}--sc       {W}Specify SCD file. Auto gen if not specified");
     println!("{C}-n {P}┃ {C}--noise    {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
+    println!("{C}-r {P}┃ {C}--range    {W}Trim and splice frame ranges: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio    {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     println!("                {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
     #[cfg(feature = "vship")]
@@ -89,7 +92,7 @@ fn print_help() {
         println!("{C}-m {P}┃ {C}--mode     {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
         println!("{C}-f {P}┃ {C}--qp       {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
         println!("{C}-v {P}┃ {C}--vship    {W}Metric worker count");
-        println!("{C}-d {P}┃ {C}--display  {W}Display JSON file for CVVDP. Screen name must be {R}xav_screen{W}");
+        println!("{C}-d {P}┃ {C}--display  {W}Display JSON file for CVVDP. Screen name must be {R}xav{W}");
     }
 
     println!();
@@ -101,6 +104,7 @@ fn print_help() {
     println!("  {C}-b {R}1                {P}\\  {B}# {W}Decode {R}1 {W}extra chunk in memory for less waiting");
     println!("  {C}-s {G}scd.txt          {P}\\  {B}# {W}Optionally use a scene file from external SCD tools");
     println!("  {C}-n {R}4                {P}\\  {B}# {W}Add ISO-{R}400 {W}photon noise");
+    println!("  {C}-r {G}\"0-120,240-480\"  {P}\\  {B}# {W}Only encode given frame ranges and combine");
     println!("  {C}-a {G}\"norm 1,2\"       {P}\\  {B}# {W}Encode {R}2 {W}streams using Opus with stereo downmixing");
     #[cfg(feature = "vship")]
     {
@@ -124,6 +128,15 @@ fn parse_args() -> Args {
         print_help();
         std::process::exit(1);
     })
+}
+
+fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
+    s.split(',')
+        .map(|p| {
+            let (a, b) = p.trim().split_once('-').ok_or("invalid range")?;
+            Ok((a.trim().parse()?, b.trim().parse()?))
+        })
+        .collect()
 }
 
 fn apply_defaults(args: &mut Args) {
@@ -170,6 +183,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     let mut chunk_buffer = None;
     #[cfg(feature = "vship")]
     let mut cvvdp_config = None;
+    let mut ranges = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -250,6 +264,12 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
                     chunk_buffer = Some(args[i].parse()?);
                 }
             }
+            "-r" | "--range" => {
+                i += 1;
+                if i < args.len() {
+                    ranges = Some(parse_ranges(&args[i])?);
+                }
+            }
             #[cfg(feature = "vship")]
             "-d" | "--display" => {
                 i += 1;
@@ -293,6 +313,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
         output,
         decode_strat: None,
         chunk_buffer,
+        ranges,
         #[cfg(feature = "vship")]
         metric_worker,
         #[cfg(feature = "vship")]
@@ -420,6 +441,10 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
+
+    let scenes =
+        if let Some(ref r) = args.ranges { chunk::translate_scenes(&scenes, r) } else { scenes };
+
     chunk::validate_scenes(&scenes, inf.fps_num, inf.fps_den)?;
 
     let chunks = chunk::chunkify(&scenes);

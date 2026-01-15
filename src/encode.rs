@@ -8,7 +8,7 @@ use crossbeam_channel::bounded;
 use crossbeam_channel::select;
 
 use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
-use crate::decode::decode_chunks;
+use crate::decode::{decode_chunks, decode_pipe};
 use crate::encoder::{EncConfig, Encoder, make_enc_cmd};
 use crate::ffms::{VidIdx, VidInf};
 use crate::pipeline::Pipeline;
@@ -111,8 +111,16 @@ pub fn encode_all(
         let idx = Arc::clone(idx);
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
+        let is_pipe = crate::y4m::is_pipe();
+        let raw_fsz =
+            crate::ffms::calc_8bit_size(inf.width, inf.height) * if inf.is_10bit { 2 } else { 1 };
         thread::spawn(move || {
-            decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, &sem);
+            if is_pipe {
+                let mut reader = crate::y4m::PipeReader::new(raw_fsz);
+                decode_pipe(&chunks, &mut reader, &inf, &tx, &skip_indices, strat, &sem);
+            } else {
+                decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, &sem);
+            }
         })
     };
 
@@ -426,21 +434,37 @@ fn encode_tq(
         let enc_tx = enc_tx.clone();
         let permits_decoder = Arc::clone(&permits);
         let permits_done = Arc::clone(&permits);
+        let is_pipe = crate::y4m::is_pipe();
+        let raw_fsz =
+            crate::ffms::calc_8bit_size(inf.width, inf.height) * if inf.is_10bit { 2 } else { 1 };
 
         thread::spawn(move || {
             let (decode_tx, decode_rx) = bounded::<crate::worker::WorkPkg>(2);
             let inf_decode = inf.clone();
 
             let decoder_handle = thread::spawn(move || {
-                decode_chunks(
-                    &chunks,
-                    &idx,
-                    &inf_decode,
-                    &decode_tx,
-                    &skip_indices,
-                    strat,
-                    &permits_decoder,
-                );
+                if is_pipe {
+                    let mut reader = crate::y4m::PipeReader::new(raw_fsz);
+                    decode_pipe(
+                        &chunks,
+                        &mut reader,
+                        &inf_decode,
+                        &decode_tx,
+                        &skip_indices,
+                        strat,
+                        &permits_decoder,
+                    );
+                } else {
+                    decode_chunks(
+                        &chunks,
+                        &idx,
+                        &inf_decode,
+                        &decode_tx,
+                        &skip_indices,
+                        strat,
+                        &permits_decoder,
+                    );
+                }
             });
 
             let mut completed = 0;
