@@ -471,3 +471,190 @@ fn dec_10_crop_stride_rem(
     }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
+
+pub fn decode_pipe(
+    chunks: &[Chunk],
+    reader: &mut crate::y4m::PipeReader,
+    inf: &VidInf,
+    tx: &Sender<WorkPkg>,
+    skip: &HashSet<usize>,
+    strat: DecodeStrat,
+    sem: &Arc<Semaphore>,
+) {
+    let cc = match strat {
+        DecodeStrat::B10CropFast { cc }
+        | DecodeStrat::B10CropFastRem { cc }
+        | DecodeStrat::B10Crop { cc }
+        | DecodeStrat::B10CropRem { cc }
+        | DecodeStrat::B10CropStride { cc }
+        | DecodeStrat::B10CropStrideRem { cc }
+        | DecodeStrat::B8CropFast { cc }
+        | DecodeStrat::B8Crop { cc }
+        | DecodeStrat::B8CropStride { cc } => Some(cc),
+        _ => None,
+    };
+
+    let (w, h) = cc.map_or((inf.width, inf.height), |c| (c.new_w, c.new_h));
+    let raw_fsz = reader.frame_size;
+    let fsz = if inf.is_10bit { calc_packed_size(w, h) } else { calc_8bit_size(w, h) };
+    let has_rem = inf.is_10bit && (w % 8) != 0;
+
+    match (inf.is_10bit, cc, has_rem) {
+        (true, Some(cc), false) => {
+            pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
+                dec_pipe_10_crop(ch, raw, raw_fsz, &cc, fsz)
+            });
+        }
+        (true, Some(cc), true) => {
+            pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
+                dec_pipe_10_crop_rem(ch, raw, raw_fsz, &cc, fsz)
+            });
+        }
+        (true, None, false) => {
+            pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
+                dec_pipe_10(ch, raw, raw_fsz, w, h, fsz)
+            });
+        }
+        (true, None, true) => {
+            pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
+                dec_pipe_10_rem(ch, raw, raw_fsz, w, h, fsz)
+            });
+        }
+        (false, Some(cc), _) => {
+            pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
+                dec_pipe_8_crop(ch, raw, raw_fsz, &cc, fsz)
+            });
+        }
+        (false, None, _) => {
+            pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
+                dec_pipe_8(ch, raw, fsz, w, h)
+            });
+        }
+    }
+}
+
+#[inline]
+fn pipe_loop<F>(
+    chunks: &[Chunk],
+    reader: &mut crate::y4m::PipeReader,
+    skip: &HashSet<usize>,
+    sem: &Arc<Semaphore>,
+    tx: &Sender<WorkPkg>,
+    raw_fsz: usize,
+    decode: F,
+) where
+    F: Fn(&Chunk, &[u8]) -> WorkPkg,
+{
+    for ch in chunks {
+        let len = ch.end - ch.start;
+
+        if skip.contains(&ch.idx) {
+            reader.skip_frames(len);
+            continue;
+        }
+
+        sem.acquire();
+
+        let mut raw = vec![0u8; len * raw_fsz];
+        for i in 0..len {
+            if !reader.read_frame(&mut raw[i * raw_fsz..(i + 1) * raw_fsz]) {
+                return;
+            }
+        }
+
+        tx.send(decode(ch, &raw)).ok();
+    }
+}
+
+#[inline]
+fn dec_pipe_10(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usize) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    let y_raw = (w * h * 2) as usize;
+    let uv_raw = y_raw / 4;
+    let y_pack = (w as usize * h as usize * 5) / 4;
+    let uv_pack = y_pack / 4;
+    for i in 0..len {
+        let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
+        let dst = &mut dat[i * fsz..(i + 1) * fsz];
+        crate::ffms::pack_10bit(&src[..y_raw], &mut dst[..y_pack]);
+        crate::ffms::pack_10bit(&src[y_raw..y_raw + uv_raw], &mut dst[y_pack..y_pack + uv_pack]);
+        crate::ffms::pack_10bit(&src[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
+    }
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
+
+#[inline]
+fn dec_pipe_10_rem(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usize) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    let y_raw = (w * h * 2) as usize;
+    for i in 0..len {
+        let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
+        let dst = &mut dat[i * fsz..(i + 1) * fsz];
+        crate::ffms::pack_10bit_rem(&src[..y_raw], dst, w as usize, h as usize);
+    }
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
+
+#[inline]
+fn dec_pipe_10_crop(ch: &Chunk, data: &[u8], raw_fsz: usize, cc: &CropCalc, fsz: usize) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    let y_pack = (cc.new_w as usize * cc.new_h as usize * 5) / 4;
+    let uv_pack = y_pack / 4;
+    let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
+    for i in 0..len {
+        let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
+        cc.crop(src, &mut crop_buf);
+        let y_raw = (cc.new_w * cc.new_h * 2) as usize;
+        let uv_raw = y_raw / 4;
+        let dst = &mut dat[i * fsz..(i + 1) * fsz];
+        crate::ffms::pack_10bit(&crop_buf[..y_raw], &mut dst[..y_pack]);
+        crate::ffms::pack_10bit(
+            &crop_buf[y_raw..y_raw + uv_raw],
+            &mut dst[y_pack..y_pack + uv_pack],
+        );
+        crate::ffms::pack_10bit(&crop_buf[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
+    }
+    WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
+}
+
+#[inline]
+fn dec_pipe_10_crop_rem(
+    ch: &Chunk,
+    data: &[u8],
+    raw_fsz: usize,
+    cc: &CropCalc,
+    fsz: usize,
+) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
+    for i in 0..len {
+        let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
+        cc.crop(src, &mut crop_buf);
+        let y_raw = (cc.new_w * cc.new_h * 2) as usize;
+        let dst = &mut dat[i * fsz..(i + 1) * fsz];
+        crate::ffms::pack_10bit_rem(&crop_buf[..y_raw], dst, cc.new_w as usize, cc.new_h as usize);
+    }
+    WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
+}
+
+#[inline]
+fn dec_pipe_8(ch: &Chunk, data: &[u8], fsz: usize, w: u32, h: u32) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let dat = data[..len * fsz].to_vec();
+    WorkPkg::new(ch.clone(), dat, len, w, h)
+}
+
+#[inline]
+fn dec_pipe_8_crop(ch: &Chunk, data: &[u8], raw_fsz: usize, cc: &CropCalc, fsz: usize) -> WorkPkg {
+    let len = ch.end - ch.start;
+    let mut dat = vec![0u8; len * fsz];
+    for i in 0..len {
+        let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
+        cc.crop(src, &mut dat[i * fsz..(i + 1) * fsz]);
+    }
+    WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
+}

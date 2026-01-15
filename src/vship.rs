@@ -285,8 +285,7 @@ impl VshipProcessor {
 
             let cvvdp_handler = if use_cvvdp {
                 let mut handler = std::mem::zeroed::<VshipCVVDPHandler>();
-                let model_key =
-                    std::ffi::CString::new(cvvdp_model.unwrap_or("xav_screen")).unwrap();
+                let model_key = std::ffi::CString::new(cvvdp_model.unwrap_or("xav")).unwrap();
                 let config_cstr = std::ffi::CString::new(
                     cvvdp_config.ok_or("CVVDP requires -d/--display <json_file> argument")?,
                 )

@@ -306,3 +306,23 @@ fn run_merge(
 
     Ok(())
 }
+
+pub fn translate_scenes(scenes: &[Scene], ranges: &[(usize, usize)]) -> Vec<Scene> {
+    let mut cuts: Vec<usize> = scenes.iter().map(|s| s.s_frame).collect();
+    for &(s, e) in ranges {
+        cuts.push(s);
+        cuts.push(e + 1);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut out = Vec::new();
+    for i in 0..cuts.len() {
+        let s = cuts[i];
+        let e = cuts.get(i + 1).copied().unwrap_or(usize::MAX);
+        if let Some(&(_, re)) = ranges.iter().find(|&&(rs, re)| s >= rs && s <= re) {
+            out.push(Scene { s_frame: s, e_frame: e.min(re + 1) });
+        }
+    }
+    out
+}
