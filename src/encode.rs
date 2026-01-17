@@ -310,7 +310,7 @@ fn run_metrics_worker(
                     fps,
                     tq_ctx.use_cvvdp,
                     tq_ctx.use_butteraugli,
-                    Some("xav_screen"),
+                    Some("xav"),
                     tq_ctx.cvvdp_config,
                 )
                 .unwrap(),
