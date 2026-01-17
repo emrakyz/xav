@@ -278,15 +278,19 @@ unsafe fn detect_right_crop(
     None
 }
 
+fn prev_multiple_of_2(n: u32) -> u32 {
+    n & !1
+}
+
 fn min_crop(samples: &[CropResult]) -> CropResult {
     if samples.is_empty() {
         return CropResult::no_crop();
     }
 
     CropResult {
-        top: samples.iter().map(|c| c.top).min().unwrap_or(0).next_multiple_of(2),
-        bottom: samples.iter().map(|c| c.bottom).min().unwrap_or(0).next_multiple_of(2),
-        left: samples.iter().map(|c| c.left).min().unwrap_or(0).next_multiple_of(2),
-        right: samples.iter().map(|c| c.right).min().unwrap_or(0).next_multiple_of(2),
+        top: prev_multiple_of_2(samples.iter().map(|c| c.top).min().unwrap_or(0)),
+        bottom: prev_multiple_of_2(samples.iter().map(|c| c.bottom).min().unwrap_or(0)),
+        left: prev_multiple_of_2(samples.iter().map(|c| c.left).min().unwrap_or(0)),
+        right: prev_multiple_of_2(samples.iter().map(|c| c.right).min().unwrap_or(0)),
     }
 }
