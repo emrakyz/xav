@@ -125,7 +125,7 @@ impl ProgsTrack {
         std::io::stdout().flush().unwrap();
 
         let total_chunks = chunks.len();
-        let total_frames = inf.frames;
+        let total_frames = chunks.iter().map(|c| c.end - c.start).sum();
         let fps_num = inf.fps_num as usize;
         let fps_den = inf.fps_den as usize;
 
