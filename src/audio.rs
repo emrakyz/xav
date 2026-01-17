@@ -29,6 +29,22 @@ struct AudioStream {
     lang: Option<String>,
 }
 
+const FF_FLAGS: [&str; 13] = [
+    "-fflags",
+    "+genpts+igndts+discardcorrupt+bitexact",
+    "-bitexact",
+    "-avoid_negative_ts",
+    "make_zero",
+    "-err_detect",
+    "ignore_err",
+    "-ignore_unknown",
+    "-reset_timestamps",
+    "1",
+    "-start_at_zero",
+    "-output_ts_offset",
+    "0",
+];
+
 pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Box<dyn std::error::Error>> {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     if parts.len() != 2 {
@@ -152,27 +168,7 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Box<dyn std::error::Err
     Ok(streams)
 }
 
-fn encode_stream(
-    input: &Path,
-    stream: &AudioStream,
-    bitrate: u32,
-    output: &Path,
-    normalize: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"])
-        .arg(input)
-        .args(["-map_metadata", "-1", "-map_chapters", "-1", "-dn", "-sn", "-vn", "-map"])
-        .arg(format!("0:{}", stream.index));
-
-    if normalize {
-        cmd.args([
-            "-af",
-            "pan=stereo|FL=FL+0.707*FC+0.707*SL+0.5*BL+0.5*BC|FR=FR+0.707*FC+0.707*SR+0.5*BR+0.5*\
-             BC,loudnorm=I=-14:TP=-2.5:LRA=14",
-        ]);
-    }
-
+fn add_opus_args(cmd: &mut Command, bitrate: u32, channels: u32, normalize: bool) {
     cmd.args([
         "-c:a",
         "libopus",
@@ -189,28 +185,130 @@ fn encode_stream(
         "-vbr",
         "on",
         "-mapping_family",
-        if normalize || stream.channels <= 2 { "0" } else { "1" },
+        if normalize || channels <= 2 { "0" } else { "1" },
         "-apply_phase_inv",
         "true",
         "-packet_loss",
         "0",
-        "-fflags",
-        "+genpts+igndts+discardcorrupt+bitexact",
-        "-avoid_negative_ts",
-        "make_zero",
-        "-bitexact",
-        "-err_detect",
-        "ignore_err",
-        "-ignore_unknown",
-        "-reset_timestamps",
-        "1",
-        "-start_at_zero",
-    ])
-    .arg(output)
-    .status()
-    .ok()
-    .filter(std::process::ExitStatus::success)
-    .ok_or_else(|| format!("Failed to encode stream {}", stream.index))?;
+    ]);
+}
+
+fn encode_stream(
+    input: &Path,
+    stream: &AudioStream,
+    bitrate: u32,
+    output: &Path,
+    normalize: bool,
+    times: Option<&[(f64, f64)]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(t) = times
+        && t.len() > 1
+    {
+        return encode_stream_multi(input, stream, bitrate, output, normalize, t);
+    }
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"]);
+
+    if let Some(t) = times
+        && t.len() == 1
+    {
+        cmd.args(["-ss", &format!("{:.6}", t[0].0)]);
+        cmd.args(["-t", &format!("{:.6}", t[0].1 - t[0].0)]);
+    }
+
+    cmd.arg("-i")
+        .arg(input)
+        .args(["-map_metadata", "-1", "-map_chapters", "-1", "-dn", "-sn", "-vn", "-map"])
+        .arg(format!("0:{}", stream.index));
+
+    if normalize {
+        cmd.args([
+            "-af",
+            "pan=stereo|FL=FL+0.707*FC+0.707*SL+0.5*BL+0.5*BC|FR=FR+0.707*FC+0.707*SR+0.5*BR+0.5*\
+             BC,loudnorm=I=-14:TP=-2.5:LRA=14",
+        ]);
+    }
+
+    add_opus_args(&mut cmd, bitrate, stream.channels, normalize);
+    cmd.args(FF_FLAGS)
+        .arg(output)
+        .status()
+        .ok()
+        .filter(std::process::ExitStatus::success)
+        .ok_or_else(|| format!("Failed to encode stream {}", stream.index))?;
+    Ok(())
+}
+
+fn encode_stream_multi(
+    input: &Path,
+    stream: &AudioStream,
+    bitrate: u32,
+    output: &Path,
+    normalize: bool,
+    times: &[(f64, f64)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = output.parent().unwrap();
+    let mut segments = Vec::new();
+
+    for (i, (start, end)) in times.iter().enumerate() {
+        let seg_path = temp_dir.join(format!("audio_enc_{i}.opus"));
+
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
+            .args(["-ss", &format!("{start:.6}")])
+            .args(["-t", &format!("{:.6}", end - start)])
+            .arg("-i")
+            .arg(input)
+            .args(["-map_metadata", "-1", "-map_chapters", "-1", "-dn", "-sn", "-vn", "-map"])
+            .arg(format!("0:{}", stream.index));
+
+        if normalize {
+            cmd.args([
+                "-af",
+                "pan=stereo|FL=FL+0.707*FC+0.707*SL+0.5*BL+0.5*BC|FR=FR+0.707*FC+0.707*SR+0.5*\
+                 BR+0.5*BC,loudnorm=I=-14:TP=-2.5:LRA=14",
+            ]);
+        }
+
+        add_opus_args(&mut cmd, bitrate, stream.channels, normalize);
+        cmd.arg(&seg_path);
+
+        if cmd.status().is_ok_and(|s| s.success()) {
+            segments.push(seg_path);
+        }
+    }
+
+    if segments.is_empty() {
+        return Err("No audio segments encoded".into());
+    }
+
+    let concat_list = temp_dir.join(format!("concat_{}.txt", stream.index));
+    let mut content = String::new();
+    for seg in &segments {
+        use std::fmt::Write;
+        let _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
+    }
+    fs::write(&concat_list, content)?;
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
+        .args(["-f", "concat", "-safe", "0", "-i"])
+        .arg(&concat_list)
+        .args(["-c", "copy"])
+        .arg(output);
+
+    let status = cmd.status()?;
+
+    let _ = fs::remove_file(&concat_list);
+    for seg in &segments {
+        let _ = fs::remove_file(seg);
+    }
+
+    if !status.success() {
+        return Err(format!("Failed to concat stream {}", stream.index).into());
+    }
+
     Ok(())
 }
 
@@ -219,6 +317,7 @@ fn mux_files(
     files: &[(AudioStream, std::path::PathBuf)],
     input: &Path,
     output: &Path,
+    has_ranges: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"]).arg(video);
@@ -227,16 +326,19 @@ fn mux_files(
         cmd.arg("-i").arg(path);
     }
 
-    cmd.arg("-i").arg(input);
-
     cmd.args(["-map", "0:v"]);
 
     for i in 0..files.len() {
         cmd.args(["-map", &format!("{}:a", i + 1)]);
     }
 
-    let input_idx = files.len() + 1;
-    cmd.args(["-map", &format!("{input_idx}:s?"), "-map", &format!("{input_idx}:t?")]);
+    if !has_ranges {
+        cmd.arg("-i").arg(input);
+        let input_idx = files.len() + 1;
+        cmd.args(["-map", &format!("{input_idx}:s?")])
+            .args(["-map", &format!("{input_idx}:t?")])
+            .args(["-map_chapters", &input_idx.to_string()]);
+    }
 
     for (i, (info, _)) in files.iter().enumerate() {
         let code = info.lang.as_deref().unwrap_or("und");
@@ -245,19 +347,7 @@ fn mux_files(
     }
 
     cmd.args(["-c", "copy"])
-        .args([
-            "-fflags",
-            "+genpts+igndts+discardcorrupt+bitexact",
-            "-bitexact",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-err_detect",
-            "ignore_err",
-            "-ignore_unknown",
-            "-reset_timestamps",
-            "1",
-            "-start_at_zero",
-        ])
+        .args(FF_FLAGS)
         .arg(output)
         .status()
         .ok()
@@ -271,12 +361,17 @@ pub fn process_audio(
     input: &Path,
     video: &Path,
     output: &Path,
+    ranges: Option<&[(usize, usize)]>,
+    fps_num: u32,
+    fps_den: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let all = get_streams(input)?;
     let sel: Vec<_> = match &spec.streams {
         AudioStreams::All => all.iter().collect(),
         AudioStreams::Specific(ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
     };
+
+    let times = ranges.map(|r| crate::chunk::ranges_to_times(r, fps_num, fps_den));
 
     let work = input.parent().unwrap();
     let (use_norm, base_bitrate) = match &spec.bitrate {
@@ -315,12 +410,12 @@ pub fn process_audio(
                     .map_or_else(|| format!("{:02}.opus", s.index), |l| format!("{l}.opus")),
             );
 
-            encode_stream(input, s, br, &path, use_norm)?;
+            encode_stream(input, s, br, &path, use_norm, times.as_deref())?;
             Ok::<_, Box<dyn std::error::Error>>(((*s).clone(), path))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    mux_files(video, &files, input, output)?;
+    mux_files(video, &files, input, output, ranges.is_some())?;
 
     for (_, p) in &files {
         let _ = fs::remove_file(p);

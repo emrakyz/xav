@@ -508,12 +508,21 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             Some(&args.input)
         },
         args.encoder,
+        args.ranges.as_deref(),
     )?;
 
     if let Some(ref audio_spec) = args.audio
         && args.encoder == encoder::Encoder::SvtAv1
     {
-        audio::process_audio(audio_spec, &args.input, &video_mkv, &args.output)?;
+        audio::process_audio(
+            audio_spec,
+            &args.input,
+            &video_mkv,
+            &args.output,
+            args.ranges.as_deref(),
+            inf.fps_num,
+            inf.fps_den,
+        )?;
         fs::remove_file(&video_mkv)?;
     }
 
@@ -522,7 +531,8 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let input_size = fs::metadata(&args.input)?.len();
     let output_size = fs::metadata(&args.output)?.len();
-    let duration = inf.frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
+    let total_frames: usize = chunks.iter().map(|c| c.end - c.start).sum();
+    let duration = total_frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
     let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
     let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
     let change = ((output_size as f64 / input_size as f64) - 1.0) * 100.0;
@@ -539,7 +549,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let change_color = if change < 0.0 { G } else { R };
 
     let fps_rate = f64::from(inf.fps_num) / f64::from(inf.fps_den);
-    let enc_speed = inf.frames as f64 / enc_time.as_secs_f64();
+    let enc_speed = total_frames as f64 / enc_time.as_secs_f64();
 
     let enc_secs = enc_time.as_secs();
     let (eh, em, es) = (enc_secs / 3600, (enc_secs % 3600) / 60, enc_secs % 60);
