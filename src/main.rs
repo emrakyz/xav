@@ -77,7 +77,7 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{R}>");
+    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{R}>");
     println!("{C}-p {P}┃ {C}--param    {W}Encoder params");
     println!("{C}-w {P}┃ {C}--worker   {W}Encoder count");
     println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
@@ -124,10 +124,14 @@ fn print_help() {
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
-    get_args(&args, true).unwrap_or_else(|_| {
-        print_help();
-        std::process::exit(1);
-    })
+    match get_args(&args, true) {
+        Ok(args) => args,
+        Err(e) => {
+            eprintln!("\n{R}Error: {e}{N}\n");
+            print_help();
+            std::process::exit(1);
+        }
+    }
 }
 
 fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
@@ -142,7 +146,11 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Erro
 fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
-        let ext = if args.encoder == crate::encoder::Encoder::Avm { "ivf" } else { "mkv" };
+        let ext = match args.encoder {
+            crate::encoder::Encoder::Avm => "ivf",
+            crate::encoder::Encoder::Vvenc => "mp4",
+            crate::encoder::Encoder::SvtAv1 => "mkv",
+        };
         args.output = args.input.with_file_name(format!("{stem}_xav.{ext}"));
     }
 
@@ -292,6 +300,20 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
 
     if allow_resume && let Ok(saved_args) = get_saved_args(&input) {
         return Ok(saved_args);
+    }
+
+    if output != PathBuf::new() {
+        let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let containers = match encoder {
+            crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
+            crate::encoder::Encoder::Avm => "ivf",
+            crate::encoder::Encoder::Vvenc => "mp4",
+        };
+        if !containers.split(", ").any(|c| c == ext) {
+            return Err(
+                format!("Invalid extension .{ext} for {encoder:?}. Use: {containers}").into()
+            );
+        }
     }
 
     let chunk_buffer = worker + chunk_buffer.unwrap_or(0);
@@ -496,7 +518,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     chunk::merge_out(
         &work_dir.join("encode"),
-        if args.audio.is_some() && args.encoder == encoder::Encoder::SvtAv1 {
+        if args.audio.is_some() && args.encoder != encoder::Encoder::Avm {
             &video_mkv
         } else {
             &args.output
@@ -512,7 +534,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     if let Some(ref audio_spec) = args.audio
-        && args.encoder == encoder::Encoder::SvtAv1
+        && args.encoder != encoder::Encoder::Avm
     {
         audio::process_audio(
             audio_spec,

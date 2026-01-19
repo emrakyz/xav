@@ -3,11 +3,12 @@ use std::process::{Command, Stdio};
 
 use crate::ffms::VidInf;
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Encoder {
     #[default]
     SvtAv1,
     Avm,
+    Vvenc,
 }
 
 impl Encoder {
@@ -15,8 +16,20 @@ impl Encoder {
         match s.to_lowercase().as_str() {
             "svt-av1" => Some(Self::SvtAv1),
             "avm" => Some(Self::Avm),
+            "vvenc" => Some(Self::Vvenc),
             _ => None,
         }
+    }
+
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::SvtAv1 | Self::Avm => "ivf",
+            Self::Vvenc => "vvc",
+        }
+    }
+
+    pub const fn integer_qp(self) -> bool {
+        matches!(self, Self::Avm | Self::Vvenc)
     }
 }
 
@@ -35,6 +48,7 @@ pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
     match encoder {
         Encoder::SvtAv1 => make_svt_cmd(cfg),
         Encoder::Avm => make_avm_cmd(cfg),
+        Encoder::Vvenc => make_vvenc_cmd(cfg),
     }
 }
 
@@ -180,6 +194,68 @@ fn make_avm_cmd(cfg: &EncConfig) -> Command {
     cmd
 }
 
+fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
+    let mut cmd = Command::new("vvencFFapp");
+
+    let width_str = cfg.width.to_string();
+    let height_str = cfg.height.to_string();
+    let fps_str = format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den);
+    let frames_str = cfg.frames.to_string();
+
+    cmd.args([
+        "-v",
+        "4",
+        "--stats",
+        "0",
+        "--InputBitDepth",
+        "10",
+        "--InputChromaFormat",
+        "420",
+        "--IntraPeriod",
+        "-1",
+        "--RefreshSec",
+        "0",
+        "--DecodingRefreshType",
+        "idr",
+        "--POC0IDR",
+        "1",
+        "--NumPasses",
+        "1",
+        "--Passes",
+        "1",
+        "--Profile",
+        "main_10",
+        "--Tier",
+        "main",
+        "--MaxBitDepthConstraint",
+        "10",
+        "--InternalBitDepth",
+        "10",
+        "--OutputBitDepth",
+        "10",
+    ]);
+
+    cmd.arg("--SourceWidth").arg(&width_str);
+    cmd.arg("--SourceHeight").arg(&height_str);
+    cmd.arg("--fps").arg(&fps_str);
+    cmd.arg("--FramesToBeEncoded").arg(&frames_str);
+
+    if cfg.crf >= 0.0 {
+        cmd.arg("--QP").arg(format!("{}", cfg.crf as i32));
+    }
+
+    colorize_vvenc(&mut cmd, cfg.inf);
+
+    cmd.args(cfg.params.split_whitespace());
+
+    cmd.arg("-i").arg("-");
+    cmd.arg("-b").arg(cfg.output);
+
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    cmd
+}
+
 fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
     if let Some(cp) = inf.color_primaries {
         cmd.arg(format!("--color-primaries={}", color_primaries_str(cp)));
@@ -192,6 +268,146 @@ fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
     }
     if let Some(csp) = inf.chroma_sample_position {
         cmd.arg(format!("--chroma-sample-position={}", chroma_pos_str(csp)));
+    }
+}
+
+fn vvenc_mastering(md: &str) -> Option<String> {
+    let pair = |s: &str, p: &str| -> Option<(f64, f64)> {
+        let start = s.find(p)? + p.len();
+        let end = s[start..].find(')')? + start;
+        let mut parts = s[start..end].split(',');
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    };
+
+    let (gx, gy) = pair(md, "G(")?;
+    let (bx, by) = pair(md, "B(")?;
+    let (rx, ry) = pair(md, "R(")?;
+    let (wx, wy) = pair(md, "WP(")?;
+    let (lmax, lmin) = pair(md, "L(")?;
+
+    Some(format!(
+        "{},{},{},{},{},{},{},{},{},{}",
+        (gx * 50000.0) as u32,
+        (gy * 50000.0) as u32,
+        (bx * 50000.0) as u32,
+        (by * 50000.0) as u32,
+        (rx * 50000.0) as u32,
+        (ry * 50000.0) as u32,
+        (wx * 50000.0) as u32,
+        (wy * 50000.0) as u32,
+        (lmax * 10000.0) as u32,
+        (lmin * 10000.0) as u32,
+    ))
+}
+
+fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
+    let tc = inf.transfer_characteristics.unwrap_or(2);
+    let cp = inf.color_primaries.unwrap_or(2);
+
+    let is_hlg = tc == 18;
+    let is_pq = tc == 16;
+    let is_bt2020 = cp == 9;
+    let is_bt470bg = cp == 5;
+
+    if is_pq || is_hlg {
+        let hdr_mode = match (is_pq, is_hlg, is_bt2020) {
+            (true, _, true) => "pq_2020",
+            (true, _, false) => "pq",
+            (_, true, true) => "hlg_2020",
+            (_, true, false) => "hlg",
+            _ => "off",
+        };
+        cmd.args(["--Hdr", hdr_mode]);
+    } else {
+        let sdr_mode = match (is_bt2020, is_bt470bg) {
+            (true, _) => "sdr_2020",
+            (_, true) => "sdr_470bg",
+            _ => "sdr_709",
+        };
+        cmd.args(["--Sdr", sdr_mode]);
+    }
+
+    if let Some(cp) = inf.color_primaries {
+        cmd.args(["--ColourPrimaries", vvenc_color_primaries_str(cp)]);
+    }
+    if let Some(tc) = inf.transfer_characteristics {
+        cmd.args(["--TransferCharacteristics", vvenc_transfer_char_str(tc)]);
+    }
+    if let Some(mc) = inf.matrix_coefficients {
+        cmd.args(["--MatrixCoefficients", vvenc_matrix_coeff_str(mc)]);
+    }
+    if let Some(cr) = inf.color_range {
+        cmd.args(["--Range", if cr == 1 { "full" } else { "limited" }]);
+    }
+    if let Some(csp) = inf.chroma_sample_position
+        && (0..=5).contains(&csp)
+    {
+        cmd.args(["--ChromaSampleLocType", &csp.to_string()]);
+    }
+    if let Some(ref md) = inf.mastering_display
+        && let Some(converted) = vvenc_mastering(md)
+    {
+        cmd.args(["--MasteringDisplayColourVolume", &converted]);
+    }
+    if let Some(ref cl) = inf.content_light {
+        cmd.args(["--MaxContentLightLevel", cl]);
+    }
+}
+
+const fn vvenc_color_primaries_str(v: i32) -> &'static str {
+    match v {
+        1 => "bt709",
+        4 => "bt470m",
+        5 => "bt470bg",
+        6 => "smpte170m",
+        7 => "smpte240m",
+        8 => "film",
+        9 => "bt2020",
+        10 => "smpte428",
+        11 => "smpte431",
+        12 => "smpte432",
+        _ => "unknown",
+    }
+}
+
+const fn vvenc_transfer_char_str(v: i32) -> &'static str {
+    match v {
+        1 => "bt709",
+        4 => "bt470m",
+        5 => "bt470bg",
+        6 => "smpte170m",
+        7 => "smpte240m",
+        8 => "linear",
+        9 => "log100",
+        10 => "log316",
+        11 => "iec61966-2-4",
+        12 => "bt1361e",
+        13 => "iec61966-2-1",
+        14 => "bt2020-10",
+        15 => "bt2020-12",
+        16 => "smpte2084",
+        17 => "smpte428",
+        18 => "arib-std-b67",
+        _ => "unknown",
+    }
+}
+
+const fn vvenc_matrix_coeff_str(v: i32) -> &'static str {
+    match v {
+        0 => "gbr",
+        1 => "bt709",
+        4 => "fcc",
+        5 => "bt470bg",
+        6 => "smpte170m",
+        7 => "smpte240m",
+        8 => "ycgco",
+        9 => "bt2020nc",
+        10 => "bt2020c",
+        11 => "smpte2085",
+        12 => "chroma-derived-nc",
+        13 => "chroma-derived-c",
+        14 => "ictcp",
+        _ => "unknown",
     }
 }
 

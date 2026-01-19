@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use crate::encoder::Encoder;
 
 const BAR_WIDTH: usize = 20;
+const INTERVAL_MS: u64 = 500;
 
 const G: &str = "\x1b[1;92m";
 const R: &str = "\x1b[1;91m";
@@ -19,6 +20,8 @@ const N: &str = "\x1b[0m";
 
 const G_HASH: &str = "\x1b[1;92m#";
 const R_DASH: &str = "\x1b[1;91m-";
+const B_HASH: &str = "\x1b[1;94m#";
+const Y_DASH: &str = "\x1b[1;93m-";
 
 pub struct ProgsBar {
     start: Instant,
@@ -42,7 +45,7 @@ impl ProgsBar {
     }
 
     pub fn up_idx(&mut self, current: usize, total: usize) {
-        if self.last_update.elapsed() < Duration::from_millis(750) {
+        if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
             return;
         }
         self.last_update = Instant::now();
@@ -68,7 +71,7 @@ impl ProgsBar {
     }
 
     pub fn up_scenes(&mut self, current: usize, total: usize) {
-        if self.last_update.elapsed() < Duration::from_millis(750) {
+        if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
             return;
         }
         self.last_update = Instant::now();
@@ -81,11 +84,11 @@ impl ProgsBar {
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
         let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
         let perc = (current * 100 / total.max(1)).min(100);
-        let (eta_h, eta_m, eta_s) = (eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60);
+        let (eta_m, eta_s) = ((eta_secs % 3600) / 60, eta_secs % 60);
 
         print!(
             "\r\x1b[2K{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} FPS{C}, \
-             {W}{eta_h:02}{P}:{W}{eta_m:02}{P}:{W}{eta_s:02}{C}, {G}{current}{C}/{R}{total}{N}"
+             {W}{eta_m:02}{P}:{W}{eta_s:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
         std::io::stdout().flush().unwrap();
     }
@@ -155,6 +158,9 @@ impl ProgsTrack {
                 watch_svt(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
             Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
+            Encoder::Vvenc => {
+                watch_vvenc(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
+            }
         });
     }
 
@@ -257,7 +263,14 @@ fn watch_svt(
             None => format!("{C}[{chunk_idx:04}{C}]"),
         };
 
-        let display_line = format!("{prefix} {cleaned}");
+        let display_line = if let Some((current, total)) = parse_svt_frames_total(text) {
+            let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
+            let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+            let perc = (current * 100 / total.max(1)).min(100);
+            format!("{prefix} {P}[{bar}{P}] {W}{perc}% {cleaned}")
+        } else {
+            format!("{prefix} {cleaned}")
+        };
 
         let frames_delta = if track_frames {
             parse_svt_frames(text).map(|current| {
@@ -296,6 +309,88 @@ fn watch_avm(
     tx.send(WorkerMsg::Clear(worker_id)).ok();
 }
 
+fn watch_vvenc(
+    tx: &crossbeam_channel::Sender<WorkerMsg>,
+    mut stdout: impl std::io::Read,
+    worker_id: usize,
+    chunk_idx: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let start = Instant::now();
+    let mut buf = [0u8; 4096];
+    let mut line_buf = String::new();
+    let mut poc_count = 0;
+    let mut total_frames = 0;
+    let mut last_poc_count = 0;
+    let mut last_update = Instant::now();
+
+    loop {
+        match stdout.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                line_buf.push_str(&String::from_utf8_lossy(&buf[..n]));
+
+                while let Some(pos) = line_buf.find('\n') {
+                    let line = line_buf[..pos].trim().to_string();
+                    line_buf = line_buf[pos + 1..].to_string();
+
+                    if line.contains("error") || line.contains("Error") {
+                        print!("\x1b[?1049l");
+                        std::io::stdout().flush().unwrap();
+                        eprintln!("{line}");
+                    }
+
+                    if total_frames == 0 && line.contains("encode ") {
+                        total_frames =
+                            line.split_whitespace().find_map(|s| s.parse().ok()).unwrap_or(0);
+                    }
+
+                    if line.starts_with("POC") {
+                        poc_count += 1;
+                    }
+                }
+
+                if last_update.elapsed() >= Duration::from_millis(INTERVAL_MS) {
+                    last_update = Instant::now();
+
+                    let total = total_frames.max(poc_count);
+                    let fps = poc_count as f32 / start.elapsed().as_secs_f32().max(0.001);
+                    let filled = (BAR_WIDTH * poc_count / total.max(1)).min(BAR_WIDTH);
+                    let bar =
+                        format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+                    let perc = (poc_count * 100 / total.max(1)).min(100);
+
+                    let prefix = match crf_score {
+                        Some((crf, Some(score))) => {
+                            format!("{C}[{chunk_idx:04} / F {crf:.2} / {score:.2}{C}]")
+                        }
+                        Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
+                        None => format!("{C}[{chunk_idx:04}{C}]"),
+                    };
+
+                    let display = format!(
+                        "{prefix} {P}[{bar}{P}] {W}{perc}%{C}, {Y}{fps:.2}{C}, \
+                         {G}{poc_count}{C}/{R}{total}"
+                    );
+
+                    let delta = if track_frames {
+                        let d = poc_count.saturating_sub(last_poc_count);
+                        last_poc_count = poc_count;
+                        Some(d)
+                    } else {
+                        None
+                    };
+
+                    tx.send(WorkerMsg::Update { worker_id, line: display, frames: delta }).ok();
+                }
+            }
+        }
+    }
+
+    tx.send(WorkerMsg::Clear(worker_id)).ok();
+}
+
 fn parse_svt_frames(line: &str) -> Option<usize> {
     let frames_pos = line.find(" Frames")?;
     let bytes = line.as_bytes();
@@ -315,6 +410,27 @@ fn parse_svt_frames(line: &str) -> Option<usize> {
     first_num.parse().ok()
 }
 
+fn parse_svt_frames_total(line: &str) -> Option<(usize, usize)> {
+    let frames_pos = line.find(" Frames")?;
+    let bytes = line.as_bytes();
+
+    let mut start = frames_pos;
+    while start > 0 {
+        let b = bytes[start - 1];
+        if b.is_ascii_digit() || b == b'/' {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let num_part = &line[start..frames_pos];
+    let mut parts = num_part.split('/');
+    let current = parts.next()?.parse().ok()?;
+    let total = parts.next()?.parse().ok()?;
+    Some((current, total))
+}
+
 fn display_loop(
     rx: &crossbeam_channel::Receiver<WorkerMsg>,
     worker_count: usize,
@@ -327,7 +443,7 @@ fn display_loop(
     let mut last_draw = Instant::now();
 
     loop {
-        match rx.recv_timeout(Duration::from_millis(750)) {
+        match rx.recv_timeout(Duration::from_millis(INTERVAL_MS)) {
             Ok(WorkerMsg::Update { worker_id, line, frames }) => {
                 if worker_id < worker_count {
                     lines[worker_id] = line;
@@ -345,7 +461,7 @@ fn display_loop(
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         }
 
-        if last_draw.elapsed() >= Duration::from_millis(750) {
+        if last_draw.elapsed() >= Duration::from_millis(INTERVAL_MS) {
             draw_screen(&lines, worker_count, &start, state, &processed, init_frames);
             last_draw = Instant::now();
         }
