@@ -227,8 +227,9 @@ fn complete_chunk(
     probe_sizes: &[(f64, u64)],
     use_cvvdp: bool,
     cvvdp_per_frame: bool,
+    encoder: Encoder,
 ) {
-    let dst = work_dir.join("encode").join(format!("{chunk_idx:04}.ivf"));
+    let dst = work_dir.join("encode").join(format!("{chunk_idx:04}.{}", encoder.extension()));
     std::fs::copy(probe_path, &dst).unwrap();
     done_tx.send(chunk_idx).unwrap();
 
@@ -290,6 +291,7 @@ fn run_metrics_worker(
     worker_id: usize,
     worker_count: usize,
     tq_ctx: &TQCtx,
+    encoder: Encoder,
 ) {
     let mut vship: Option<crate::vship::VshipProcessor> = None;
     let mut unpacked_buf = vec![0u8; if inf.is_10bit { pipe.conv_buf_size } else { 0 }];
@@ -319,8 +321,12 @@ fn run_metrics_worker(
 
         let tq_st = pkg.tq_state.as_ref().unwrap();
         let crf = tq_st.last_crf;
-        let probe_path =
-            work_dir.join("split").join(format!("{:04}_{:.2}.ivf", pkg.chunk.idx, crf));
+        let probe_path = work_dir.join("split").join(format!(
+            "{:04}_{:.2}.{}",
+            pkg.chunk.idx,
+            crf,
+            encoder.extension()
+        ));
         let last_score = tq_st.probes.last().map(|probe| probe.score);
         let metrics_slot = worker_count + worker_id;
 
@@ -350,8 +356,12 @@ fn run_metrics_worker(
 
         if should_complete {
             let best = tq_ctx.best_probe(&tq_state.probes);
-            let probe_path =
-                work_dir.join("split").join(format!("{:04}_{:.2}.ivf", pkg.chunk.idx, best.crf));
+            let probe_path = work_dir.join("split").join(format!(
+                "{:04}_{:.2}.{}",
+                pkg.chunk.idx,
+                best.crf,
+                encoder.extension()
+            ));
 
             complete_chunk(
                 pkg.chunk.idx,
@@ -369,6 +379,7 @@ fn run_metrics_worker(
                 &tq_state.probe_sizes,
                 tq_ctx.use_cvvdp,
                 tq_ctx.cvvdp_per_frame,
+                encoder,
             );
         } else {
             rework_tx.send(pkg).unwrap();
@@ -507,6 +518,7 @@ fn encode_tq(
         let pipe = pipe.clone();
         let wd = work_dir.to_path_buf();
         let metric_mode = args.metric_mode.clone();
+        let encoder = args.encoder;
         let st = stats.clone();
         let resume_state = Arc::clone(&resume_state);
         let tq_logger = Arc::clone(&tq_logger);
@@ -529,6 +541,7 @@ fn encode_tq(
                 worker_id,
                 worker_count,
                 &tq_ctx,
+                encoder,
             );
         }));
     }
@@ -572,6 +585,7 @@ fn encode_tq(
                 }
                 .clamp(tq.search_min, tq.search_max);
 
+                let crf = if encoder.integer_qp() { crf.round() } else { crf };
                 tq.last_crf = crf;
 
                 enc_tq_probe(
@@ -633,7 +647,7 @@ fn enc_tq_probe(
     worker_id: usize,
     encoder: Encoder,
 ) -> PathBuf {
-    let name = format!("{:04}_{:.2}.ivf", pkg.chunk.idx, crf);
+    let name = format!("{:04}_{:.2}.{}", pkg.chunk.idx, crf, encoder.extension());
     let out = work_dir.join("split").join(&name);
     let cfg = EncConfig {
         inf,
@@ -658,7 +672,7 @@ fn enc_tq_probe(
             Some((crf as f32, last_score)),
             encoder,
         ),
-        Encoder::Avm => prog.watch_enc(
+        Encoder::Avm | Encoder::Vvenc => prog.watch_enc(
             child.stdout.take().unwrap(),
             worker_id,
             pkg.chunk.idx,
@@ -709,7 +723,11 @@ fn run_enc_worker(
 
         if let Some(s) = stats {
             s.completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let out = work_dir.join("encode").join(format!("{:04}.ivf", pkg.chunk.idx));
+            let out = work_dir.join("encode").join(format!(
+                "{:04}.{}",
+                pkg.chunk.idx,
+                encoder.extension()
+            ));
             let file_size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
             let comp = crate::chunk::ChunkComp {
                 idx: pkg.chunk.idx,
@@ -736,7 +754,7 @@ fn enc_chunk(
     worker_id: usize,
     encoder: Encoder,
 ) {
-    let out = work_dir.join("encode").join(format!("{:04}.ivf", pkg.chunk.idx));
+    let out = work_dir.join("encode").join(format!("{:04}.{}", pkg.chunk.idx, encoder.extension()));
     let cfg = EncConfig {
         inf,
         params,
@@ -759,7 +777,7 @@ fn enc_chunk(
             None,
             encoder,
         ),
-        Encoder::Avm => prog.watch_enc(
+        Encoder::Avm | Encoder::Vvenc => prog.watch_enc(
             child.stdout.take().unwrap(),
             worker_id,
             pkg.chunk.idx,

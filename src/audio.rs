@@ -169,6 +169,10 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Box<dyn std::error::Err
 }
 
 fn add_opus_args(cmd: &mut Command, bitrate: u32, channels: u32, normalize: bool) {
+    if !normalize && matches!(channels, 6..=8) {
+        let layout = ["5.1", "6.1", "7.1"][channels as usize - 6];
+        cmd.args(["-af", &format!("channelmap=channel_layout={layout}")]);
+    }
     cmd.args([
         "-c:a",
         "libopus",
@@ -326,14 +330,19 @@ fn mux_files(
         cmd.arg("-i").arg(path);
     }
 
+    let is_mp4 = output.extension().is_some_and(|e| e == "mp4");
+
+    if !has_ranges && !is_mp4 {
+        cmd.arg("-i").arg(input);
+    }
+
     cmd.args(["-map", "0:v"]);
 
     for i in 0..files.len() {
         cmd.args(["-map", &format!("{}:a", i + 1)]);
     }
 
-    if !has_ranges {
-        cmd.arg("-i").arg(input);
+    if !has_ranges && !is_mp4 {
         let input_idx = files.len() + 1;
         cmd.args(["-map", &format!("{input_idx}:s?")])
             .args(["-map", &format!("{input_idx}:t?")])
@@ -404,11 +413,8 @@ pub fn process_audio(
                     AudioBitrate::Norm => unreachable!(),
                 }
             };
-            let path = work.join(
-                s.lang
-                    .as_ref()
-                    .map_or_else(|| format!("{:02}.opus", s.index), |l| format!("{l}.opus")),
-            );
+            let path =
+                work.join(format!("{}_{:02}.opus", s.lang.as_deref().unwrap_or("und"), s.index));
 
             encode_stream(input, s, br, &path, use_norm, times.as_deref())?;
             Ok::<_, Box<dyn std::error::Error>>(((*s).clone(), path))
@@ -416,6 +422,10 @@ pub fn process_audio(
         .collect::<Result<Vec<_>, _>>()?;
 
     mux_files(video, &files, input, output, ranges.is_some())?;
+
+    if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
+        crate::chunk::add_mp4_subs(input, output);
+    }
 
     for (_, p) in &files {
         let _ = fs::remove_file(p);

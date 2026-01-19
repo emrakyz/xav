@@ -278,7 +278,7 @@ unsafe fn detect_right_crop(
     None
 }
 
-fn prev_multiple_of_2(n: u32) -> u32 {
+const fn prev_multiple_of_2(n: u32) -> u32 {
     n & !1
 }
 

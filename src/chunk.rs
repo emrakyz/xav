@@ -144,10 +144,91 @@ fn concat_ivf(
     Ok(())
 }
 
+fn concat_vvc(
+    files: &[std::path::PathBuf],
+    output: &Path,
+    inf: &crate::ffms::VidInf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let temp_266 = output.with_extension("266");
+
+    let mut out = fs::File::create(&temp_266)?;
+    for file in files {
+        let data = fs::read(file)?;
+        out.write_all(&data)?;
+    }
+    drop(out);
+
+    let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
+
+    let status = Command::new("MP4Box")
+        .args(["-flat", "-new"])
+        .args(["-for-test"])
+        .args(["-no-iod"])
+        .arg("-add")
+        .arg(format!("{}:fps={}", temp_266.display(), fps))
+        .arg(output)
+        .status()?;
+
+    let _ = fs::remove_file(&temp_266);
+
+    if !status.success() {
+        return Err("MP4Box VVC import failed".into());
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 const BATCH_SIZE: usize = usize::MAX;
 #[cfg(not(target_os = "windows"))]
 const BATCH_SIZE: usize = 960;
+
+const FF_FLAGS: [&str; 13] = [
+    "-fflags",
+    "+genpts+igndts+discardcorrupt+bitexact",
+    "-bitexact",
+    "-avoid_negative_ts",
+    "make_zero",
+    "-err_detect",
+    "ignore_err",
+    "-ignore_unknown",
+    "-reset_timestamps",
+    "1",
+    "-start_at_zero",
+    "-output_ts_offset",
+    "0",
+];
+
+pub fn add_mp4_subs(input: &Path, output: &Path) {
+    let Ok(out) = Command::new("MP4Box").arg("-info").arg(input).output() else { return };
+    let info = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let combined = format!("{info}{stderr}");
+
+    let mut cmd = Command::new("MP4Box");
+    cmd.args(["-for-test", "-no-iod"]);
+    let mut has_tracks = false;
+
+    for line in combined.lines() {
+        if line.contains("type: Text")
+            && let Some(track) = line
+                .split("Track ")
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|s| s.parse::<u32>().ok())
+        {
+            cmd.arg("-add").arg(format!("{}#{}", input.display(), track));
+            has_tracks = true;
+        }
+    }
+
+    if has_tracks {
+        cmd.arg(output);
+        let _ = cmd.status();
+    }
+}
 
 pub fn merge_out(
     encode_dir: &Path,
@@ -159,7 +240,7 @@ pub fn merge_out(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut files: Vec<_> = fs::read_dir(encode_dir)?
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == "ivf"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == encoder.extension()))
         .collect();
 
     files.sort_unstable_by_key(|e| {
@@ -176,6 +257,38 @@ pub fn merge_out(
             output,
             inf.frames as u32,
         );
+    }
+
+    if encoder == Encoder::Vvenc {
+        let temp_mp4 = encode_dir.join("temp_vvc.mp4");
+        concat_vvc(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &temp_mp4, inf)?;
+
+        if let Some(input) = input {
+            let temp_audio = encode_dir.join("audio.mka");
+
+            let has_audio = if let Some(r) = ranges {
+                let times = ranges_to_times(r, inf.fps_num, inf.fps_den);
+                extract_audio_ranges(input, &times, &temp_audio)?
+            } else {
+                extract_audio_full(input, &temp_audio)
+            };
+
+            if has_audio {
+                let mut cmd = Command::new("MP4Box");
+                cmd.args(["-for-test", "-no-iod"]);
+                cmd.arg("-add").arg(&temp_audio);
+                cmd.arg(&temp_mp4);
+                let _ = cmd.status();
+                let _ = fs::remove_file(&temp_audio);
+            }
+
+            if ranges.is_none() {
+                add_mp4_subs(input, &temp_mp4);
+            }
+        }
+
+        fs::rename(&temp_mp4, output)?;
+        return Ok(());
     }
 
     if files.len() <= BATCH_SIZE {
@@ -195,7 +308,7 @@ pub fn merge_out(
         .chunks(BATCH_SIZE)
         .enumerate()
         .map(|(i, chunk)| {
-            let path = temp_dir.join(format!("batch_{i}.ivf"));
+            let path = temp_dir.join(format!("batch_{i}.{}", encoder.extension()));
             run_merge(
                 &chunk.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
                 &path,
@@ -228,22 +341,6 @@ fn run_merge(
     }
     fs::write(&concat_list, content)?;
 
-    let ff_flags = [
-        "-fflags",
-        "+genpts+igndts+discardcorrupt+bitexact",
-        "-bitexact",
-        "-avoid_negative_ts",
-        "make_zero",
-        "-err_detect",
-        "ignore_err",
-        "-ignore_unknown",
-        "-reset_timestamps",
-        "1",
-        "-start_at_zero",
-        "-output_ts_offset",
-        "0",
-    ];
-
     let temp_dir = output.parent().unwrap();
     let video = if input.is_some() { temp_dir.join("video.mkv") } else { output.to_path_buf() };
 
@@ -254,7 +351,7 @@ fn run_merge(
         .arg(&concat_list)
         .args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
         .args(["-c", "copy", "-r", &fps])
-        .args(ff_flags)
+        .args(FF_FLAGS)
         .arg(&video);
 
     let status = cmd.status()?;
@@ -272,9 +369,9 @@ fn run_merge(
 
         let has_audio = if let Some(r) = ranges {
             let times = ranges_to_times(r, inf.fps_num, inf.fps_den);
-            extract_audio_ranges(input, &times, &temp_audio, &ff_flags)?
+            extract_audio_ranges(input, &times, &temp_audio)?
         } else {
-            extract_audio_full(input, &temp_audio, &ff_flags)
+            extract_audio_full(input, &temp_audio)
         };
 
         let mut cmd2 = Command::new("ffmpeg");
@@ -302,7 +399,7 @@ fn run_merge(
                 .args(["-map_chapters", input_idx]);
         }
 
-        cmd2.args(["-c", "copy"]).args(ff_flags).arg(output);
+        cmd2.args(["-c", "copy"]).args(FF_FLAGS).arg(output);
 
         let status2 = cmd2.status()?;
         let _ = fs::remove_file(&video);
@@ -336,13 +433,7 @@ pub fn translate_scenes(scenes: &[Scene], ranges: &[(usize, usize)]) -> Vec<Scen
     out
 }
 
-fn extract_segment(
-    input: &Path,
-    output: &Path,
-    ff_flags: &[&str],
-    start: Option<f64>,
-    duration: Option<f64>,
-) -> bool {
+fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Option<f64>) -> bool {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-loglevel", "quiet", "-hide_banner", "-nostdin", "-y"]);
 
@@ -357,7 +448,7 @@ fn extract_segment(
         .arg(input)
         .args(["-vn", "-sn", "-dn", "-map", "0:a", "-c", "copy"])
         .args(["-map_metadata", "-1", "-map_chapters", "-1"])
-        .args(ff_flags)
+        .args(FF_FLAGS)
         .arg(output);
 
     let _ = cmd.status();
@@ -367,7 +458,6 @@ fn extract_segment(
 fn concat_segments(
     segments: &[std::path::PathBuf],
     output: &Path,
-    ff_flags: &[&str],
 ) -> Result<bool, Box<dyn std::error::Error>> {
     let temp_dir = output.parent().unwrap();
     let concat_list = temp_dir.join("audio_concat.txt");
@@ -380,11 +470,11 @@ fn concat_segments(
     fs::write(&concat_list, content)?;
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "quiet", "-hide_banner", "-nostdin", "-y"])
+    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
         .args(["-f", "concat", "-safe", "0", "-i"])
         .arg(&concat_list)
         .args(["-c", "copy"])
-        .args(ff_flags)
+        .args(FF_FLAGS)
         .arg(output);
 
     let _ = cmd.status();
@@ -393,24 +483,17 @@ fn concat_segments(
     Ok(output.exists() && fs::metadata(output).map(|m| m.len() > 0).unwrap_or(false))
 }
 
-fn extract_audio_full(input: &Path, output: &Path, ff_flags: &[&str]) -> bool {
-    extract_segment(input, output, ff_flags, None, None)
+fn extract_audio_full(input: &Path, output: &Path) -> bool {
+    extract_segment(input, output, None, None)
 }
 
 fn extract_audio_ranges(
     input: &Path,
     times: &[(f64, f64)],
     output: &Path,
-    ff_flags: &[&str],
 ) -> Result<bool, Box<dyn std::error::Error>> {
     if times.len() == 1 {
-        return Ok(extract_segment(
-            input,
-            output,
-            ff_flags,
-            Some(times[0].0),
-            Some(times[0].1 - times[0].0),
-        ));
+        return Ok(extract_segment(input, output, Some(times[0].0), Some(times[0].1 - times[0].0)));
     }
 
     let temp_dir = output.parent().unwrap();
@@ -418,7 +501,7 @@ fn extract_audio_ranges(
 
     for (i, (start, end)) in times.iter().enumerate() {
         let seg_path = temp_dir.join(format!("audio_seg_{i}.mka"));
-        if extract_segment(input, &seg_path, ff_flags, Some(*start), Some(end - start)) {
+        if extract_segment(input, &seg_path, Some(*start), Some(end - start)) {
             segments.push(seg_path);
         }
     }
@@ -427,7 +510,7 @@ fn extract_audio_ranges(
         return Ok(false);
     }
 
-    let result = concat_segments(&segments, output, ff_flags)?;
+    let result = concat_segments(&segments, output)?;
 
     for seg in &segments {
         let _ = fs::remove_file(seg);

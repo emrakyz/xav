@@ -202,6 +202,7 @@ build_ffmpeg() {
                 --enable-demuxer=flv \
                 --enable-demuxer=ivf \
                 --enable-demuxer=yuv4mpegpipe \
+                --enable-demuxer=vvc \
                 --enable-decoder=rawvideo \
                 --enable-decoder=h264 \
                 --enable-decoder=hevc \
@@ -212,6 +213,7 @@ build_ffmpeg() {
                 --enable-decoder=libdav1d \
                 --enable-decoder=vp9 \
                 --enable-decoder=vc1 \
+                --enable-decoder=vvc \
                 --enable-libdav1d \
                 --enable-parser=h264 \
                 --enable-parser=hevc \
@@ -219,6 +221,7 @@ build_ffmpeg() {
                 --enable-parser=mpegvideo \
                 --enable-parser=av1 \
                 --enable-parser=vp9 \
+                --enable-parser=vvc \
                 --enable-parser=vc1 >> "${logfile}" 2>&1
 
         make -j"$(nproc)" >> "${logfile}" 2>&1
