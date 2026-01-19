@@ -77,7 +77,7 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{R}>");
+    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{R}>");
     println!("{C}-p {P}┃ {C}--param    {W}Encoder params");
     println!("{C}-w {P}┃ {C}--worker   {W}Encoder count");
     println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
