@@ -147,9 +147,9 @@ fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
         let ext = match args.encoder {
+            crate::encoder::Encoder::SvtAv1 | crate::encoder::Encoder::X265 => "mkv",
             crate::encoder::Encoder::Avm => "ivf",
             crate::encoder::Encoder::Vvenc => "mp4",
-            crate::encoder::Encoder::SvtAv1 => "mkv",
         };
         args.output = args.input.with_file_name(format!("{stem}_xav.{ext}"));
     }
@@ -308,6 +308,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
             crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
             crate::encoder::Encoder::Avm => "ivf",
             crate::encoder::Encoder::Vvenc => "mp4",
+            crate::encoder::Encoder::X265 => "mkv, mp4",
         };
         if !containers.split(", ").any(|c| c == ext) {
             return Err(

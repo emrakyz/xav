@@ -180,6 +180,53 @@ fn concat_vvc(
     Ok(())
 }
 
+fn concat_hevc(
+    files: &[std::path::PathBuf],
+    output: &Path,
+    inf: &crate::ffms::VidInf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::Write;
+
+    let temp_265 = output.with_extension("265");
+    {
+        let mut out = fs::File::create(&temp_265)?;
+        for file in files {
+            out.write_all(&fs::read(file)?)?;
+        }
+    }
+
+    let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
+
+    if Command::new("MP4Box").arg("-version").output().is_ok() {
+        let status = Command::new("MP4Box")
+            .args(["-flat", "-new", "-for-test", "-no-iod", "-add"])
+            .arg(format!("{}:fps={}", temp_265.display(), fps))
+            .arg(output)
+            .status()?;
+
+        let _ = fs::remove_file(&temp_265);
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    if Command::new("mkvmerge").arg("--version").output().is_ok() {
+        let mut cmd = Command::new("mkvmerge");
+        cmd.arg("-o").arg(output);
+        cmd.args(["--default-duration", &format!("0:{fps}fps")]);
+        cmd.arg(&temp_265);
+
+        let status = cmd.status()?;
+        let _ = fs::remove_file(&temp_265);
+        if status.success() {
+            return Ok(());
+        }
+    }
+
+    let _ = fs::remove_file(&temp_265);
+    Err("Neither MP4Box nor mkvmerge available for HEVC concat".into())
+}
+
 #[cfg(target_os = "windows")]
 const BATCH_SIZE: usize = usize::MAX;
 #[cfg(not(target_os = "windows"))]
@@ -263,32 +310,28 @@ pub fn merge_out(
         let temp_mp4 = encode_dir.join("temp_vvc.mp4");
         concat_vvc(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &temp_mp4, inf)?;
 
-        if let Some(input) = input {
-            let temp_audio = encode_dir.join("audio.mka");
-
-            let has_audio = if let Some(r) = ranges {
-                let times = ranges_to_times(r, inf.fps_num, inf.fps_den);
-                extract_audio_ranges(input, &times, &temp_audio)?
-            } else {
-                extract_audio_full(input, &temp_audio)
-            };
-
-            if has_audio {
-                let mut cmd = Command::new("MP4Box");
-                cmd.args(["-for-test", "-no-iod"]);
-                cmd.arg("-add").arg(&temp_audio);
-                cmd.arg(&temp_mp4);
-                let _ = cmd.status();
-                let _ = fs::remove_file(&temp_audio);
-            }
-
-            if ranges.is_none() {
-                add_mp4_subs(input, &temp_mp4);
-            }
+        if input.is_none() {
+            fs::rename(&temp_mp4, output)?;
+            return Ok(());
         }
 
-        fs::rename(&temp_mp4, output)?;
-        return Ok(());
+        let result = mux_av(&temp_mp4, output, inf, input.unwrap(), ranges);
+        let _ = fs::remove_file(&temp_mp4);
+        return result;
+    }
+
+    if encoder == Encoder::X265 {
+        let temp_video = encode_dir.join("temp_hevc.mkv");
+        concat_hevc(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &temp_video, inf)?;
+
+        if input.is_none() {
+            fs::rename(&temp_video, output)?;
+            return Ok(());
+        }
+
+        let result = mux_av(&temp_video, output, inf, input.unwrap(), ranges);
+        let _ = fs::remove_file(&temp_video);
+        return result;
     }
 
     if files.len() <= BATCH_SIZE {
@@ -408,6 +451,65 @@ fn run_merge(
         if !status2.success() {
             return Err("FFmpeg mux failed".into());
         }
+    }
+
+    Ok(())
+}
+
+fn mux_av(
+    video: &Path,
+    output: &Path,
+    inf: &crate::ffms::VidInf,
+    input: &Path,
+    ranges: Option<&[(usize, usize)]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = video.parent().unwrap();
+    let temp_audio = temp_dir.join("audio.mka");
+
+    let has_audio = if let Some(r) = ranges {
+        let times = ranges_to_times(r, inf.fps_num, inf.fps_den);
+        extract_audio_ranges(input, &times, &temp_audio)?
+    } else {
+        extract_audio_full(input, &temp_audio)
+    };
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
+        .arg("-i")
+        .arg(video);
+
+    if has_audio {
+        cmd.arg("-i").arg(&temp_audio);
+    }
+
+    if ranges.is_none() {
+        cmd.arg("-i").arg(input);
+    }
+
+    let input_idx = if has_audio { "2" } else { "1" };
+
+    cmd.args(["-map", "0:v"]);
+    if has_audio {
+        cmd.args(["-map", "1:a"]);
+    }
+
+    if ranges.is_none() {
+        cmd.args(["-map", &format!("{input_idx}:s?")])
+            .args(["-map", &format!("{input_idx}:t?")])
+            .args(["-map_chapters", input_idx]);
+    }
+
+    cmd.args(["-c", "copy"]).args(FF_FLAGS).arg(output);
+
+    let status = cmd.status()?;
+    let _ = fs::remove_file(&temp_audio);
+
+    if !status.success() {
+        return Err("FFmpeg mux failed".into());
+    }
+
+    if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
+        add_mp4_subs(input, output);
     }
 
     Ok(())

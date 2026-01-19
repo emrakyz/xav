@@ -158,6 +158,7 @@ impl ProgsTrack {
                 watch_svt(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
             Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
+            Encoder::X265 => watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
             Encoder::Vvenc => {
                 watch_vvenc(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
@@ -218,7 +219,6 @@ fn watch_svt(
 
         let mut cleaned = content
             .replace(" Frames\x1b[0m @ ", " ")
-            .replace(" kb/s", "")
             .replace("Size: ", "")
             .replace(" MB", "")
             .replace(" fps", "")
@@ -235,6 +235,10 @@ fn watch_svt(
         let parts: Vec<&str> = cleaned.rsplitn(2, '|').collect();
         if parts.len() > 1 && parts[0].trim().contains(':') {
             cleaned = parts[1].to_string();
+        }
+
+        if let Some(p) = cleaned.find(" kb/s") {
+            cleaned.truncate(p + 5);
         }
 
         if cleaned.contains("fpm") {
@@ -429,6 +433,81 @@ fn parse_svt_frames_total(line: &str) -> Option<(usize, usize)> {
     let current = parts.next()?.parse().ok()?;
     let total = parts.next()?.parse().ok()?;
     Some((current, total))
+}
+
+fn watch_x265(
+    tx: &crossbeam_channel::Sender<WorkerMsg>,
+    stderr: impl std::io::Read,
+    worker_id: usize,
+    chunk_idx: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let reader = BufReader::new(stderr);
+    let mut last_frames = 0;
+    let mut last_update = Instant::now();
+
+    for line in reader.split(b'\r').filter_map(Result::ok) {
+        let Ok(text) = std::str::from_utf8(&line) else { continue };
+        let text = text.trim();
+
+        if text.is_empty() {
+            continue;
+        }
+
+        if !text.starts_with('[') {
+            print!("\x1b[?1049l");
+            std::io::stdout().flush().unwrap();
+            eprintln!("{text}");
+            continue;
+        }
+
+        if last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
+            continue;
+        }
+        last_update = Instant::now();
+
+        let Some((cur, tot, fps, kbps)) = parse_x265(text) else { continue };
+
+        let filled = (BAR_WIDTH * cur / tot.max(1)).min(BAR_WIDTH);
+        let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+
+        let prefix = match crf_score {
+            Some((crf, Some(s))) => format!("{C}[{chunk_idx:04} / F {crf:.2} / {s:.2}{C}]"),
+            Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
+            None => format!("{C}[{chunk_idx:04}{C}]"),
+        };
+
+        let line = format!(
+            "{prefix} {P}[{bar}{P}] {W}{}% {Y}{cur}/{tot} {G}{fps:.2} {W}| {P}{kbps:.2} kb/s",
+            cur * 100 / tot.max(1)
+        );
+
+        let delta = track_frames.then(|| {
+            let d = cur.saturating_sub(last_frames);
+            last_frames = cur;
+            d
+        });
+
+        tx.send(WorkerMsg::Update { worker_id, line, frames: delta }).ok();
+    }
+
+    tx.send(WorkerMsg::Clear(worker_id)).ok();
+}
+
+fn parse_x265(s: &str) -> Option<(usize, usize, f32, f32)> {
+    let rest = s.split(']').nth(1)?;
+    let mut parts = rest.split(',');
+
+    let fp = parts.next()?.trim();
+    let mut fs = fp.split('/');
+    let cur = fs.next()?.trim().parse().ok()?;
+    let tot = fs.next()?.split_whitespace().next()?.parse().ok()?;
+
+    let fps = parts.next()?.split_whitespace().next()?.parse().ok()?;
+    let kbps = parts.next()?.split_whitespace().next()?.parse().ok()?;
+
+    Some((cur, tot, fps, kbps))
 }
 
 fn display_loop(
