@@ -21,27 +21,34 @@
 - Fully automated, very fast and safe crop detection and cropping, by also accounting for multi aspect ratio videos
 - Optional photon noise application
 - Convenient optional Opus audio encoding: With optional automated bitrate calculation, stereo downmixing and loudness normalization based on AC-4 standards: [ETSI TS 103 190-1, Section 6.2.17](https://www.etsi.org/deliver/etsi_ts/103100_103199/10319001/01.03.01_60/ts_10319001v010301p.pdf)
-- Detailed progress monitoring for encoders and quality metric testing.
-- Detailed video output summary, TQ output summary and TQ related JSON log file.
+- Detailed progress monitoring for encoders and quality metric testing
+- Detailed video output summary, TQ output summary and TQ related JSON log file
 - Auto resume where you left off for additional safety if it crashes or intentionally stopped
+- Native trim and splice support
+- **Piping support:** You can pipe any command that produces frames: `command - | xav ...` **NOTE:** This is of course slower than the native, highly optimized pipeline but it can be preferable in some workflows
+- Complex flags/parameters are abstracted for convenience. The user can still override them. `xav` builds the encoder command and lets the user only deal with parameters that actually matter such as the `preset`
 
 ## User Guide and FAQ
 - Refer to `user_doc.pdf` (work in progress)
 
 ## Dependencies
+**Build Time:**
+- Rust Nightly, NASM, Clang
 
-- [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) or a fork of it or [AVM](https://gitlab.com/AOMediaCodec/avm) (the reference AV2 encoder)
-- [FFMS2](https://github.com/FFMS/ffms2)
-- [VSHIP](https://github.com/Line-fr/Vship) (optional for GPU based target quality encoding)
-- Rust Nightly, NASM, Clang (build-time)
+**Runtime:**
+- One encoder binary: [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) | [AVM](https://gitlab.com/AOMediaCodec/avm) | [VVENC](https://github.com/fraunhoferhhi/vvenc) | [X265](https://bitbucket.org/multicoreware/x265_git/wiki/Home) | [X264](https://www.videolan.org/developers/x264.html)
+- [FFMS2](https://github.com/FFMS/ffms2) (used to access decoders and provides frame accuracy)
+
+**Runtime (Optional):**
+- [VSHIP](https://codeberg.org/Line-fr/Vship) (for GPU based target quality encoding)
+- [MP4Box](https://gpac.io/downloads/gpac-nightly-builds) (the only reliable muxer for `VVC` and it's also used as the first option for concatting x264/x265 videos before the final mux)
+- [mkvmerge](https://mkvtoolnix.download) (used as a secondary option for concatting x264/x265 videos if `MP4Box` is not present)
 
 ## Building
 
-Build script for now is Linux only.
-
 Run the `build.sh` script: Select static or dynamic build
 
-Building statically requires you to have static libraries for: glibc, libstdc++, llvm-libunwind, compiler-rt
+Building everything statically with the script requires you to have static libraries for: `glibc`, `libstdc++`, `llvm-libunwind`, `compiler-rt`
 
 ## Other Recommended Tools
 
