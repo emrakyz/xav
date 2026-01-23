@@ -77,7 +77,7 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{R}>");
+    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
     println!("{C}-p {P}┃ {C}--param    {W}Encoder params");
     println!("{C}-w {P}┃ {C}--worker   {W}Encoder count");
     println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
@@ -147,7 +147,9 @@ fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = args.input.file_stem().unwrap().to_string_lossy();
         let ext = match args.encoder {
-            crate::encoder::Encoder::SvtAv1 | crate::encoder::Encoder::X265 => "mkv",
+            crate::encoder::Encoder::SvtAv1
+            | crate::encoder::Encoder::X265
+            | crate::encoder::Encoder::X264 => "mkv",
             crate::encoder::Encoder::Avm => "ivf",
             crate::encoder::Encoder::Vvenc => "mp4",
         };
@@ -308,7 +310,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
             crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
             crate::encoder::Encoder::Avm => "ivf",
             crate::encoder::Encoder::Vvenc => "mp4",
-            crate::encoder::Encoder::X265 => "mkv, mp4",
+            crate::encoder::Encoder::X265 | crate::encoder::Encoder::X264 => "mkv, mp4",
         };
         if !containers.split(", ").any(|c| c == ext) {
             return Err(

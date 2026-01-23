@@ -158,7 +158,9 @@ impl ProgsTrack {
                 watch_svt(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
             Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
-            Encoder::X265 => watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
+            Encoder::X265 | Encoder::X264 => {
+                watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score)
+            }
             Encoder::Vvenc => {
                 watch_vvenc(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
@@ -239,6 +241,9 @@ fn watch_svt(
 
         if let Some(p) = cleaned.find(" kb/s") {
             cleaned.truncate(p + 5);
+            if let Some(dot_pos) = cleaned[..p].rfind('.') {
+                cleaned = format!("{} kb/s", &cleaned[..dot_pos]);
+            }
         }
 
         if cleaned.contains("fpm") {
@@ -456,6 +461,9 @@ fn watch_x265(
         }
 
         if !text.starts_with('[') {
+            if text.starts_with("encoded") {
+                continue;
+            }
             print!("\x1b[?1049l");
             std::io::stdout().flush().unwrap();
             eprintln!("{text}");
@@ -479,7 +487,7 @@ fn watch_x265(
         };
 
         let line = format!(
-            "{prefix} {P}[{bar}{P}] {W}{}% {Y}{cur}/{tot} {G}{fps:.2} {W}| {P}{kbps:.2} kb/s",
+            "{prefix} {P}[{bar}{P}] {W}{}% {Y}{cur}/{tot} {G}{fps:.2} {W}| {P}{kbps:.0} kb/s",
             cur * 100 / tot.max(1)
         );
 

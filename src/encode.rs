@@ -664,7 +664,7 @@ fn enc_tq_probe(
 
     let last_score = pkg.tq_state.as_ref().and_then(|tq| tq.probes.last().map(|probe| probe.score));
     match encoder {
-        Encoder::SvtAv1 | Encoder::X265 => prog.watch_enc(
+        Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => prog.watch_enc(
             child.stderr.take().unwrap(),
             worker_id,
             pkg.chunk.idx,
@@ -769,7 +769,7 @@ fn enc_chunk(
     let mut child = cmd.spawn().unwrap();
 
     match encoder {
-        Encoder::SvtAv1 | Encoder::X265 => prog.watch_enc(
+        Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => prog.watch_enc(
             child.stderr.take().unwrap(),
             worker_id,
             pkg.chunk.idx,
