@@ -409,14 +409,16 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
 }
 
 fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
+    let unk = |s| if is_x264 && s == "unknown" { "undef" } else { s };
+
     if let Some(cp) = inf.color_primaries {
-        cmd.args(["--colorprim", h26x_color_primaries_str(cp)]);
+        cmd.args(["--colorprim", unk(h26x_color_primaries_str(cp))]);
     }
     if let Some(tc) = inf.transfer_characteristics {
-        cmd.args(["--transfer", h26x_transfer_char_str(tc)]);
+        cmd.args(["--transfer", unk(h26x_transfer_char_str(tc))]);
     }
     if let Some(mc) = inf.matrix_coefficients {
-        cmd.args(["--colormatrix", h26x_matrix_coeff_str(mc)]);
+        cmd.args(["--colormatrix", unk(h26x_matrix_coeff_str(mc))]);
     }
     if let Some(cr) = inf.color_range {
         if is_x264 {
