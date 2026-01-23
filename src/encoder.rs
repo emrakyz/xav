@@ -311,7 +311,24 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
     }
 
     if let Some(preset) = x265_signal_preset(cfg.inf) {
-        cmd.args(["--video-signal-type-preset", preset]);
+        cmd.arg("--video-signal-type-preset");
+        let cv = preset
+            .starts_with("BT2100_PQ")
+            .then(|| cfg.inf.mastering_display.as_deref().and_then(x265_color_volume))
+            .flatten();
+        if let Some(cv) = cv {
+            cmd.arg(format!("{preset}:{cv}"));
+        } else {
+            cmd.arg(preset);
+        }
+        if let Some(ref md) = cfg.inf.mastering_display
+            && let Some(converted) = h26x_mastering(md, false)
+        {
+            cmd.args(["--master-display", &converted]);
+        }
+        if let Some(ref cl) = cfg.inf.content_light {
+            cmd.args(["--max-cll", cl]);
+        }
     } else {
         colorize_h26x(&mut cmd, cfg.inf, false);
     }
@@ -414,7 +431,7 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
         cmd.args(["--chromaloc", &csp.to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
-        && let Some(converted) = h26x_mastering(md)
+        && let Some(converted) = h26x_mastering(md, is_x264)
     {
         cmd.args([if is_x264 { "--mastering-display" } else { "--master-display" }, &converted]);
     }
@@ -445,6 +462,41 @@ fn x265_signal_preset(inf: &VidInf) -> Option<&'static str> {
     }
 }
 
+fn x265_color_volume(md: &str) -> Option<&'static str> {
+    let pair = |s: &str, p: &str| -> Option<(u32, u32)> {
+        let start = s.find(p)? + p.len();
+        let end = s[start..].find(')')? + start;
+        let mut parts = s[start..end].split(',');
+        let a: f64 = parts.next()?.parse().ok()?;
+        let b: f64 = parts.next()?.parse().ok()?;
+        Some(((a * 50000.0) as u32, (b * 50000.0) as u32))
+    };
+
+    let g = pair(md, "G(")?;
+    let b = pair(md, "B(")?;
+    let r = pair(md, "R(")?;
+    let wp = pair(md, "WP(")?;
+
+    let start = md.find("L(")? + 2;
+    let end = md[start..].find(')')? + start;
+    let mut parts = md[start..end].split(',');
+    let lmax = (parts.next()?.parse::<f64>().ok()? * 10000.0) as u32;
+    let lmin = (parts.next()?.parse::<f64>().ok()? * 10000.0) as u32;
+
+    match (g, b, r, wp, lmax, lmin) {
+        ((13250, 34500), (7500, 3000), (34000, 16000), (15635, 16450), 10000000, 5) => {
+            Some("P3D65x1000n0005")
+        }
+        ((13250, 34500), (7500, 3000), (34000, 16000), (15635, 16450), 40000000, 50) => {
+            Some("P3D65x4000n005")
+        }
+        ((8500, 39850), (6550, 2300), (34000, 146000), (15635, 16450), 10000000, 1) => {
+            Some("BT2100x108n0005")
+        }
+        _ => None,
+    }
+}
+
 fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
     if let Some(cp) = inf.color_primaries {
         cmd.arg(format!("--color-primaries={}", color_primaries_str(cp)));
@@ -460,7 +512,7 @@ fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
     }
 }
 
-fn h26x_mastering(md: &str) -> Option<String> {
+fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
     let pair = |s: &str, p: &str| -> Option<(f64, f64)> {
         let start = s.find(p)? + p.len();
         let end = s[start..].find(')')? + start;
@@ -474,19 +526,22 @@ fn h26x_mastering(md: &str) -> Option<String> {
     let (wx, wy) = pair(md, "WP(")?;
     let (lmax, lmin) = pair(md, "L(")?;
 
-    Some(format!(
-        "{},{},{},{},{},{},{},{},{},{}",
-        (gx * 50000.0) as u32,
-        (gy * 50000.0) as u32,
-        (bx * 50000.0) as u32,
-        (by * 50000.0) as u32,
-        (rx * 50000.0) as u32,
-        (ry * 50000.0) as u32,
-        (wx * 50000.0) as u32,
-        (wy * 50000.0) as u32,
-        (lmax * 10000.0) as u32,
-        (lmin * 10000.0) as u32,
-    ))
+    let gx = (gx * 50000.0) as u32;
+    let gy = (gy * 50000.0) as u32;
+    let bx = (bx * 50000.0) as u32;
+    let by = (by * 50000.0) as u32;
+    let rx = (rx * 50000.0) as u32;
+    let ry = (ry * 50000.0) as u32;
+    let wx = (wx * 50000.0) as u32;
+    let wy = (wy * 50000.0) as u32;
+    let lmax = (lmax * 10000.0) as u32;
+    let lmin = (lmin * 10000.0) as u32;
+
+    if x264_format {
+        Some(format!("G({gx},{gy})B({bx},{by})R({rx},{ry})WP({wx},{wy})L({lmax},{lmin})"))
+    } else {
+        Some(format!("{gx},{gy},{bx},{by},{rx},{ry},{wx},{wy},{lmax},{lmin}"))
+    }
 }
 
 fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
@@ -534,7 +589,7 @@ fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
         cmd.args(["--ChromaSampleLocType", &csp.to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
-        && let Some(converted) = h26x_mastering(md)
+        && let Some(converted) = h26x_mastering(md, false)
     {
         cmd.args(["--MasteringDisplayColourVolume", &converted]);
     }
