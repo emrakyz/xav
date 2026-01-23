@@ -419,7 +419,7 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
         cmd.args([if is_x264 { "--mastering-display" } else { "--master-display" }, &converted]);
     }
     if let Some(ref cl) = inf.content_light {
-        cmd.args(["--max-cll", cl]);
+        cmd.args([if is_x264 { "--cll" } else { "--max-cll" }, cl]);
     }
 }
 
