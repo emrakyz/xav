@@ -180,16 +180,17 @@ fn concat_vvc(
     Ok(())
 }
 
-fn concat_hevc(
+fn concat_h26x(
     files: &[std::path::PathBuf],
     output: &Path,
     inf: &crate::ffms::VidInf,
+    encoder: Encoder,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
-    let temp_265 = output.with_extension("265");
+    let temp_26x = output.with_extension(encoder.extension());
     {
-        let mut out = fs::File::create(&temp_265)?;
+        let mut out = fs::File::create(&temp_26x)?;
         for file in files {
             out.write_all(&fs::read(file)?)?;
         }
@@ -200,11 +201,11 @@ fn concat_hevc(
     if Command::new("MP4Box").arg("-version").output().is_ok() {
         let status = Command::new("MP4Box")
             .args(["-flat", "-new", "-for-test", "-no-iod", "-add"])
-            .arg(format!("{}:fps={}", temp_265.display(), fps))
+            .arg(format!("{}:fps={}", temp_26x.display(), fps))
             .arg(output)
             .status()?;
 
-        let _ = fs::remove_file(&temp_265);
+        let _ = fs::remove_file(&temp_26x);
         if status.success() {
             return Ok(());
         }
@@ -214,17 +215,17 @@ fn concat_hevc(
         let mut cmd = Command::new("mkvmerge");
         cmd.arg("-o").arg(output);
         cmd.args(["--default-duration", &format!("0:{fps}fps")]);
-        cmd.arg(&temp_265);
+        cmd.arg(&temp_26x);
 
         let status = cmd.status()?;
-        let _ = fs::remove_file(&temp_265);
+        let _ = fs::remove_file(&temp_26x);
         if status.success() {
             return Ok(());
         }
     }
 
-    let _ = fs::remove_file(&temp_265);
-    Err("Neither MP4Box nor mkvmerge available for HEVC concat".into())
+    let _ = fs::remove_file(&temp_26x);
+    Err("Neither MP4Box nor mkvmerge available for H.26x concat".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -320,18 +321,23 @@ pub fn merge_out(
         return result;
     }
 
-    if encoder == Encoder::X265 {
+    if matches!(encoder, Encoder::X265 | Encoder::X264) {
         let temp_video = encode_dir.join("temp_hevc.mkv");
-        concat_hevc(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &temp_video, inf)?;
+        concat_h26x(
+            &files.iter().map(|f| f.path()).collect::<Vec<_>>(),
+            &temp_video,
+            inf,
+            encoder,
+        )?;
 
-        if input.is_none() {
-            fs::rename(&temp_video, output)?;
-            return Ok(());
+        if let Some(input_file) = input {
+            let result = mux_av(&temp_video, output, inf, input_file, ranges);
+            let _ = fs::remove_file(&temp_video);
+            return result;
         }
 
-        let result = mux_av(&temp_video, output, inf, input.unwrap(), ranges);
-        let _ = fs::remove_file(&temp_video);
-        return result;
+        fs::rename(&temp_video, output)?;
+        return Ok(());
     }
 
     if files.len() <= BATCH_SIZE {

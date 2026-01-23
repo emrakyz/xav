@@ -198,10 +198,12 @@ build_ffmpeg() {
                 --enable-demuxer=mov \
                 --enable-demuxer=mpegts \
                 --enable-demuxer=mpegps \
-                --enable-demuxer=avi \
                 --enable-demuxer=flv \
+                --enable-demuxer=avi \
                 --enable-demuxer=ivf \
                 --enable-demuxer=yuv4mpegpipe \
+                --enable-demuxer=h264 \
+                --enable-demuxer=hevc \
                 --enable-demuxer=vvc \
                 --enable-decoder=rawvideo \
                 --enable-decoder=h264 \

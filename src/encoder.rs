@@ -10,6 +10,7 @@ pub enum Encoder {
     Avm,
     Vvenc,
     X265,
+    X264,
 }
 
 impl Encoder {
@@ -19,6 +20,7 @@ impl Encoder {
             "avm" => Some(Self::Avm),
             "vvenc" => Some(Self::Vvenc),
             "x265" => Some(Self::X265),
+            "x264" => Some(Self::X264),
             _ => None,
         }
     }
@@ -28,6 +30,7 @@ impl Encoder {
             Self::SvtAv1 | Self::Avm => "ivf",
             Self::Vvenc => "266",
             Self::X265 => "265",
+            Self::X264 => "264",
         }
     }
 
@@ -53,6 +56,7 @@ pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
         Encoder::Avm => make_avm_cmd(cfg),
         Encoder::Vvenc => make_vvenc_cmd(cfg),
         Encoder::X265 => make_x265_cmd(cfg),
+        Encoder::X264 => make_x264_cmd(cfg),
     }
 }
 
@@ -288,8 +292,6 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         "1",
         "--lookahead-threads",
         "1",
-        "--bframes",
-        "16",
         "--frame-threads",
         "1",
         "--slices",
@@ -308,7 +310,11 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
     }
 
-    colorize_x265(&mut cmd, cfg.inf);
+    if let Some(preset) = x265_signal_preset(cfg.inf) {
+        cmd.args(["--video-signal-type-preset", preset]);
+    } else {
+        colorize_h26x(&mut cmd, cfg.inf, false);
+    }
 
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("avx512f") {
@@ -323,27 +329,89 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
     cmd
 }
 
-fn colorize_x265(cmd: &mut Command, inf: &VidInf) {
-    if let Some(preset) = x265_signal_preset(inf) {
-        cmd.args(["--video-signal-type-preset", preset]);
-    } else {
-        if let Some(cp) = inf.color_primaries {
-            cmd.args(["--colorprim", h26x_color_primaries_str(cp)]);
-        }
-        if let Some(tc) = inf.transfer_characteristics {
-            cmd.args(["--transfer", h26x_transfer_char_str(tc)]);
-        }
-        if let Some(mc) = inf.matrix_coefficients {
-            cmd.args(["--colormatrix", h26x_matrix_coeff_str(mc)]);
-        }
-        if let Some(cr) = inf.color_range {
+fn make_x264_cmd(cfg: &EncConfig) -> Command {
+    let mut cmd = Command::new("x264");
+
+    cmd.args([
+        "--log-level",
+        "error",
+        "--input-csp",
+        "i420",
+        "--output-csp",
+        "i420",
+        "--input-depth",
+        "10",
+        "--output-depth",
+        "10",
+        "--profile",
+        "high10",
+        "--keyint",
+        "infinite",
+        "--min-keyint",
+        "9999",
+        "--no-scenecut",
+        "--open-gop",
+        "--b-adapt",
+        "2",
+        "--muxer",
+        "raw",
+        "--demuxer",
+        "raw",
+        "--threads",
+        "1",
+        "--lookahead-threads",
+        "1",
+        "--fps",
+    ]);
+
+    cmd.arg(format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den));
+    cmd.arg("--input-res").arg(format!("{}x{}", cfg.width, cfg.height));
+    cmd.arg("--frames").arg(cfg.frames.to_string());
+
+    if cfg.crf >= 0.0 {
+        cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
+    }
+
+    if let Some(cr) = cfg.inf.color_range {
+        cmd.args(["--input-range", if cr == 1 { "pc" } else { "tv" }]);
+    }
+
+    colorize_h26x(&mut cmd, cfg.inf, true);
+
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx512f") {
+        cmd.args(["--asm", "avx512"]);
+    }
+
+    cmd.args(cfg.params.split_whitespace());
+    cmd.arg("--output").arg(cfg.output);
+    cmd.arg("-");
+    cmd.stdin(Stdio::piped()).stderr(Stdio::piped());
+
+    cmd
+}
+
+fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
+    if let Some(cp) = inf.color_primaries {
+        cmd.args(["--colorprim", h26x_color_primaries_str(cp)]);
+    }
+    if let Some(tc) = inf.transfer_characteristics {
+        cmd.args(["--transfer", h26x_transfer_char_str(tc)]);
+    }
+    if let Some(mc) = inf.matrix_coefficients {
+        cmd.args(["--colormatrix", h26x_matrix_coeff_str(mc)]);
+    }
+    if let Some(cr) = inf.color_range {
+        if is_x264 {
+            cmd.args(["--range", if cr == 1 { "pc" } else { "tv" }]);
+        } else {
             cmd.args(["--range", if cr == 1 { "full" } else { "limited" }]);
         }
-        if let Some(csp) = inf.chroma_sample_position
-            && (0..=5).contains(&csp)
-        {
-            cmd.args(["--chromaloc", &csp.to_string()]);
-        }
+    }
+    if let Some(csp) = inf.chroma_sample_position
+        && (0..=5).contains(&csp)
+    {
+        cmd.args(["--chromaloc", &csp.to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
         && let Some(converted) = h26x_mastering(md)
