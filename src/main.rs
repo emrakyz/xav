@@ -65,8 +65,8 @@ pub struct Args {
 }
 
 extern "C" fn restore() {
-    print!("\x1b[?25h\x1b[?1049l");
-    let _ = std::io::stdout().flush();
+    eprint!("\x1b[?25h\x1b[?1049l");
+    let _ = std::io::stderr().flush();
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
@@ -433,12 +433,12 @@ const fn scale_crop(
 }
 
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    print!("\x1b[?1049h\x1b[H\x1b[?25l");
-    std::io::stdout().flush().unwrap();
+    eprint!("\x1b[?1049h\x1b[H\x1b[?25l");
+    std::io::stderr().flush().unwrap();
 
     ensure_scene_file(args)?;
 
-    println!();
+    eprintln!();
 
     let hash = hash_input(&args.input);
     let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
@@ -551,8 +551,8 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         fs::remove_file(&video_mkv)?;
     }
 
-    print!("\x1b[?25h\x1b[?1049l");
-    std::io::stdout().flush().unwrap();
+    eprint!("\x1b[?25h\x1b[?1049l");
+    std::io::stderr().flush().unwrap();
 
     let input_size = fs::metadata(&args.input)?.len();
     let output_size = fs::metadata(&args.output)?.len();
@@ -596,7 +596,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 {P}┗━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{N}",
     args.input.file_name().unwrap().to_string_lossy(),
     args.output.file_name().unwrap().to_string_lossy(),
-    format!("{} {C}({:.0} kb/s) {G}󰛂 {G}{} {C}({:.0} kb/s) {}{} {:.2}%", 
+    format!("{} {C}({:.0} kb/s) {G}󰛂 {G}{} {C}({:.0} kb/s) {}{} {:.2}%",
         fmt_size(input_size), input_br, fmt_size(output_size), output_br, change_color, arrow, change.abs()),
     final_width, final_height, fps_rate, dh, dm, ds, "",
     eh, em, es, enc_speed, ""
@@ -612,8 +612,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = args.output.clone();
 
     std::panic::set_hook(Box::new(move |panic_info| {
-        print!("\x1b[?25h\x1b[?1049l");
-        let _ = std::io::stdout().flush();
+        eprint!("\x1b[?25h\x1b[?1049l");
+        let _ = std::io::stderr().flush();
         eprintln!("{panic_info}");
         eprintln!("{}, FAIL", output.display());
     }));
@@ -626,8 +626,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Err(e) = main_with_args(&args) {
-        print!("\x1b[?1049l");
-        std::io::stdout().flush().unwrap();
+        eprint!("\x1b[?1049l");
+        std::io::stderr().flush().unwrap();
         eprintln!("{}, FAIL", args.output.display());
         return Err(e);
     }
