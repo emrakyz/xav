@@ -17,7 +17,7 @@ pub fn fd_scenes(
     let idx = ffms::VidIdx::new(vid_path, true)?;
     let inf = ffms::get_vidinf(&idx)?;
 
-    let max_dist = ((inf.fps_num * 10 + inf.fps_den / 2) / inf.fps_den).min(300);
+    let max_dist = 300;
     let tot_frames = inf.frames;
     drop(idx);
 

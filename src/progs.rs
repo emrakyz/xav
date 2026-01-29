@@ -159,7 +159,7 @@ impl ProgsTrack {
             }
             Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
             Encoder::X265 | Encoder::X264 => {
-                watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score)
+                watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
             Encoder::Vvenc => {
                 watch_vvenc(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
