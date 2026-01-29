@@ -46,12 +46,8 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn s
     Ok(scenes)
 }
 
-pub fn validate_scenes(
-    scenes: &[Scene],
-    fps_num: u32,
-    fps_den: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let max_len = ((fps_num * 10 + fps_den / 2) / fps_den).min(300);
+pub fn validate_scenes(scenes: &[Scene]) -> Result<(), Box<dyn std::error::Error>> {
+    let max_len = 300;
 
     for (i, scene) in scenes.iter().enumerate() {
         let len = scene.e_frame.saturating_sub(scene.s_frame);
@@ -324,7 +320,7 @@ pub fn merge_out(
     if matches!(encoder, Encoder::X265 | Encoder::X264) {
         let temp_video = encode_dir.join("temp_hevc.mkv");
         concat_h26x(
-            &files.iter().map(|f| f.path()).collect::<Vec<_>>(),
+            &files.iter().map(std::fs::DirEntry::path).collect::<Vec<_>>(),
             &temp_video,
             inf,
             encoder,
@@ -560,7 +556,7 @@ fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Op
         .arg(output);
 
     let _ = cmd.status();
-    output.exists() && fs::metadata(output).map(|m| m.len() > 0).unwrap_or(false)
+    output.exists() && fs::metadata(output).is_ok_and(|m| m.len() > 0)
 }
 
 fn concat_segments(
@@ -588,7 +584,7 @@ fn concat_segments(
     let _ = cmd.status();
     let _ = fs::remove_file(&concat_list);
 
-    Ok(output.exists() && fs::metadata(output).map(|m| m.len() > 0).unwrap_or(false))
+    Ok(output.exists() && fs::metadata(output).is_ok_and(|m| m.len() > 0))
 }
 
 fn extract_audio_full(input: &Path, output: &Path) -> bool {

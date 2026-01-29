@@ -509,7 +509,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let scenes =
         if let Some(ref r) = args.ranges { chunk::translate_scenes(&scenes, r) } else { scenes };
 
-    chunk::validate_scenes(&scenes, inf.fps_num, inf.fps_den)?;
+    chunk::validate_scenes(&scenes)?;
 
     let chunks = chunk::chunkify(&scenes);
 

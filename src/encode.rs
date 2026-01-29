@@ -233,7 +233,7 @@ fn complete_chunk(
     std::fs::copy(probe_path, &dst).unwrap();
     done_tx.send(chunk_idx).unwrap();
 
-    let file_size = std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(0);
+    let file_size = std::fs::metadata(&dst).map_or(0, |m| m.len());
     let comp = crate::chunk::ChunkComp { idx: chunk_idx, frames: chunk_frames, size: file_size };
 
     let mut resume = resume_state.lock().unwrap();
@@ -330,7 +330,7 @@ fn run_metrics_worker(
         let last_score = tq_st.probes.last().map(|probe| probe.score);
         let metrics_slot = worker_count + worker_id;
 
-        let probe_size = std::fs::metadata(&probe_path).map(|m| m.len()).unwrap_or(0);
+        let probe_size = std::fs::metadata(&probe_path).map_or(0, |m| m.len());
         pkg.tq_state.as_mut().unwrap().probe_sizes.push((crf, probe_size));
 
         let (score, frame_scores) = (pipe.calc_metrics)(
@@ -728,7 +728,7 @@ fn run_enc_worker(
                 pkg.chunk.idx,
                 encoder.extension()
             ));
-            let file_size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+            let file_size = std::fs::metadata(&out).map_or(0, |m| m.len());
             let comp = crate::chunk::ChunkComp {
                 idx: pkg.chunk.idx,
                 frames: pkg.frame_count,
