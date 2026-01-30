@@ -20,10 +20,14 @@ vship = []
 libc = "0.2.180"
 crossbeam-channel = "0.5.15"
 ffms2-sys = { version = "0.3.0", features = ["static"] }
-av-scenechange = { version = "0.22.0", default-features = false, features = ["ffms2", "asm", "nasm-rs", "cc", "libc"] }
-av1-grain = { version = "0.2.5", default-features = false, features = ["create"] }
+av-decoders = { git = "https://github.com/rust-av/av-decoders", default-features = false, features = ["ffms2"] }
+av-scenechange = { git = "https://github.com/rust-av/av-scenechange", default-features = false, features = ["ffms2", "asm", "nasm-rs", "cc", "libc"] }
+av1-grain = { version = "0.3.0", default-features = false, features = ["create"] }
 sonic-rs = "0.5.6"
 serde = { version = "1.0.228", features = ["derive"] }
+
+[patch.crates-io]
+av-decoders = { git = "https://github.com/rust-av/av-decoders" }
 
 [profile.release]
 opt-level = 3
