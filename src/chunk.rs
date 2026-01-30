@@ -8,6 +8,7 @@ use crate::encoder::Encoder;
 pub struct Scene {
     pub s_frame: usize,
     pub e_frame: usize,
+    pub params: Option<Box<str>>,
 }
 
 #[derive(Clone)]
@@ -15,6 +16,7 @@ pub struct Chunk {
     pub idx: usize,
     pub start: usize,
     pub end: usize,
+    pub params: Option<Box<str>>,
 }
 
 #[derive(Clone)]
@@ -31,16 +33,22 @@ pub struct ResumeInf {
 
 pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn std::error::Error>> {
     let content = fs::read_to_string(path)?;
-    let mut s_frames: Vec<usize> =
-        content.lines().filter_map(|line| line.trim().parse().ok()).collect();
+    let mut parsed: Vec<_> = content
+        .lines()
+        .filter_map(|line| {
+            let t = line.trim();
+            let (f, r) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
+            Some((f.parse::<usize>().ok()?, Some(r.trim()).filter(|s| !s.is_empty()).map(Box::from)))
+        })
+        .collect();
 
-    s_frames.sort_unstable();
+    parsed.sort_unstable_by_key(|(f, _)| *f);
 
     let mut scenes = Vec::new();
-    for i in 0..s_frames.len() {
-        let s = s_frames[i];
-        let e = s_frames.get(i + 1).copied().unwrap_or(t_frames);
-        scenes.push(Scene { s_frame: s, e_frame: e });
+    for i in 0..parsed.len() {
+        let (s, params) = &parsed[i];
+        let e = parsed.get(i + 1).map(|(f, _)| *f).unwrap_or(t_frames);
+        scenes.push(Scene { s_frame: *s, e_frame: e, params: params.clone() });
     }
 
     Ok(scenes)
@@ -68,7 +76,7 @@ pub fn chunkify(scenes: &[Scene]) -> Vec<Chunk> {
     scenes
         .iter()
         .enumerate()
-        .map(|(i, s)| Chunk { idx: i, start: s.s_frame, end: s.e_frame })
+        .map(|(i, s)| Chunk { idx: i, start: s.s_frame, end: s.e_frame, params: s.params.clone() })
         .collect()
 }
 
@@ -531,7 +539,8 @@ pub fn translate_scenes(scenes: &[Scene], ranges: &[(usize, usize)]) -> Vec<Scen
         let s = cuts[i];
         let e = cuts.get(i + 1).copied().unwrap_or(usize::MAX);
         if let Some(&(_, re)) = ranges.iter().find(|&&(rs, re)| s >= rs && s <= re) {
-            out.push(Scene { s_frame: s, e_frame: e.min(re + 1) });
+            let params = scenes.iter().rfind(|sc| sc.s_frame <= s).and_then(|sc| sc.params.clone());
+            out.push(Scene { s_frame: s, e_frame: e.min(re + 1), params });
         }
     }
     out

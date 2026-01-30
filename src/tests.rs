@@ -85,7 +85,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
     let sem_c = Arc::clone(&sem);
     thread::spawn(move || {
         decode_chunks(
-            &[Chunk { idx: 0, start: 0, end: 10 }],
+            &[Chunk { idx: 0, start: 0, end: 10, params: None }],
             &idx_c,
             &inf_c,
             &tx,
