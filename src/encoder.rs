@@ -42,6 +42,7 @@ impl Encoder {
 pub struct EncConfig<'a> {
     pub inf: &'a VidInf,
     pub params: &'a str,
+    pub zone_params: Option<&'a str>,
     pub crf: f32,
     pub output: &'a Path,
     pub grain_table: Option<&'a Path>,
@@ -51,13 +52,17 @@ pub struct EncConfig<'a> {
 }
 
 pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
-    match encoder {
+    let mut cmd = match encoder {
         Encoder::SvtAv1 => make_svt_cmd(cfg),
         Encoder::Avm => make_avm_cmd(cfg),
         Encoder::Vvenc => make_vvenc_cmd(cfg),
         Encoder::X265 => make_x265_cmd(cfg),
         Encoder::X264 => make_x264_cmd(cfg),
+    };
+    if let Some(z) = cfg.zone_params {
+        cmd.args(z.split_whitespace());
     }
+    cmd
 }
 
 fn make_svt_cmd(cfg: &EncConfig) -> Command {

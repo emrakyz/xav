@@ -649,10 +649,10 @@ fn enc_tq_probe(
 ) -> PathBuf {
     let name = format!("{:04}_{:.2}.{}", pkg.chunk.idx, crf, encoder.extension());
     let out = work_dir.join("split").join(&name);
-    let merged = pkg.chunk.params.as_ref().map(|z| format!("{params} {z}"));
     let cfg = EncConfig {
         inf,
-        params: merged.as_deref().unwrap_or(params),
+        params,
+        zone_params: pkg.chunk.params.as_deref(),
         crf: crf as f32,
         output: &out,
         grain_table: grain,
@@ -756,10 +756,10 @@ fn enc_chunk(
     encoder: Encoder,
 ) {
     let out = work_dir.join("encode").join(format!("{:04}.{}", pkg.chunk.idx, encoder.extension()));
-    let merged = pkg.chunk.params.as_ref().map(|z| format!("{params} {z}"));
     let cfg = EncConfig {
         inf,
-        params: merged.as_deref().unwrap_or(params),
+        params,
+        zone_params: pkg.chunk.params.as_deref(),
         crf,
         output: &out,
         grain_table: grain,
