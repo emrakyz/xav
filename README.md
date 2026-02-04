@@ -25,8 +25,9 @@
 - Detailed video output summary, TQ output summary and TQ related JSON log file
 - Auto resume where you left off for additional safety if it crashes or intentionally stopped
 - Native trim and splice support
-- **Piping support:** You can pipe any command that produces frames: `command - | xav ...` **NOTE:** This is of course slower than the native, highly optimized pipeline but it can be preferable in some workflows
+- **Piping:** You can pipe any command that produces frames: `command - | xav ...` **NOTE:** This is of course slower than the native, highly optimized pipeline but it can be preferable in some workflows
 - Complex flags/parameters are abstracted for convenience. The user can still override them. `xav` builds the encoder command and lets the user only deal with parameters that actually matter such as the `preset`
+- **Zoning:** Very simply, you can add your special parameters next to keyframe positions in the scenes file to encode different scenes with different parameters
 
 ## User Guide and FAQ
 - Refer to `user_doc.pdf` (work in progress)
