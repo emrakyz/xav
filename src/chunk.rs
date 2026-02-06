@@ -38,7 +38,10 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn s
         .filter_map(|line| {
             let t = line.trim();
             let (f, r) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
-            Some((f.parse::<usize>().ok()?, Some(r.trim()).filter(|s| !s.is_empty()).map(Box::from)))
+            Some((
+                f.parse::<usize>().ok()?,
+                Some(r.trim()).filter(|s| !s.is_empty()).map(Box::from),
+            ))
         })
         .collect();
 
@@ -47,7 +50,7 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn s
     let mut scenes = Vec::new();
     for i in 0..parsed.len() {
         let (s, params) = &parsed[i];
-        let e = parsed.get(i + 1).map(|(f, _)| *f).unwrap_or(t_frames);
+        let e = parsed.get(i + 1).map_or(t_frames, |(f, _)| *f);
         scenes.push(Scene { s_frame: *s, e_frame: e, params: params.clone() });
     }
 

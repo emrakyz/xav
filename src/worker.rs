@@ -21,6 +21,7 @@ pub struct TQState {
     pub round: usize,
     pub target: f64,
     pub last_crf: f64,
+    pub final_encode: bool,
 }
 
 impl WorkPkg {

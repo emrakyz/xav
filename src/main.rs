@@ -62,6 +62,9 @@ pub struct Args {
     pub metric_mode: String,
     #[cfg(feature = "vship")]
     pub cvvdp_config: Option<String>,
+    #[cfg(feature = "vship")]
+    pub probe_params: Option<String>,
+    pub sc_only: bool,
 }
 
 extern "C" fn restore() {
@@ -77,23 +80,25 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-e {P}┃ {C}--encoder  {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
-    println!("{C}-p {P}┃ {C}--param    {W}Encoder params");
-    println!("{C}-w {P}┃ {C}--worker   {W}Encoder count");
-    println!("{C}-b {P}┃ {C}--buffer   {W}Extra chunks to hold in front buffer");
-    println!("{C}-s {P}┃ {C}--sc       {W}Specify SCD file. Auto gen if not specified");
-    println!("{C}-n {P}┃ {C}--noise    {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
-    println!("{C}-r {P}┃ {C}--range    {W}Trim and splice frame ranges: {G}\"10-20,90-100\"");
-    println!("{C}-a {P}┃ {C}--audio    {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
-    println!("                {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
+    println!("{C}-e {P}┃ {C}--encoder    {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
+    println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
+    println!("{C}-w {P}┃ {C}--worker     {W}Encoder count");
+    println!("{C}-b {P}┃ {C}--buffer     {W}Extra chunks to hold in front buffer");
+    println!("{C}-s {P}┃ {C}--sc         {W}Specify SCD file. Auto gen if not specified");
+    println!("{C}-n {P}┃ {C}--noise      {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
+    println!("{C}-r {P}┃ {C}--range      {W}Trim and splice frame ranges: {G}\"10-20,90-100\"");
+    println!("{C}-a {P}┃ {C}--audio      {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
+    println!("                  {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
     #[cfg(feature = "vship")]
     {
-        println!("{C}-t {P}┃ {C}--tq       {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2: {Y}-t {G}9.00-9.01");
-        println!("{C}-m {P}┃ {C}--mode     {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
-        println!("{C}-f {P}┃ {C}--qp       {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
-        println!("{C}-v {P}┃ {C}--vship    {W}Metric worker count");
-        println!("{C}-d {P}┃ {C}--display  {W}Display JSON file for CVVDP. Screen name must be {R}xav{W}");
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2: {Y}-t {G}9.00-9.01");
+        println!("{C}-m {P}┃ {C}--mode       {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
+        println!("{C}-f {P}┃ {C}--qp         {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
+        println!("{C}-v {P}┃ {C}--vship      {W}Metric worker count");
+        println!("{C}-d {P}┃ {C}--display    {W}Display JSON file for CVVDP. Screen name must be {R}xav{W}");
+        println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probing ({R}NOT RECOMMENDED{W}; expert-only)");
     }
+    println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
 
     println!();
     println!("{P}Example:{W}");
@@ -117,9 +122,9 @@ fn print_help() {
     println!("  {G}input.mkv           {P}\\  {B}# {W}Name or path of the input file");
     println!("  {G}output.mkv             {B}# {W}Optional output name");
     println!();
-    println!("{Y}Worker {P}┃ {Y}Buffer {P}┃ {Y}Metric worker count {W}depend on the OS,");
-    println!("hardware, content, parameters and other variables.");
-    println!("Experiment and use the sweet spot values for your case.");
+    println!("{Y}Worker {P}┃ {Y}Buffer {P}┃ {Y}Metric worker count {W}depend on the OS");
+    println!("hardware, content, parameters and other variables");
+    println!("Experiment and use the sweet spot values for your case");
 }
 
 fn parse_args() -> Args {
@@ -193,7 +198,10 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     let mut chunk_buffer = None;
     #[cfg(feature = "vship")]
     let mut cvvdp_config = None;
+    #[cfg(feature = "vship")]
+    let mut probe_params = None;
     let mut ranges = None;
+    let mut sc_only = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -287,6 +295,22 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
                     cvvdp_config = Some(args[i].clone());
                 }
             }
+            #[cfg(feature = "vship")]
+            "-P" | "--probe-param" => {
+                i += 1;
+                if i < args.len() {
+                    probe_params = Some(args[i].clone());
+                }
+            }
+
+            "--sc-only" => {
+                sc_only = true;
+            }
+
+            "-h" | "--help" => {
+                print_help();
+                std::process::exit(0);
+            }
 
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
@@ -343,6 +367,9 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
         metric_worker,
         #[cfg(feature = "vship")]
         cvvdp_config,
+        #[cfg(feature = "vship")]
+        probe_params,
+        sc_only,
     };
 
     apply_defaults(&mut result);
@@ -459,6 +486,16 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut args = args.clone();
 
+    let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
+
+    let scenes =
+        if let Some(ref r) = args.ranges { chunk::translate_scenes(&scenes, r) } else { scenes };
+
+    chunk::validate_scenes(&scenes)?;
+    if args.sc_only {
+        return Ok(());
+    }
+
     let pipe_init = y4m::init_pipe();
 
     let crop = {
@@ -503,13 +540,6 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-
-    let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
-
-    let scenes =
-        if let Some(ref r) = args.ranges { chunk::translate_scenes(&scenes, r) } else { scenes };
-
-    chunk::validate_scenes(&scenes)?;
 
     let chunks = chunk::chunkify(&scenes);
 
