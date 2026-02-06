@@ -230,7 +230,9 @@ fn complete_chunk(
     encoder: Encoder,
 ) {
     let dst = work_dir.join("encode").join(format!("{chunk_idx:04}.{}", encoder.extension()));
-    std::fs::copy(probe_path, &dst).unwrap();
+    if probe_path != dst {
+        std::fs::copy(probe_path, &dst).unwrap();
+    }
     done_tx.send(chunk_idx).unwrap();
 
     let file_size = std::fs::metadata(&dst).map_or(0, |m| m.len());
@@ -292,11 +294,41 @@ fn run_metrics_worker(
     worker_count: usize,
     tq_ctx: &TQCtx,
     encoder: Encoder,
+    use_probe_params: bool,
 ) {
     let mut vship: Option<crate::vship::VshipProcessor> = None;
     let mut unpacked_buf = vec![0u8; if inf.is_10bit { pipe.conv_buf_size } else { 0 }];
 
     while let Ok(mut pkg) = rx.recv() {
+        let tq_st = pkg.tq_state.as_ref().unwrap();
+        if tq_st.final_encode {
+            let best = tq_ctx.best_probe(&tq_st.probes);
+            let p = work_dir.join("encode").join(format!(
+                "{:04}.{}",
+                pkg.chunk.idx,
+                encoder.extension()
+            ));
+            complete_chunk(
+                pkg.chunk.idx,
+                pkg.frame_count,
+                &p,
+                work_dir,
+                done_tx,
+                resume_state,
+                stats,
+                tq_logger,
+                tq_st.round,
+                best.crf,
+                best.score,
+                &tq_st.probes,
+                &tq_st.probe_sizes,
+                tq_ctx.use_cvvdp,
+                tq_ctx.cvvdp_per_frame,
+                encoder,
+            );
+            continue;
+        }
+
         if vship.is_none() {
             let fps = inf.fps_num as f32 / inf.fps_den as f32;
             vship = Some(
@@ -356,31 +388,36 @@ fn run_metrics_worker(
 
         if should_complete {
             let best = tq_ctx.best_probe(&tq_state.probes);
-            let probe_path = work_dir.join("split").join(format!(
-                "{:04}_{:.2}.{}",
-                pkg.chunk.idx,
-                best.crf,
-                encoder.extension()
-            ));
-
-            complete_chunk(
-                pkg.chunk.idx,
-                pkg.frame_count,
-                &probe_path,
-                work_dir,
-                done_tx,
-                resume_state,
-                stats,
-                tq_logger,
-                tq_state.round,
-                best.crf,
-                best.score,
-                &tq_state.probes,
-                &tq_state.probe_sizes,
-                tq_ctx.use_cvvdp,
-                tq_ctx.cvvdp_per_frame,
-                encoder,
-            );
+            if use_probe_params {
+                tq_state.final_encode = true;
+                tq_state.last_crf = best.crf;
+                rework_tx.send(pkg).unwrap();
+            } else {
+                let probe_path = work_dir.join("split").join(format!(
+                    "{:04}_{:.2}.{}",
+                    pkg.chunk.idx,
+                    best.crf,
+                    encoder.extension()
+                ));
+                complete_chunk(
+                    pkg.chunk.idx,
+                    pkg.frame_count,
+                    &probe_path,
+                    work_dir,
+                    done_tx,
+                    resume_state,
+                    stats,
+                    tq_logger,
+                    tq_state.round,
+                    best.crf,
+                    best.score,
+                    &tq_state.probes,
+                    &tq_state.probe_sizes,
+                    tq_ctx.use_cvvdp,
+                    tq_ctx.cvvdp_per_frame,
+                    encoder,
+                );
+            }
         } else {
             rework_tx.send(pkg).unwrap();
         }
@@ -524,6 +561,7 @@ fn encode_tq(
         let tq_logger = Arc::clone(&tq_logger);
         let prog_clone = Arc::clone(&prog);
         let worker_count = args.worker;
+        let use_probe_params = args.probe_params.is_some();
 
         metrics_workers.push(thread::spawn(move || {
             run_metrics_worker(
@@ -542,6 +580,7 @@ fn encode_tq(
                 worker_count,
                 &tq_ctx,
                 encoder,
+                use_probe_params,
             );
         }));
     }
@@ -553,6 +592,7 @@ fn encode_tq(
         let inf = inf.clone();
         let pipe = pipe.clone();
         let params = args.params.clone();
+        let probe_params = args.probe_params.clone();
         let wd = work_dir.to_path_buf();
         let grain = grain_table.cloned();
         let prog_clone = prog.clone();
@@ -573,25 +613,42 @@ fn encode_tq(
                     round: 0,
                     target,
                     last_crf: 0.0,
+                    final_encode: false,
                 });
-                tq.round += 1;
 
-                let current_round = tq.round;
-                let crf = if current_round <= 2 {
-                    crate::tq::binary_search(tq.search_min, tq.search_max)
+                let is_final = tq.final_encode;
+                let crf = if is_final {
+                    tq.last_crf
                 } else {
-                    crate::tq::interpolate_crf(&tq.probes, tq.target, current_round)
-                        .unwrap_or_else(|| crate::tq::binary_search(tq.search_min, tq.search_max))
-                }
-                .clamp(tq.search_min, tq.search_max);
-
-                let crf = if encoder.integer_qp() { crf.round() } else { crf };
-                tq.last_crf = crf;
-
+                    tq.round += 1;
+                    let c = if tq.round <= 2 {
+                        crate::tq::binary_search(tq.search_min, tq.search_max)
+                    } else {
+                        crate::tq::interpolate_crf(&tq.probes, tq.target, tq.round).unwrap_or_else(
+                            || crate::tq::binary_search(tq.search_min, tq.search_max),
+                        )
+                    }
+                    .clamp(tq.search_min, tq.search_max);
+                    let c = if encoder.integer_qp() { c.round() } else { c };
+                    tq.last_crf = c;
+                    c
+                };
+                let (p, out) = if is_final {
+                    (
+                        &params,
+                        Some(wd.join("encode").join(format!(
+                            "{:04}.{}",
+                            pkg.chunk.idx,
+                            encoder.extension()
+                        ))),
+                    )
+                } else {
+                    (probe_params.as_ref().unwrap_or(&params), None)
+                };
                 enc_tq_probe(
                     &pkg,
                     crf,
-                    &params,
+                    p,
                     &inf,
                     &pipe,
                     &wd,
@@ -600,6 +657,7 @@ fn encode_tq(
                     &prog_clone,
                     worker_id,
                     encoder,
+                    out.as_deref(),
                 );
 
                 tx.send(pkg).unwrap();
@@ -646,15 +704,26 @@ fn enc_tq_probe(
     prog: &Arc<ProgsTrack>,
     worker_id: usize,
     encoder: Encoder,
+    output_override: Option<&Path>,
 ) -> PathBuf {
-    let name = format!("{:04}_{:.2}.{}", pkg.chunk.idx, crf, encoder.extension());
-    let out = work_dir.join("split").join(&name);
+    let default_out;
+    let out = if let Some(p) = output_override {
+        p
+    } else {
+        default_out = work_dir.join("split").join(format!(
+            "{:04}_{:.2}.{}",
+            pkg.chunk.idx,
+            crf,
+            encoder.extension()
+        ));
+        &default_out
+    };
     let cfg = EncConfig {
         inf,
         params,
         zone_params: pkg.chunk.params.as_deref(),
         crf: crf as f32,
-        output: &out,
+        output: out,
         grain_table: grain,
         width: pkg.width,
         height: pkg.height,
@@ -689,7 +758,7 @@ fn enc_tq_probe(
         std::process::exit(1);
     }
 
-    out
+    out.to_path_buf()
 }
 
 fn run_enc_worker(
