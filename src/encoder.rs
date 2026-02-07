@@ -433,9 +433,9 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
         }
     }
     if let Some(csp) = inf.chroma_sample_position
-        && (0..=5).contains(&csp)
+        && (1..=6).contains(&csp)
     {
-        cmd.args(["--chromaloc", &csp.to_string()]);
+        cmd.args(["--chromaloc", &(csp - 1).to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
         && let Some(converted) = h26x_mastering(md, is_x264)
@@ -591,9 +591,9 @@ fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
         cmd.args(["--Range", if cr == 1 { "full" } else { "limited" }]);
     }
     if let Some(csp) = inf.chroma_sample_position
-        && (0..=5).contains(&csp)
+        && (1..=6).contains(&csp)
     {
-        cmd.args(["--ChromaSampleLocType", &csp.to_string()]);
+        cmd.args(["--ChromaSampleLocType", &(csp - 1).to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
         && let Some(converted) = h26x_mastering(md, false)
