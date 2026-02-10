@@ -729,6 +729,23 @@ fn enc_tq_probe(
         height: pkg.height,
         frames: pkg.frame_count,
     };
+    #[cfg(feature = "libsvtav1")]
+    if encoder == Encoder::SvtAv1 {
+        let last_score =
+            pkg.tq_state.as_ref().and_then(|tq| tq.probes.last().map(|probe| probe.score));
+        enc_svt_lib(
+            pkg,
+            &cfg,
+            pipe,
+            conv_buf,
+            prog,
+            worker_id,
+            false,
+            Some((crf as f32, last_score)),
+        );
+        return out.to_path_buf();
+    }
+
     let mut cmd = make_enc_cmd(encoder, &cfg);
     let mut child = cmd.spawn().unwrap();
 
@@ -836,6 +853,13 @@ fn enc_chunk(
         height: pkg.height,
         frames: pkg.frame_count,
     };
+    #[cfg(feature = "libsvtav1")]
+    if encoder == Encoder::SvtAv1 {
+        enc_svt_lib(pkg, &cfg, pipe, conv_buf, prog, worker_id, true, None);
+        pkg.yuv = Vec::new();
+        return;
+    }
+
     let mut cmd = make_enc_cmd(encoder, &cfg);
     let mut child = cmd.spawn().unwrap();
 
@@ -1045,5 +1069,177 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
     if let Ok(mut file) = OpenOptions::new().create(true).write(true).truncate(true).open(&log_path)
     {
         let _ = file.write_all(out.as_bytes());
+    }
+}
+
+#[cfg(feature = "libsvtav1")]
+fn write_ivf_header(f: &mut std::fs::File, cfg: &EncConfig) {
+    use std::io::Write;
+    let _ = f.write_all(b"DKIF");
+    let _ = f.write_all(&0u16.to_le_bytes());
+    let _ = f.write_all(&32u16.to_le_bytes());
+    let _ = f.write_all(b"AV01");
+    let _ = f.write_all(&(cfg.width as u16).to_le_bytes());
+    let _ = f.write_all(&(cfg.height as u16).to_le_bytes());
+    let _ = f.write_all(&cfg.inf.fps_num.to_le_bytes());
+    let _ = f.write_all(&cfg.inf.fps_den.to_le_bytes());
+    let _ = f.write_all(&0u32.to_le_bytes());
+    let _ = f.write_all(&0u32.to_le_bytes());
+}
+
+#[cfg(feature = "libsvtav1")]
+fn write_ivf_frame(f: &mut std::fs::File, data: &[u8], pts: u64) {
+    use std::io::Write;
+    let _ = f.write_all(&(data.len() as u32).to_le_bytes());
+    let _ = f.write_all(&pts.to_le_bytes());
+    let _ = f.write_all(data);
+}
+
+#[cfg(feature = "libsvtav1")]
+fn drain_svt_packets(
+    handle: *mut crate::svt::EbComponentType,
+    out: &mut std::fs::File,
+    done: bool,
+) -> usize {
+    use crate::svt::{
+        EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, svt_av1_enc_get_packet,
+        svt_av1_enc_release_out_buffer,
+    };
+    let mut count = 0;
+    loop {
+        let mut pkt: *mut EbBufferHeaderType = std::ptr::null_mut();
+        let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, u8::from(done)) };
+        if ret != EB_ERROR_NONE {
+            break;
+        }
+        let p = unsafe { &*pkt };
+        if p.n_filled_len > 0 {
+            let data = unsafe { std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
+            write_ivf_frame(out, data, p.pts as u64);
+            count += 1;
+        }
+        let eos = p.flags & EB_BUFFERFLAG_EOS != 0;
+        unsafe { svt_av1_enc_release_out_buffer(&raw mut pkt) };
+        if eos {
+            break;
+        }
+    }
+    count
+}
+
+#[cfg(feature = "libsvtav1")]
+fn enc_svt_lib(
+    pkg: &crate::worker::WorkPkg,
+    cfg: &EncConfig,
+    pipe: &Pipeline,
+    conv_buf: &mut [u8],
+    prog: &Arc<ProgsTrack>,
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    use crate::svt::{
+        EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
+        EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
+        svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
+        svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
+    };
+
+    let mut handle: *mut EbComponentType = std::ptr::null_mut();
+    let mut config = unsafe { std::mem::zeroed::<EbSvtAv1EncConfiguration>() };
+
+    let ret = unsafe { svt_av1_enc_init_handle(&raw mut handle, &raw mut config) };
+    if ret != EB_ERROR_NONE {
+        std::process::exit(1);
+    }
+
+    crate::encoder::set_svt_config(&raw mut config, cfg);
+
+    let ret = unsafe { svt_av1_enc_set_parameter(handle, &raw mut config) };
+    if ret != EB_ERROR_NONE {
+        std::process::exit(1);
+    }
+
+    let ret = unsafe { svt_av1_enc_init(handle) };
+    if ret != EB_ERROR_NONE {
+        std::process::exit(1);
+    }
+
+    let mut out = std::fs::File::create(cfg.output).unwrap();
+    write_ivf_header(&mut out, cfg);
+
+    let w = cfg.width as usize;
+    let h = cfg.height as usize;
+    let y_size = w * h * 2;
+    let uv_size = (w / 2) * (h / 2) * 2;
+
+    let mut io_fmt = EbSvtIOFormat {
+        luma: conv_buf.as_mut_ptr(),
+        cb: unsafe { conv_buf.as_mut_ptr().add(y_size) },
+        cr: unsafe { conv_buf.as_mut_ptr().add(y_size + uv_size) },
+        y_stride: w as u32,
+        cb_stride: (w / 2) as u32,
+        cr_stride: (w / 2) as u32,
+    };
+
+    let mut in_hdr = unsafe { std::mem::zeroed::<EbBufferHeaderType>() };
+    in_hdr.size = std::mem::size_of::<EbBufferHeaderType>() as u32;
+    in_hdr.p_buffer = (&raw mut io_fmt).cast::<u8>();
+    in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
+    in_hdr.n_alloc_len = in_hdr.n_filled_len;
+
+    let mut tracker = crate::progs::LibEncTracker::new();
+    prog.update_lib_enc(worker_id, pkg.chunk.idx, 0, pkg.frame_count, 0.0, None, crf_score);
+
+    #[allow(clippy::cast_possible_wrap)]
+    for i in 0..pkg.frame_count {
+        let frame = get_frame(&pkg.yuv, i, pipe.frame_size);
+        if cfg.inf.is_10bit {
+            (pipe.unpack)(frame, conv_buf, pipe);
+        } else {
+            crate::ffms::conv_to_10bit(frame, conv_buf);
+        }
+
+        in_hdr.pts = i as i64;
+        in_hdr.flags = 0;
+
+        let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
+        if ret != EB_ERROR_NONE {
+            std::process::exit(1);
+        }
+
+        tracker.encoded += drain_svt_packets(handle, &mut out, false);
+        tracker.report(prog, worker_id, pkg.chunk.idx, pkg.frame_count, track_frames, crf_score);
+    }
+
+    let mut eos = unsafe { std::mem::zeroed::<EbBufferHeaderType>() };
+    eos.flags = EB_BUFFERFLAG_EOS;
+    unsafe { svt_av1_enc_send_picture(handle, &raw mut eos) };
+
+    loop {
+        let mut pkt: *mut EbBufferHeaderType = std::ptr::null_mut();
+        let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, 1) };
+        if ret != EB_ERROR_NONE {
+            break;
+        }
+        let p = unsafe { &*pkt };
+        if p.n_filled_len > 0 {
+            let data = unsafe { std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
+            write_ivf_frame(&mut out, data, p.pts as u64);
+            tracker.encoded += 1;
+        }
+        let is_eos = p.flags & EB_BUFFERFLAG_EOS != 0;
+        unsafe { svt_av1_enc_release_out_buffer(&raw mut pkt) };
+        tracker.report(prog, worker_id, pkg.chunk.idx, pkg.frame_count, track_frames, crf_score);
+        if is_eos {
+            break;
+        }
+    }
+
+    prog.clear_lib_enc(worker_id);
+
+    unsafe {
+        svt_av1_enc_deinit(handle);
+        svt_av1_enc_deinit_handle(handle);
     }
 }

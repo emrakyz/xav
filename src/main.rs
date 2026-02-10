@@ -17,6 +17,8 @@ mod noise;
 pub mod pipeline;
 mod progs;
 mod scd;
+#[cfg(feature = "libsvtav1")]
+mod svt;
 #[cfg(feature = "vship")]
 mod tq;
 #[cfg(feature = "vship")]
