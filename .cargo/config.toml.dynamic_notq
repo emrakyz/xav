@@ -1,5 +1,5 @@
 [env]
-RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Z panic_abort_tests -C link-args=-fno-pic -lffms2"
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -Z dylib-lto -Z panic_abort_tests -C link-args=-fno-pic -fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=safe -Wl,-z,norelro -Wl,--build-id=none -Wl,--no-eh-frame-hdr -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all -Wl,--strip-all -lffms2"
 
 [build]
 rustflags = [
@@ -12,7 +12,7 @@ rustflags = [
     "-C", "linker=clang",
     "-C", "lto=fat",
     "-C", "embed-bitcode=yes",
-    "-C", "link-args=-fno-pic",
+    "-C", "link-args=-fno-pic -fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=safe -Wl,-z,norelro -Wl,--build-id=none -Wl,--no-eh-frame-hdr -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all -Wl,--strip-all",
     "-Z", "dylib-lto",
     "-Z", "panic_abort_tests",
     "-lffms2",

@@ -1,5 +1,5 @@
 [env]
-RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -C link-args=-fno-pic no-pie -Z panic_abort_tests -Z dylib-lto"
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -C link-args=-no-pie -fno-pic -fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=safe -Wl,-z,norelro -Wl,--build-id=none -Wl,--no-eh-frame-hdr -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all -Wl,--strip-all -Z panic_abort_tests -Z dylib-lto"
 
 [build]
 target = "x86_64-unknown-linux-gnu"
@@ -15,5 +15,5 @@ rustflags = [
     "-C", "linker=clang",
     "-C", "lto=fat",
     "-C", "embed-bitcode=yes",
-    "-C", "link-args=-no-pie -fno-pic",
+    "-C", "link-args=-no-pie -fno-pic -fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=safe -Wl,-z,norelro -Wl,--build-id=none -Wl,--no-eh-frame-hdr -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all -Wl,--strip-all",
 ]

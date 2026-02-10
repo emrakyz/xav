@@ -190,6 +190,81 @@ impl ProgsTrack {
 
         self.tx.send(WorkerMsg::Update { worker_id, line, frames: None }).ok();
     }
+
+    #[cfg(feature = "libsvtav1")]
+    pub fn update_lib_enc(
+        &self,
+        worker_id: usize,
+        chunk_idx: usize,
+        current: usize,
+        total: usize,
+        fps: f32,
+        frames_delta: Option<usize>,
+        crf_score: Option<(f32, Option<f64>)>,
+    ) {
+        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
+        let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+        let perc = (current * 100 / total.max(1)).min(100);
+
+        let prefix = match crf_score {
+            Some((crf, Some(score))) => {
+                format!("{C}[{chunk_idx:04} / F {crf:.2} / {score:.2}{C}]")
+            }
+            Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
+            None => format!("{C}[{chunk_idx:04}{C}]"),
+        };
+
+        let line = format!(
+            "{prefix} {P}[{bar}{P}] {W}{perc}%{C}, {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
+        );
+
+        self.tx.send(WorkerMsg::Update { worker_id, line, frames: frames_delta }).ok();
+    }
+
+    #[cfg(feature = "libsvtav1")]
+    pub fn clear_lib_enc(&self, worker_id: usize) {
+        self.tx.send(WorkerMsg::Clear(worker_id)).ok();
+    }
+}
+
+#[cfg(feature = "libsvtav1")]
+pub struct LibEncTracker {
+    start: Instant,
+    pub encoded: usize,
+    last_reported: usize,
+}
+
+#[cfg(feature = "libsvtav1")]
+impl LibEncTracker {
+    pub fn new() -> Self {
+        Self { start: Instant::now(), encoded: 0, last_reported: 0 }
+    }
+
+    pub fn report(
+        &mut self,
+        prog: &ProgsTrack,
+        worker_id: usize,
+        chunk_idx: usize,
+        total: usize,
+        track_frames: bool,
+        crf_score: Option<(f32, Option<f64>)>,
+    ) {
+        if self.encoded == self.last_reported {
+            return;
+        }
+        let fps = self.encoded as f32 / self.start.elapsed().as_secs_f32().max(0.001);
+        let delta = self.encoded - self.last_reported;
+        self.last_reported = self.encoded;
+        prog.update_lib_enc(
+            worker_id,
+            chunk_idx,
+            self.encoded,
+            total,
+            fps,
+            if track_frames { Some(delta) } else { None },
+            crf_score,
+        );
+    }
 }
 
 fn watch_svt(

@@ -62,7 +62,7 @@ show_opts() {
         opts=("${@}")
 
         for i in "${!opts[@]}"; do
-                printf "${Y}%2d) ${P}%-70s${N}\n" "$((i + 1))" "${opts[i]}"
+                printf "${Y}%2d) ${P}%-70b${N}\n" "$((i + 1))" "${opts[i]}"
         done
 
         echo
@@ -309,10 +309,10 @@ setup_toolchain() {
 -mllvm -polly-run-inliner \
 -mllvm -polly-run-dce"
 
-        export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fstrict-aliasing -fstrict-overflow -fno-zero-initialized-in-bss -static -fno-pic -fno-pie"
+        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fstrict-aliasing -fstrict-overflow -fno-zero-initialized-in-bss -static -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=${selected_cxx}"
-        export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=all -static -fno-pic -fno-pie"
+        export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=safe -static -fno-pic -fno-pie"
 }
 
 main() {
@@ -335,6 +335,20 @@ main() {
                 dynamic_notq)
                         mode_choice=4
                         ;;
+                static_tq_lib)
+                        mode_choice=5
+                        polly="ON"
+                        ;;
+                static_notq_lib)
+                        mode_choice=6
+                        polly="ON"
+                        ;;
+                dynamic_tq_lib)
+                        mode_choice=7
+                        ;;
+                dynamic_notq_lib)
+                        mode_choice=8
+                        ;;
                 "") ;;
                 *)
                         echo -e "Unknown preset: $preset"
@@ -343,6 +357,10 @@ main() {
                         echo "  dynamic_tq"
                         echo "  static_notq"
                         echo "  dynamic_notq"
+                        echo "  static_tq_lib"
+                        echo "  static_notq_lib"
+                        echo "  dynamic_tq_lib"
+                        echo "  dynamic_notq_lib"
                         exit 1
                         ;;
         esac
@@ -352,19 +370,35 @@ main() {
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}\n"
 
         BUILD_MODES=(
-                "Build everything statically (ffms2) with TQ"
-                "Build dynamically (requires ffms2, vship installed) with TQ"
-                "Build statically without TQ (no vship)"
-                "Build dynamically without TQ (requires ffms2 only)"
+                "Build everything statically with TQ"
+                "Build dynamically with TQ"
+                "Build statically without TQ"
+                "Build dynamically without TQ"
+                "Build statically with TQ + libsvtav1"
+                "Build statically without TQ + libsvtav1"
+                "Build dynamically with TQ + libsvtav1"
+                "Build dynamically without TQ + libsvtav1"
+        )
+
+        BUILD_DESCS=(
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
+                "Just compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P} (without target quality feature)."
+                "Just compile ${G}xav${P} by using ${G}ffms2${P} library from your system (without target quality feature)."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P}; all statically (you need to have the static libraries for ${G}vship${P} and ${G}libsvtav1${P} yourself)."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}libsvtav1${P} yourself) without TQ."
+                "Just compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} / ${G}libsvtav1${P} libraries from your system."
+                "Just compile ${G}xav${P} by using ${G}ffms2${P} / ${G}libsvtav1${P} libraries from your system without TQ."
         )
 
         [[ "${preset}" ]] || {
                 while true; do
                         show_opts "${BUILD_MODES[@]}"
+                        show_opts "${BUILD_DESCS[@]}"
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
-                        [[ "${mode_choice}" =~ ^[1-4]$ ]] && {
-                                loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
+                        [[ "${mode_choice}" =~ ^[1-8]$ ]] && {
+                                loginf g "Mode: ${BUILD_DESCS[mode_choice - 1]}"
                                 break
                         }
                 done
@@ -389,6 +423,26 @@ main() {
                 4)
                         config_file=".cargo/config.toml.dynamic_notq"
                         cargo_features=""
+                        build_static=false
+                        ;;
+                5)
+                        config_file=".cargo/config.toml.static"
+                        cargo_features="--features static,vship,libsvtav1"
+                        build_static=true
+                        ;;
+                6)
+                        config_file=".cargo/config.toml.static_notq"
+                        cargo_features="--features static,libsvtav1"
+                        build_static=true
+                        ;;
+                7)
+                        config_file=".cargo/config.toml.dynamic_lib"
+                        cargo_features="--features vship,libsvtav1"
+                        build_static=false
+                        ;;
+                8)
+                        config_file=".cargo/config.toml.dynamic_lib_notq"
+                        cargo_features="--features libsvtav1"
                         build_static=false
                         ;;
         esac

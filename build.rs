@@ -27,4 +27,10 @@ fn main() {
             println!("cargo:rustc-link-lib=dylib=cuda");
         }
     }
+
+    if cfg!(feature = "libsvtav1") {
+        let home = env::var("HOME").expect("HOME environment variable not set");
+        println!("cargo:rustc-link-search=native={home}/.local/src/SVT-AV1/Bin/Release");
+        println!("cargo:rustc-link-lib=static=SvtAv1Enc");
+    }
 }
