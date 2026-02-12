@@ -86,14 +86,15 @@ pub fn encode_all(
 
     let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
     let stats = Some(create_stats(completed_count, resume_data));
-    let prog = Arc::new(ProgsTrack::new(
+    let (prog, display_handle) = ProgsTrack::new(
         chunks,
         inf,
         args.worker,
         completed_frames,
         Arc::clone(&stats.as_ref().unwrap().completed),
         Arc::clone(&stats.as_ref().unwrap().completions),
-    ));
+    );
+    let prog = Arc::new(prog);
 
     let strat = args.decode_strat.unwrap();
     let pipe = Pipeline::new(
@@ -156,6 +157,8 @@ pub fn encode_all(
     for handle in workers {
         handle.join().unwrap();
     }
+    drop(prog);
+    display_handle.join().unwrap();
 }
 
 #[derive(Copy, Clone)]
@@ -537,14 +540,15 @@ fn encode_tq(
     let resume_state = Arc::new(std::sync::Mutex::new(resume_data.clone()));
     let tq_logger = Arc::new(std::sync::Mutex::new(Vec::new()));
     let stats = Some(create_stats(completed_count, resume_data));
-    let prog = Arc::new(ProgsTrack::new(
+    let (prog, display_handle) = ProgsTrack::new(
         chunks,
         inf,
         args.worker + args.metric_worker,
         completed_frames,
         Arc::clone(&stats.as_ref().unwrap().completed),
         Arc::clone(&stats.as_ref().unwrap().completions),
-    ));
+    );
+    let prog = Arc::new(prog);
 
     let mut metrics_workers = Vec::new();
     for worker_id in 0..args.metric_worker {
@@ -689,6 +693,8 @@ fn encode_tq(
         "ssimulacra2"
     };
     write_tq_log(&args.input, work_dir, inf, metric_name);
+    drop(prog);
+    display_handle.join().unwrap();
 }
 
 #[cfg(feature = "vship")]

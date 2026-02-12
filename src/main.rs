@@ -70,8 +70,8 @@ pub struct Args {
 }
 
 extern "C" fn restore() {
-    eprint!("\x1b[?25h\x1b[?1049l");
-    let _ = std::io::stderr().flush();
+    print!("\x1b[?25h\x1b[?1049l");
+    let _ = std::io::stdout().flush();
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
@@ -462,12 +462,12 @@ const fn scale_crop(
 }
 
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    eprint!("\x1b[?1049h\x1b[H\x1b[?25l");
-    std::io::stderr().flush().unwrap();
+    print!("\x1b[?1049h\x1b[H\x1b[?25l");
+    std::io::stdout().flush().unwrap();
 
     ensure_scene_file(args)?;
 
-    eprintln!();
+    println!();
 
     let hash = hash_input(&args.input);
     let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
@@ -583,8 +583,8 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         fs::remove_file(&video_mkv)?;
     }
 
-    eprint!("\x1b[?25h\x1b[?1049l");
-    std::io::stderr().flush().unwrap();
+    print!("\x1b[?25h\x1b[?1049l");
+    std::io::stdout().flush().unwrap();
 
     let input_size = fs::metadata(&args.input)?.len();
     let output_size = fs::metadata(&args.output)?.len();
@@ -616,7 +616,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let (final_width, final_height) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
 
-    eprintln!(
+    println!(
     "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
 {P}┃ {G}✅ {Y}DONE   {P}┃ {R}{:<30.30} {G}󰛂 {G}{:<30.30} {P}┃\n\
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
@@ -644,8 +644,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = args.output.clone();
 
     std::panic::set_hook(Box::new(move |panic_info| {
-        eprint!("\x1b[?25h\x1b[?1049l");
-        let _ = std::io::stderr().flush();
+        print!("\x1b[?25h\x1b[?1049l");
+        let _ = std::io::stdout().flush();
         eprintln!("{panic_info}");
         eprintln!("{}, FAIL", output.display());
     }));
@@ -658,8 +658,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Err(e) = main_with_args(&args) {
-        eprint!("\x1b[?1049l");
-        std::io::stderr().flush().unwrap();
+        print!("\x1b[?1049l");
+        std::io::stdout().flush().unwrap();
         eprintln!("{}, FAIL", args.output.display());
         return Err(e);
     }
@@ -697,10 +697,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let m = if cvvdp_per_frame { jod_mean(&s) } else { s.iter().sum::<f64>() / s.len() as f64 };
 
         if TQ_RESUMED.get().copied().unwrap_or(false) {
-            eprintln!("\nBelow stats are only for the last run when resume used\n");
-            eprintln!("{Y}Mean: {W}{m:.4}");
+            println!("\nBelow stats are only for the last run when resume used\n");
+            println!("{Y}Mean: {W}{m:.4}");
         } else {
-            eprintln!("\n{Y}Mean: {W}{m:.4}");
+            println!("\n{Y}Mean: {W}{m:.4}");
         }
         for p in [25.0, 10.0, 5.0, 1.0, 0.1] {
             let i = ((s.len() as f64 * p / 100.0).ceil() as usize).min(s.len());
@@ -709,9 +709,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 s[..i].iter().sum::<f64>() / i as f64
             };
-            eprintln!("{Y}Mean of worst {p}%: {W}{pct_mean:.4}");
+            println!("{Y}Mean of worst {p}%: {W}{pct_mean:.4}");
         }
-        eprintln!(
+        println!(
             "{Y}STDDEV: {W}{:.4}{N}",
             (s.iter().map(|&x| (x - m).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
         );
