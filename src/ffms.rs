@@ -12,12 +12,20 @@ use ffms2_sys::{
 use crate::decode::CropCalc;
 use crate::progs::ProgsBar;
 
+pub const fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
+    }
+    a
+}
+
 #[derive(Clone)]
 pub struct VidInf {
     pub width: u32,
     pub height: u32,
-    pub display_width: Option<u32>,
-    pub display_height: Option<u32>,
+    pub dar: Option<(u32, u32)>,
     pub fps_num: u32,
     pub fps_den: u32,
     pub frames: usize,
@@ -126,68 +134,6 @@ impl Drop for VidIdx {
 unsafe impl Send for VidIdx {}
 unsafe impl Sync for VidIdx {}
 
-fn get_chroma_loc(path: &str, frame_chroma: i32) -> Option<i32> {
-    let ffmpeg_value = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=chroma_location",
-            "-of",
-            "default=noprint_wrappers=1",
-            path,
-        ])
-        .output()
-        .ok()
-        .and_then(|out| {
-            let text = String::from_utf8_lossy(&out.stdout);
-            if text.starts_with("chroma_location=left") {
-                Some(1)
-            } else if text.starts_with("chroma_location=topleft") {
-                Some(3)
-            } else {
-                None
-            }
-        })
-        .or_else(|| (frame_chroma != 0).then_some(frame_chroma));
-
-    match ffmpeg_value? {
-        1 => Some(1),
-        3 => Some(2),
-        _ => None,
-    }
-}
-
-fn get_disp_res(path: &str) -> Option<(u32, u32)> {
-    let output = std::process::Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=display_aspect_ratio",
-            "-of",
-            "csv=p=0",
-            path,
-        ])
-        .output()
-        .ok()?;
-
-    let dar = String::from_utf8_lossy(&output.stdout);
-    let dar = dar.trim();
-    if let Some((num_str, den_str)) = dar.split_once(':')
-        && let (Ok(num), Ok(den)) = (num_str.parse::<u32>(), den_str.parse::<u32>())
-        && num > 0
-        && den > 0
-    {
-        return Some((num, den));
-    }
-    None
-}
-
 pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
@@ -229,7 +175,11 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
             _ => None,
         };
 
-        let chroma_sample_position = get_chroma_loc(&idx.path, (*frame).ChromaLocation);
+        let chroma_sample_position = match (*frame).ChromaLocation {
+            1 => Some(1),
+            3 => Some(2),
+            _ => None,
+        };
 
         let mastering_display = if (*props).HasMasteringDisplayPrimaries != 0
             && (*props).HasMasteringDisplayLuminance != 0
@@ -257,14 +207,20 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
             None
         };
 
-        let (display_width, display_height) =
-            get_disp_res(&idx.path).map_or((None, None), |(w, h)| (Some(w), Some(h)));
+        let (sar_n, sar_d) = ((*props).SARNum, (*props).SARDen);
+        let dar = if sar_n > 0 && sar_d > 0 && sar_n != sar_d {
+            let dw = u64::from(width) * sar_n as u64;
+            let dh = u64::from(height) * sar_d as u64;
+            let g = gcd(dw, dh);
+            Some(((dw / g) as u32, (dh / g) as u32))
+        } else {
+            None
+        };
 
         let inf = VidInf {
             width,
             height,
-            display_width,
-            display_height,
+            dar,
             fps_num: (*props).FPSNumerator as u32,
             fps_den: (*props).FPSDenominator as u32,
             frames: (*props).NumFrames as usize,
