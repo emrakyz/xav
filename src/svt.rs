@@ -6,8 +6,6 @@ pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
 const MAX_TEMPORAL_LAYERS: usize = 6;
 const FRAME_UPDATE_TYPES: usize = 7;
 
-// ---------- core handle / buffer types ----------
-
 #[repr(C)]
 pub struct EbComponentType {
     pub size: u32,
@@ -49,8 +47,6 @@ pub struct EbSvtIOFormat {
     pub cr_stride: u32,
     pub cb_stride: u32,
 }
-
-// ---------- config sub-structs ----------
 
 #[repr(C)]
 struct ChromaPoints {
@@ -97,8 +93,6 @@ struct SFramePositions {
     sframe_qps: *mut u8,
     sframe_qp_offsets: *mut i8,
 }
-
-// ---------- encoder configuration ----------
 
 #[repr(C)]
 pub struct EbSvtAv1EncConfiguration {
@@ -181,7 +175,6 @@ pub struct EbSvtAv1EncConfiguration {
     use_cpu_flags: u64,
     stat_report: u32,
     recon_enabled: bool,
-    // 1.0.0+
     force_key_frames: bool,
     multiply_keyint: bool,
     resize_mode: u8,
