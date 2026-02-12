@@ -344,8 +344,9 @@ fn mux_files(
 
     if !has_ranges && !is_mp4 {
         let input_idx = files.len() + 1;
-        cmd.args(["-map", &format!("{input_idx}:s?")])
-            .args(["-map", &format!("{input_idx}:t?")])
+        cmd.args(["-map", &format!("{input_idx}")])
+            .args(["-map", &format!("-{input_idx}:V")])
+            .args(["-map", &format!("-{input_idx}:a")])
             .args(["-map_chapters", &input_idx.to_string()]);
     }
 
