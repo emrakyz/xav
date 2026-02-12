@@ -322,6 +322,7 @@ fn mux_files(
     input: &Path,
     output: &Path,
     has_ranges: bool,
+    dar: Option<(u32, u32)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"]).arg(video);
@@ -356,8 +357,11 @@ fn mux_files(
         cmd.args([&format!("-metadata:s:a:{i}"), &format!("title={}", lang_name(code))]);
     }
 
-    cmd.args(["-c", "copy"])
-        .args(FF_FLAGS)
+    cmd.args(["-c", "copy"]);
+    if let Some((dw, dh)) = dar {
+        cmd.args(["-aspect", &format!("{dw}:{dh}")]);
+    }
+    cmd.args(FF_FLAGS)
         .arg(output)
         .status()
         .ok()
@@ -374,6 +378,7 @@ pub fn process_audio(
     ranges: Option<&[(usize, usize)]>,
     fps_num: u32,
     fps_den: u32,
+    dar: Option<(u32, u32)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let all = get_streams(input)?;
     let sel: Vec<_> = match &spec.streams {
@@ -422,7 +427,7 @@ pub fn process_audio(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    mux_files(video, &files, input, output, ranges.is_some())?;
+    mux_files(video, &files, input, output, ranges.is_some(), dar)?;
 
     if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
         crate::chunk::add_mp4_subs(input, output);

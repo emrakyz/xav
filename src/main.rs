@@ -509,7 +509,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let (inf, crop, pipe_reader) = if let Some((y, reader)) = pipe_init {
+    let (mut inf, crop, pipe_reader) = if let Some((y, reader)) = pipe_init {
         let (cv, ch) = crop;
         let target_w = inf.width - ch * 2;
         let target_h = inf.height - cv * 2;
@@ -528,10 +528,20 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         inf.width = y.width;
         inf.height = y.height;
         inf.is_10bit = y.is_10bit;
+        inf.dar = None;
         (inf, new_crop, Some(reader))
     } else {
         (inf, crop, None)
     };
+
+    if let Some((dw, dh)) = inf.dar {
+        let fw = u64::from(inf.width - crop.1 * 2);
+        let fh = u64::from(inf.height - crop.0 * 2);
+        let n = u64::from(dw) * u64::from(inf.height) * fw;
+        let d = u64::from(dh) * u64::from(inf.width) * fh;
+        let g = ffms::gcd(n, d);
+        inf.dar = Some(((n / g) as u32, (d / g) as u32));
+    }
 
     args.decode_strat = Some(ffms::get_decode_strat(&idx, &inf, crop)?);
 
@@ -579,6 +589,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             args.ranges.as_deref(),
             inf.fps_num,
             inf.fps_den,
+            inf.dar,
         )?;
         fs::remove_file(&video_mkv)?;
     }

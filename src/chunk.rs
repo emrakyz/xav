@@ -456,7 +456,11 @@ fn run_merge(
                 .args(["-map_chapters", input_idx]);
         }
 
-        cmd2.args(["-c", "copy"]).args(FF_FLAGS).arg(output);
+        cmd2.args(["-c", "copy"]);
+        if let Some((dw, dh)) = inf.dar {
+            cmd2.args(["-aspect", &format!("{dw}:{dh}")]);
+        }
+        cmd2.args(FF_FLAGS).arg(output);
 
         let status2 = cmd2.status()?;
         let _ = fs::remove_file(&video);
@@ -514,7 +518,11 @@ fn mux_av(
             .args(["-map_chapters", input_idx]);
     }
 
-    cmd.args(["-c", "copy"]).args(FF_FLAGS).arg(output);
+    cmd.args(["-c", "copy"]);
+    if let Some((dw, dh)) = inf.dar {
+        cmd.args(["-aspect", &format!("{dw}:{dh}")]);
+    }
+    cmd.args(FF_FLAGS).arg(output);
 
     let status = cmd.status()?;
     let _ = fs::remove_file(&temp_audio);
