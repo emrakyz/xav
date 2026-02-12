@@ -450,8 +450,9 @@ fn run_merge(
         }
 
         if ranges.is_none() {
-            cmd2.args(["-map", &format!("{input_idx}:s?")])
-                .args(["-map", &format!("{input_idx}:t?")])
+            cmd2.args(["-map", input_idx])
+                .args(["-map", &format!("-{input_idx}:V")])
+                .args(["-map", &format!("-{input_idx}:a")])
                 .args(["-map_chapters", input_idx]);
         }
 
@@ -507,8 +508,9 @@ fn mux_av(
     }
 
     if ranges.is_none() {
-        cmd.args(["-map", &format!("{input_idx}:s?")])
-            .args(["-map", &format!("{input_idx}:t?")])
+        cmd.args(["-map", input_idx])
+            .args(["-map", &format!("-{input_idx}:V")])
+            .args(["-map", &format!("-{input_idx}:a")])
             .args(["-map_chapters", input_idx]);
     }
 
@@ -563,7 +565,7 @@ fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Op
     cmd.arg("-i")
         .arg(input)
         .args(["-vn", "-sn", "-dn", "-map", "0:a", "-c", "copy"])
-        .args(["-map_metadata", "-1", "-map_chapters", "-1"])
+        .args(["-map_chapters", "-1"])
         .args(FF_FLAGS)
         .arg(output);
 
