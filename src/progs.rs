@@ -62,12 +62,12 @@ impl ProgsBar {
         let perc = (current * 100 / total.max(1)).min(100);
         let (eta_h, eta_m, eta_s) = (eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60);
 
-        eprint!(
+        print!(
             "\r\x1b[2K{W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} MBs{C}, \
              {W}{eta_h:02}{P}:{W}{eta_m:02}{P}:{W}{eta_s:02}{C}, \
              {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
-        std::io::stderr().flush().unwrap();
+        std::io::stdout().flush().unwrap();
     }
 
     pub fn up_scenes(&mut self, current: usize, total: usize) {
@@ -86,21 +86,21 @@ impl ProgsBar {
         let perc = (current * 100 / total.max(1)).min(100);
         let (eta_m, eta_s) = ((eta_secs % 3600) / 60, eta_secs % 60);
 
-        eprint!(
+        print!(
             "\r\x1b[2K{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} FPS{C}, \
              {W}{eta_m:02}{P}:{W}{eta_s:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
-        std::io::stderr().flush().unwrap();
+        std::io::stdout().flush().unwrap();
     }
 
     pub fn finish() {
-        eprint!("\r\x1b[2K");
-        std::io::stderr().flush().unwrap();
+        print!("\r\x1b[2K");
+        std::io::stdout().flush().unwrap();
     }
 
     pub fn finish_scenes() {
-        eprint!("\r\x1b[2K");
-        std::io::stderr().flush().unwrap();
+        print!("\r\x1b[2K");
+        std::io::stdout().flush().unwrap();
     }
 }
 
@@ -121,11 +121,11 @@ impl ProgsTrack {
         init_frames: usize,
         completed: Arc<AtomicUsize>,
         completions: Arc<Mutex<crate::chunk::ResumeInf>>,
-    ) -> Self {
+    ) -> (Self, thread::JoinHandle<()>) {
         let (tx, rx) = crossbeam_channel::unbounded();
 
-        eprint!("\x1b[s");
-        std::io::stderr().flush().unwrap();
+        print!("\x1b[s");
+        std::io::stdout().flush().unwrap();
 
         let total_chunks = chunks.len();
         let total_frames = chunks.iter().map(|c| c.end - c.start).sum();
@@ -135,11 +135,11 @@ impl ProgsTrack {
         let state =
             ProgState { total_chunks, total_frames, fps_num, fps_den, completed, completions };
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             display_loop(&rx, worker_count, init_frames, &state);
         });
 
-        Self { tx }
+        (Self { tx }, handle)
     }
 
     pub fn watch_enc(
@@ -283,8 +283,8 @@ fn watch_svt(
         let text = text.trim();
 
         if text.contains("error") || text.contains("Error") {
-            eprint!("\x1b[?1049l");
-            std::io::stderr().flush().unwrap();
+            print!("\x1b[?1049l");
+            std::io::stdout().flush().unwrap();
             eprintln!("{text}");
         }
 
@@ -420,8 +420,8 @@ fn watch_vvenc(
                     line_buf = line_buf[pos + 1..].to_string();
 
                     if line.contains("error") || line.contains("Error") {
-                        eprint!("\x1b[?1049l");
-                        std::io::stderr().flush().unwrap();
+                        print!("\x1b[?1049l");
+                        std::io::stdout().flush().unwrap();
                         eprintln!("{line}");
                     }
 
@@ -539,8 +539,8 @@ fn watch_x265(
             if text.starts_with("encoded") {
                 continue;
             }
-            eprint!("\x1b[?1049l");
-            std::io::stderr().flush().unwrap();
+            print!("\x1b[?1049l");
+            std::io::stdout().flush().unwrap();
             eprintln!("{text}");
             continue;
         }
@@ -640,17 +640,17 @@ fn draw_screen(
     processed: &Arc<AtomicUsize>,
     init_frames: usize,
 ) {
-    eprint!("\x1b[u");
+    print!("\x1b[u");
 
     for line in lines.iter().take(worker_count) {
         if line.is_empty() {
-            eprint!("\r\x1b[2K\n");
+            print!("\r\x1b[2K\n");
         } else {
-            eprint!("\r\x1b[2K{line}\n");
+            print!("\r\x1b[2K{line}\n");
         }
     }
 
-    eprint!("\r\x1b[2K\n");
+    print!("\r\x1b[2K\n");
 
     let data = state.completions.lock().unwrap();
     let completed_frames: usize = data.chnks_done.iter().map(|c| c.frames).sum();
@@ -689,10 +689,11 @@ fn draw_screen(
     let eta_h = (eta_secs / 3600).min(99);
     let eta_m = (eta_secs % 3600) / 60;
 
-    eprint!(
+    print!(
         "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
          {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2}{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
          {bitrate_str}{C}, {est_str}{C}{N})\n",
         state.total_chunks, state.total_frames
     );
+    std::io::stdout().flush().unwrap();
 }
