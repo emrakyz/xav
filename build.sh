@@ -309,7 +309,7 @@ setup_toolchain() {
 -mllvm -polly-run-inliner \
 -mllvm -polly-run-dce"
 
-        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fstrict-aliasing -fstrict-overflow -fno-zero-initialized-in-bss -static -fno-pic -fno-pie"
+        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -static -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=${selected_cxx}"
         export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=safe -static -fno-pic -fno-pie"
@@ -436,12 +436,12 @@ main() {
                         build_static=true
                         ;;
                 7)
-                        config_file=".cargo/config.toml.dynamic_lib"
+                        config_file=".cargo/config.toml.dynamic"
                         cargo_features="--features vship,libsvtav1"
                         build_static=false
                         ;;
                 8)
-                        config_file=".cargo/config.toml.dynamic_lib_notq"
+                        config_file=".cargo/config.toml.dynamic_notq"
                         cargo_features="--features libsvtav1"
                         build_static=false
                         ;;
