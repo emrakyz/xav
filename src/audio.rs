@@ -182,8 +182,6 @@ fn add_opus_args(cmd: &mut Command, bitrate: u32, channels: u32, normalize: bool
         &format!("{bitrate}k"),
         "-application",
         "audio",
-        "-frame_duration",
-        "120",
         "-compression_level",
         "10",
         "-vbr",
