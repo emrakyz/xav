@@ -413,7 +413,7 @@ pub fn process_audio(
                             8 => 7.1,
                             _ => f64::from(s.channels),
                         };
-                        (128.0 * ((cc / 2.0) * 0.75)) as u32
+                        (128.0 * (cc / 2.0_f64).powf(0.75)) as u32
                     }
                     AudioBitrate::Fixed(b) => *b,
                     AudioBitrate::Norm => unreachable!(),
