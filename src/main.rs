@@ -469,20 +469,6 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    let hash = hash_input(&args.input);
-    let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
-
-    let is_new_encode = !work_dir.exists();
-    #[cfg(feature = "vship")]
-    TQ_RESUMED.get_or_init(|| !is_new_encode);
-
-    fs::create_dir_all(work_dir.join("split"))?;
-    fs::create_dir_all(work_dir.join("encode"))?;
-
-    if is_new_encode {
-        save_args(&work_dir)?;
-    }
-
     let idx = ffms::VidIdx::new(&args.input, true)?;
     let inf = ffms::get_vidinf(&idx)?;
 
@@ -496,6 +482,20 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     chunk::validate_scenes(&scenes)?;
     if args.sc_only {
         return Ok(());
+    }
+
+    let hash = hash_input(&args.input);
+    let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
+
+    let is_new_encode = !work_dir.exists();
+    #[cfg(feature = "vship")]
+    TQ_RESUMED.get_or_init(|| !is_new_encode);
+
+    fs::create_dir_all(work_dir.join("split"))?;
+    fs::create_dir_all(work_dir.join("encode"))?;
+
+    if is_new_encode {
+        save_args(&work_dir)?;
     }
 
     let pipe_init = y4m::init_pipe();
