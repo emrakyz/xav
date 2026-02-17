@@ -3,6 +3,37 @@ use std::ffi::c_void;
 pub const EB_ERROR_NONE: i32 = 0;
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
 
+#[repr(C)]
+pub struct AomFilmGrain {
+    pub apply_grain: i32,
+    pub update_parameters: i32,
+    pub scaling_points_y: [[i32; 2]; 14],
+    pub num_y_points: i32,
+    pub scaling_points_cb: [[i32; 2]; 10],
+    pub num_cb_points: i32,
+    pub scaling_points_cr: [[i32; 2]; 10],
+    pub num_cr_points: i32,
+    pub scaling_shift: i32,
+    pub ar_coeff_lag: i32,
+    pub ar_coeffs_y: [i32; 24],
+    pub ar_coeffs_cb: [i32; 25],
+    pub ar_coeffs_cr: [i32; 25],
+    pub ar_coeff_shift: i32,
+    pub cb_mult: i32,
+    pub cb_luma_mult: i32,
+    pub cb_offset: i32,
+    pub cr_mult: i32,
+    pub cr_luma_mult: i32,
+    pub cr_offset: i32,
+    pub overlap_flag: i32,
+    pub clip_to_restricted_range: i32,
+    pub bit_depth: i32,
+    pub chroma_scaling_from_luma: i32,
+    pub grain_scale_shift: i32,
+    pub random_seed: u16,
+    pub ignore_ref: i32,
+}
+
 const MAX_TEMPORAL_LAYERS: usize = 6;
 const FRAME_UPDATE_TYPES: usize = 7;
 
@@ -191,7 +222,7 @@ pub struct EbSvtAv1EncConfiguration {
     frame_scale_evts: FrameScaleEvts,
     enable_roi_map: bool,
     tf_strength: u8,
-    fgs_table: *mut c_void,
+    pub fgs_table: *mut c_void,
     enable_variance_boost: bool,
     variance_boost_strength: u8,
     variance_octile: u8,

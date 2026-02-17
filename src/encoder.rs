@@ -791,7 +791,7 @@ pub fn set_svt_config(config: *mut crate::svt::EbSvtAv1EncConfiguration, cfg: &E
     }
 
     if let Some(gt) = cfg.grain_table {
-        parse_svt_param(config, "fgs-table", &gt.display().to_string());
+        load_fgs_table(config, gt);
     }
 
     parse_svt_params(config, cfg.params);
@@ -799,6 +799,55 @@ pub fn set_svt_config(config: *mut crate::svt::EbSvtAv1EncConfiguration, cfg: &E
     if let Some(z) = cfg.zone_params {
         parse_svt_params(config, z);
     }
+}
+
+#[cfg(feature = "libsvtav1")]
+fn load_fgs_table(config: *mut crate::svt::EbSvtAv1EncConfiguration, path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let Ok(segments) = av1_grain::parse_grain_table(&text) else { return };
+    let Some(seg) = segments.into_iter().next() else { return };
+
+    let mut fg = Box::new(unsafe { std::mem::zeroed::<crate::svt::AomFilmGrain>() });
+    fg.apply_grain = 1;
+    fg.ignore_ref = 1;
+    fg.update_parameters = 1;
+    fg.random_seed = seg.random_seed;
+    fg.ar_coeff_lag = i32::from(seg.ar_coeff_lag);
+    fg.ar_coeff_shift = i32::from(seg.ar_coeff_shift);
+    fg.scaling_shift = i32::from(seg.scaling_shift);
+    fg.grain_scale_shift = i32::from(seg.grain_scale_shift);
+    fg.chroma_scaling_from_luma = i32::from(seg.chroma_scaling_from_luma);
+    fg.overlap_flag = i32::from(seg.overlap_flag);
+    fg.cb_mult = i32::from(seg.cb_mult);
+    fg.cb_luma_mult = i32::from(seg.cb_luma_mult);
+    fg.cb_offset = i32::from(seg.cb_offset);
+    fg.cr_mult = i32::from(seg.cr_mult);
+    fg.cr_luma_mult = i32::from(seg.cr_luma_mult);
+    fg.cr_offset = i32::from(seg.cr_offset);
+
+    fg.num_y_points = i32::from(seg.scaling_points_y.len() as u8);
+    for (i, [x, y]) in seg.scaling_points_y.iter().enumerate() {
+        fg.scaling_points_y[i] = [i32::from(*x), i32::from(*y)];
+    }
+    fg.num_cb_points = i32::from(seg.scaling_points_cb.len() as u8);
+    for (i, [x, y]) in seg.scaling_points_cb.iter().enumerate() {
+        fg.scaling_points_cb[i] = [i32::from(*x), i32::from(*y)];
+    }
+    fg.num_cr_points = i32::from(seg.scaling_points_cr.len() as u8);
+    for (i, [x, y]) in seg.scaling_points_cr.iter().enumerate() {
+        fg.scaling_points_cr[i] = [i32::from(*x), i32::from(*y)];
+    }
+    for (i, v) in seg.ar_coeffs_y.iter().enumerate() {
+        fg.ar_coeffs_y[i] = i32::from(*v);
+    }
+    for (i, v) in seg.ar_coeffs_cb.iter().enumerate() {
+        fg.ar_coeffs_cb[i] = i32::from(*v);
+    }
+    for (i, v) in seg.ar_coeffs_cr.iter().enumerate() {
+        fg.ar_coeffs_cr[i] = i32::from(*v);
+    }
+
+    unsafe { (*config).fgs_table = Box::into_raw(fg).cast() };
 }
 
 const fn chroma_pos_str(v: i32) -> &'static str {
