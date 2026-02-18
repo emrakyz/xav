@@ -156,14 +156,11 @@ fn concat_vvc(
     output: &Path,
     inf: &crate::ffms::VidInf,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
-
     let temp_266 = output.with_extension("266");
 
     let mut out = fs::File::create(&temp_266)?;
     for file in files {
-        let data = fs::read(file)?;
-        out.write_all(&data)?;
+        std::io::copy(&mut fs::File::open(file)?, &mut out)?;
     }
     drop(out);
 
@@ -193,13 +190,11 @@ fn concat_h26x(
     inf: &crate::ffms::VidInf,
     encoder: Encoder,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::io::Write;
-
     let temp_26x = output.with_extension(encoder.extension());
     {
         let mut out = fs::File::create(&temp_26x)?;
         for file in files {
-            out.write_all(&fs::read(file)?)?;
+            std::io::copy(&mut fs::File::open(file)?, &mut out)?;
         }
     }
 
