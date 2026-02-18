@@ -416,29 +416,23 @@ pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
 
 #[inline]
 pub fn pack_4_pix_10bit(input: [u8; 8], output: &mut [u8; 5]) {
-    let p0 = u64::from(u16::from_le_bytes([input[0], input[1]]));
-    let p1 = u64::from(u16::from_le_bytes([input[2], input[3]]));
-    let p2 = u64::from(u16::from_le_bytes([input[4], input[5]]));
-    let p3 = u64::from(u16::from_le_bytes([input[6], input[7]]));
-    let packed: u64 = p0 | (p1 << 10) | (p2 << 20) | (p3 << 30);
-    let bytes = packed.to_le_bytes();
-    output.copy_from_slice(&bytes[..5]);
+    let raw = u64::from_le_bytes(input);
+    let p0 = u64::from(raw as u16);
+    let p1 = u64::from((raw >> 16) as u16);
+    let p2 = u64::from((raw >> 32) as u16);
+    let p3 = raw >> 48;
+    let packed = p0 | (p1 << 10) | (p2 << 20) | (p3 << 30);
+    output.copy_from_slice(&packed.to_le_bytes()[..5]);
 }
 
 #[inline]
-pub fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
-    let packed = u64::from(u32::from_le_bytes(input[0..4].try_into().unwrap()))
-        | (u64::from(input[4]) << 32);
-
-    let p0 = (packed & 0x3FF) as u16;
-    let p1 = ((packed >> 10) & 0x3FF) as u16;
-    let p2 = ((packed >> 20) & 0x3FF) as u16;
-    let p3 = ((packed >> 30) & 0x3FF) as u16;
-
-    output[0..2].copy_from_slice(&p0.to_le_bytes());
-    output[2..4].copy_from_slice(&p1.to_le_bytes());
-    output[4..6].copy_from_slice(&p2.to_le_bytes());
-    output[6..8].copy_from_slice(&p3.to_le_bytes());
+pub const fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
+    let packed = u64::from_le_bytes([input[0], input[1], input[2], input[3], input[4], 0, 0, 0]);
+    let result = (packed & 0x3FF)
+        | (((packed >> 10) & 0x3FF) << 16)
+        | (((packed >> 20) & 0x3FF) << 32)
+        | (((packed >> 30) & 0x3FF) << 48);
+    *output = result.to_le_bytes();
 }
 
 pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
