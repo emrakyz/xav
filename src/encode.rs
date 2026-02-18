@@ -1102,10 +1102,8 @@ fn write_ivf_header(f: &mut impl std::io::Write, cfg: &EncConfig) {
 
 #[cfg(feature = "libsvtav1")]
 fn write_ivf_frame(f: &mut impl std::io::Write, data: &[u8], pts: u64) {
-    let mut hdr = [0u8; 12];
-    hdr[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
-    hdr[4..12].copy_from_slice(&pts.to_le_bytes());
-    let _ = f.write_all(&hdr);
+    let _ = f.write_all(&(data.len() as u32).to_le_bytes());
+    let _ = f.write_all(&pts.to_le_bytes());
     let _ = f.write_all(data);
 }
 
