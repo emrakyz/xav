@@ -387,8 +387,9 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
 }
 
 fn hash_input(path: &Path) -> String {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
+    canonical.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
 
@@ -403,8 +404,9 @@ fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn get_saved_args(input: &Path) -> Result<Args, Box<dyn std::error::Error>> {
-    let hash = hash_input(input);
-    let work_dir = input.with_file_name(format!(".{}", &hash[..7]));
+    let canonical = input.canonicalize()?;
+    let hash = hash_input(&canonical);
+    let work_dir = canonical.with_file_name(format!(".{}", &hash[..7]));
     let cmd_path = work_dir.join("cmd.txt");
 
     if cmd_path.exists() {
@@ -484,8 +486,9 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let hash = hash_input(&args.input);
-    let work_dir = args.input.with_file_name(format!(".{}", &hash[..7]));
+    let canonical_input = args.input.canonicalize()?;
+    let hash = hash_input(&canonical_input);
+    let work_dir = canonical_input.with_file_name(format!(".{}", &hash[..7]));
 
     let is_new_encode = !work_dir.exists();
     #[cfg(feature = "vship")]
