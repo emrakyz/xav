@@ -18,6 +18,8 @@ pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), Box<dyn st
         transfer_function: transfer,
         chroma_grain: true,
         random_seed: None,
+        // range 1 == full range, otherwise assume limited
+        full_range: inf.color_range.map(|range| range == 1).unwrap_or(false),
     };
 
     let duration = inf.frames as u64 * u64::from(inf.fps_den) * 10_000_000 / u64::from(inf.fps_num);
