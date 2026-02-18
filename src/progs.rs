@@ -301,52 +301,7 @@ fn watch_svt(
             continue;
         }
 
-        let content = text.strip_prefix("Encoding: ").unwrap_or(text);
-
-        let mut cleaned = content
-            .replace(" Frames\x1b[0m @ ", " ")
-            .replace("Size: ", "")
-            .replace(" MB", "")
-            .replace(" fps", "")
-            .replace("Time: \u{1b}[36m0:", "")
-            .replace("33m   ", "33m")
-            .replace("33m  ", "33m")
-            .replace("33m ", "33m");
-
-        let parts: Vec<&str> = cleaned.split("\u{1b}[38;5;248m").collect();
-        if parts.len() > 1 {
-            cleaned = parts[0].to_string();
-        }
-
-        let parts: Vec<&str> = cleaned.rsplitn(2, '|').collect();
-        if parts.len() > 1 && parts[0].trim().contains(':') {
-            cleaned = parts[1].to_string();
-        }
-
-        if let Some(p) = cleaned.find(" kb/s") {
-            cleaned.truncate(p + 5);
-            if let Some(dot_pos) = cleaned[..p].rfind('.') {
-                cleaned = format!("{} kb/s", &cleaned[..dot_pos]);
-            }
-        }
-
-        if cleaned.contains("fpm") {
-            let parts: Vec<&str> = cleaned.split_whitespace().collect();
-            if let Some(fpm_pos) = parts.iter().position(|&s| s == "fpm")
-                && fpm_pos > 0
-            {
-                let num_str = parts[fpm_pos - 1];
-                let num_clean = num_str.replace("\u{1b}[32m", "").replace("\u{1b}[0m", "");
-                if let Ok(fpm) = num_clean.parse::<f32>() {
-                    let fps = fpm / 60.0;
-                    cleaned = cleaned.replacen(
-                        &format!("{num_str} fpm"),
-                        &format!("\u{1b}[32m{fps:.2}\u{1b}[0m"),
-                        1,
-                    );
-                }
-            }
-        }
+        let Some((current, total, fps, kbps)) = parse_svt(text) else { continue };
 
         let prefix = match crf_score {
             Some((crf, Some(score))) => {
@@ -356,21 +311,19 @@ fn watch_svt(
             None => format!("{C}[{chunk_idx:04}{C}]"),
         };
 
-        let display_line = if let Some((current, total)) = parse_svt_frames_total(text) {
-            let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-            let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
-            let perc = (current * 100 / total.max(1)).min(100);
-            format!("{prefix} {P}[{bar}{P}] {W}{perc}% {cleaned}")
-        } else {
-            format!("{prefix} {cleaned}")
-        };
+        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
+        let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+        let perc = (current * 100 / total.max(1)).min(100);
+
+        let display_line = format!(
+            "{prefix} {P}[{bar}{P}] {W}{perc}% {Y}{current}/{total} {G}{fps:.2} {W}| {P}{kbps:.0} \
+             kb/s"
+        );
 
         let frames_delta = if track_frames {
-            parse_svt_frames(text).map(|current| {
-                let delta = current.saturating_sub(last_frames);
-                last_frames = current;
-                delta
-            })
+            let delta = current.saturating_sub(last_frames);
+            last_frames = current;
+            Some(delta)
         } else {
             None
         };
@@ -484,28 +437,29 @@ fn watch_vvenc(
     tx.send(WorkerMsg::Clear(worker_id)).ok();
 }
 
-fn parse_svt_frames(line: &str) -> Option<usize> {
-    let frames_pos = line.find(" Frames")?;
-    let bytes = line.as_bytes();
-
-    let mut start = frames_pos;
-    while start > 0 {
-        let b = bytes[start - 1];
-        if b.is_ascii_digit() || b == b'/' {
-            start -= 1;
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            i += 2;
+            while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
+                i += 1;
+            }
         } else {
-            break;
+            out.push(bytes[i] as char);
         }
+        i += 1;
     }
-
-    let num_part = &line[start..frames_pos];
-    let first_num = num_part.split('/').next()?;
-    first_num.parse().ok()
+    out
 }
 
-fn parse_svt_frames_total(line: &str) -> Option<(usize, usize)> {
-    let frames_pos = line.find(" Frames")?;
-    let bytes = line.as_bytes();
+fn parse_svt(line: &str) -> Option<(usize, usize, f32, f32)> {
+    let clean = strip_ansi(line);
+
+    let frames_pos = clean.find(" Frames")?;
+    let bytes = clean.as_bytes();
 
     let mut start = frames_pos;
     while start > 0 {
@@ -517,11 +471,34 @@ fn parse_svt_frames_total(line: &str) -> Option<(usize, usize)> {
         }
     }
 
-    let num_part = &line[start..frames_pos];
-    let mut parts = num_part.split('/');
-    let current = parts.next()?.parse().ok()?;
-    let total = parts.next()?.parse().ok()?;
-    Some((current, total))
+    let num_part = &clean[start..frames_pos];
+    let mut frame_parts = num_part.split('/');
+    let current: usize = frame_parts.next()?.parse().ok()?;
+    let total: usize = frame_parts.next()?.parse().ok()?;
+
+    let after_frames = &clean[frames_pos + 7..];
+
+    let fps = if let Some(fpm_pos) = after_frames.find(" fpm") {
+        let before = &after_frames[..fpm_pos];
+        let num_str = before.rsplit(|c: char| !c.is_ascii_digit() && c != '.').next()?;
+        num_str.parse::<f32>().ok()? / 60.0
+    } else if let Some(fps_pos) = after_frames.find(" fps") {
+        let before = &after_frames[..fps_pos];
+        let num_str = before.rsplit(|c: char| !c.is_ascii_digit() && c != '.').next()?;
+        num_str.parse().ok()?
+    } else {
+        return None;
+    };
+
+    let kbps = if let Some(kbps_pos) = after_frames.find(" kb/s") {
+        let before = &after_frames[..kbps_pos];
+        let num_str = before.rsplit(|c: char| !c.is_ascii_digit() && c != '.').next()?;
+        num_str.parse().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+
+    Some((current, total, fps, kbps))
 }
 
 fn watch_x265(
