@@ -1,6 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -35,7 +35,8 @@ struct ProgState {
     fps_num: usize,
     fps_den: usize,
     completed: Arc<AtomicUsize>,
-    completions: Arc<Mutex<crate::chunk::ResumeInf>>,
+    completed_frames: Arc<AtomicUsize>,
+    total_size: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ProgsBar {
@@ -120,7 +121,8 @@ impl ProgsTrack {
         worker_count: usize,
         init_frames: usize,
         completed: Arc<AtomicUsize>,
-        completions: Arc<Mutex<crate::chunk::ResumeInf>>,
+        completed_frames: Arc<AtomicUsize>,
+        total_size: Arc<std::sync::atomic::AtomicU64>,
     ) -> (Self, thread::JoinHandle<()>) {
         let (tx, rx) = crossbeam_channel::unbounded();
 
@@ -132,8 +134,15 @@ impl ProgsTrack {
         let fps_num = inf.fps_num as usize;
         let fps_den = inf.fps_den as usize;
 
-        let state =
-            ProgState { total_chunks, total_frames, fps_num, fps_den, completed, completions };
+        let state = ProgState {
+            total_chunks,
+            total_frames,
+            fps_num,
+            fps_den,
+            completed,
+            completed_frames,
+            total_size,
+        };
 
         let handle = thread::spawn(move || {
             display_loop(&rx, worker_count, init_frames, &state);
@@ -652,10 +661,8 @@ fn draw_screen(
 
     print!("\r\x1b[2K\n");
 
-    let data = state.completions.lock().unwrap();
-    let completed_frames: usize = data.chnks_done.iter().map(|c| c.frames).sum();
-    let total_size: u64 = data.chnks_done.iter().map(|c| c.size).sum();
-    drop(data);
+    let completed_frames = state.completed_frames.load(Ordering::Relaxed);
+    let total_size = state.total_size.load(Ordering::Relaxed);
 
     let processed_frames = processed.load(Ordering::Relaxed);
     let frames_done = completed_frames.max(init_frames + processed_frames);

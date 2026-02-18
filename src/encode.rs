@@ -28,24 +28,30 @@ pub fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
 
 struct WorkerStats {
     completed: Arc<std::sync::atomic::AtomicUsize>,
+    completed_frames: Arc<std::sync::atomic::AtomicUsize>,
+    total_size: Arc<std::sync::atomic::AtomicU64>,
     completions: Arc<std::sync::Mutex<ResumeInf>>,
 }
 
 impl WorkerStats {
-    fn new(completed_count: usize, resume_data: ResumeInf) -> Self {
+    fn new(completed_count: usize, resume_data: &ResumeInf) -> Self {
+        let init_frames: usize = resume_data.chnks_done.iter().map(|c| c.frames).sum();
+        let init_size: u64 = resume_data.chnks_done.iter().map(|c| c.size).sum();
         Self {
             completed: Arc::new(std::sync::atomic::AtomicUsize::new(completed_count)),
-            completions: Arc::new(std::sync::Mutex::new(resume_data)),
+            completed_frames: Arc::new(std::sync::atomic::AtomicUsize::new(init_frames)),
+            total_size: Arc::new(std::sync::atomic::AtomicU64::new(init_size)),
+            completions: Arc::new(std::sync::Mutex::new(resume_data.clone())),
         }
     }
 
     fn add_completion(&self, completion: ChunkComp, work_dir: &Path) {
-        {
-            let mut data = self.completions.lock().unwrap();
-            data.chnks_done.push(completion);
-        }
-        let data = self.completions.lock().unwrap();
+        self.completed_frames.fetch_add(completion.frames, std::sync::atomic::Ordering::Relaxed);
+        self.total_size.fetch_add(completion.size, std::sync::atomic::Ordering::Relaxed);
+        let mut data = self.completions.lock().unwrap();
+        data.chnks_done.push(completion);
         let _ = crate::chunk::save_resume(&data, work_dir);
+        drop(data);
     }
 }
 
@@ -60,7 +66,7 @@ fn build_skip_set(resume_data: &ResumeInf) -> (HashSet<usize>, usize, usize) {
     (skip_indices, completed_count, completed_frames)
 }
 
-fn create_stats(completed_count: usize, resume_data: ResumeInf) -> Arc<WorkerStats> {
+fn create_stats(completed_count: usize, resume_data: &ResumeInf) -> Arc<WorkerStats> {
     Arc::new(WorkerStats::new(completed_count, resume_data))
 }
 
@@ -85,14 +91,15 @@ pub fn encode_all(
     }
 
     let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
-    let stats = Some(create_stats(completed_count, resume_data));
+    let stats = Some(create_stats(completed_count, &resume_data));
     let (prog, display_handle) = ProgsTrack::new(
         chunks,
         inf,
         args.worker,
         completed_frames,
         Arc::clone(&stats.as_ref().unwrap().completed),
-        Arc::clone(&stats.as_ref().unwrap().completions),
+        Arc::clone(&stats.as_ref().unwrap().completed_frames),
+        Arc::clone(&stats.as_ref().unwrap().total_size),
     );
     let prog = Arc::new(prog);
 
@@ -248,7 +255,8 @@ fn complete_chunk(
 
     if let Some(s) = stats {
         s.completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        s.completions.lock().unwrap().chnks_done.push(comp);
+        s.completed_frames.fetch_add(comp.frames, std::sync::atomic::Ordering::Relaxed);
+        s.total_size.fetch_add(comp.size, std::sync::atomic::Ordering::Relaxed);
     }
 
     let probes_with_size: Vec<(f64, f64, u64)> = probes
@@ -539,14 +547,15 @@ fn encode_tq(
 
     let resume_state = Arc::new(std::sync::Mutex::new(resume_data.clone()));
     let tq_logger = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let stats = Some(create_stats(completed_count, resume_data));
+    let stats = Some(create_stats(completed_count, &resume_data));
     let (prog, display_handle) = ProgsTrack::new(
         chunks,
         inf,
         args.worker + args.metric_worker,
         completed_frames,
         Arc::clone(&stats.as_ref().unwrap().completed),
-        Arc::clone(&stats.as_ref().unwrap().completions),
+        Arc::clone(&stats.as_ref().unwrap().completed_frames),
+        Arc::clone(&stats.as_ref().unwrap().total_size),
     );
     let prog = Arc::new(prog);
 
@@ -1079,32 +1088,31 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
 }
 
 #[cfg(feature = "libsvtav1")]
-fn write_ivf_header(f: &mut std::fs::File, cfg: &EncConfig) {
-    use std::io::Write;
-    let _ = f.write_all(b"DKIF");
-    let _ = f.write_all(&0u16.to_le_bytes());
-    let _ = f.write_all(&32u16.to_le_bytes());
-    let _ = f.write_all(b"AV01");
-    let _ = f.write_all(&(cfg.width as u16).to_le_bytes());
-    let _ = f.write_all(&(cfg.height as u16).to_le_bytes());
-    let _ = f.write_all(&cfg.inf.fps_num.to_le_bytes());
-    let _ = f.write_all(&cfg.inf.fps_den.to_le_bytes());
-    let _ = f.write_all(&0u32.to_le_bytes());
-    let _ = f.write_all(&0u32.to_le_bytes());
+fn write_ivf_header(f: &mut impl std::io::Write, cfg: &EncConfig) {
+    let mut hdr = [0u8; 32];
+    hdr[0..4].copy_from_slice(b"DKIF");
+    hdr[6..8].copy_from_slice(&32u16.to_le_bytes());
+    hdr[8..12].copy_from_slice(b"AV01");
+    hdr[12..14].copy_from_slice(&(cfg.width as u16).to_le_bytes());
+    hdr[14..16].copy_from_slice(&(cfg.height as u16).to_le_bytes());
+    hdr[16..20].copy_from_slice(&cfg.inf.fps_num.to_le_bytes());
+    hdr[20..24].copy_from_slice(&cfg.inf.fps_den.to_le_bytes());
+    let _ = f.write_all(&hdr);
 }
 
 #[cfg(feature = "libsvtav1")]
-fn write_ivf_frame(f: &mut std::fs::File, data: &[u8], pts: u64) {
-    use std::io::Write;
-    let _ = f.write_all(&(data.len() as u32).to_le_bytes());
-    let _ = f.write_all(&pts.to_le_bytes());
+fn write_ivf_frame(f: &mut impl std::io::Write, data: &[u8], pts: u64) {
+    let mut hdr = [0u8; 12];
+    hdr[0..4].copy_from_slice(&(data.len() as u32).to_le_bytes());
+    hdr[4..12].copy_from_slice(&pts.to_le_bytes());
+    let _ = f.write_all(&hdr);
     let _ = f.write_all(data);
 }
 
 #[cfg(feature = "libsvtav1")]
 fn drain_svt_packets(
     handle: *mut crate::svt::EbComponentType,
-    out: &mut std::fs::File,
+    out: &mut impl std::io::Write,
     done: bool,
 ) -> usize {
     use crate::svt::{
@@ -1171,7 +1179,7 @@ fn enc_svt_lib(
         std::process::exit(1);
     }
 
-    let mut out = std::fs::File::create(cfg.output).unwrap();
+    let mut out = std::io::BufWriter::new(std::fs::File::create(cfg.output).unwrap());
     write_ivf_header(&mut out, cfg);
 
     let w = cfg.width as usize;
