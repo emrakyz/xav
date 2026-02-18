@@ -501,13 +501,15 @@ pub fn decode_pipe(
 
     match (inf.is_10bit, cc, has_rem) {
         (true, Some(cc), false) => {
+            let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
             pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
-                dec_pipe_10_crop(ch, raw, raw_fsz, &cc, fsz)
+                dec_pipe_10_crop(ch, raw, raw_fsz, &cc, fsz, &mut crop_buf)
             });
         }
         (true, Some(cc), true) => {
+            let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
             pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
-                dec_pipe_10_crop_rem(ch, raw, raw_fsz, &cc, fsz)
+                dec_pipe_10_crop_rem(ch, raw, raw_fsz, &cc, fsz, &mut crop_buf)
             });
         }
         (true, None, false) => {
@@ -541,9 +543,9 @@ fn pipe_loop<F>(
     sem: &Arc<Semaphore>,
     tx: &Sender<WorkPkg>,
     raw_fsz: usize,
-    decode: F,
+    mut decode: F,
 ) where
-    F: Fn(&Chunk, &[u8]) -> WorkPkg,
+    F: FnMut(&Chunk, &[u8]) -> WorkPkg,
 {
     for ch in chunks {
         let len = ch.end - ch.start;
@@ -598,15 +600,21 @@ fn dec_pipe_10_rem(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz:
 }
 
 #[inline]
-fn dec_pipe_10_crop(ch: &Chunk, data: &[u8], raw_fsz: usize, cc: &CropCalc, fsz: usize) -> WorkPkg {
+fn dec_pipe_10_crop(
+    ch: &Chunk,
+    data: &[u8],
+    raw_fsz: usize,
+    cc: &CropCalc,
+    fsz: usize,
+    crop_buf: &mut [u8],
+) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
     let y_pack = (cc.new_w as usize * cc.new_h as usize * 5) / 4;
     let uv_pack = y_pack / 4;
-    let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
-        cc.crop(src, &mut crop_buf);
+        cc.crop(src, crop_buf);
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let uv_raw = y_raw / 4;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
@@ -627,13 +635,13 @@ fn dec_pipe_10_crop_rem(
     raw_fsz: usize,
     cc: &CropCalc,
     fsz: usize,
+    crop_buf: &mut [u8],
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-    let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
-        cc.crop(src, &mut crop_buf);
+        cc.crop(src, crop_buf);
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
         crate::ffms::pack_10bit_rem(&crop_buf[..y_raw], dst, cc.new_w as usize, cc.new_h as usize);

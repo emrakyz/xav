@@ -1,5 +1,4 @@
 use std::cmp::min;
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
@@ -10,10 +9,7 @@ use av_scenechange::{DetectionOptions, SceneDetectionSpeed, av_decoders, detect_
 use crate::ffms;
 use crate::progs::ProgsBar;
 
-pub fn fd_scenes(
-    vid_path: &Path,
-    scene_file: &Path,
-) -> Result<BTreeMap<usize, (f64, f64)>, Box<dyn std::error::Error>> {
+pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let idx = ffms::VidIdx::new(vid_path, true)?;
     let inf = ffms::get_vidinf(&idx)?;
 
@@ -51,8 +47,12 @@ pub fn fd_scenes(
 
     ProgsBar::finish_scenes();
 
-    let scores: BTreeMap<usize, (f64, f64)> =
-        results.scores.into_iter().map(|(k, v)| (k, (v.inter_cost, v.threshold))).collect();
+    let mut scores: Vec<Option<(f64, f64)>> = vec![None; tot_frames];
+    for (k, v) in results.scores {
+        if k < tot_frames {
+            scores[k] = Some((v.inter_cost, v.threshold));
+        }
+    }
 
     let mut scenes = Vec::new();
     for i in 0..results.scene_changes.len() {
@@ -77,7 +77,8 @@ pub fn fd_scenes(
 
             let split_point = (min_size..=max_size)
                 .filter_map(|size| {
-                    scores.get(&(current_start + size)).map(|(inter_cost, threshold)| {
+                    let idx = current_start + size;
+                    scores[idx].map(|(inter_cost, threshold)| {
                         let inter_score = inter_cost / threshold;
                         let distance_from_mid =
                             (middle_point.max(size) - middle_point.min(size)) as f64;
@@ -107,5 +108,5 @@ pub fn fd_scenes(
 
     fs::write(scene_file, content)?;
 
-    Ok(scores)
+    Ok(())
 }
