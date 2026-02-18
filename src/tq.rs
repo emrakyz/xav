@@ -38,11 +38,11 @@ pub fn binary_search(min: f64, max: f64) -> f64 {
 }
 
 pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
-    let mut sorted = probes.to_vec();
-    sorted.sort_unstable_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+    let mut pairs: Vec<(f64, f64)> = probes.iter().map(|p| (p.score, p.crf)).collect();
+    pairs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    let x: Vec<f64> = sorted.iter().map(|p| p.score).collect();
-    let y: Vec<f64> = sorted.iter().map(|p| p.crf).collect();
+    let x: Vec<f64> = pairs.iter().map(|p| p.0).collect();
+    let y: Vec<f64> = pairs.iter().map(|p| p.1).collect();
 
     let result = match round {
         1 | 2 => None,
