@@ -61,12 +61,12 @@ impl ProgsBar {
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
         let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
         let perc = (current * 100 / total.max(1)).min(100);
-        let (eta_h, eta_m, eta_s) = (eta_secs / 3600, (eta_secs % 3600) / 60, eta_secs % 60);
+        let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
+        let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
 
         print!(
-            "\r\x1b[2K{W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} MBs{C}, \
-             {W}{eta_h:02}{P}:{W}{eta_m:02}{P}:{W}{eta_s:02}{C}, \
-             {G}{mb_current}{C}/{R}{mb_total}{N}"
+            "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} \
+             MBs{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
         std::io::stdout().flush().unwrap();
     }
@@ -85,11 +85,12 @@ impl ProgsBar {
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
         let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
         let perc = (current * 100 / total.max(1)).min(100);
-        let (eta_m, eta_s) = ((eta_secs % 3600) / 60, eta_secs % 60);
+        let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
+        let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
 
         print!(
-            "\r\x1b[2K{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} FPS{C}, \
-             {W}{eta_m:02}{P}:{W}{eta_s:02}{C}, {G}{current}{C}/{R}{total}{N}"
+            "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
+             FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
         std::io::stdout().flush().unwrap();
     }
@@ -644,7 +645,8 @@ fn draw_screen(
     let processed_frames = processed.load(Ordering::Relaxed);
     let frames_done = completed_frames.max(init_frames + processed_frames);
 
-    let elapsed_secs = crate::chunk::PRIOR_SECS.load(Ordering::Relaxed) as usize + start.elapsed().as_secs() as usize;
+    let elapsed_secs = crate::chunk::PRIOR_SECS.load(Ordering::Relaxed) as usize
+        + start.elapsed().as_secs() as usize;
     let fps = frames_done as f32 / elapsed_secs.max(1) as f32;
     let remaining = state.total_frames.saturating_sub(frames_done);
     let eta_secs = remaining * elapsed_secs / frames_done.max(1);

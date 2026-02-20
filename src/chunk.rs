@@ -1,7 +1,6 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::encoder::Encoder;
@@ -102,7 +101,10 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
             let mut prior_secs = 0u64;
 
             for line in content.lines() {
-                if let Some(s) = line.strip_prefix("elapsed ") { prior_secs = s.parse().unwrap_or(0); continue; }
+                if let Some(s) = line.strip_prefix("elapsed ") {
+                    prior_secs = s.parse().unwrap_or(0);
+                    continue;
+                }
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() == 3
                     && let (Ok(idx), Ok(frames), Ok(size)) = (
@@ -121,10 +123,11 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
 }
 
 pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fmt::Write;
     let path = work_dir.join("done.txt");
     let mut content = String::new();
-    use std::fmt::Write;
-    let elapsed = PRIOR_SECS.load(Ordering::Relaxed) + ENC_START.get().map_or(0, |s| s.elapsed().as_secs());
+    let elapsed =
+        PRIOR_SECS.load(Ordering::Relaxed) + ENC_START.get().map_or(0, |s| s.elapsed().as_secs());
     let _ = writeln!(content, "elapsed {elapsed}");
 
     for chunk in &data.chnks_done {
