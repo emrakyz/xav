@@ -253,7 +253,7 @@ pub fn thr_vid_src(
             idx.track,
             idx.idx_handle,
             threads,
-            0,
+            1,
             std::ptr::addr_of_mut!(err),
         );
 

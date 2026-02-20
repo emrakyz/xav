@@ -644,8 +644,8 @@ fn draw_screen(
     let processed_frames = processed.load(Ordering::Relaxed);
     let frames_done = completed_frames.max(init_frames + processed_frames);
 
-    let elapsed_secs = start.elapsed().as_secs() as usize;
-    let fps = (frames_done.saturating_sub(init_frames)) as f32 / elapsed_secs.max(1) as f32;
+    let elapsed_secs = crate::chunk::PRIOR_SECS.load(Ordering::Relaxed) as usize + start.elapsed().as_secs() as usize;
+    let fps = frames_done as f32 / elapsed_secs.max(1) as f32;
     let remaining = state.total_frames.saturating_sub(frames_done);
     let eta_secs = remaining * elapsed_secs / frames_done.max(1);
     let chunks_done = state.completed.load(Ordering::Relaxed);

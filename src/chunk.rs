@@ -2,7 +2,16 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::encoder::Encoder;
+
+pub static PRIOR_SECS: AtomicU64 = AtomicU64::new(0);
+static ENC_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+pub fn init_elapsed(prior: u64) {
+    PRIOR_SECS.store(prior, Ordering::Relaxed);
+    ENC_START.set(std::time::Instant::now()).ok();
+}
 
 #[derive(Clone)]
 pub struct Scene {
@@ -29,6 +38,7 @@ pub struct ChunkComp {
 #[derive(Clone)]
 pub struct ResumeInf {
     pub chnks_done: Vec<ChunkComp>,
+    pub prior_secs: u64,
 }
 
 pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn std::error::Error>> {
@@ -89,8 +99,10 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
         .then(|| {
             let content = fs::read_to_string(path).ok()?;
             let mut chnks_done = Vec::new();
+            let mut prior_secs = 0u64;
 
             for line in content.lines() {
+                if let Some(s) = line.strip_prefix("elapsed ") { prior_secs = s.parse().unwrap_or(0); continue; }
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() == 3
                     && let (Ok(idx), Ok(frames), Ok(size)) = (
@@ -103,7 +115,7 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
                 }
             }
 
-            Some(ResumeInf { chnks_done })
+            Some(ResumeInf { chnks_done, prior_secs })
         })
         .flatten()
 }
@@ -111,9 +123,11 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
 pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let path = work_dir.join("done.txt");
     let mut content = String::new();
+    use std::fmt::Write;
+    let elapsed = PRIOR_SECS.load(Ordering::Relaxed) + ENC_START.get().map_or(0, |s| s.elapsed().as_secs());
+    let _ = writeln!(content, "elapsed {elapsed}");
 
     for chunk in &data.chnks_done {
-        use std::fmt::Write;
         let _ = writeln!(
             content,
             "{idx} {frames} {size}",

@@ -558,9 +558,11 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let chunks = chunk::chunkify(&scenes);
 
+    let prior_secs = chunk::get_resume(&work_dir).map_or(0, |r| r.prior_secs);
+    chunk::init_elapsed(prior_secs);
     let enc_start = std::time::Instant::now();
     encode::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref(), pipe_reader);
-    let enc_time = enc_start.elapsed();
+    let enc_time = enc_start.elapsed() + std::time::Duration::from_secs(prior_secs);
 
     let video_mkv = work_dir.join("encode").join("video.mkv");
 

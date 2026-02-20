@@ -56,7 +56,7 @@ impl WorkerStats {
 }
 
 fn load_resume_data(work_dir: &Path) -> ResumeInf {
-    get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new() })
+    get_resume(work_dir).unwrap_or(ResumeInf { chnks_done: Vec::new(), prior_secs: 0 })
 }
 
 fn build_skip_set(resume_data: &ResumeInf) -> (HashSet<usize>, usize, usize) {
