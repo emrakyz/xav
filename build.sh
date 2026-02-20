@@ -86,7 +86,7 @@ find_bin() {
 }
 
 detect_deps() {
-        SYS_LIB_DIRS=("/usr/lib64" "/usr/lib" "/lib64" "/lib")
+        SYS_LIB_DIRS=("/usr/lib64" "/usr/lib" "/usr/local/lib64" "/usr/local/lib" "/lib64" "/lib")
         GCC_LIB_DIRS=()
         while IFS= read -r d; do
                 GCC_LIB_DIRS+=("${d}")
@@ -175,17 +175,25 @@ detect_deps() {
                 }
         done
 
-        VSHIP_STATIC_PATH="${HOME}/.local/src/Vship/libvship.a"
-        [[ -f "${VSHIP_STATIC_PATH}" ]] && HAS_VSHIP_STATIC=true || {
-                HAS_VSHIP_STATIC=false
-                VSHIP_STATIC_PATH=""
-        }
+        VSHIP_SEARCH_DIRS=(
+                "${HOME}/.local/src/Vship"
+                "/usr/lib64"
+                "/usr/lib"
+                "/usr/local/lib64"
+                "/usr/local/lib"
+                "/lib64"
+                "/lib"
+        )
+        VSHIP_STATIC_PATH="$(find_lib libvship.a "${VSHIP_SEARCH_DIRS[@]}" || true)"
+        [[ -n "${VSHIP_STATIC_PATH}" ]] && HAS_VSHIP_STATIC=true || HAS_VSHIP_STATIC=false
 
         SVT_SEARCH_DIRS=(
                 "${HOME}/.local/src/svt-av1-hdr/Bin/Release"
                 "${HOME}/.local/src/SVT-AV1/Bin/Release"
                 "/usr/lib64"
                 "/usr/lib"
+                "/usr/local/lib64"
+                "/usr/local/lib"
                 "/lib64"
                 "/lib"
         )
@@ -335,7 +343,7 @@ show_build_menu() {
         printf "  ${Y}%-30b${N} %b\n" "compiler-rt static:" "$(dep_status "${HAS_COMPILERRT_STATIC}" "${COMPILERRT_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "Rust STDLIB static:" "$(dep_status "${HAS_RUST_STDLIB}" "${RUST_STDLIB_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) SVT-AV1 static:" "$(dep_status_locations "${HAS_SVT_STATIC}" "${SVT_STATIC_PATH}" "${SVT_SEARCH_DIRS[@]}")"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${HOME}/.local/src/Vship")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${VSHIP_SEARCH_DIRS[@]}")"
         echo
 
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"

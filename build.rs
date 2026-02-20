@@ -17,7 +17,21 @@ fn main() {
 
         #[cfg(feature = "vship")]
         {
-            println!("cargo:rustc-link-search=native={home}/.local/src/Vship");
+            let vship_paths = [
+                format!("{home}/.local/src/Vship"),
+                "/usr/lib64".to_string(),
+                "/usr/lib".to_string(),
+                "/usr/local/lib64".to_string(),
+                "/usr/local/lib".to_string(),
+                "/lib64".to_string(),
+                "/lib".to_string(),
+            ];
+            for path in &vship_paths {
+                if std::path::Path::new(&format!("{path}/libvship.a")).exists() {
+                    println!("cargo:rustc-link-search=native={path}");
+                    break;
+                }
+            }
 
             println!("cargo:rustc-link-lib=static=vship");
 
@@ -35,6 +49,8 @@ fn main() {
             format!("{home}/.local/src/SVT-AV1/Bin/Release"),
             "/usr/lib64".to_string(),
             "/usr/lib".to_string(),
+            "/usr/local/lib64".to_string(),
+            "/usr/local/lib".to_string(),
             "/lib64".to_string(),
             "/lib".to_string(),
         ];
