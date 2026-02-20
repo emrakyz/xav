@@ -164,8 +164,8 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
             x => x,
         };
 
-        let width = (*frame).EncodedWidth as u32;
-        let height = (*frame).EncodedHeight as u32;
+        let width = (*frame).EncodedWidth.cast_unsigned();
+        let height = (*frame).EncodedHeight.cast_unsigned();
         let y_linesize = (*frame).Linesize[0] as usize;
         let is_10bit = y_linesize >= (width as usize) * 2;
 
@@ -221,8 +221,8 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
             width,
             height,
             dar,
-            fps_num: (*props).FPSNumerator as u32,
-            fps_den: (*props).FPSDenominator as u32,
+            fps_num: (*props).FPSNumerator.cast_unsigned(),
+            fps_den: (*props).FPSDenominator.cast_unsigned(),
             frames: (*props).NumFrames as usize,
             color_primaries: Some((*frame).ColorPrimaries),
             transfer_characteristics: Some((*frame).TransferCharateristics),

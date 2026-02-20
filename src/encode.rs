@@ -284,7 +284,8 @@ fn complete_chunk(
     if use_cvvdp && !cvvdp_per_frame {
         tq_scores.push(final_score);
     } else {
-        tq_scores.extend_from_slice(&probes.last().unwrap().frame_scores);
+        let best = probes.iter().find(|p| (p.crf - final_crf).abs() < 0.001).unwrap();
+        tq_scores.extend_from_slice(&best.frame_scores);
     }
 }
 
@@ -1127,7 +1128,7 @@ fn drain_svt_packets(
         let p = unsafe { &*pkt };
         if p.n_filled_len > 0 {
             let data = unsafe { std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
-            write_ivf_frame(out, data, p.pts as u64);
+            write_ivf_frame(out, data, p.pts.cast_unsigned());
             count += 1;
         }
         let eos = p.flags & EB_BUFFERFLAG_EOS != 0;
@@ -1237,7 +1238,7 @@ fn enc_svt_lib(
         let p = unsafe { &*pkt };
         if p.n_filled_len > 0 {
             let data = unsafe { std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
-            write_ivf_frame(&mut out, data, p.pts as u64);
+            write_ivf_frame(&mut out, data, p.pts.cast_unsigned());
             tracker.encoded += 1;
         }
         let is_eos = p.flags & EB_BUFFERFLAG_EOS != 0;
