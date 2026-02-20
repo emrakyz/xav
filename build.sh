@@ -68,6 +68,322 @@ show_opts() {
         echo
 }
 
+find_lib() {
+        local name="${1}"
+        local search_dirs=("${@:2}")
+
+        for dir in "${search_dirs[@]}"; do
+                [[ -f "${dir}/${name}" ]] && {
+                        echo "${dir}/${name}"
+                        return 0
+                }
+        done
+        return 1
+}
+
+find_bin() {
+        command -v "${1}" 2> /dev/null
+}
+
+detect_deps() {
+        SYS_LIB_DIRS=("/usr/lib64" "/usr/lib" "/lib64" "/lib")
+        GCC_LIB_DIRS=()
+        while IFS= read -r d; do
+                GCC_LIB_DIRS+=("${d}")
+        done < <(find /usr/lib/gcc /usr/lib64/gcc -maxdepth 2 -type d 2> /dev/null || true)
+
+        CLANG_RT_DIR="$(clang --print-runtime-dir 2> /dev/null || true)"
+        CLANG_LIB_DIRS=()
+        [[ -n "${CLANG_RT_DIR}" && -d "${CLANG_RT_DIR}" ]] && CLANG_LIB_DIRS+=("${CLANG_RT_DIR}")
+        while IFS= read -r d; do
+                CLANG_LIB_DIRS+=("${d}")
+        done < <(find /usr/lib/clang /usr/lib64/clang -type d -name "linux" -o -type d -name "lib" 2> /dev/null || true)
+
+        ALL_STATIC_DIRS=("${SYS_LIB_DIRS[@]}" "${GCC_LIB_DIRS[@]}" "${CLANG_LIB_DIRS[@]}")
+
+        RUST_NIGHTLY_PATH="$(find_bin rustc || true)"
+        RUSTC_VERSION=""
+        if [[ -n "${RUST_NIGHTLY_PATH}" ]]; then
+                RUSTC_VERSION="$(rustc --version 2> /dev/null || true)"
+                [[ "${RUSTC_VERSION}" == *nightly* ]] && HAS_RUST_NIGHTLY=true || HAS_RUST_NIGHTLY=false
+        else
+                HAS_RUST_NIGHTLY=false
+        fi
+
+        NASM_PATH="$(find_bin nasm || true)"
+        NASM_VERSION=""
+        if [[ -n "${NASM_PATH}" ]]; then
+                HAS_NASM=true
+                NASM_VERSION="$(nasm --version 2> /dev/null | head -1 || true)"
+        else
+                HAS_NASM=false
+        fi
+
+        LLD_PATH="$(find_bin ld.lld || true)"
+        [[ -n "${LLD_PATH}" ]] && HAS_LLD=true || HAS_LLD=false
+
+        CLANG_PATH="$(find_bin clang || true)"
+        [[ -n "${CLANG_PATH}" ]] && HAS_CLANG=true || HAS_CLANG=false
+
+        LLVM_PATH="$(find_bin llvm-ar || true)"
+        [[ -n "${LLVM_PATH}" ]] && HAS_LLVM=true || HAS_LLVM=false
+
+        COMPILERRT_PATH="$(find_lib libclang_rt.builtins.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+        if [[ -z "${COMPILERRT_PATH}" ]]; then
+                COMPILERRT_PATH="$(find_lib libclang_rt.builtins-x86_64.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+        fi
+        [[ -n "${COMPILERRT_PATH}" ]] && HAS_COMPILERRT=true || HAS_COMPILERRT=false
+
+        LIBUNWIND_PATH="$(find_lib libunwind.so "${SYS_LIB_DIRS[@]}" || true)"
+        if [[ -z "${LIBUNWIND_PATH}" ]]; then
+                LIBUNWIND_PATH="$(find_lib libunwind.a "${ALL_STATIC_DIRS[@]}" || true)"
+        fi
+        [[ -n "${LIBUNWIND_PATH}" ]] && HAS_LIBUNWIND=true || HAS_LIBUNWIND=false
+
+        HAS_HARD_REQS=true
+        for req in HAS_RUST_NIGHTLY HAS_NASM HAS_COMPILERRT HAS_LIBUNWIND HAS_LLD HAS_CLANG HAS_LLVM; do
+                [[ "${!req}" == false ]] && {
+                        HAS_HARD_REQS=false
+                        break
+                }
+        done
+
+        GLIBC_STATIC_PATH="$(find_lib libc.a "${ALL_STATIC_DIRS[@]}" || true)"
+        [[ -n "${GLIBC_STATIC_PATH}" ]] && HAS_GLIBC_STATIC=true || HAS_GLIBC_STATIC=false
+
+        LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
+        [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
+
+        LLVM_LIBUNWIND_STATIC_PATH="$(find_lib libunwind.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+        [[ -n "${LLVM_LIBUNWIND_STATIC_PATH}" ]] && HAS_LLVM_LIBUNWIND_STATIC=true || HAS_LLVM_LIBUNWIND_STATIC=false
+
+        COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
+        [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
+
+        RUST_SYSROOT="$(rustc --print sysroot 2> /dev/null || true)"
+        RUST_STDLIB_PATH=""
+        if [[ -n "${RUST_SYSROOT}" ]]; then
+                RUST_STDLIB_PATH="$(find "${RUST_SYSROOT}" -name 'libstd-*.rlib' -print -quit 2> /dev/null || true)"
+        fi
+        [[ -n "${RUST_STDLIB_PATH}" ]] && HAS_RUST_STDLIB=true || HAS_RUST_STDLIB=false
+
+        HAS_STATIC_LIBS=true
+        for req in HAS_GLIBC_STATIC HAS_LIBSTDCXX_STATIC HAS_LLVM_LIBUNWIND_STATIC HAS_COMPILERRT_STATIC; do
+                [[ "${!req}" == false ]] && {
+                        HAS_STATIC_LIBS=false
+                        break
+                }
+        done
+
+        VSHIP_STATIC_PATH="${HOME}/.local/src/Vship/libvship.a"
+        [[ -f "${VSHIP_STATIC_PATH}" ]] && HAS_VSHIP_STATIC=true || {
+                HAS_VSHIP_STATIC=false
+                VSHIP_STATIC_PATH=""
+        }
+
+        SVT_SEARCH_DIRS=(
+                "${HOME}/.local/src/svt-av1-hdr/Bin/Release"
+                "${HOME}/.local/src/SVT-AV1/Bin/Release"
+                "/usr/lib64"
+                "/usr/lib"
+                "/lib64"
+                "/lib"
+        )
+        SVT_STATIC_PATH="$(find_lib libSvtAv1Enc.a "${SVT_SEARCH_DIRS[@]}" || true)"
+        [[ -n "${SVT_STATIC_PATH}" ]] && HAS_SVT_STATIC=true || HAS_SVT_STATIC=false
+
+        FFMS2_PATH="$(find_lib libffms2.so "${SYS_LIB_DIRS[@]}" || true)"
+        [[ -n "${FFMS2_PATH}" ]] && HAS_FFMS2=true || HAS_FFMS2=false
+
+        VSHIP_PATH="$(find_lib libvship.so "${SYS_LIB_DIRS[@]}" || true)"
+        [[ -n "${VSHIP_PATH}" ]] && HAS_VSHIP=true || HAS_VSHIP=false
+
+        FFMPEG_PATH="$(find_bin ffmpeg || true)"
+        FFMPEG_VERSION=""
+        if [[ -n "${FFMPEG_PATH}" ]]; then
+                HAS_FFMPEG=true
+                FFMPEG_VERSION="$(ffmpeg -version 2> /dev/null | head -1 || true)"
+        else
+                HAS_FFMPEG=false
+        fi
+
+        MP4BOX_PATH="$(find_bin MP4Box || true)"
+        MP4BOX_VERSION=""
+        if [[ -n "${MP4BOX_PATH}" ]]; then
+                HAS_MP4BOX=true
+                MP4BOX_VERSION="$(MP4Box -version 2>&1 | head -1 || true)"
+        else
+                HAS_MP4BOX=false
+        fi
+
+        MKVMERGE_PATH="$(find_bin mkvmerge || true)"
+        MKVMERGE_VERSION=""
+        if [[ -n "${MKVMERGE_PATH}" ]]; then
+                HAS_MKVMERGE=true
+                MKVMERGE_VERSION="$(mkvmerge --version 2> /dev/null | head -1 || true)"
+        else
+                HAS_MKVMERGE=false
+        fi
+
+        SVTAV1ENC_PATH="$(find_bin SvtAv1EncApp || true)"
+        SVTAV1ENC_VERSION=""
+        if [[ -n "${SVTAV1ENC_PATH}" ]]; then
+                HAS_SVTAV1ENC=true
+                SVTAV1ENC_VERSION="$(SvtAv1EncApp --version 2>&1 | head -1 || true)"
+        else
+                HAS_SVTAV1ENC=false
+        fi
+
+        AVMENC_PATH="$(find_bin avmenc || true)"
+        AVMENC_VERSION=""
+        if [[ -n "${AVMENC_PATH}" ]]; then
+                HAS_AVMENC=true
+                AVMENC_VERSION="$(avmenc --help 2>&1 | head -1 || true)"
+        else
+                HAS_AVMENC=false
+        fi
+
+        VVENCFFAPP_PATH="$(find_bin vvencFFapp || true)"
+        VVENCFFAPP_VERSION=""
+        if [[ -n "${VVENCFFAPP_PATH}" ]]; then
+                HAS_VVENCFFAPP=true
+                VVENCFFAPP_VERSION="$(vvencFFapp --version 2>&1 | head -1 || true)"
+        else
+                HAS_VVENCFFAPP=false
+        fi
+
+        X265_PATH="$(find_bin x265 || true)"
+        X265_VERSION=""
+        if [[ -n "${X265_PATH}" ]]; then
+                HAS_X265=true
+                X265_VERSION="$(x265 --version 2>&1 | head -1 || true)"
+        else
+                HAS_X265=false
+        fi
+
+        X264_PATH="$(find_bin x264 || true)"
+        X264_VERSION=""
+        if [[ -n "${X264_PATH}" ]]; then
+                HAS_X264=true
+                X264_VERSION="$(x264 --version 2>&1 | head -1 || true)"
+        else
+                HAS_X264=false
+        fi
+
+        ELIGIBLE=()
+        if [[ "${HAS_HARD_REQS}" == true ]]; then
+                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_FFMS2}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_FFMS2}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+        else
+                ELIGIBLE=(false false false false false false false false)
+        fi
+}
+
+dep_status() {
+        local has="${1}" path="${2}" ver="${3:-}"
+        local NF="${R}  Not Found${N}"
+
+        if [[ "${has}" == true ]]; then
+                [[ -n "${ver}" ]] && echo -e "${G}✅ ${path} ${W}(${ver})${N}" || echo -e "${G}✅ ${path}${N}"
+        else
+                echo -e "${NF}"
+        fi
+}
+
+dep_status_locations() {
+        local has="${1}" path="${2}"
+        shift 2
+        local search_dirs=("${@}")
+
+        if [[ "${has}" == true ]]; then
+                echo -e "${G}✅ ${path}${N}"
+        else
+                echo -e "${R}  Not Found in:${N}"
+                for dir in "${search_dirs[@]}"; do
+                        echo -e "      ${R}- ${dir}${N}"
+                done
+        fi
+}
+
+show_build_menu() {
+        detect_deps
+
+        echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
+        echo -e "${C}║${W}  Required Compiler Toolchain (needed for all build types)             ${C}║${N}"
+        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
+        printf "  ${Y}%-30b${N} %b\n" "Rust Nightly:" "$(dep_status "${HAS_RUST_NIGHTLY}" "${RUST_NIGHTLY_PATH}" "${RUSTC_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "NASM:" "$(dep_status "${HAS_NASM}" "${NASM_PATH}" "${NASM_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "compiler-rt:" "$(dep_status "${HAS_COMPILERRT}" "${COMPILERRT_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "libunwind:" "$(dep_status "${HAS_LIBUNWIND}" "${LIBUNWIND_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "lld:" "$(dep_status "${HAS_LLD}" "${LLD_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "clang:" "$(dep_status "${HAS_CLANG}" "${CLANG_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "llvm:" "$(dep_status "${HAS_LLVM}" "${LLVM_PATH}")"
+        echo
+
+        echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
+        echo -e "${C}║${W}  Fully Static Build Time Requirements                                 ${C}║${N}"
+        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
+        printf "  ${Y}%-30b${N} %b\n" "Glibc static:" "$(dep_status "${HAS_GLIBC_STATIC}" "${GLIBC_STATIC_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "libstdc++ static:" "$(dep_status "${HAS_LIBSTDCXX_STATIC}" "${LIBSTDCXX_STATIC_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "llvm-libunwind static:" "$(dep_status "${HAS_LLVM_LIBUNWIND_STATIC}" "${LLVM_LIBUNWIND_STATIC_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "compiler-rt static:" "$(dep_status "${HAS_COMPILERRT_STATIC}" "${COMPILERRT_STATIC_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "Rust STDLIB static:" "$(dep_status "${HAS_RUST_STDLIB}" "${RUST_STDLIB_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) SVT-AV1 static:" "$(dep_status_locations "${HAS_SVT_STATIC}" "${SVT_STATIC_PATH}" "${SVT_SEARCH_DIRS[@]}")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${HOME}/.local/src/Vship")"
+        echo
+
+        echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
+        echo -e "${C}║${W}  Dynamic Build Requirements                                           ${C}║${N}"
+        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
+        printf "  ${Y}%-30b${N} %b\n" "FFMS2:" "$(dep_status "${HAS_FFMS2}" "${FFMS2_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP:" "$(dep_status "${HAS_VSHIP}" "${VSHIP_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) SVT-AV1 static:" "$(dep_status_locations "${HAS_SVT_STATIC}" "${SVT_STATIC_PATH}" "${SVT_SEARCH_DIRS[@]}")"
+        echo -e "  ${P}Note: Even with dynamic builds, SVT-AV1 library (libSvtAv1Enc.a) is linked statically.${N}"
+        echo
+
+        echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
+        echo -e "${C}║${W}  Runtime Requirements                                                 ${C}║${N}"
+        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
+        printf "  ${Y}%-30b${N} %b\n" "ffmpeg (Always needed for final muxing and audio encoding):" " $(dep_status "${HAS_FFMPEG}" "${FFMPEG_PATH}" "${FFMPEG_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) MP4Box (create VVC timestamps):                 " " $(dep_status "${HAS_MP4BOX}" "${MP4BOX_PATH}" "${MP4BOX_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "(Optional) mkvmerge (create h26* timestamps):" "               $(dep_status "${HAS_MKVMERGE}" "${MKVMERGE_PATH}" "${MKVMERGE_VERSION}")"
+        echo
+        echo -e "  ${W}Encoder Binaries (Optional):${N}"
+        printf "  ${Y}%-30b${N} %b\n" "SvtAv1EncApp:" "$(dep_status "${HAS_SVTAV1ENC}" "${SVTAV1ENC_PATH}" "${SVTAV1ENC_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "avmenc:" "$(dep_status "${HAS_AVMENC}" "${AVMENC_PATH}" "${AVMENC_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "vvencFFapp:" "$(dep_status "${HAS_VVENCFFAPP}" "${VVENCFFAPP_PATH}" "${VVENCFFAPP_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "x265:" "$(dep_status "${HAS_X265}" "${X265_PATH}" "${X265_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "x264:" "$(dep_status "${HAS_X264}" "${X264_PATH}" "${X264_VERSION}")"
+        echo
+
+        echo -e "\n${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
+        echo -e "${C}║${W}                         Build Configuration                           ${C}║${N}"
+        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}\n"
+
+        echo -e "  ${W}[x]${N} ${Y}= Eligible to build${N}\n"
+
+        for i in "${!BUILD_MODES[@]}"; do
+                local idx=$((i + 1))
+                if [[ "${ELIGIBLE[i]}" == true ]]; then
+                        printf "  ${G}[x] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
+                else
+                        printf "  ${R}[ ] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
+                fi
+        done
+        echo
+
+        for i in "${!BUILD_DESCS[@]}"; do
+                printf "  ${Y}%d) ${P}%b${N}\n" "$((i + 1))" "${BUILD_DESCS[i]}"
+        done
+        echo
+}
+
 cleanup_existing() {
         [[ "${build_static}" == false ]] && return 0
 
@@ -365,10 +681,6 @@ main() {
                         ;;
         esac
 
-        echo -e "\n${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
-        echo -e "${C}║${W}                         Build Configuration                           ${C}║${N}"
-        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}\n"
-
         BUILD_MODES=(
                 "Build everything statically with TQ"
                 "Build dynamically with TQ"
@@ -392,13 +704,17 @@ main() {
         )
 
         [[ "${preset}" ]] || {
+                show_build_menu
+
                 while true; do
-                        show_opts "${BUILD_MODES[@]}"
-                        show_opts "${BUILD_DESCS[@]}"
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
                         [[ "${mode_choice}" =~ ^[1-8]$ ]] && {
-                                loginf g "Mode: ${BUILD_DESCS[mode_choice - 1]}"
+                                if [[ "${ELIGIBLE[mode_choice - 1]}" == false ]]; then
+                                        echo -e "${R}Mode ${mode_choice} is not eligible on this system.${N}"
+                                        continue
+                                fi
+                                loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
                                 break
                         }
                 done
