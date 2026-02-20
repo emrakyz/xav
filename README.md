@@ -30,7 +30,7 @@
 
 ## Dependencies
 **Build Time:**
-- Rust Nightly, NASM, Clang, lld, compiler-rt,
+- Rust Nightly, NASM, Clang
 
 **Runtime:**
 - One encoder binary (or SVT-AV1 library): [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) | [AVM](https://gitlab.com/AOMediaCodec/avm) | [VVENC](https://github.com/fraunhoferhhi/vvenc) | [X265](https://bitbucket.org/multicoreware/x265_git/wiki/Home) | [X264](https://www.videolan.org/developers/x264.html)
@@ -38,14 +38,10 @@
 
 **Runtime (Optional):**
 - [VSHIP](https://codeberg.org/Line-fr/Vship) (for GPU based target quality encoding)
-- [MP4Box](https://gpac.io/downloads/gpac-nightly-builds) (the only reliable muxer for `VVC` and it's also used as the first option for concatting x264/x265 videos before the final mux)
-- [mkvmerge](https://mkvtoolnix.download) (used as a secondary option for concatting x264/x265 videos if `MP4Box` is not present)
 
 ## Build
 
-Run the `build.sh` script: Select static or dynamic build
-
-Building everything statically with the script requires you to have static libraries for: `glibc`, `libstdc++`, `llvm-libunwind`, `compiler-rt`
+Run the `build.sh` script: Select one of static or dynamic builds
 
 ## Guide
-- Refer to `user_doc.pdf` (work in progress)
+- Refer to `user_doc.pdf` (WIP)
