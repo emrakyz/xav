@@ -72,7 +72,9 @@ fn extr_raw_data(
 }
 
 fn test_roundtrip(filename: &str, crop: (u32, u32)) {
-    let input = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_files").join(filename);
+    let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("test_files")
+        .join(filename);
 
     let idx = ffms::VidIdx::new(&input, false).unwrap();
     let inf = ffms::get_vidinf(&idx).unwrap();
@@ -85,7 +87,12 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
     let sem_c = Arc::clone(&sem);
     thread::spawn(move || {
         decode_chunks(
-            &[Chunk { idx: 0, start: 0, end: 10, params: None }],
+            &[Chunk {
+                idx: 0,
+                start: 0,
+                end: 10,
+                params: None,
+            }],
             &idx_c,
             &inf_c,
             &tx,
@@ -129,7 +136,11 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
 
         extr_raw_data(source, i, &mut decoded_frame, &inf, crop);
 
-        assert_eq!(roundtrip_frame.len(), decoded_frame.len(), "Frame {i} length mismatch");
+        assert_eq!(
+            roundtrip_frame.len(),
+            decoded_frame.len(),
+            "Frame {i} length mismatch"
+        );
 
         let row_size = final_w * if inf.is_10bit { 2 } else { 1 };
         for row in 0..final_h {

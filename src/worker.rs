@@ -51,7 +51,10 @@ pub struct Semaphore {
 
 impl Semaphore {
     pub const fn new(permits: usize) -> Self {
-        Self { state: Mutex::new(permits), cvar: Condvar::new() }
+        Self {
+            state: Mutex::new(permits),
+            cvar: Condvar::new(),
+        }
     }
 
     pub fn acquire(&self) {

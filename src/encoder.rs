@@ -202,7 +202,9 @@ fn make_avm_cmd(cfg: &EncConfig) -> Command {
 
     cmd.args(cfg.params.split_whitespace());
     cmd.arg("-");
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
 
     cmd
 }
@@ -264,7 +266,9 @@ fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
     cmd.arg("-i").arg("-");
     cmd.arg("-b").arg(cfg.output);
 
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     cmd
 }
@@ -308,7 +312,8 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
     ]);
 
     cmd.arg(format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den));
-    cmd.arg("--input-res").arg(format!("{}x{}", cfg.width, cfg.height));
+    cmd.arg("--input-res")
+        .arg(format!("{}x{}", cfg.width, cfg.height));
     cmd.arg("--frames").arg(cfg.frames.to_string());
 
     if cfg.crf >= 0.0 {
@@ -319,7 +324,12 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         cmd.arg("--video-signal-type-preset");
         let cv = preset
             .starts_with("BT2100_PQ")
-            .then(|| cfg.inf.mastering_display.as_deref().and_then(x265_color_volume))
+            .then(|| {
+                cfg.inf
+                    .mastering_display
+                    .as_deref()
+                    .and_then(x265_color_volume)
+            })
             .flatten();
         if let Some(cv) = cv {
             cmd.arg(format!("{preset}:{cv}"));
@@ -387,7 +397,8 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
     ]);
 
     cmd.arg(format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den));
-    cmd.arg("--input-res").arg(format!("{}x{}", cfg.width, cfg.height));
+    cmd.arg("--input-res")
+        .arg(format!("{}x{}", cfg.width, cfg.height));
     cmd.arg("--frames").arg(cfg.frames.to_string());
 
     if cfg.crf >= 0.0 {
@@ -414,7 +425,13 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
 }
 
 fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
-    let unk = |s| if is_x264 && s == "unknown" { "undef" } else { s };
+    let unk = |s| {
+        if is_x264 && s == "unknown" {
+            "undef"
+        } else {
+            s
+        }
+    };
 
     if let Some(cp) = inf.color_primaries {
         cmd.args(["--colorprim", unk(h26x_color_primaries_str(cp))]);
@@ -440,7 +457,14 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
     if let Some(ref md) = inf.mastering_display
         && let Some(converted) = h26x_mastering(md, is_x264)
     {
-        cmd.args([if is_x264 { "--mastering-display" } else { "--master-display" }, &converted]);
+        cmd.args([
+            if is_x264 {
+                "--mastering-display"
+            } else {
+                "--master-display"
+            },
+            &converted,
+        ]);
     }
     if let Some(ref cl) = inf.content_light {
         cmd.args([if is_x264 { "--cll" } else { "--max-cll" }, cl]);
@@ -509,7 +533,10 @@ fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
         cmd.arg(format!("--color-primaries={}", color_primaries_str(cp)));
     }
     if let Some(tc) = inf.transfer_characteristics {
-        cmd.arg(format!("--transfer-characteristics={}", transfer_char_str(tc)));
+        cmd.arg(format!(
+            "--transfer-characteristics={}",
+            transfer_char_str(tc)
+        ));
     }
     if let Some(mc) = inf.matrix_coefficients {
         cmd.arg(format!("--matrix-coefficients={}", matrix_coeff_str(mc)));
@@ -545,9 +572,13 @@ fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
     let lmin = (lmin * 10000.0) as u32;
 
     if x264_format {
-        Some(format!("G({gx},{gy})B({bx},{by})R({rx},{ry})WP({wx},{wy})L({lmax},{lmin})"))
+        Some(format!(
+            "G({gx},{gy})B({bx},{by})R({rx},{ry})WP({wx},{wy})L({lmax},{lmin})"
+        ))
     } else {
-        Some(format!("{gx},{gy},{bx},{by},{rx},{ry},{wx},{wy},{lmax},{lmin}"))
+        Some(format!(
+            "{gx},{gy},{bx},{by},{rx},{ry},{wx},{wy},{lmax},{lmin}"
+        ))
     }
 }
 
@@ -803,9 +834,15 @@ pub fn set_svt_config(config: *mut crate::svt::EbSvtAv1EncConfiguration, cfg: &E
 
 #[cfg(feature = "libsvtav1")]
 fn load_fgs_table(config: *mut crate::svt::EbSvtAv1EncConfiguration, path: &std::path::Path) {
-    let Ok(text) = std::fs::read_to_string(path) else { return };
-    let Ok(segments) = av1_grain::parse_grain_table(&text) else { return };
-    let Some(seg) = segments.into_iter().next() else { return };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(segments) = av1_grain::parse_grain_table(&text) else {
+        return;
+    };
+    let Some(seg) = segments.into_iter().next() else {
+        return;
+    };
 
     let mut fg = Box::new(unsafe { std::mem::zeroed::<crate::svt::AomFilmGrain>() });
     fg.apply_grain = 1;

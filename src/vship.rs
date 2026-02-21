@@ -306,7 +306,11 @@ impl VshipProcessor {
                 None
             };
 
-            Ok(Self { handler, cvvdp_handler, butteraugli_handler })
+            Ok(Self {
+                handler,
+                cvvdp_handler,
+                butteraugli_handler,
+            })
         }
     }
 
@@ -390,9 +394,14 @@ impl VshipProcessor {
         line_sizes2: [i64; 3],
     ) -> Result<f64, Box<dyn std::error::Error>> {
         unsafe {
-            let mut score = VshipButteraugliScore { norm_q: 0.0, norm3: 0.0, norminf: 0.0 };
+            let mut score = VshipButteraugliScore {
+                norm_q: 0.0,
+                norm3: 0.0,
+                norminf: 0.0,
+            };
             let ret = Vship_ComputeButteraugli(
-                self.butteraugli_handler.ok_or("Butteraugli handler not initialized")?,
+                self.butteraugli_handler
+                    .ok_or("Butteraugli handler not initialized")?,
                 ptr::from_mut(&mut score),
                 std::ptr::null(),
                 0,
@@ -476,7 +485,11 @@ fn create_yuv_colorspace(
         _ => VshipRange::Limited,
     };
 
-    let sample_val = if is_10bit { VshipSample::Uint10 } else { VshipSample::Uint8 };
+    let sample_val = if is_10bit {
+        VshipSample::Uint10
+    } else {
+        VshipSample::Uint8
+    };
 
     VshipColorspace {
         width: i64::from(width),
@@ -491,6 +504,11 @@ fn create_yuv_colorspace(
         yuv_matrix: matrix_val,
         transfer_function: transfer_val,
         primaries: primaries_val,
-        crop: VshipCropRectangle { top: 0, bottom: 0, left: 0, right: 0 },
+        crop: VshipCropRectangle {
+            top: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
+        },
     }
 }

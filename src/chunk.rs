@@ -60,7 +60,11 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn s
     for i in 0..parsed.len() {
         let (s, params) = &parsed[i];
         let e = parsed.get(i + 1).map_or(t_frames, |(f, _)| *f);
-        scenes.push(Scene { s_frame: *s, e_frame: e, params: params.clone() });
+        scenes.push(Scene {
+            s_frame: *s,
+            e_frame: e,
+            params: params.clone(),
+        });
     }
 
     Ok(scenes)
@@ -88,7 +92,12 @@ pub fn chunkify(scenes: &[Scene]) -> Vec<Chunk> {
     scenes
         .iter()
         .enumerate()
-        .map(|(i, s)| Chunk { idx: i, start: s.s_frame, end: s.e_frame, params: s.params.clone() })
+        .map(|(i, s)| Chunk {
+            idx: i,
+            start: s.s_frame,
+            end: s.e_frame,
+            params: s.params.clone(),
+        })
         .collect()
 }
 
@@ -117,7 +126,10 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
                 }
             }
 
-            Some(ResumeInf { chnks_done, prior_secs })
+            Some(ResumeInf {
+                chnks_done,
+                prior_secs,
+            })
         })
         .flatten()
 }
@@ -269,7 +281,9 @@ const FF_FLAGS: [&str; 13] = [
 ];
 
 pub fn add_mp4_subs(input: &Path, output: &Path) {
-    let Ok(out) = Command::new("MP4Box").arg("-info").arg(input).output() else { return };
+    let Ok(out) = Command::new("MP4Box").arg("-info").arg(input).output() else {
+        return;
+    };
     let info = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let combined = format!("{info}{stderr}");
@@ -286,7 +300,8 @@ pub fn add_mp4_subs(input: &Path, output: &Path) {
                 .and_then(|s| s.split_whitespace().next())
                 .and_then(|s| s.parse::<u32>().ok())
         {
-            cmd.arg("-add").arg(format!("{}#{}", input.display(), track));
+            cmd.arg("-add")
+                .arg(format!("{}#{}", input.display(), track));
             has_tracks = true;
         }
     }
@@ -307,7 +322,11 @@ pub fn merge_out(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut files: Vec<_> = fs::read_dir(encode_dir)?
         .filter_map(Result::ok)
-        .filter(|e| e.path().extension().is_some_and(|ext| ext == encoder.extension()))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|ext| ext == encoder.extension())
+        })
         .collect();
 
     files.sort_unstable_by_key(|e| {
@@ -328,7 +347,11 @@ pub fn merge_out(
 
     if encoder == Encoder::Vvenc {
         let temp_mp4 = encode_dir.join("temp_vvc.mp4");
-        concat_vvc(&files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(), &temp_mp4, inf)?;
+        concat_vvc(
+            &files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
+            &temp_mp4,
+            inf,
+        )?;
 
         if input.is_none() {
             fs::rename(&temp_mp4, output)?;
@@ -343,7 +366,10 @@ pub fn merge_out(
     if matches!(encoder, Encoder::X265 | Encoder::X264) {
         let temp_video = encode_dir.join("temp_hevc.mkv");
         concat_h26x(
-            &files.iter().map(std::fs::DirEntry::path).collect::<Vec<_>>(),
+            &files
+                .iter()
+                .map(std::fs::DirEntry::path)
+                .collect::<Vec<_>>(),
             &temp_video,
             inf,
             encoder,
@@ -410,14 +436,25 @@ fn run_merge(
     fs::write(&concat_list, content)?;
 
     let temp_dir = output.parent().unwrap();
-    let video = if input.is_some() { temp_dir.join("video.mkv") } else { output.to_path_buf() };
+    let video = if input.is_some() {
+        temp_dir.join("video.mkv")
+    } else {
+        output.to_path_buf()
+    };
 
     let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-f", "concat", "-safe", "0", "-i"])
         .arg(&concat_list)
-        .args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
+        .args([
+            "-loglevel",
+            "error",
+            "-hide_banner",
+            "-nostdin",
+            "-stats",
+            "-y",
+        ])
         .args(["-c", "copy", "-r", &fps])
         .args(FF_FLAGS)
         .arg(&video);
@@ -443,8 +480,15 @@ fn run_merge(
         };
 
         let mut cmd2 = Command::new("ffmpeg");
-        cmd2.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
-            .args(["-i", &video.to_string_lossy()]);
+        cmd2.args([
+            "-loglevel",
+            "error",
+            "-hide_banner",
+            "-nostdin",
+            "-stats",
+            "-y",
+        ])
+        .args(["-i", &video.to_string_lossy()]);
 
         if has_audio {
             cmd2.args(["-i", &temp_audio.to_string_lossy()]);
@@ -504,9 +548,16 @@ fn mux_av(
     };
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"])
-        .arg("-i")
-        .arg(video);
+    cmd.args([
+        "-loglevel",
+        "error",
+        "-hide_banner",
+        "-nostdin",
+        "-stats",
+        "-y",
+    ])
+    .arg("-i")
+    .arg(video);
 
     if has_audio {
         cmd.arg("-i").arg(&temp_audio);
@@ -564,8 +615,15 @@ pub fn translate_scenes(scenes: &[Scene], ranges: &[(usize, usize)]) -> Vec<Scen
         let s = cuts[i];
         let e = cuts.get(i + 1).copied().unwrap_or(usize::MAX);
         if let Some(&(_, re)) = ranges.iter().find(|&&(rs, re)| s >= rs && s <= re) {
-            let params = scenes.iter().rfind(|sc| sc.s_frame <= s).and_then(|sc| sc.params.clone());
-            out.push(Scene { s_frame: s, e_frame: e.min(re + 1), params });
+            let params = scenes
+                .iter()
+                .rfind(|sc| sc.s_frame <= s)
+                .and_then(|sc| sc.params.clone());
+            out.push(Scene {
+                s_frame: s,
+                e_frame: e.min(re + 1),
+                params,
+            });
         }
     }
     out
@@ -631,7 +689,12 @@ fn extract_audio_ranges(
     output: &Path,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     if times.len() == 1 {
-        return Ok(extract_segment(input, output, Some(times[0].0), Some(times[0].1 - times[0].0)));
+        return Ok(extract_segment(
+            input,
+            output,
+            Some(times[0].0),
+            Some(times[0].1 - times[0].0),
+        ));
     }
 
     let temp_dir = output.parent().unwrap();
@@ -659,5 +722,8 @@ fn extract_audio_ranges(
 
 pub fn ranges_to_times(ranges: &[(usize, usize)], fps_num: u32, fps_den: u32) -> Vec<(f64, f64)> {
     let fps = f64::from(fps_num) / f64::from(fps_den);
-    ranges.iter().map(|&(s, e)| (s as f64 / fps, (e + 1) as f64 / fps)).collect()
+    ranges
+        .iter()
+        .map(|&(s, e)| (s as f64 / fps, (e + 1) as f64 / fps))
+        .collect()
 }

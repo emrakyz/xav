@@ -232,8 +232,12 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> 
     let (mut encoder, mut params) = (crate::encoder::Encoder::default(), String::new());
     let (mut noise, mut audio, mut ranges) = (None, None, None);
     #[cfg(feature = "vship")]
-    let (mut target_quality, mut qp_range, mut cvvdp_config, mut probe_params) =
-        (None::<String>, None::<String>, None::<String>, None::<String>);
+    let (mut target_quality, mut qp_range, mut cvvdp_config, mut probe_params) = (
+        None::<String>,
+        None::<String>,
+        None::<String>,
+        None::<String>,
+    );
     #[cfg(feature = "vship")]
     let (mut metric_mode, mut metric_worker) = ("mean".to_string(), 1usize);
 
@@ -362,7 +366,13 @@ fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let cmd: Vec<String> = std::env::args().collect();
     let quoted_cmd: Vec<String> = cmd
         .iter()
-        .map(|arg| if arg.contains(' ') { format!("\"{arg}\"") } else { arg.clone() })
+        .map(|arg| {
+            if arg.contains(' ') {
+                format!("\"{arg}\"")
+            } else {
+                arg.clone()
+            }
+        })
         .collect();
     fs::write(work_dir.join("cmd.txt"), quoted_cmd.join(" "))?;
     Ok(())
@@ -433,7 +443,10 @@ fn init_pipe_crop(
     inf: ffms::VidInf,
 ) -> (ffms::VidInf, (u32, u32), Option<crate::y4m::PipeReader>) {
     let pipe_init = y4m::init_pipe();
-    let config = crop::CropDetectConfig { sample_count: 13, min_black_pixels: 2 };
+    let config = crop::CropDetectConfig {
+        sample_count: 13,
+        min_black_pixels: 2,
+    };
     let crop = match crop::detect_crop(idx, &inf, &config) {
         Ok(detected) if detected.has_crop() => detected.to_tuple(),
         _ => (0, 0),
@@ -478,8 +491,11 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
 
-    let scenes =
-        if let Some(ref r) = args.ranges { chunk::translate_scenes(&scenes, r) } else { scenes };
+    let scenes = if let Some(ref r) = args.ranges {
+        chunk::translate_scenes(&scenes, r)
+    } else {
+        scenes
+    };
 
     chunk::validate_scenes(&scenes)?;
     if args.sc_only {
@@ -527,7 +543,15 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     let prior_secs = chunk::get_resume(&work_dir).map_or(0, |r| r.prior_secs);
     chunk::init_elapsed(prior_secs);
     let enc_start = std::time::Instant::now();
-    encode::encode_all(&chunks, &inf, &args, &idx, &work_dir, grain_table.as_ref(), pipe_reader);
+    encode::encode_all(
+        &chunks,
+        &inf,
+        &args,
+        &idx,
+        &work_dir,
+        grain_table.as_ref(),
+        pipe_reader,
+    );
     let enc_time = enc_start.elapsed() + std::time::Duration::from_secs(prior_secs);
 
     let video_mkv = work_dir.join("encode").join("video.mkv");
@@ -673,12 +697,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let jod_mean = |scores: &[f64]| -> f64 {
-            let q = scores.iter().map(|&x| crate::tq::inverse_jod(x)).sum::<f64>()
+            let q = scores
+                .iter()
+                .map(|&x| crate::tq::inverse_jod(x))
+                .sum::<f64>()
                 / scores.len() as f64;
             crate::tq::jod(q)
         };
 
-        let m = if cvvdp_per_frame { jod_mean(&s) } else { s.iter().sum::<f64>() / s.len() as f64 };
+        let m = if cvvdp_per_frame {
+            jod_mean(&s)
+        } else {
+            s.iter().sum::<f64>() / s.len() as f64
+        };
 
         if TQ_RESUMED.get().copied().unwrap_or(false) {
             println!("\nBelow stats are only for the last run when resume used\n");

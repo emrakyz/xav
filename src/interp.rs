@@ -25,7 +25,10 @@ pub fn pchip(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     d[0] = s0;
     d[3] = s2;
 
-    let params = [(s0, s1, x[1] - x[0], x[2] - x[1]), (s1, s2, x[2] - x[1], x[3] - x[2])];
+    let params = [
+        (s0, s1, x[1] - x[0], x[2] - x[1]),
+        (s1, s2, x[2] - x[1], x[3] - x[2]),
+    ];
     for (i, &(s_prev, s_next, h_prev, h_next)) in params.iter().enumerate() {
         let idx = i + 1;
         if s_prev * s_next <= 0.0 {
@@ -65,7 +68,10 @@ pub fn pchip(x: &[f64; 4], y: &[f64; 4], xi: f64) -> Option<f64> {
     let h01 = (-2.0f64).mul_add(t3, 3.0 * t2);
     let h11 = t3 - t2;
 
-    Some(h00.mul_add(y[k], (h10 * h).mul_add(d[k], (h11 * h).mul_add(d[k + 1], h01 * y[k + 1]))))
+    Some(h00.mul_add(
+        y[k],
+        (h10 * h).mul_add(d[k], (h11 * h).mul_add(d[k + 1], h01 * y[k + 1])),
+    ))
 }
 
 pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
@@ -118,7 +124,10 @@ pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
     let h01 = (-2.0f64).mul_add(s3, 3.0 * s2);
     let h11 = s3 - s2;
 
-    Some(h00.mul_add(y[k], (h10 * h).mul_add(t[k], (h11 * h).mul_add(t[k + 1], h01 * y[k + 1]))))
+    Some(h00.mul_add(
+        y[k],
+        (h10 * h).mul_add(t[k], (h11 * h).mul_add(t[k + 1], h01 * y[k + 1])),
+    ))
 }
 
 pub fn fritsch_carlson(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
@@ -157,5 +166,8 @@ pub fn fritsch_carlson(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
     let h01 = (-2.0f64).mul_add(t3, 3.0 * t2);
     let h11 = t3 - t2;
 
-    Some((h11 * h).mul_add(m[k + 1], h00.mul_add(y[k], h10.mul_add(h * m[k], h01 * y[k + 1]))))
+    Some((h11 * h).mul_add(
+        m[k + 1],
+        h00.mul_add(y[k], h10.mul_add(h * m[k], h01 * y[k + 1])),
+    ))
 }
