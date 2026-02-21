@@ -1,7 +1,4 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use std::process::Command;
+use std::{collections::HashSet, fs, path::Path, process::Command};
 
 #[derive(Clone)]
 pub enum AudioBitrate {

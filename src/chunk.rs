@@ -1,7 +1,9 @@
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use crate::encoder::Encoder;
 

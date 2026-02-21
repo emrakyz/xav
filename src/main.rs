@@ -1,8 +1,10 @@
-use std::collections::hash_map::DefaultHasher;
-use std::fs;
-use std::hash::{Hash, Hasher};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fs,
+    hash::{Hash, Hasher},
+    io::Write,
+    path::{Path, PathBuf},
+};
 
 mod audio;
 mod chunk;

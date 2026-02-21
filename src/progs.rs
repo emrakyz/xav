@@ -1,8 +1,12 @@
-use std::io::{BufRead, BufReader, Write};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::{
+    io::{BufRead, BufReader, Write},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::encoder::Encoder;
 

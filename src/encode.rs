@@ -1,21 +1,25 @@
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::thread;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread,
+};
 
 use crossbeam_channel::bounded;
 #[cfg(feature = "vship")]
 use crossbeam_channel::select;
 
-use crate::chunk::{Chunk, ChunkComp, ResumeInf, get_resume};
-use crate::decode::{decode_chunks, decode_pipe};
-use crate::encoder::{EncConfig, Encoder, make_enc_cmd};
-use crate::ffms::{VidIdx, VidInf};
-use crate::pipeline::Pipeline;
-use crate::progs::ProgsTrack;
-use crate::worker::Semaphore;
 #[cfg(feature = "vship")]
 use crate::worker::TQState;
+use crate::{
+    chunk::{Chunk, ChunkComp, ResumeInf, get_resume},
+    decode::{decode_chunks, decode_pipe},
+    encoder::{EncConfig, Encoder, make_enc_cmd},
+    ffms::{VidIdx, VidInf},
+    pipeline::Pipeline,
+    progs::ProgsTrack,
+    worker::Semaphore,
+};
 
 #[cfg(feature = "vship")]
 pub static TQ_SCORES: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
@@ -923,8 +927,7 @@ fn enc_chunk(
 
 #[cfg(feature = "vship")]
 pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, work_dir: &Path) {
-    use std::fs::OpenOptions;
-    use std::io::Write as IoWrite;
+    use std::{fs::OpenOptions, io::Write as IoWrite};
 
     let chunks_path = work_dir.join("chunks.json");
     let probes_str = chunk_log
@@ -991,7 +994,7 @@ fn format_tq_json(
 
     for (i, l) in all_logs.iter().enumerate() {
         let mut sp: Vec<_> = l.p.iter().collect();
-        sp.sort_by(|(a, _, _), (b, _, _)| a.partial_cmp(b).unwrap());
+        sp.sort_by(|(a, ..), (b, ..)| a.partial_cmp(b).unwrap());
         let _ = writeln!(out, "    {{");
         let _ = writeln!(out, "      \"id\": {},", l.id);
         let _ = writeln!(out, "      \"probes\": [");
@@ -1073,8 +1076,10 @@ struct TqChunkLine {
 
 #[cfg(feature = "vship")]
 fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
-    use std::fs::OpenOptions;
-    use std::io::{BufRead, Write as IoWrite};
+    use std::{
+        fs::OpenOptions,
+        io::{BufRead, Write as IoWrite},
+    };
 
     let log_path = input.with_extension("json");
     let chunks_path = work_dir.join("chunks.json");

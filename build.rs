@@ -1,5 +1,4 @@
-use std::path::Path;
-use std::{env, process};
+use std::{env, path::Path, process};
 
 fn main() {
     if cfg!(feature = "static") {

@@ -1,6 +1,4 @@
-use std::ffi::CString;
-use std::path::Path;
-use std::sync::Arc;
+use std::{ffi::CString, path::Path, sync::Arc};
 
 use ffms2_sys::{
     FFMS_CreateIndexer, FFMS_CreateVideoSource, FFMS_DestroyIndex, FFMS_DestroyVideoSource,
@@ -9,8 +7,7 @@ use ffms2_sys::{
     FFMS_SetProgressCallback, FFMS_TrackTypeIndexSettings, FFMS_VideoSource, FFMS_WriteIndex,
 };
 
-use crate::decode::CropCalc;
-use crate::progs::ProgsBar;
+use crate::{decode::CropCalc, progs::ProgsBar};
 
 pub const fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
@@ -682,15 +679,15 @@ pub fn get_decode_strat(
             (true, true, true, _, true) => DecodeStrat::B10CropStrideRem {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (false, false, false, _, _) => DecodeStrat::B8Fast,
-            (false, false, true, _, _) => DecodeStrat::B8Stride,
+            (false, false, false, ..) => DecodeStrat::B8Fast,
+            (false, false, true, ..) => DecodeStrat::B8Stride,
             (false, true, false, false, _) => DecodeStrat::B8CropFast {
                 cc: CropCalc::new(inf, crop, 1),
             },
             (false, true, false, true, _) => DecodeStrat::B8Crop {
                 cc: CropCalc::new(inf, crop, 1),
             },
-            (false, true, true, _, _) => DecodeStrat::B8CropStride {
+            (false, true, true, ..) => DecodeStrat::B8CropStride {
                 cc: CropCalc::new(inf, crop, 1),
             },
         };
