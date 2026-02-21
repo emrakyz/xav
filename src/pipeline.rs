@@ -98,9 +98,7 @@ impl Pipeline {
     pub fn new(
         inf: &VidInf,
         strat: DecodeStrat,
-        #[allow(unused_variables)]
-        #[cfg(feature = "vship")]
-        target_quality: Option<&str>,
+        #[cfg(feature = "vship")] target_quality: Option<&str>,
     ) -> Self {
         let (final_w, final_h) = match strat {
             DecodeStrat::B10CropFast { cc }
@@ -219,7 +217,9 @@ fn compute_ssimulacra2(
     input_strides: [i64; 3],
     output_strides: [i64; 3],
 ) -> f64 {
-    vship.compute_ssimulacra2(input_planes, output_planes, input_strides, output_strides).unwrap()
+    vship
+        .compute_ssimulacra2(input_planes, output_planes, input_strides, output_strides)
+        .unwrap()
 }
 
 #[cfg(feature = "vship")]
@@ -230,7 +230,9 @@ fn compute_butteraugli(
     input_strides: [i64; 3],
     output_strides: [i64; 3],
 ) -> f64 {
-    vship.compute_butteraugli(input_planes, output_planes, input_strides, output_strides).unwrap()
+    vship
+        .compute_butteraugli(input_planes, output_planes, input_strides, output_strides)
+        .unwrap()
 }
 
 #[cfg(feature = "vship")]
@@ -241,5 +243,7 @@ fn compute_cvvdp(
     input_strides: [i64; 3],
     output_strides: [i64; 3],
 ) -> f64 {
-    vship.compute_cvvdp(input_planes, output_planes, input_strides, output_strides).unwrap()
+    vship
+        .compute_cvvdp(input_planes, output_planes, input_strides, output_strides)
+        .unwrap()
 }

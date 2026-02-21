@@ -42,7 +42,11 @@ struct ProgState {
 impl ProgsBar {
     pub fn new() -> Self {
         let now = Instant::now();
-        Self { start: now, total: 0, last_update: now }
+        Self {
+            start: now,
+            total: 0,
+            last_update: now,
+        }
     }
 
     pub fn up_idx(&mut self, current: usize, total: usize) {
@@ -59,7 +63,11 @@ impl ProgsBar {
         let remaining = total.saturating_sub(current);
         let eta_secs = remaining * elapsed / current.max(1);
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
+        let bar = format!(
+            "{}{}",
+            G_HASH.repeat(filled),
+            R_DASH.repeat(BAR_WIDTH - filled)
+        );
         let perc = (current * 100 / total.max(1)).min(100);
         let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
         let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
@@ -83,7 +91,11 @@ impl ProgsBar {
         let remaining = total.saturating_sub(current);
         let eta_secs = remaining * elapsed / current.max(1);
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
+        let bar = format!(
+            "{}{}",
+            G_HASH.repeat(filled),
+            R_DASH.repeat(BAR_WIDTH - filled)
+        );
         let perc = (current * 100 / total.max(1)).min(100);
         let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
         let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
@@ -107,7 +119,11 @@ impl ProgsBar {
 }
 
 enum WorkerMsg {
-    Update { worker_id: usize, line: String, frames: Option<usize> },
+    Update {
+        worker_id: usize,
+        line: String,
+        frames: Option<usize>,
+    },
     Clear(usize),
 }
 
@@ -189,7 +205,11 @@ impl ProgsTrack {
         let (current, total) = progress;
         let (crf, last_score) = crf_score;
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", G_HASH.repeat(filled), R_DASH.repeat(BAR_WIDTH - filled));
+        let bar = format!(
+            "{}{}",
+            G_HASH.repeat(filled),
+            R_DASH.repeat(BAR_WIDTH - filled)
+        );
         let perc = (current * 100 / total.max(1)).min(100);
         let score_str = last_score.map_or(String::new(), |s| format!(" / {s:.2}"));
 
@@ -198,7 +218,13 @@ impl ProgsTrack {
              {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
         );
 
-        self.tx.send(WorkerMsg::Update { worker_id, line, frames: None }).ok();
+        self.tx
+            .send(WorkerMsg::Update {
+                worker_id,
+                line,
+                frames: None,
+            })
+            .ok();
     }
 
     #[cfg(feature = "libsvtav1")]
@@ -213,7 +239,11 @@ impl ProgsTrack {
     ) {
         let (current, total) = progress;
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+        let bar = format!(
+            "{}{}",
+            B_HASH.repeat(filled),
+            Y_DASH.repeat(BAR_WIDTH - filled)
+        );
         let perc = (current * 100 / total.max(1)).min(100);
 
         let prefix = match crf_score {
@@ -228,7 +258,13 @@ impl ProgsTrack {
             "{prefix} {P}[{bar}{P}] {W}{perc}%{C}, {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
         );
 
-        self.tx.send(WorkerMsg::Update { worker_id, line, frames: frames_delta }).ok();
+        self.tx
+            .send(WorkerMsg::Update {
+                worker_id,
+                line,
+                frames: frames_delta,
+            })
+            .ok();
     }
 
     #[cfg(feature = "libsvtav1")]
@@ -247,7 +283,11 @@ pub struct LibEncTracker {
 #[cfg(feature = "libsvtav1")]
 impl LibEncTracker {
     pub fn new() -> Self {
-        Self { start: Instant::now(), encoded: 0, last_reported: 0 }
+        Self {
+            start: Instant::now(),
+            encoded: 0,
+            last_reported: 0,
+        }
     }
 
     pub fn report(
@@ -288,7 +328,9 @@ fn watch_svt(
     let mut last_frames = 0;
 
     for line in reader.split(b'\r').filter_map(Result::ok) {
-        let Ok(text) = std::str::from_utf8(&line) else { continue };
+        let Ok(text) = std::str::from_utf8(&line) else {
+            continue;
+        };
         let text = text.trim();
 
         if text.contains("error") || text.contains("Error") {
@@ -301,7 +343,9 @@ fn watch_svt(
             continue;
         }
 
-        let Some((current, total, fps, kbps)) = parse_svt(text) else { continue };
+        let Some((current, total, fps, kbps)) = parse_svt(text) else {
+            continue;
+        };
 
         let prefix = match crf_score {
             Some((crf, Some(score))) => {
@@ -312,7 +356,11 @@ fn watch_svt(
         };
 
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+        let bar = format!(
+            "{}{}",
+            B_HASH.repeat(filled),
+            Y_DASH.repeat(BAR_WIDTH - filled)
+        );
         let perc = (current * 100 / total.max(1)).min(100);
 
         let display_line = format!(
@@ -328,7 +376,12 @@ fn watch_svt(
             None
         };
 
-        tx.send(WorkerMsg::Update { worker_id, line: display_line, frames: frames_delta }).ok();
+        tx.send(WorkerMsg::Update {
+            worker_id,
+            line: display_line,
+            frames: frames_delta,
+        })
+        .ok();
     }
 
     tx.send(WorkerMsg::Clear(worker_id)).ok();
@@ -388,8 +441,10 @@ fn watch_vvenc(
                     }
 
                     if total_frames == 0 && line.contains("encode ") {
-                        total_frames =
-                            line.split_whitespace().find_map(|s| s.parse().ok()).unwrap_or(0);
+                        total_frames = line
+                            .split_whitespace()
+                            .find_map(|s| s.parse().ok())
+                            .unwrap_or(0);
                     }
 
                     if line.starts_with("POC") {
@@ -403,8 +458,11 @@ fn watch_vvenc(
                     let total = total_frames.max(poc_count);
                     let fps = poc_count as f32 / start.elapsed().as_secs_f32().max(0.001);
                     let filled = (BAR_WIDTH * poc_count / total.max(1)).min(BAR_WIDTH);
-                    let bar =
-                        format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+                    let bar = format!(
+                        "{}{}",
+                        B_HASH.repeat(filled),
+                        Y_DASH.repeat(BAR_WIDTH - filled)
+                    );
                     let perc = (poc_count * 100 / total.max(1)).min(100);
 
                     let prefix = match crf_score {
@@ -428,7 +486,12 @@ fn watch_vvenc(
                         None
                     };
 
-                    tx.send(WorkerMsg::Update { worker_id, line: display, frames: delta }).ok();
+                    tx.send(WorkerMsg::Update {
+                        worker_id,
+                        line: display,
+                        frames: delta,
+                    })
+                    .ok();
                 }
             }
         }
@@ -480,11 +543,15 @@ fn parse_svt(line: &str) -> Option<(usize, usize, f32, f32)> {
 
     let fps = if let Some(fpm_pos) = after_frames.find(" fpm") {
         let before = &after_frames[..fpm_pos];
-        let num_str = before.rsplit(|c: char| !c.is_ascii_digit() && c != '.').next()?;
+        let num_str = before
+            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
+            .next()?;
         num_str.parse::<f32>().ok()? / 60.0
     } else if let Some(fps_pos) = after_frames.find(" fps") {
         let before = &after_frames[..fps_pos];
-        let num_str = before.rsplit(|c: char| !c.is_ascii_digit() && c != '.').next()?;
+        let num_str = before
+            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
+            .next()?;
         num_str.parse().ok()?
     } else {
         return None;
@@ -492,7 +559,9 @@ fn parse_svt(line: &str) -> Option<(usize, usize, f32, f32)> {
 
     let kbps = if let Some(kbps_pos) = after_frames.find(" kb/s") {
         let before = &after_frames[..kbps_pos];
-        let num_str = before.rsplit(|c: char| !c.is_ascii_digit() && c != '.').next()?;
+        let num_str = before
+            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
+            .next()?;
         num_str.parse().unwrap_or(0.0)
     } else {
         0.0
@@ -514,7 +583,9 @@ fn watch_x265(
     let mut last_update = Instant::now();
 
     for line in reader.split(b'\r').filter_map(Result::ok) {
-        let Ok(text) = std::str::from_utf8(&line) else { continue };
+        let Ok(text) = std::str::from_utf8(&line) else {
+            continue;
+        };
         let text = text.trim();
 
         if text.is_empty() {
@@ -536,10 +607,16 @@ fn watch_x265(
         }
         last_update = Instant::now();
 
-        let Some((cur, tot, fps, kbps)) = parse_x265(text) else { continue };
+        let Some((cur, tot, fps, kbps)) = parse_x265(text) else {
+            continue;
+        };
 
         let filled = (BAR_WIDTH * cur / tot.max(1)).min(BAR_WIDTH);
-        let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
+        let bar = format!(
+            "{}{}",
+            B_HASH.repeat(filled),
+            Y_DASH.repeat(BAR_WIDTH - filled)
+        );
 
         let prefix = match crf_score {
             Some((crf, Some(s))) => format!("{C}[{chunk_idx:04} / F {crf:.2} / {s:.2}{C}]"),
@@ -558,7 +635,12 @@ fn watch_x265(
             d
         });
 
-        tx.send(WorkerMsg::Update { worker_id, line, frames: delta }).ok();
+        tx.send(WorkerMsg::Update {
+            worker_id,
+            line,
+            frames: delta,
+        })
+        .ok();
     }
 
     tx.send(WorkerMsg::Clear(worker_id)).ok();
@@ -592,7 +674,11 @@ fn display_loop(
 
     loop {
         match rx.recv_timeout(Duration::from_millis(INTERVAL_MS)) {
-            Ok(WorkerMsg::Update { worker_id, line, frames }) => {
+            Ok(WorkerMsg::Update {
+                worker_id,
+                line,
+                frames,
+            }) => {
                 if worker_id < worker_count {
                     lines[worker_id] = line;
                     if let Some(delta) = frames {
@@ -668,7 +754,11 @@ fn draw_screen(
 
     let progress = (frames_done * BAR_WIDTH / state.total_frames.max(1)).min(BAR_WIDTH);
     let perc = (frames_done * 100 / state.total_frames.max(1)).min(100);
-    let bar = format!("{}{}", G_HASH.repeat(progress), R_DASH.repeat(BAR_WIDTH - progress));
+    let bar = format!(
+        "{}{}",
+        G_HASH.repeat(progress),
+        R_DASH.repeat(BAR_WIDTH - progress)
+    );
 
     let (h, m) = (elapsed_secs / 3600, (elapsed_secs % 3600) / 60);
     let eta_h = (eta_secs / 3600).min(99);

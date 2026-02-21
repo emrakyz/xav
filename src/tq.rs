@@ -83,6 +83,8 @@ macro_rules! calc_metrics_impl {
             let pixel_size = if $is_10bit { 2 } else { 1 };
             let y_size = pipe.final_w * pipe.final_h * pixel_size;
             let uv_size = y_size / 4;
+            let ys = i64::try_from(pipe.final_w * pixel_size).unwrap();
+            let cs = i64::try_from(pipe.final_w / 2 * pixel_size).unwrap();
 
             macro_rules! process_frame {
                 ($frame_idx: expr) => {{
@@ -98,7 +100,7 @@ macro_rules! calc_metrics_impl {
 
                     let input_frame =
                         &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
-                    let output_frame = crate::ffms::get_frame(src, $frame_idx).unwrap();
+                    let of = crate::ffms::get_frame(src, $frame_idx).unwrap();
 
                     let input_yuv: &[u8] = if $is_10bit {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);
@@ -112,31 +114,22 @@ macro_rules! calc_metrics_impl {
                         input_yuv[y_size..].as_ptr(),
                         input_yuv[y_size + uv_size..].as_ptr(),
                     ];
-                    let input_strides = [
-                        i64::try_from(pipe.final_w * pixel_size).unwrap(),
-                        i64::try_from(pipe.final_w / 2 * pixel_size).unwrap(),
-                        i64::try_from(pipe.final_w / 2 * pixel_size).unwrap(),
+
+                    let of = unsafe { &*of };
+                    let output_planes = [of.Data[0], of.Data[1], of.Data[2]];
+                    let output_strides = [
+                        i64::from(of.Linesize[0]),
+                        i64::from(of.Linesize[1]),
+                        i64::from(of.Linesize[2]),
                     ];
 
-                    let output_planes = unsafe {
-                        [(*output_frame).Data[0], (*output_frame).Data[1], (*output_frame).Data[2]]
-                    };
-                    let output_strides = unsafe {
-                        [
-                            i64::from((*output_frame).Linesize[0]),
-                            i64::from((*output_frame).Linesize[1]),
-                            i64::from((*output_frame).Linesize[2]),
-                        ]
-                    };
-
-                    let score = (pipe.compute_metric)(
+                    scores.push((pipe.compute_metric)(
                         vship,
                         input_planes,
                         output_planes,
-                        input_strides,
+                        [ys, cs, cs],
                         output_strides,
-                    );
-                    scores.push(score);
+                    ));
                 }};
             }
 
@@ -156,8 +149,10 @@ macro_rules! calc_metrics_impl {
             let result = if pipe.reset_cvvdp && !cvvdp_per_frame {
                 scores.last().copied().unwrap_or(0.0)
             } else if cvvdp_per_frame {
-                let percentile: f64 =
-                    metric_mode.strip_prefix('p').and_then(|p| p.parse().ok()).unwrap_or(15.0);
+                let percentile: f64 = metric_mode
+                    .strip_prefix('p')
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(15.0);
                 let mut q: Vec<f64> = scores.iter().map(|&s| inverse_jod(s)).collect();
                 q.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
                 let cutoff = ((q.len() as f64 * percentile / 100.0).ceil() as usize).min(q.len());

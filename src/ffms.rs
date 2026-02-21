@@ -116,7 +116,11 @@ impl VidIdx {
 
             let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, std::ptr::addr_of_mut!(err));
 
-            Ok(Arc::new(Self { path: path.to_str().unwrap().to_string(), track, idx_handle: idx }))
+            Ok(Arc::new(Self {
+                path: path.to_str().unwrap().to_string(),
+                track,
+                idx_handle: idx,
+            }))
         }
     }
 }
@@ -202,7 +206,11 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
         };
 
         let content_light = if (*props).HasContentLightLevel != 0 {
-            Some(format!("{},{}", (*props).ContentLightLevelMax, (*props).ContentLightLevelAverage))
+            Some(format!(
+                "{},{}",
+                (*props).ContentLightLevelMax,
+                (*props).ContentLightLevelAverage
+            ))
         } else {
             None
         };
@@ -299,7 +307,13 @@ pub fn extr_8bit(
         let uv_size = y_size / 4;
 
         let y_linesize = (*frame).Linesize[0] as usize;
-        copy_with_stride((*frame).Data[0], y_linesize, width, height, output.as_mut_ptr());
+        copy_with_stride(
+            (*frame).Data[0],
+            y_linesize,
+            width,
+            height,
+            output.as_mut_ptr(),
+        );
         copy_with_stride(
             (*frame).Data[1],
             (*frame).Linesize[1] as usize,
@@ -408,10 +422,13 @@ pub fn extr_8bit_fast(
 }
 
 pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
-    input.iter().zip(output.chunks_exact_mut(2)).for_each(|(&pixel, out_chunk)| {
-        let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
-        out_chunk.copy_from_slice(&pixel_10bit);
-    });
+    input
+        .iter()
+        .zip(output.chunks_exact_mut(2))
+        .for_each(|(&pixel, out_chunk)| {
+            let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
+            out_chunk.copy_from_slice(&pixel_10bit);
+        });
 }
 
 #[inline]
@@ -436,19 +453,25 @@ pub const fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
 }
 
 pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
-    input.chunks_exact(8).zip(output.chunks_exact_mut(5)).for_each(|(i_chunk, o_chunk)| {
-        let i_arr: &[u8; 8] = i_chunk.try_into().unwrap();
-        let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
-        pack_4_pix_10bit(*i_arr, o_arr);
-    });
+    input
+        .chunks_exact(8)
+        .zip(output.chunks_exact_mut(5))
+        .for_each(|(i_chunk, o_chunk)| {
+            let i_arr: &[u8; 8] = i_chunk.try_into().unwrap();
+            let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
+            pack_4_pix_10bit(*i_arr, o_arr);
+        });
 }
 
 pub fn unpack_10bit(input: &[u8], output: &mut [u8], _w: usize, _h: usize) {
-    input.chunks_exact(5).zip(output.chunks_exact_mut(8)).for_each(|(i_chunk, o_chunk)| {
-        let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
-        let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
-        unpack_4_pix_10bit(*i_arr, o_arr);
-    });
+    input
+        .chunks_exact(5)
+        .zip(output.chunks_exact_mut(8))
+        .for_each(|(i_chunk, o_chunk)| {
+            let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
+            let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
+            unpack_4_pix_10bit(*i_arr, o_arr);
+        });
 }
 
 pub fn unpack_10bit_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
@@ -478,9 +501,11 @@ fn unpack_plane_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
         let src = &input[row * packed_row..row * packed_row + packed_row];
         let dst = &mut output[row * unpacked_row..row * unpacked_row + unpacked_row];
 
-        src.chunks_exact(5).zip(dst.chunks_exact_mut(8)).for_each(|(i, o)| {
-            unpack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-        });
+        src.chunks_exact(5)
+            .zip(dst.chunks_exact_mut(8))
+            .for_each(|(i, o)| {
+                unpack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
 
         let rem = unpacked_row % 8;
         if rem > 0 {
@@ -501,9 +526,12 @@ fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) 
             let src_row = std::slice::from_raw_parts(src.add(row * stride), w_bytes);
             let dst_row = std::slice::from_raw_parts_mut(out.add(pos), pack_row);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             pos += pack_row;
         }
@@ -624,7 +652,11 @@ pub fn get_decode_strat(
         let has_crop = crop != (0, 0);
         let h_crop = crop.1 != 0;
 
-        let final_w = if has_crop { inf.width - crop.1 * 2 } else { inf.width };
+        let final_w = if has_crop {
+            inf.width - crop.1 * 2
+        } else {
+            inf.width
+        };
         let has_rem = inf.is_10bit && (final_w % 8) != 0;
 
         let strat = match (inf.is_10bit, has_crop, has_pad, h_crop, has_rem) {
@@ -632,35 +664,35 @@ pub fn get_decode_strat(
             (true, false, false, _, true) => DecodeStrat::B10FastRem,
             (true, false, true, _, false) => DecodeStrat::B10Stride,
             (true, false, true, _, true) => DecodeStrat::B10StrideRem,
-            (true, true, false, false, false) => {
-                DecodeStrat::B10CropFast { cc: CropCalc::new(inf, crop, 2) }
-            }
-            (true, true, false, false, true) => {
-                DecodeStrat::B10CropFastRem { cc: CropCalc::new(inf, crop, 2) }
-            }
-            (true, true, false, true, false) => {
-                DecodeStrat::B10Crop { cc: CropCalc::new(inf, crop, 2) }
-            }
-            (true, true, false, true, true) => {
-                DecodeStrat::B10CropRem { cc: CropCalc::new(inf, crop, 2) }
-            }
-            (true, true, true, _, false) => {
-                DecodeStrat::B10CropStride { cc: CropCalc::new(inf, crop, 2) }
-            }
-            (true, true, true, _, true) => {
-                DecodeStrat::B10CropStrideRem { cc: CropCalc::new(inf, crop, 2) }
-            }
+            (true, true, false, false, false) => DecodeStrat::B10CropFast {
+                cc: CropCalc::new(inf, crop, 2),
+            },
+            (true, true, false, false, true) => DecodeStrat::B10CropFastRem {
+                cc: CropCalc::new(inf, crop, 2),
+            },
+            (true, true, false, true, false) => DecodeStrat::B10Crop {
+                cc: CropCalc::new(inf, crop, 2),
+            },
+            (true, true, false, true, true) => DecodeStrat::B10CropRem {
+                cc: CropCalc::new(inf, crop, 2),
+            },
+            (true, true, true, _, false) => DecodeStrat::B10CropStride {
+                cc: CropCalc::new(inf, crop, 2),
+            },
+            (true, true, true, _, true) => DecodeStrat::B10CropStrideRem {
+                cc: CropCalc::new(inf, crop, 2),
+            },
             (false, false, false, _, _) => DecodeStrat::B8Fast,
             (false, false, true, _, _) => DecodeStrat::B8Stride,
-            (false, true, false, false, _) => {
-                DecodeStrat::B8CropFast { cc: CropCalc::new(inf, crop, 1) }
-            }
-            (false, true, false, true, _) => {
-                DecodeStrat::B8Crop { cc: CropCalc::new(inf, crop, 1) }
-            }
-            (false, true, true, _, _) => {
-                DecodeStrat::B8CropStride { cc: CropCalc::new(inf, crop, 1) }
-            }
+            (false, true, false, false, _) => DecodeStrat::B8CropFast {
+                cc: CropCalc::new(inf, crop, 1),
+            },
+            (false, true, false, true, _) => DecodeStrat::B8Crop {
+                cc: CropCalc::new(inf, crop, 1),
+            },
+            (false, true, true, _, _) => DecodeStrat::B8CropStride {
+                cc: CropCalc::new(inf, crop, 1),
+            },
         };
 
         Ok(strat)
@@ -670,7 +702,11 @@ pub fn get_decode_strat(
 pub fn get_raw_frame(vid_src: *mut FFMS_VideoSource, frame_idx: usize) -> *const FFMS_Frame {
     unsafe {
         let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
-        FFMS_GetFrame(vid_src, i32::try_from(frame_idx).unwrap_or(0), std::ptr::addr_of_mut!(err))
+        FFMS_GetFrame(
+            vid_src,
+            i32::try_from(frame_idx).unwrap_or(0),
+            std::ptr::addr_of_mut!(err),
+        )
     }
 }
 
@@ -713,7 +749,13 @@ pub fn extr_10bit_pack_stride(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        pack_stride((*frame).Data[0], (*frame).Linesize[0] as usize, w, h, output.as_mut_ptr());
+        pack_stride(
+            (*frame).Data[0],
+            (*frame).Linesize[0] as usize,
+            w,
+            h,
+            output.as_mut_ptr(),
+        );
 
         pack_stride(
             (*frame).Data[1],
@@ -806,9 +848,12 @@ pub fn extr_10bit_crop_pack_stride(
             let dst_row =
                 std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             dst_pos += pack_row_y;
         }
@@ -823,9 +868,12 @@ pub fn extr_10bit_crop_pack_stride(
             let dst_row =
                 std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             dst_pos += pack_row_uv;
         }
@@ -838,9 +886,12 @@ pub fn extr_10bit_crop_pack_stride(
             let dst_row =
                 std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             dst_pos += pack_row_uv;
         }
@@ -856,9 +907,12 @@ fn pack_stride_rem(src: *const u8, stride: usize, w: usize, h: usize, out: *mut 
             let src_row = std::slice::from_raw_parts(src.add(row * stride), w_bytes);
             let dst_row = std::slice::from_raw_parts_mut(out.add(row * y_row), y_row);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             let rem = w_bytes % 8;
             if rem > 0 {
@@ -878,9 +932,11 @@ pub fn pack_10bit_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
         let src = &input[row * unpacked_row..][..unpacked_row];
         let dst = &mut output[row * y_row..][..y_row];
 
-        src.chunks_exact(8).zip(dst.chunks_exact_mut(5)).for_each(|(i, o)| {
-            pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-        });
+        src.chunks_exact(8)
+            .zip(dst.chunks_exact_mut(5))
+            .for_each(|(i, o)| {
+                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+            });
 
         let rem = unpacked_row % 8;
         if rem > 0 {
@@ -936,7 +992,13 @@ pub fn extr_10bit_pack_stride_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        pack_stride_rem((*frame).Data[0], (*frame).Linesize[0] as usize, w, h, output.as_mut_ptr());
+        pack_stride_rem(
+            (*frame).Data[0],
+            (*frame).Linesize[0] as usize,
+            w,
+            h,
+            output.as_mut_ptr(),
+        );
         pack_stride_rem(
             (*frame).Data[1],
             (*frame).Linesize[1] as usize,
@@ -1051,9 +1113,12 @@ pub fn extr_10bit_crop_pack_stride_rem(
                 std::slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
             let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             let rem = crop_calc.y_len % 8;
             if rem > 0 {
@@ -1072,9 +1137,12 @@ pub fn extr_10bit_crop_pack_stride_rem(
                 std::slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
             let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             let rem = crop_calc.uv_len % 8;
             if rem > 0 {
@@ -1093,9 +1161,12 @@ pub fn extr_10bit_crop_pack_stride_rem(
                 std::slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
             let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
-            src_row.chunks_exact(8).zip(dst_row.chunks_exact_mut(5)).for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
-            });
+            src_row
+                .chunks_exact(8)
+                .zip(dst_row.chunks_exact_mut(5))
+                .for_each(|(i, o)| {
+                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                });
 
             let rem = crop_calc.uv_len % 8;
             if rem > 0 {

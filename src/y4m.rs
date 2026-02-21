@@ -58,8 +58,16 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
     }
 
     let frame_size = width as usize * height as usize * 3 / 2 * if is_10bit { 2 } else { 1 };
-    let info = Y4mInfo { width, height, is_10bit };
-    let pipe_reader = PipeReader { reader, frame_size, frame_header: [0u8; 6] };
+    let info = Y4mInfo {
+        width,
+        height,
+        is_10bit,
+    };
+    let pipe_reader = PipeReader {
+        reader,
+        frame_size,
+        frame_header: [0u8; 6],
+    };
 
     Some((info, pipe_reader))
 }

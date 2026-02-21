@@ -57,7 +57,11 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::
     let mut scenes = Vec::new();
     for i in 0..results.scene_changes.len() {
         let s = results.scene_changes[i];
-        let e = results.scene_changes.get(i + 1).copied().unwrap_or(tot_frames);
+        let e = results
+            .scene_changes
+            .get(i + 1)
+            .copied()
+            .unwrap_or(tot_frames);
         scenes.push((s, e));
     }
 

@@ -97,8 +97,14 @@ pub fn decode_chunks(
     sem: &Arc<Semaphore>,
 ) {
     let thr = std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
-    let Ok(src) = thr_vid_src(idx, thr) else { return };
-    let filtered: Vec<Chunk> = chunks.iter().filter(|c| !skip.contains(&c.idx)).cloned().collect();
+    let Ok(src) = thr_vid_src(idx, thr) else {
+        return;
+    };
+    let filtered: Vec<Chunk> = chunks
+        .iter()
+        .filter(|c| !skip.contains(&c.idx))
+        .cloned()
+        .collect();
     match strat {
         DecodeStrat::B8Fast
         | DecodeStrat::B8Stride
@@ -123,70 +129,80 @@ fn dispatch_10bit(
             let f = calc_packed_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_fast(ch, src, inf, inf.width, inf.height, f)).ok();
+                tx.send(dec_10_fast(ch, src, inf, inf.width, inf.height, f))
+                    .ok();
             }
         }
         DecodeStrat::B10FastRem => {
             let f = calc_packed_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_fast_rem(ch, src, inf, inf.width, inf.height, f)).ok();
+                tx.send(dec_10_fast_rem(ch, src, inf, inf.width, inf.height, f))
+                    .ok();
             }
         }
         DecodeStrat::B10Stride => {
             let f = calc_packed_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_stride(ch, src, inf, inf.width, inf.height, f)).ok();
+                tx.send(dec_10_stride(ch, src, inf, inf.width, inf.height, f))
+                    .ok();
             }
         }
         DecodeStrat::B10StrideRem => {
             let f = calc_packed_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_stride_rem(ch, src, inf, inf.width, inf.height, f)).ok();
+                tx.send(dec_10_stride_rem(ch, src, inf, inf.width, inf.height, f))
+                    .ok();
             }
         }
         DecodeStrat::B10CropFast { cc } => {
             let f = calc_packed_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_crop_fast(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_10_crop_fast(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B10CropFastRem { cc } => {
             let f = calc_packed_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_crop_fast_rem(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_10_crop_fast_rem(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B10Crop { cc } => {
             let f = calc_packed_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_crop(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_10_crop(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B10CropRem { cc } => {
             let f = calc_packed_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_crop_rem(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_10_crop_rem(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B10CropStride { cc } => {
             let f = calc_packed_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_crop_stride(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_10_crop_stride(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B10CropStrideRem { cc } => {
             let f = calc_packed_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_10_crop_stride_rem(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_10_crop_stride_rem(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         _ => {}
@@ -206,28 +222,32 @@ fn dispatch_8bit(
             let f = calc_8bit_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_8_fast(ch, src, inf, inf.width, inf.height, f)).ok();
+                tx.send(dec_8_fast(ch, src, inf, inf.width, inf.height, f))
+                    .ok();
             }
         }
         DecodeStrat::B8Stride => {
             let f = calc_8bit_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_8_stride(ch, src, inf, inf.width, inf.height, f)).ok();
+                tx.send(dec_8_stride(ch, src, inf, inf.width, inf.height, f))
+                    .ok();
             }
         }
         DecodeStrat::B8CropFast { cc } => {
             let f = calc_8bit_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_8_crop_fast(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_8_crop_fast(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B8Crop { cc } => {
             let f = calc_8bit_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_8_crop(ch, src, &cc, cc.new_w, cc.new_h, f)).ok();
+                tx.send(dec_8_crop(ch, src, &cc, cc.new_w, cc.new_h, f))
+                    .ok();
             }
         }
         DecodeStrat::B8CropStride { cc } => {
@@ -235,7 +255,8 @@ fn dispatch_8bit(
             let mut buf = vec![0u8; calc_8bit_size(inf.width, inf.height)];
             for ch in filtered {
                 sem.acquire();
-                tx.send(dec_8_crop_stride(ch, src, inf, &cc, f, &mut buf)).ok();
+                tx.send(dec_8_crop_stride(ch, src, inf, &cc, f, &mut buf))
+                    .ok();
             }
         }
         _ => {}
@@ -522,7 +543,11 @@ pub fn decode_pipe(
 
     let (w, h) = cc.map_or((inf.width, inf.height), |c| (c.new_w, c.new_h));
     let raw_fsz = reader.frame_size;
-    let fsz = if inf.is_10bit { calc_packed_size(w, h) } else { calc_8bit_size(w, h) };
+    let fsz = if inf.is_10bit {
+        calc_packed_size(w, h)
+    } else {
+        calc_8bit_size(w, h)
+    };
     let has_rem = inf.is_10bit && (w % 8) != 0;
 
     match (inf.is_10bit, cc, has_rem) {
@@ -606,7 +631,10 @@ fn dec_pipe_10(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usi
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
         crate::ffms::pack_10bit(&src[..y_raw], &mut dst[..y_pack]);
-        crate::ffms::pack_10bit(&src[y_raw..y_raw + uv_raw], &mut dst[y_pack..y_pack + uv_pack]);
+        crate::ffms::pack_10bit(
+            &src[y_raw..y_raw + uv_raw],
+            &mut dst[y_pack..y_pack + uv_pack],
+        );
         crate::ffms::pack_10bit(&src[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
     }
     WorkPkg::new(ch.clone(), dat, len, w, h)
@@ -670,7 +698,12 @@ fn dec_pipe_10_crop_rem(
         cc.crop(src, crop_buf);
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        crate::ffms::pack_10bit_rem(&crop_buf[..y_raw], dst, cc.new_w as usize, cc.new_h as usize);
+        crate::ffms::pack_10bit_rem(
+            &crop_buf[..y_raw],
+            dst,
+            cc.new_w as usize,
+            cc.new_h as usize,
+        );
     }
     WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
 }

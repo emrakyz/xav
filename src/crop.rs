@@ -20,7 +20,12 @@ pub struct CropResult {
 
 impl CropResult {
     pub const fn no_crop() -> Self {
-        Self { top: 0, bottom: 0, left: 0, right: 0 }
+        Self {
+            top: 0,
+            bottom: 0,
+            left: 0,
+            right: 0,
+        }
     }
 
     pub const fn has_crop(&self) -> bool {
@@ -28,8 +33,16 @@ impl CropResult {
     }
 
     pub const fn to_tuple(self) -> (u32, u32) {
-        let v = if self.top < self.bottom { self.top } else { self.bottom };
-        let h = if self.left < self.right { self.left } else { self.right };
+        let v = if self.top < self.bottom {
+            self.top
+        } else {
+            self.bottom
+        };
+        let h = if self.left < self.right {
+            self.left
+        } else {
+            self.right
+        };
 
         let v_even = v & !1;
         let h_even = h & !1;
@@ -133,7 +146,11 @@ unsafe fn read_pixel(row_start: *const u8, col: usize, is_10bit: bool, black_cla
 
 #[inline]
 const fn get_thresholds(is_10bit: bool) -> (u16, u16, u16) {
-    if is_10bit { (128, 64, 64) } else { (32, 16, 16) }
+    if is_10bit {
+        (128, 64, 64)
+    } else {
+        (32, 16, 16)
+    }
 }
 
 unsafe fn detect_top_crop(

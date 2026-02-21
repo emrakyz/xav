@@ -60,7 +60,12 @@ pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Box<dyn std::error::Error
         streams: if parts[1] == "all" {
             AudioStreams::All
         } else {
-            AudioStreams::Specific(parts[1].split(',').map(str::parse).collect::<Result<_, _>>()?)
+            AudioStreams::Specific(
+                parts[1]
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()?,
+            )
         },
     })
 }
@@ -158,7 +163,10 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Box<dyn std::error::Err
                 seen.insert(idx).then(|| AudioStream {
                     index: idx,
                     channels: p[1].parse().unwrap_or(2),
-                    lang: p.get(2).filter(|s| !s.is_empty()).map(std::string::ToString::to_string),
+                    lang: p
+                        .get(2)
+                        .filter(|s| !s.is_empty())
+                        .map(std::string::ToString::to_string),
                 })
             })?
         })
@@ -210,7 +218,14 @@ fn encode_stream(
     }
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y"]);
+    cmd.args([
+        "-loglevel",
+        "error",
+        "-hide_banner",
+        "-nostdin",
+        "-stats",
+        "-y",
+    ]);
 
     if let Some(t) = times
         && t.len() == 1
@@ -221,7 +236,16 @@ fn encode_stream(
 
     cmd.arg("-i")
         .arg(input)
-        .args(["-map_metadata", "-1", "-map_chapters", "-1", "-dn", "-sn", "-vn", "-map"])
+        .args([
+            "-map_metadata",
+            "-1",
+            "-map_chapters",
+            "-1",
+            "-dn",
+            "-sn",
+            "-vn",
+            "-map",
+        ])
         .arg(format!("0:{}", stream.index));
 
     if normalize {
@@ -262,7 +286,16 @@ fn encode_stream_multi(
             .args(["-t", &format!("{:.6}", end - start)])
             .arg("-i")
             .arg(input)
-            .args(["-map_metadata", "-1", "-map_chapters", "-1", "-dn", "-sn", "-vn", "-map"])
+            .args([
+                "-map_metadata",
+                "-1",
+                "-map_chapters",
+                "-1",
+                "-dn",
+                "-sn",
+                "-vn",
+                "-map",
+            ])
             .arg(format!("0:{}", stream.index));
 
         if normalize {
@@ -323,7 +356,16 @@ fn mux_files(
     dar: Option<(u32, u32)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-stats", "-y", "-i"]).arg(video);
+    cmd.args([
+        "-loglevel",
+        "error",
+        "-hide_banner",
+        "-nostdin",
+        "-stats",
+        "-y",
+        "-i",
+    ])
+    .arg(video);
 
     for (_, path) in files {
         cmd.arg("-i").arg(path);
@@ -352,7 +394,10 @@ fn mux_files(
     for (i, (info, _)) in files.iter().enumerate() {
         let code = info.lang.as_deref().unwrap_or("und");
         cmd.args([&format!("-metadata:s:a:{i}"), &format!("language={code}")]);
-        cmd.args([&format!("-metadata:s:a:{i}"), &format!("title={}", lang_name(code))]);
+        cmd.args([
+            &format!("-metadata:s:a:{i}"),
+            &format!("title={}", lang_name(code)),
+        ]);
     }
 
     cmd.args(["-c", "copy"]);
@@ -415,8 +460,11 @@ pub fn process_audio(
                     AudioBitrate::Norm => unreachable!(),
                 }
             };
-            let path =
-                work.join(format!("{}_{:02}.opus", s.lang.as_deref().unwrap_or("und"), s.index));
+            let path = work.join(format!(
+                "{}_{:02}.opus",
+                s.lang.as_deref().unwrap_or("und"),
+                s.index
+            ));
 
             encode_stream(input, s, br, &path, use_norm, times.as_deref())?;
             Ok::<_, Box<dyn std::error::Error>>(((*s).clone(), path))
