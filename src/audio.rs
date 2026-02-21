@@ -374,9 +374,7 @@ pub fn process_audio(
     video: &Path,
     output: &Path,
     ranges: Option<&[(usize, usize)]>,
-    fps_num: u32,
-    fps_den: u32,
-    dar: Option<(u32, u32)>,
+    inf: &crate::ffms::VidInf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let all = get_streams(input)?;
     let sel: Vec<_> = match &spec.streams {
@@ -384,7 +382,7 @@ pub fn process_audio(
         AudioStreams::Specific(ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
     };
 
-    let times = ranges.map(|r| crate::chunk::ranges_to_times(r, fps_num, fps_den));
+    let times = ranges.map(|r| crate::chunk::ranges_to_times(r, inf.fps_num, inf.fps_den));
 
     let work = input.parent().unwrap();
     let (use_norm, base_bitrate) = match &spec.bitrate {
@@ -425,7 +423,7 @@ pub fn process_audio(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    mux_files(video, &files, input, output, ranges.is_some(), dar)?;
+    mux_files(video, &files, input, output, ranges.is_some(), inf.dar)?;
 
     if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
         crate::chunk::add_mp4_subs(input, output);

@@ -176,144 +176,116 @@ fn apply_defaults(args: &mut Args) {
     }
 }
 
-fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::error::Error>> {
-    if args.len() < 2 {
-        return Err("Usage: xav [options] <input> <output>".into());
-    }
+fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
+    *i += 1;
+    args.get(*i).map(String::as_str)
+}
 
-    let mut worker = 1;
-    let mut scene_file = PathBuf::new();
+fn validate_output(
+    output: &Path,
+    encoder: crate::encoder::Encoder,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let containers = match encoder {
+        crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
+        crate::encoder::Encoder::Avm => "ivf",
+        crate::encoder::Encoder::Vvenc => "mp4",
+        crate::encoder::Encoder::X265 | crate::encoder::Encoder::X264 => "mkv, mp4",
+    };
+    if !containers.split(", ").any(|c| c == ext) {
+        return Err(format!("Invalid extension .{ext} for {encoder:?}. Use: {containers}").into());
+    }
+    Ok(())
+}
+
+macro_rules! arg {
+    (str $a:ident, $i:ident, $v:expr) => {
+        if let Some(v) = next_arg($a, &mut $i) {
+            $v = v.to_string();
+        }
+    };
+    (opt $a:ident, $i:ident, $v:expr) => {
+        if let Some(v) = next_arg($a, &mut $i) {
+            $v = Some(v.to_string());
+        }
+    };
+    (parse $a:ident, $i:ident, $v:expr) => {
+        if let Some(v) = next_arg($a, &mut $i) {
+            $v = v.parse()?;
+        }
+    };
+    (opt_parse $a:ident, $i:ident, $v:expr) => {
+        if let Some(v) = next_arg($a, &mut $i) {
+            $v = Some(v.parse()?);
+        }
+    };
+    (path $a:ident, $i:ident, $v:expr) => {
+        if let Some(v) = next_arg($a, &mut $i) {
+            $v = PathBuf::from(v);
+        }
+    };
+}
+
+fn parse_args_loop(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
+    let (mut worker, mut chunk_buffer, mut sc_only) = (1usize, None, false);
+    let (mut scene_file, mut input, mut output) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
+    let (mut encoder, mut params) = (crate::encoder::Encoder::default(), String::new());
+    let (mut noise, mut audio, mut ranges) = (None, None, None);
     #[cfg(feature = "vship")]
-    let mut target_quality = None;
+    let (mut target_quality, mut qp_range, mut cvvdp_config, mut probe_params) =
+        (None::<String>, None::<String>, None::<String>, None::<String>);
     #[cfg(feature = "vship")]
-    let mut metric_mode = "mean".to_string();
-    #[cfg(feature = "vship")]
-    let mut qp_range = None;
-    let mut params = String::new();
-    let mut noise = None;
-    let mut audio = None;
-    let mut encoder = crate::encoder::Encoder::default();
-    let mut input = PathBuf::new();
-    let mut output = PathBuf::new();
-    #[cfg(feature = "vship")]
-    let mut metric_worker = 1;
-    let mut chunk_buffer = None;
-    #[cfg(feature = "vship")]
-    let mut cvvdp_config = None;
-    #[cfg(feature = "vship")]
-    let mut probe_params = None;
-    let mut ranges = None;
-    let mut sc_only = false;
+    let (mut metric_mode, mut metric_worker) = ("mean".to_string(), 1usize);
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "-e" | "--encoder" => {
-                i += 1;
-                if i < args.len() {
-                    encoder = crate::encoder::Encoder::from_str(&args[i])
-                        .ok_or_else(|| format!("Unknown encoder: {}", args[i]))?;
+                if let Some(v) = next_arg(args, &mut i) {
+                    encoder = crate::encoder::Encoder::from_str(v)
+                        .ok_or_else(|| format!("Unknown encoder: {v}"))?;
                 }
             }
-            "-w" | "--worker" => {
-                i += 1;
-                if i < args.len() {
-                    worker = args[i].parse()?;
+            "-w" | "--worker" => arg!(parse args, i, worker),
+            "-s" | "--sc" => arg!(path args, i, scene_file),
+            "-p" | "--param" => arg!(str args, i, params),
+            "-b" | "--buffer" => arg!(opt_parse args, i, chunk_buffer),
+            "-r" | "--range" => {
+                if let Some(v) = next_arg(args, &mut i) {
+                    ranges = Some(parse_ranges(v)?);
                 }
             }
-            "-s" | "--sc" => {
-                i += 1;
-                if i < args.len() {
-                    scene_file = PathBuf::from(&args[i]);
-                }
-            }
-            #[cfg(feature = "vship")]
-            "-t" | "--tq" => {
-                i += 1;
-                if i < args.len() {
-                    target_quality = Some(args[i].clone());
-                }
-            }
-            #[cfg(feature = "vship")]
-            "-m" | "--mode" => {
-                i += 1;
-                if i < args.len() {
-                    metric_mode.clone_from(&args[i]);
-                }
-            }
-            #[cfg(feature = "vship")]
-            "-f" | "--qp" => {
-                i += 1;
-                if i < args.len() {
-                    qp_range = Some(args[i].clone());
-                }
-            }
-            "-p" | "--param" => {
-                i += 1;
-                if i < args.len() {
-                    params.clone_from(&args[i]);
+            "-a" | "--audio" => {
+                if let Some(v) = next_arg(args, &mut i) {
+                    audio = Some(audio::parse_audio_arg(v)?);
                 }
             }
             "-n" | "--noise" => {
-                i += 1;
-                if i < args.len() {
-                    let val: u32 = args[i].parse()?;
+                if let Some(v) = next_arg(args, &mut i) {
+                    let val: u32 = v.parse()?;
                     if !(1..=64).contains(&val) {
                         return Err("Noise ISO must be between 1-64".into());
                     }
                     noise = Some(val * 100);
                 }
             }
-            "-a" | "--audio" => {
-                i += 1;
-                if i < args.len() {
-                    audio = Some(audio::parse_audio_arg(&args[i])?);
-                }
-            }
-
             #[cfg(feature = "vship")]
-            "-v" | "--metric-worker" => {
-                i += 1;
-                if i < args.len() {
-                    metric_worker = args[i].parse()?;
-                }
-            }
-            "-b" | "--buffer" => {
-                i += 1;
-                if i < args.len() {
-                    chunk_buffer = Some(args[i].parse()?);
-                }
-            }
-            "-r" | "--range" => {
-                i += 1;
-                if i < args.len() {
-                    ranges = Some(parse_ranges(&args[i])?);
-                }
-            }
+            "-t" | "--tq" => arg!(opt args, i, target_quality),
             #[cfg(feature = "vship")]
-            "-d" | "--display" => {
-                i += 1;
-                if i < args.len() {
-                    cvvdp_config = Some(args[i].clone());
-                }
-            }
+            "-m" | "--mode" => arg!(str args, i, metric_mode),
             #[cfg(feature = "vship")]
-            "-P" | "--probe-param" => {
-                i += 1;
-                if i < args.len() {
-                    probe_params = Some(args[i].clone());
-                }
-            }
-
-            "--sc-only" => {
-                sc_only = true;
-            }
-
+            "-f" | "--qp" => arg!(opt args, i, qp_range),
+            #[cfg(feature = "vship")]
+            "-v" | "--vship" => arg!(parse args, i, metric_worker),
+            #[cfg(feature = "vship")]
+            "-d" | "--display" => arg!(opt args, i, cvvdp_config),
+            #[cfg(feature = "vship")]
+            "-P" | "--probe-param" => arg!(opt args, i, probe_params),
+            "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
             }
-
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
                     input = PathBuf::from(arg);
@@ -326,53 +298,47 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
         i += 1;
     }
 
-    if allow_resume && let Ok(saved_args) = get_saved_args(&input) {
-        return Ok(saved_args);
-    }
-
-    if output != PathBuf::new() {
-        let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let containers = match encoder {
-            crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
-            crate::encoder::Encoder::Avm => "ivf",
-            crate::encoder::Encoder::Vvenc => "mp4",
-            crate::encoder::Encoder::X265 | crate::encoder::Encoder::X264 => "mkv, mp4",
-        };
-        if !containers.split(", ").any(|c| c == ext) {
-            return Err(
-                format!("Invalid extension .{ext} for {encoder:?}. Use: {containers}").into()
-            );
-        }
-    }
-
-    let chunk_buffer = worker + chunk_buffer.unwrap_or(0);
-
-    let mut result = Args {
+    Ok(Args {
         encoder,
         worker,
         scene_file,
-        #[cfg(feature = "vship")]
-        target_quality,
-        #[cfg(feature = "vship")]
-        metric_mode,
-        #[cfg(feature = "vship")]
-        qp_range,
         params,
         noise,
         audio,
         input,
         output,
         decode_strat: None,
-        chunk_buffer,
+        chunk_buffer: worker + chunk_buffer.unwrap_or(0),
         ranges,
+        sc_only,
+        #[cfg(feature = "vship")]
+        target_quality,
+        #[cfg(feature = "vship")]
+        metric_mode,
+        #[cfg(feature = "vship")]
+        qp_range,
         #[cfg(feature = "vship")]
         metric_worker,
         #[cfg(feature = "vship")]
         cvvdp_config,
         #[cfg(feature = "vship")]
         probe_params,
-        sc_only,
-    };
+    })
+}
+
+fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::error::Error>> {
+    if args.len() < 2 {
+        return Err("Usage: xav [options] <input> <output>".into());
+    }
+
+    let mut result = parse_args_loop(args)?;
+
+    if allow_resume && let Ok(saved_args) = get_saved_args(&result.input) {
+        return Ok(saved_args);
+    }
+    if result.output != PathBuf::new() {
+        validate_output(&result.output, result.encoder)?;
+    }
 
     apply_defaults(&mut result);
 
@@ -382,7 +348,6 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::er
     {
         return Err("Missing args".into());
     }
-
     Ok(result)
 }
 
@@ -463,6 +428,41 @@ const fn scale_crop(
     (scaled_v, scaled_h)
 }
 
+fn init_pipe_crop(
+    idx: &std::sync::Arc<ffms::VidIdx>,
+    inf: ffms::VidInf,
+) -> (ffms::VidInf, (u32, u32), Option<crate::y4m::PipeReader>) {
+    let pipe_init = y4m::init_pipe();
+    let config = crop::CropDetectConfig { sample_count: 13, min_black_pixels: 2 };
+    let crop = match crop::detect_crop(idx, &inf, &config) {
+        Ok(detected) if detected.has_crop() => detected.to_tuple(),
+        _ => (0, 0),
+    };
+
+    if let Some((y, reader)) = pipe_init {
+        let (cv, ch) = crop;
+        let target_w = inf.width - ch * 2;
+        let target_h = inf.height - cv * 2;
+        let matches_original_ar = y.width * inf.height == y.height * inf.width;
+        let matches_cropped_ar = y.width * target_h == y.height * target_w;
+        let new_crop = if matches_cropped_ar {
+            (0, 0)
+        } else if matches_original_ar {
+            scale_crop(crop, inf.width, inf.height, y.width, y.height)
+        } else {
+            (0, 0)
+        };
+        let mut inf = inf;
+        inf.width = y.width;
+        inf.height = y.height;
+        inf.is_10bit = y.is_10bit;
+        inf.dar = None;
+        (inf, new_crop, Some(reader))
+    } else {
+        (inf, crop, None)
+    }
+}
+
 fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     std::io::stdout().flush().unwrap();
@@ -501,41 +501,7 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
         save_args(&work_dir)?;
     }
 
-    let pipe_init = y4m::init_pipe();
-
-    let crop = {
-        let config = crop::CropDetectConfig { sample_count: 13, min_black_pixels: 2 };
-
-        match crop::detect_crop(&idx, &inf, &config) {
-            Ok(detected) if detected.has_crop() => detected.to_tuple(),
-            _ => (0, 0),
-        }
-    };
-
-    let (mut inf, crop, pipe_reader) = if let Some((y, reader)) = pipe_init {
-        let (cv, ch) = crop;
-        let target_w = inf.width - ch * 2;
-        let target_h = inf.height - cv * 2;
-
-        let matches_original_ar = y.width * inf.height == y.height * inf.width;
-        let matches_cropped_ar = y.width * target_h == y.height * target_w;
-
-        let new_crop = if matches_cropped_ar {
-            (0, 0)
-        } else if matches_original_ar {
-            scale_crop(crop, inf.width, inf.height, y.width, y.height)
-        } else {
-            (0, 0)
-        };
-        let mut inf = inf;
-        inf.width = y.width;
-        inf.height = y.height;
-        inf.is_10bit = y.is_10bit;
-        inf.dar = None;
-        (inf, new_crop, Some(reader))
-    } else {
-        (inf, crop, None)
-    };
+    let (mut inf, crop, pipe_reader) = init_pipe_crop(&idx, inf);
 
     if let Some((dw, dh)) = inf.dar {
         let fw = u64::from(inf.width - crop.1 * 2);
@@ -592,18 +558,28 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
             &video_mkv,
             &args.output,
             args.ranges.as_deref(),
-            inf.fps_num,
-            inf.fps_den,
-            inf.dar,
+            &inf,
         )?;
         fs::remove_file(&video_mkv)?;
     }
 
+    print_summary(&args, &inf, &chunks, crop, enc_time);
+    fs::remove_dir_all(&work_dir)?;
+    Ok(())
+}
+
+fn print_summary(
+    args: &Args,
+    inf: &ffms::VidInf,
+    chunks: &[chunk::Chunk],
+    crop: (u32, u32),
+    enc_time: std::time::Duration,
+) {
     print!("\x1b[?25h\x1b[?1049l");
     std::io::stdout().flush().unwrap();
 
-    let input_size = fs::metadata(&args.input)?.len();
-    let output_size = fs::metadata(&args.output)?.len();
+    let input_size = fs::metadata(&args.input).map_or(0, |m| m.len());
+    let output_size = fs::metadata(&args.output).map_or(0, |m| m.len());
     let total_frames: usize = chunks.iter().map(|c| c.end - c.start).sum();
     let duration = total_frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
     let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
@@ -620,16 +596,12 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
 
     let arrow = if change < 0.0 { "󰛀" } else { "󰛃" };
     let change_color = if change < 0.0 { G } else { R };
-
     let fps_rate = f64::from(inf.fps_num) / f64::from(inf.fps_den);
     let enc_speed = total_frames as f64 / enc_time.as_secs_f64();
-
     let enc_secs = enc_time.as_secs();
     let (eh, em, es) = (enc_secs / 3600, (enc_secs % 3600) / 60, enc_secs % 60);
-
     let dur_secs = duration as u64;
     let (dh, dm, ds) = (dur_secs / 3600, (dur_secs % 3600) / 60, dur_secs % 60);
-
     let (final_width, final_height) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
 
     println!(
@@ -649,10 +621,6 @@ fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
     final_width, final_height, fps_rate, dh, dm, ds, "",
     eh, em, es, enc_speed, ""
 );
-
-    fs::remove_dir_all(&work_dir)?;
-
-    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

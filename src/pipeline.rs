@@ -12,18 +12,22 @@ pub type WriteFn = fn(&mut ChildStdin, &[u8], usize, &mut [u8], &Pipeline);
 const fn unpack_noop(_: &[u8], _: &mut [u8], _: &Pipeline) {}
 
 #[cfg(feature = "vship")]
+pub struct MetricsProgress<'a> {
+    pub prog: &'a crate::progs::ProgsTrack,
+    pub slot: usize,
+    pub crf: f32,
+    pub last_score: Option<f64>,
+}
+
+#[cfg(feature = "vship")]
 pub type CalcMetricsFn = fn(
     &crate::worker::WorkPkg,
     &std::path::Path,
-    &crate::ffms::VidInf,
     &Pipeline,
     &crate::vship::VshipProcessor,
     &str,
     &mut [u8],
-    &std::sync::Arc<crate::progs::ProgsTrack>,
-    usize,
-    f32,
-    Option<f64>,
+    &MetricsProgress,
 ) -> (f64, Vec<f64>);
 
 #[cfg(feature = "vship")]

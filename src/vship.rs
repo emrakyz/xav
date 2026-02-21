@@ -233,40 +233,16 @@ impl VshipProcessor {
     pub fn new(
         width: u32,
         height: u32,
-        is_10bit: bool,
-        matrix: Option<i32>,
-        transfer: Option<i32>,
-        primaries: Option<i32>,
-        color_range: Option<i32>,
-        chroma_sample_position: Option<i32>,
-        fps: f32,
+        inf: &crate::ffms::VidInf,
         use_cvvdp: bool,
         use_butteraugli: bool,
         cvvdp_model: Option<&str>,
         cvvdp_config: Option<&str>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        let fps = inf.fps_num as f32 / inf.fps_den as f32;
         unsafe {
-            let src_colorspace = create_yuv_colorspace(
-                width,
-                height,
-                is_10bit,
-                matrix,
-                transfer,
-                primaries,
-                color_range,
-                chroma_sample_position,
-            );
-
-            let dis_colorspace = create_yuv_colorspace(
-                width,
-                height,
-                true,
-                matrix,
-                transfer,
-                primaries,
-                color_range,
-                chroma_sample_position,
-            );
+            let src_colorspace = create_yuv_colorspace(width, height, inf.is_10bit, inf);
+            let dis_colorspace = create_yuv_colorspace(width, height, true, inf);
 
             let handler = if !use_cvvdp && !use_butteraugli {
                 let mut handler = std::mem::zeroed::<VshipSSIMU2Handler>();
@@ -458,18 +434,14 @@ fn create_yuv_colorspace(
     width: u32,
     height: u32,
     is_10bit: bool,
-    matrix: Option<i32>,
-    transfer: Option<i32>,
-    primaries: Option<i32>,
-    color_range: Option<i32>,
-    chroma_sample_position: Option<i32>,
+    inf: &crate::ffms::VidInf,
 ) -> VshipColorspace {
-    let chroma_loc = match chroma_sample_position {
+    let chroma_loc = match inf.chroma_sample_position {
         Some(2) => VshipChromaLocation::TopLeft,
         _ => VshipChromaLocation::Left,
     };
 
-    let matrix_val = match matrix {
+    let matrix_val = match inf.matrix_coefficients {
         Some(0) => VshipYuvMatrix::Rgb,
         Some(5) => VshipYuvMatrix::Bt470Bg,
         Some(6) => VshipYuvMatrix::St170M,
@@ -479,7 +451,7 @@ fn create_yuv_colorspace(
         _ => VshipYuvMatrix::Bt709,
     };
 
-    let transfer_val = match transfer {
+    let transfer_val = match inf.transfer_characteristics {
         Some(4) => VshipTransferFunction::Bt470M,
         Some(5) => VshipTransferFunction::Bt470Bg,
         Some(6) => VshipTransferFunction::Bt601,
@@ -491,7 +463,7 @@ fn create_yuv_colorspace(
         _ => VshipTransferFunction::Bt709,
     };
 
-    let primaries_val = match primaries {
+    let primaries_val = match inf.color_primaries {
         Some(-1) => VshipPrimaries::Internal,
         Some(4) => VshipPrimaries::Bt470M,
         Some(5) => VshipPrimaries::Bt470Bg,
@@ -499,7 +471,7 @@ fn create_yuv_colorspace(
         _ => VshipPrimaries::Bt709,
     };
 
-    let range_val = match color_range {
+    let range_val = match inf.color_range {
         Some(2) => VshipRange::Full,
         _ => VshipRange::Limited,
     };

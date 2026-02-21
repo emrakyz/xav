@@ -60,15 +60,11 @@ macro_rules! calc_metrics_impl {
         pub fn $name(
             pkg: &crate::worker::WorkPkg,
             probe_path: &std::path::Path,
-            _inf: &crate::ffms::VidInf,
             pipe: &crate::pipeline::Pipeline,
             vship: &crate::vship::VshipProcessor,
             metric_mode: &str,
             unpacked_buf: &mut [u8],
-            prog: &std::sync::Arc<crate::progs::ProgsTrack>,
-            worker_id: usize,
-            crf: f32,
-            last_score: Option<f64>,
+            mp: &crate::pipeline::MetricsProgress,
         ) -> (f64, Vec<f64>) {
             let cvvdp_per_frame = pipe.reset_cvvdp && metric_mode.starts_with('p');
             if pipe.reset_cvvdp {
@@ -92,12 +88,12 @@ macro_rules! calc_metrics_impl {
                 ($frame_idx: expr) => {{
                     let elapsed = start.elapsed().as_secs_f32().max(0.001);
                     let fps = ($frame_idx + 1) as f32 / elapsed;
-                    prog.show_metric_progress(
-                        worker_id,
+                    mp.prog.show_metric_progress(
+                        mp.slot,
                         pkg.chunk.idx,
                         ($frame_idx + 1, pkg.frame_count),
                         fps,
-                        (crf, last_score),
+                        (mp.crf, mp.last_score),
                     );
 
                     let input_frame =

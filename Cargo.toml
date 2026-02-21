@@ -18,7 +18,7 @@ vship = []
 libsvtav1 = []
 
 [dependencies]
-libc = "0.2.181"
+libc = "0.2.182"
 crossbeam-channel = "0.5.15"
 ffms2-sys = { version = "0.3.0", features = ["static"] }
 av-decoders = { git = "https://github.com/rust-av/av-decoders", default-features = false, features = ["ffms2"] }
@@ -37,3 +37,23 @@ strip = "symbols"
 debug = 0
 panic = "abort"
 lto = "fat"
+
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+many_single_char_names = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+
+# RESTRICTION LINTS can not be enabled as a group
+# TODO: Add restriction lints

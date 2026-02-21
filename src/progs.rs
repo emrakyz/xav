@@ -206,12 +206,12 @@ impl ProgsTrack {
         &self,
         worker_id: usize,
         chunk_idx: usize,
-        current: usize,
-        total: usize,
+        progress: (usize, usize),
         fps: f32,
         frames_delta: Option<usize>,
         crf_score: Option<(f32, Option<f64>)>,
     ) {
+        let (current, total) = progress;
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
         let bar = format!("{}{}", B_HASH.repeat(filled), Y_DASH.repeat(BAR_WIDTH - filled));
         let perc = (current * 100 / total.max(1)).min(100);
@@ -268,8 +268,7 @@ impl LibEncTracker {
         prog.update_lib_enc(
             worker_id,
             chunk_idx,
-            self.encoded,
-            total,
+            (self.encoded, total),
             fps,
             if track_frames { Some(delta) } else { None },
             crf_score,
