@@ -1,18 +1,19 @@
-use std::collections::HashSet;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use crossbeam_channel::Sender;
 use ffms2_sys::FFMS_VideoSource;
 
-use crate::chunk::Chunk;
-use crate::ffms::{
-    DecodeStrat, VidIdx, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src, extr_8bit_crop,
-    extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10bit_crop, extr_10bit_crop_fast,
-    extr_10bit_crop_fast_rem, extr_10bit_crop_pack_stride, extr_10bit_crop_pack_stride_rem,
-    extr_10bit_crop_rem, extr_10bit_pack, extr_10bit_pack_rem, extr_10bit_pack_stride,
-    extr_10bit_pack_stride_rem, thr_vid_src,
+use crate::{
+    chunk::Chunk,
+    ffms::{
+        DecodeStrat, VidIdx, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src,
+        extr_8bit_crop, extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10bit_crop,
+        extr_10bit_crop_fast, extr_10bit_crop_fast_rem, extr_10bit_crop_pack_stride,
+        extr_10bit_crop_pack_stride_rem, extr_10bit_crop_rem, extr_10bit_pack, extr_10bit_pack_rem,
+        extr_10bit_pack_stride, extr_10bit_pack_stride_rem, thr_vid_src,
+    },
+    worker::{Semaphore, WorkPkg},
 };
-use crate::worker::{Semaphore, WorkPkg};
 
 #[derive(Debug, Clone, Copy)]
 pub struct CropCalc {

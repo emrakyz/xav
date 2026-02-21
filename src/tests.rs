@@ -1,16 +1,15 @@
-use std::collections::HashSet;
-use std::path::Path;
-use std::sync::Arc;
-use std::thread;
+use std::{collections::HashSet, path::Path, sync::Arc, thread};
 
 use crossbeam_channel::bounded;
 use ffms2_sys::FFMS_VideoSource;
 
-use crate::chunk::Chunk;
-use crate::decode::decode_chunks;
-use crate::encode::get_frame;
-use crate::ffms::{self, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, thr_vid_src};
-use crate::pipeline::Pipeline;
+use crate::{
+    chunk::Chunk,
+    decode::decode_chunks,
+    encode::get_frame,
+    ffms::{self, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, thr_vid_src},
+    pipeline::Pipeline,
+};
 
 fn extr_raw_data(
     vid_src: *mut FFMS_VideoSource,

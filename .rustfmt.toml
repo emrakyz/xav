@@ -5,9 +5,10 @@ newline_style = "Unix"
 color = "Always"
 
 group_imports = "StdExternalCrate"
-imports_granularity = "Module"
+imports_granularity = "Crate"
 reorder_impl_items = true
 reorder_imports = true
+reorder_modules = true
 
 format_macro_bodies = true
 format_macro_matchers = true
@@ -15,12 +16,13 @@ format_strings = true
 format_code_in_doc_comments = true
 
 use_small_heuristics = "Default"
+use_field_init_shorthand = true
+use_try_shorthand = true
 remove_nested_parens = true
+condense_wildcard_suffixes = true
 
 binop_separator = "Front"
 
 blank_lines_lower_bound = 0
 blank_lines_upper_bound = 1
 brace_style = "SameLineWhere"
-
-

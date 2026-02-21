@@ -1,13 +1,14 @@
-use std::cmp::min;
-use std::fmt::Write;
-use std::fs;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::{
+    cmp::min,
+    fmt::Write,
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use av_scenechange::{DetectionOptions, SceneDetectionSpeed, av_decoders, detect_scene_changes};
 
-use crate::ffms;
-use crate::progs::ProgsBar;
+use crate::{ffms, progs::ProgsBar};
 
 pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let idx = ffms::VidIdx::new(vid_path, true)?;
