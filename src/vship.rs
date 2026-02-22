@@ -1,4 +1,21 @@
-use std::ptr;
+use std::{mem::MaybeUninit, ptr};
+
+#[inline]
+#[cold]
+fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> String {
+    unsafe {
+        std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[inline]
+fn vship_get_err(buf: &mut MaybeUninit<[u8; 1024]>) {
+    unsafe {
+        Vship_GetDetailedLastError(buf.as_mut_ptr().cast(), 1024);
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -135,23 +152,27 @@ struct VshipColorspace {
     crop: VshipCropRectangle,
 }
 
-#[repr(C)]
+#[repr(i32)]
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 enum VshipException {
     NoError = 0,
-    OutOfVRAM,
-    OutOfRAM,
-    BadDisplayModel,
-    DifferingInputType,
-    NonRGBSInput,
-    DeviceCountError,
-    NoDeviceDetected,
-    BadDeviceArgument,
-    BadDeviceCode,
-    BadHandler,
-    BadPointer,
-    BadErrorType,
+    OutOfVRAM = 1,
+    OutOfRAM = 2,
+    BadDisplayModel = 3,
+    DifferingInputType = 4,
+    NonRGBSInput = 5,
+    DeviceCountError = 6,
+    NoDeviceDetected = 7,
+    BadDeviceArgument = 8,
+    BadDeviceCode = 9,
+    BadHandler = 10,
+    BadPointer = 11,
+    HIPError = 12,
+    BadPath = 13,
+    BadJson = 14,
+    NotSupported = 15,
+    BadErrorType = 16,
 }
 
 unsafe extern "C" {
@@ -210,7 +231,7 @@ unsafe extern "C" {
         lineSize: *const i64,
         lineSize2: *const i64,
     ) -> VshipException;
-    fn Vship_GetErrorMessage(exception: VshipException, out_msg: *mut i8, len: i32) -> i32;
+    fn Vship_GetDetailedLastError(out_msg: *mut i8, len: i32) -> i32;
 }
 
 pub struct VshipProcessor {
@@ -221,9 +242,11 @@ pub struct VshipProcessor {
 
 pub fn init_device() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
+        let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
         let ret = Vship_SetDevice(0);
         if ret as i32 != 0 {
-            return Err("Failed to set VSHIP device".into());
+            vship_get_err(&mut errbuf);
+            return Err(vship_err_str(&errbuf).into());
         }
         Ok(())
     }
@@ -244,15 +267,15 @@ impl VshipProcessor {
             let src_colorspace = create_yuv_colorspace(width, height, inf.is_10bit, inf);
             let dis_colorspace = create_yuv_colorspace(width, height, true, inf);
 
+            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
+
             let handler = if !use_cvvdp && !use_butteraugli {
                 let mut handler = std::mem::zeroed::<VshipSSIMU2Handler>();
                 let ret =
                     Vship_SSIMU2Init(ptr::from_mut(&mut handler), src_colorspace, dis_colorspace);
                 if ret as i32 != 0 {
-                    let mut err_msg = vec![0i8; 1024];
-                    Vship_GetErrorMessage(ret, err_msg.as_mut_ptr(), 1024);
-                    let err = std::ffi::CStr::from_ptr(err_msg.as_ptr()).to_string_lossy();
-                    return Err(format!("Failed to init VSHIP: {err}").into());
+                    vship_get_err(&mut errbuf);
+                    return Err(vship_err_str(&errbuf).into());
                 }
                 Some(handler)
             } else {
@@ -276,10 +299,8 @@ impl VshipProcessor {
                     config_cstr.as_ptr(),
                 );
                 if ret as i32 != 0 {
-                    let mut err_msg = vec![0i8; 1024];
-                    Vship_GetErrorMessage(ret, err_msg.as_mut_ptr(), 1024);
-                    let err = std::ffi::CStr::from_ptr(err_msg.as_ptr()).to_string_lossy();
-                    return Err(format!("Failed to init CVVDP: {err}").into());
+                    vship_get_err(&mut errbuf);
+                    return Err(vship_err_str(&errbuf).into());
                 }
                 Some(handler)
             } else {
@@ -296,10 +317,8 @@ impl VshipProcessor {
                     203.0,
                 );
                 if ret as i32 != 0 {
-                    let mut err_msg = vec![0i8; 1024];
-                    Vship_GetErrorMessage(ret, err_msg.as_mut_ptr(), 1024);
-                    let err = std::ffi::CStr::from_ptr(err_msg.as_ptr()).to_string_lossy();
-                    return Err(format!("Failed to init Butteraugli: {err}").into());
+                    vship_get_err(&mut errbuf);
+                    return Err(vship_err_str(&errbuf).into());
                 }
                 Some(handler)
             } else {
@@ -322,6 +341,7 @@ impl VshipProcessor {
         line_sizes2: [i64; 3],
     ) -> Result<f64, Box<dyn std::error::Error>> {
         unsafe {
+            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
             let ret = Vship_ComputeSSIMU2(
                 self.handler.ok_or("SSIMULACRA2 handler not initialized")?,
@@ -333,10 +353,8 @@ impl VshipProcessor {
             );
 
             if ret as i32 != 0 {
-                let mut err_msg = vec![0i8; 1024];
-                Vship_GetErrorMessage(ret, err_msg.as_mut_ptr(), 1024);
-                let err = std::ffi::CStr::from_ptr(err_msg.as_ptr()).to_string_lossy();
-                return Err(format!("VSHIP compute failed: {err}").into());
+                vship_get_err(&mut errbuf);
+                return Err(vship_err_str(&errbuf).into());
             }
 
             Ok(score)
@@ -363,6 +381,7 @@ impl VshipProcessor {
         line_sizes2: [i64; 3],
     ) -> Result<f64, Box<dyn std::error::Error>> {
         unsafe {
+            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
             let ret = Vship_ComputeCVVDP(
                 self.cvvdp_handler.ok_or("CVVDP handler not initialized")?,
@@ -376,10 +395,8 @@ impl VshipProcessor {
             );
 
             if ret as i32 != 0 {
-                let mut err_msg = vec![0i8; 1024];
-                Vship_GetErrorMessage(ret, err_msg.as_mut_ptr(), 1024);
-                let err = std::ffi::CStr::from_ptr(err_msg.as_ptr()).to_string_lossy();
-                return Err(format!("CVVDP compute failed: {err}").into());
+                vship_get_err(&mut errbuf);
+                return Err(vship_err_str(&errbuf).into());
             }
 
             Ok(score)
@@ -394,6 +411,7 @@ impl VshipProcessor {
         line_sizes2: [i64; 3],
     ) -> Result<f64, Box<dyn std::error::Error>> {
         unsafe {
+            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = VshipButteraugliScore {
                 norm_q: 0.0,
                 norm3: 0.0,
@@ -412,10 +430,8 @@ impl VshipProcessor {
             );
 
             if ret as i32 != 0 {
-                let mut err_msg = vec![0i8; 1024];
-                Vship_GetErrorMessage(ret, err_msg.as_mut_ptr(), 1024);
-                let err = std::ffi::CStr::from_ptr(err_msg.as_ptr()).to_string_lossy();
-                return Err(format!("Butteraugli compute failed: {err}").into());
+                vship_get_err(&mut errbuf);
+                return Err(vship_err_str(&errbuf).into());
             }
 
             Ok(score.norm_q)
