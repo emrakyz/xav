@@ -4,7 +4,7 @@ use av1_grain::{NoiseGenArgs, TransferFunction, generate_photon_noise_params, wr
 
 use crate::ffms::VidInf;
 
-pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), crate::error::Error> {
     let transfer = if inf.transfer_characteristics == Some(16) {
         TransferFunction::SMPTE2084
     } else {
@@ -25,6 +25,6 @@ pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), Box<dyn st
     let duration = inf.frames as u64 * u64::from(inf.fps_den) * 10_000_000 / u64::from(inf.fps_num);
     let segment = generate_photon_noise_params(0, duration, args);
 
-    write_grain_table(output, &[segment])?;
+    write_grain_table(output, &[segment]).map_err(|e| e.to_string())?;
     Ok(())
 }

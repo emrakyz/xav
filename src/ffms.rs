@@ -25,7 +25,7 @@ macro_rules! ffms_ok {
     ($ptr:expr, $buf:expr) => {{
         let p = $ptr;
         if p.is_null() {
-            return Err(ffms_err_str($buf).into());
+            return Err(ffms_err_str($buf));
         }
         p
     }};
@@ -33,11 +33,13 @@ macro_rules! ffms_ok {
 
 #[inline]
 #[cold]
-fn ffms_err_str(buf: &MaybeUninit<[u8; 1024]>) -> String {
+fn ffms_err_str(buf: &MaybeUninit<[u8; 1024]>) -> crate::error::Error {
     unsafe {
-        std::ffi::CStr::from_ptr(buf.as_ptr().cast())
-            .to_string_lossy()
-            .into_owned()
+        crate::error::Error::Msg(
+            std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }
 
@@ -87,11 +89,11 @@ extern "C" fn idx_progs(
 }
 
 impl VidIdx {
-    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, crate::error::Error> {
         unsafe {
             FFMS_Init(0, 0);
 
-            let source = CString::new(path.to_str().unwrap())?;
+            let source = CString::new(path.to_str().unwrap_unchecked())?;
             ffms_err!(errbuf, err);
 
             let idx_path = format!("{}.ffindex", path.display());
@@ -144,11 +146,11 @@ impl VidIdx {
             let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, std::ptr::addr_of_mut!(err));
             if track < 0 {
                 FFMS_DestroyIndex(idx);
-                return Err(ffms_err_str(&errbuf).into());
+                return Err(ffms_err_str(&errbuf));
             }
 
             Ok(Arc::new(Self {
-                path: path.to_str().unwrap().to_string(),
+                path: path.to_str().unwrap_unchecked().to_string(),
                 track,
                 idx_handle: idx,
             }))
@@ -169,7 +171,7 @@ impl Drop for VidIdx {
 unsafe impl Send for VidIdx {}
 unsafe impl Sync for VidIdx {}
 
-pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error>> {
+pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, crate::error::Error> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         ffms_err!(errbuf, err);
@@ -281,7 +283,7 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error
 pub fn thr_vid_src(
     idx: &Arc<VidIdx>,
     threads: i32,
-) -> Result<*mut FFMS_VideoSource, Box<dyn std::error::Error>> {
+) -> Result<*mut FFMS_VideoSource, crate::error::Error> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         ffms_err!(errbuf, err);
@@ -490,8 +492,8 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
         .chunks_exact(8)
         .zip(output.chunks_exact_mut(5))
         .for_each(|(i_chunk, o_chunk)| {
-            let i_arr: &[u8; 8] = i_chunk.try_into().unwrap();
-            let o_arr: &mut [u8; 5] = o_chunk.try_into().unwrap();
+            let i_arr: &[u8; 8] = unsafe { i_chunk.try_into().unwrap_unchecked() };
+            let o_arr: &mut [u8; 5] = unsafe { o_chunk.try_into().unwrap_unchecked() };
             pack_4_pix_10bit(*i_arr, o_arr);
         });
 }
@@ -501,8 +503,8 @@ pub fn unpack_10bit(input: &[u8], output: &mut [u8], _w: usize, _h: usize) {
         .chunks_exact(5)
         .zip(output.chunks_exact_mut(8))
         .for_each(|(i_chunk, o_chunk)| {
-            let i_arr: &[u8; 5] = i_chunk.try_into().unwrap();
-            let o_arr: &mut [u8; 8] = o_chunk.try_into().unwrap();
+            let i_arr: &[u8; 5] = unsafe { i_chunk.try_into().unwrap_unchecked() };
+            let o_arr: &mut [u8; 8] = unsafe { o_chunk.try_into().unwrap_unchecked() };
             unpack_4_pix_10bit(*i_arr, o_arr);
         });
 }
@@ -537,13 +539,18 @@ fn unpack_plane_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
         src.chunks_exact(5)
             .zip(dst.chunks_exact_mut(8))
             .for_each(|(i, o)| {
-                unpack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                unpack_4_pix_10bit(unsafe { i.try_into().unwrap_unchecked() }, unsafe {
+                    o.try_into().unwrap_unchecked()
+                });
             });
 
         let rem = unpacked_row % 8;
         if rem > 0 {
             let mut tmp = [0u8; 8];
-            unpack_4_pix_10bit((&src[packed_row - 5..]).try_into().unwrap(), &mut tmp);
+            unpack_4_pix_10bit(
+                unsafe { (&src[packed_row - 5..]).try_into().unwrap_unchecked() },
+                &mut tmp,
+            );
             dst[unpacked_row - rem..].copy_from_slice(&tmp[..rem]);
         }
     }
@@ -563,7 +570,10 @@ fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) 
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             pos += pack_row;
@@ -657,7 +667,7 @@ pub fn get_decode_strat(
     idx: &Arc<VidIdx>,
     inf: &VidInf,
     crop: (u32, u32),
-) -> Result<DecodeStrat, Box<dyn std::error::Error>> {
+) -> Result<DecodeStrat, crate::error::Error> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         ffms_err!(errbuf, err);
@@ -884,7 +894,10 @@ pub fn extr_10bit_crop_pack_stride(
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             dst_pos += pack_row_y;
@@ -904,7 +917,10 @@ pub fn extr_10bit_crop_pack_stride(
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             dst_pos += pack_row_uv;
@@ -922,7 +938,10 @@ pub fn extr_10bit_crop_pack_stride(
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             dst_pos += pack_row_uv;
@@ -943,14 +962,20 @@ fn pack_stride_rem(src: *const u8, stride: usize, w: usize, h: usize, out: *mut 
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             let rem = w_bytes % 8;
             if rem > 0 {
                 let mut tmp = [0u8; 8];
                 tmp[..rem].copy_from_slice(&src_row[w_bytes - rem..]);
-                pack_4_pix_10bit(tmp, (&mut dst_row[y_row - 5..]).try_into().unwrap());
+                pack_4_pix_10bit(
+                    tmp,
+                    (&mut dst_row[y_row - 5..]).try_into().unwrap_unchecked(),
+                );
             }
         }
     }
@@ -967,14 +992,18 @@ pub fn pack_10bit_rem(input: &[u8], output: &mut [u8], w: usize, h: usize) {
         src.chunks_exact(8)
             .zip(dst.chunks_exact_mut(5))
             .for_each(|(i, o)| {
-                pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                pack_4_pix_10bit(unsafe { i.try_into().unwrap_unchecked() }, unsafe {
+                    o.try_into().unwrap_unchecked()
+                });
             });
 
         let rem = unpacked_row % 8;
         if rem > 0 {
             let mut tmp = [0u8; 8];
             tmp[..rem].copy_from_slice(&src[unpacked_row - rem..]);
-            pack_4_pix_10bit(tmp, (&mut dst[y_row - 5..]).try_into().unwrap());
+            pack_4_pix_10bit(tmp, unsafe {
+                (&mut dst[y_row - 5..]).try_into().unwrap_unchecked()
+            });
         }
     }
 }
@@ -1149,14 +1178,20 @@ pub fn extr_10bit_crop_pack_stride_rem(
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             let rem = crop_calc.y_len % 8;
             if rem > 0 {
                 let mut tmp = [0u8; 8];
                 tmp[..rem].copy_from_slice(&src_row[crop_calc.y_len - rem..]);
-                pack_4_pix_10bit(tmp, (&mut dst_row[y_row - 5..]).try_into().unwrap());
+                pack_4_pix_10bit(
+                    tmp,
+                    (&mut dst_row[y_row - 5..]).try_into().unwrap_unchecked(),
+                );
             }
 
             dst_pos += y_row;
@@ -1173,14 +1208,20 @@ pub fn extr_10bit_crop_pack_stride_rem(
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             let rem = crop_calc.uv_len % 8;
             if rem > 0 {
                 let mut tmp = [0u8; 8];
                 tmp[..rem].copy_from_slice(&src_row[crop_calc.uv_len - rem..]);
-                pack_4_pix_10bit(tmp, (&mut dst_row[uv_row - 5..]).try_into().unwrap());
+                pack_4_pix_10bit(
+                    tmp,
+                    (&mut dst_row[uv_row - 5..]).try_into().unwrap_unchecked(),
+                );
             }
 
             dst_pos += uv_row;
@@ -1197,14 +1238,20 @@ pub fn extr_10bit_crop_pack_stride_rem(
                 .chunks_exact(8)
                 .zip(dst_row.chunks_exact_mut(5))
                 .for_each(|(i, o)| {
-                    pack_4_pix_10bit(i.try_into().unwrap(), o.try_into().unwrap());
+                    pack_4_pix_10bit(
+                        i.try_into().unwrap_unchecked(),
+                        o.try_into().unwrap_unchecked(),
+                    );
                 });
 
             let rem = crop_calc.uv_len % 8;
             if rem > 0 {
                 let mut tmp = [0u8; 8];
                 tmp[..rem].copy_from_slice(&src_row[crop_calc.uv_len - rem..]);
-                pack_4_pix_10bit(tmp, (&mut dst_row[uv_row - 5..]).try_into().unwrap());
+                pack_4_pix_10bit(
+                    tmp,
+                    (&mut dst_row[uv_row - 5..]).try_into().unwrap_unchecked(),
+                );
             }
 
             dst_pos += uv_row;

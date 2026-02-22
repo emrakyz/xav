@@ -39,7 +39,7 @@ pub fn binary_search(min: f64, max: f64) -> f64 {
 
 pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
     let mut pairs: Vec<(f64, f64)> = probes.iter().map(|p| (p.score, p.crf)).collect();
-    pairs.sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    pairs.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
     let x: Vec<f64> = pairs.iter().map(|p| p.0).collect();
     let y: Vec<f64> = pairs.iter().map(|p| p.1).collect();
@@ -71,10 +71,22 @@ macro_rules! calc_metrics_impl {
                 vship.reset_cvvdp();
             }
 
-            let idx = crate::ffms::VidIdx::new(probe_path, false).unwrap();
+            let idx = crate::ffms::VidIdx::new(probe_path, false).unwrap_or_else(|e| {
+                use std::io::Write;
+                print!("\x1b[?25h\x1b[?1049l");
+                let _ = std::io::stdout().flush();
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
             let threads =
                 std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
-            let src = crate::ffms::thr_vid_src(&idx, threads).unwrap();
+            let src = crate::ffms::thr_vid_src(&idx, threads).unwrap_or_else(|e| {
+                use std::io::Write;
+                print!("\x1b[?25h\x1b[?1049l");
+                let _ = std::io::stdout().flush();
+                eprintln!("{e}");
+                std::process::exit(1);
+            });
 
             let mut scores = Vec::with_capacity(pkg.frame_count);
             let frame_size = pipe.frame_size;
@@ -83,8 +95,8 @@ macro_rules! calc_metrics_impl {
             let pixel_size = if $is_10bit { 2 } else { 1 };
             let y_size = pipe.final_w * pipe.final_h * pixel_size;
             let uv_size = y_size / 4;
-            let ys = i64::try_from(pipe.final_w * pixel_size).unwrap();
-            let cs = i64::try_from(pipe.final_w / 2 * pixel_size).unwrap();
+            let ys = i64::try_from(pipe.final_w * pixel_size).unwrap_or(0);
+            let cs = i64::try_from(pipe.final_w / 2 * pixel_size).unwrap_or(0);
 
             macro_rules! process_frame {
                 ($frame_idx: expr) => {{
@@ -146,36 +158,43 @@ macro_rules! calc_metrics_impl {
 
             crate::ffms::destroy_vid_src(src);
 
-            let result = if pipe.reset_cvvdp && !cvvdp_per_frame {
-                scores.last().copied().unwrap_or(0.0)
-            } else if cvvdp_per_frame {
-                let percentile: f64 = metric_mode
-                    .strip_prefix('p')
-                    .and_then(|p| p.parse().ok())
-                    .unwrap_or(15.0);
-                let mut q: Vec<f64> = scores.iter().map(|&s| inverse_jod(s)).collect();
-                q.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
-                let cutoff = ((q.len() as f64 * percentile / 100.0).ceil() as usize).min(q.len());
-                jod(q[..cutoff].iter().sum::<f64>() / cutoff as f64)
-            } else if metric_mode == "mean" {
-                scores.iter().sum::<f64>() / scores.len() as f64
-            } else if let Some(p) = metric_mode.strip_prefix('p') {
-                let percentile: f64 = p.parse().unwrap_or(15.0);
-                if pipe.sort_descending {
-                    scores.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
-                } else {
-                    scores.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-                }
-                let cutoff =
-                    ((scores.len() as f64 * percentile / 100.0).ceil() as usize).min(scores.len());
-                scores[..cutoff].iter().sum::<f64>() / cutoff as f64
-            } else {
-                scores.iter().sum::<f64>() / scores.len() as f64
-            };
-
+            let result = aggregate_scores(&mut scores, pipe, metric_mode, cvvdp_per_frame);
             (result, scores)
         }
     };
+}
+
+fn aggregate_scores(
+    scores: &mut [f64],
+    pipe: &crate::pipeline::Pipeline,
+    metric_mode: &str,
+    cvvdp_per_frame: bool,
+) -> f64 {
+    if pipe.reset_cvvdp && !cvvdp_per_frame {
+        scores.last().copied().unwrap_or(0.0)
+    } else if cvvdp_per_frame {
+        let percentile: f64 = metric_mode
+            .strip_prefix('p')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(15.0);
+        let mut q: Vec<f64> = scores.iter().map(|&s| inverse_jod(s)).collect();
+        q.sort_unstable_by(|a, b| b.total_cmp(a));
+        let cutoff = ((q.len() as f64 * percentile / 100.0).ceil() as usize).min(q.len());
+        jod(q[..cutoff].iter().sum::<f64>() / cutoff as f64)
+    } else if metric_mode == "mean" {
+        scores.iter().sum::<f64>() / scores.len() as f64
+    } else if let Some(p) = metric_mode.strip_prefix('p') {
+        let percentile: f64 = p.parse().unwrap_or(15.0);
+        if pipe.sort_descending {
+            scores.sort_unstable_by(|a, b| b.total_cmp(a));
+        } else {
+            scores.sort_unstable_by(f64::total_cmp);
+        }
+        let cutoff = ((scores.len() as f64 * percentile / 100.0).ceil() as usize).min(scores.len());
+        scores[..cutoff].iter().sum::<f64>() / cutoff as f64
+    } else {
+        scores.iter().sum::<f64>() / scores.len() as f64
+    }
 }
 
 calc_metrics_impl!(calc_metrics_8bit, false);

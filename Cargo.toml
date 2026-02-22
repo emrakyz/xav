@@ -26,6 +26,7 @@ av-scenechange = { git = "https://github.com/rust-av/av-scenechange", default-fe
 av1-grain = { version = "0.4.0", default-features = false, features = ["create", "parse"] }
 sonic-rs = "0.5.6"
 serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
 
 [patch.crates-io]
 av-decoders = { git = "https://github.com/rust-av/av-decoders" }
@@ -56,4 +57,12 @@ cast_sign_loss = "allow"
 cast_precision_loss = "allow"
 
 # RESTRICTION LINTS can not be enabled as a group
-# TODO: Add restriction lints
+unwrap_used = "deny"
+expect_used = "deny"
+unwrap_in_result = "deny"
+get_unwrap = "deny"
+panic = "deny"
+panic_in_result_fn ="deny"
+unreachable = "deny"
+big_endian_bytes = "deny"
+as_pointer_underscore = "deny"

@@ -41,7 +41,7 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
     let stdin = std::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut header = String::new();
-    reader.read_line(&mut header).unwrap();
+    let _ = reader.read_line(&mut header);
 
     let mut width = 0;
     let mut height = 0;

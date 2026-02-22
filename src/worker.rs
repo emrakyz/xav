@@ -58,15 +58,15 @@ impl Semaphore {
     }
 
     pub fn acquire(&self) {
-        let mut count = self.state.lock().unwrap();
+        let mut count = unsafe { self.state.lock().unwrap_unchecked() };
         while *count == 0 {
-            count = self.cvar.wait(count).unwrap();
+            count = unsafe { self.cvar.wait(count).unwrap_unchecked() };
         }
         *count -= 1;
     }
 
     pub fn release(&self) {
-        *self.state.lock().unwrap() += 1;
+        *unsafe { self.state.lock().unwrap_unchecked() } += 1;
         self.cvar.notify_one();
     }
 }

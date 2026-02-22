@@ -12,6 +12,7 @@ mod crop;
 mod decode;
 mod encode;
 mod encoder;
+mod error;
 mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
@@ -29,6 +30,7 @@ mod worker;
 mod y4m;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
 const G: &str = "\x1b[1;92m";
@@ -143,7 +145,7 @@ fn parse_args() -> Args {
     }
 }
 
-fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Error>> {
+fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, crate::error::Error> {
     s.split(',')
         .map(|p| {
             let (a, b) = p.trim().split_once('-').ok_or("invalid range")?;
@@ -154,7 +156,7 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Box<dyn std::error::Erro
 
 fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
-        let stem = args.input.file_stem().unwrap().to_string_lossy();
+        let stem = unsafe { args.input.file_stem().unwrap_unchecked() }.to_string_lossy();
         let ext = match args.encoder {
             crate::encoder::Encoder::SvtAv1
             | crate::encoder::Encoder::X265
@@ -166,7 +168,7 @@ fn apply_defaults(args: &mut Args) {
     }
 
     if args.scene_file == PathBuf::new() {
-        let stem = args.input.file_stem().unwrap().to_string_lossy();
+        let stem = unsafe { args.input.file_stem().unwrap_unchecked() }.to_string_lossy();
         args.scene_file = args.input.with_file_name(format!("{stem}_scd.txt"));
     }
 
@@ -186,7 +188,7 @@ fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
 fn validate_output(
     output: &Path,
     encoder: crate::encoder::Encoder,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("");
     let containers = match encoder {
         crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
@@ -228,7 +230,7 @@ macro_rules! arg {
     };
 }
 
-fn parse_args_loop(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> {
+fn parse_args_loop(args: &[String]) -> Result<Args, crate::error::Error> {
     let (mut worker, mut chunk_buffer, mut sc_only) = (1usize, None, false);
     let (mut scene_file, mut input, mut output) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
     let (mut encoder, mut params) = (crate::encoder::Encoder::default(), String::new());
@@ -332,7 +334,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Box<dyn std::error::Error>> 
     })
 }
 
-fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Box<dyn std::error::Error>> {
+fn get_args(args: &[String], allow_resume: bool) -> Result<Args, crate::error::Error> {
     if args.len() < 2 {
         return Err("Usage: xav [options] <input> <output>".into());
     }
@@ -364,7 +366,7 @@ fn hash_input(path: &Path) -> String {
     format!("{:x}", hasher.finish())
 }
 
-fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn save_args(work_dir: &Path) -> Result<(), crate::error::Error> {
     let cmd: Vec<String> = std::env::args().collect();
     let quoted_cmd: Vec<String> = cmd
         .iter()
@@ -380,7 +382,7 @@ fn save_args(work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn get_saved_args(input: &Path) -> Result<Args, Box<dyn std::error::Error>> {
+fn get_saved_args(input: &Path) -> Result<Args, crate::error::Error> {
     let canonical = input.canonicalize()?;
     let hash = hash_input(&canonical);
     let work_dir = canonical.with_file_name(format!(".{}", &hash[..7]));
@@ -420,7 +422,7 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
     args
 }
 
-fn ensure_scene_file(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+fn ensure_scene_file(args: &Args) -> Result<(), crate::error::Error> {
     if !args.scene_file.exists() {
         scd::fd_scenes(&args.input, &args.scene_file)?;
     }
@@ -478,9 +480,9 @@ fn init_pipe_crop(
     }
 }
 
-fn main_with_args(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
+fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
-    std::io::stdout().flush().unwrap();
+    let _ = std::io::stdout().flush();
 
     ensure_scene_file(args)?;
 
@@ -602,7 +604,7 @@ fn print_summary(
     enc_time: std::time::Duration,
 ) {
     print!("\x1b[?25h\x1b[?1049l");
-    std::io::stdout().flush().unwrap();
+    let _ = std::io::stdout().flush();
 
     let input_size = fs::metadata(&args.input).map_or(0, |m| m.len());
     let output_size = fs::metadata(&args.output).map_or(0, |m| m.len());
@@ -640,8 +642,8 @@ fn print_summary(
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━┻━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
 {P}┃ {Y}Time      {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02} {B}@ {:>6.2} fps{:<42} {P}┃\n\
 {P}┗━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{N}",
-    args.input.file_name().unwrap().to_string_lossy(),
-    args.output.file_name().unwrap().to_string_lossy(),
+    unsafe { args.input.file_name().unwrap_unchecked() }.to_string_lossy(),
+    unsafe { args.output.file_name().unwrap_unchecked() }.to_string_lossy(),
     format!("{} {C}({:.0} kb/s) {G}󰛂 {G}{} {C}({:.0} kb/s) {}{} {:.2}%",
         fmt_size(input_size), input_br, fmt_size(output_size), output_br, change_color, arrow, change.abs()),
     final_width, final_height, fps_rate, dh, dm, ds, "",
@@ -649,7 +651,7 @@ fn print_summary(
 );
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), crate::error::Error> {
     let args = parse_args();
     let output = args.output.clone();
 
@@ -669,8 +671,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");
-        std::io::stdout().flush().unwrap();
-        eprintln!("{}, FAIL", args.output.display());
+        let _ = std::io::stdout().flush();
+        eprintln!("{e}\n{}, FAIL", args.output.display());
         return Err(e);
     }
 
@@ -678,12 +680,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.target_quality.is_some()
         && let Some(v) = crate::encode::TQ_SCORES.get()
     {
-        let mut s = v.lock().unwrap().clone();
+        let mut s = unsafe { v.lock().unwrap_unchecked() }.clone();
 
-        let tq_parts: Vec<f64> = args
-            .target_quality
-            .as_ref()
-            .unwrap()
+        let tq_parts: Vec<f64> = unsafe { args.target_quality.as_ref().unwrap_unchecked() }
             .split('-')
             .filter_map(|s| s.parse().ok())
             .collect();
@@ -693,9 +692,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             tq_target > 8.0 && tq_target <= 10.0 && args.metric_mode.starts_with('p');
 
         if is_butteraugli {
-            s.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
+            s.sort_unstable_by(|a, b| b.total_cmp(a));
         } else {
-            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            s.sort_unstable_by(f64::total_cmp);
         }
 
         let jod_mean = |scores: &[f64]| -> f64 {
