@@ -1,9 +1,17 @@
+#[cfg(feature = "vship")]
+use std::sync::OnceLock;
 use std::{
     collections::hash_map::DefaultHasher,
-    fs,
+    env::args as env_args,
+    fs::{
+        create_dir_all, metadata, read_to_string, remove_dir_all, remove_file, write as write_to,
+    },
     hash::{Hash, Hasher},
-    io::Write,
+    io::{Write, stdout},
+    panic::set_hook,
     path::{Path, PathBuf},
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 mod audio;
@@ -29,6 +37,24 @@ mod vship;
 mod worker;
 mod y4m;
 
+use audio::{AudioSpec, parse_audio_arg, process_audio};
+use chunk::{
+    Chunk, chunkify, get_resume, init_elapsed, load_scenes, merge_out, translate_scenes,
+    validate_scenes,
+};
+use crop::{CropDetectConfig, detect_crop};
+#[cfg(feature = "vship")]
+use encode::TQ_SCORES;
+use encode::encode_all;
+use encoder::Encoder;
+use error::{Xerr, fatal};
+use ffms::{DecodeStrat, VidIdx, VidInf, gcd, get_decode_strat, get_vidinf};
+use noise::gen_table;
+use scd::fd_scenes;
+#[cfg(feature = "vship")]
+use tq::{inverse_jod, jod};
+use y4m::{PipeReader, init_pipe};
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
@@ -43,19 +69,19 @@ const W: &str = "\x1b[1;97m";
 const N: &str = "\x1b[0m";
 
 #[cfg(feature = "vship")]
-static TQ_RESUMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static TQ_RESUMED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct Args {
-    pub encoder: crate::encoder::Encoder,
+    pub encoder: Encoder,
     pub worker: usize,
     pub scene_file: PathBuf,
     pub params: String,
     pub noise: Option<u32>,
-    pub audio: Option<audio::AudioSpec>,
+    pub audio: Option<AudioSpec>,
     pub input: PathBuf,
     pub output: PathBuf,
-    pub decode_strat: Option<ffms::DecodeStrat>,
+    pub decode_strat: Option<DecodeStrat>,
     pub chunk_buffer: usize,
     pub ranges: Option<Vec<(usize, usize)>>,
     #[cfg(feature = "vship")]
@@ -75,11 +101,11 @@ pub struct Args {
 
 extern "C" fn restore() {
     print!("\x1b[?25h\x1b[?1049l");
-    let _ = std::io::stdout().flush();
+    let _ = stdout().flush();
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
-    std::process::exit(130);
+    unsafe { libc::_exit(130) };
 }
 
 #[rustfmt::skip]
@@ -133,19 +159,20 @@ fn print_help() {
     println!("Experiment and use the sweet spot values for your case");
 }
 
-fn parse_args() -> Args {
-    let args: Vec<String> = std::env::args().collect();
+fn parse_args() -> Result<Args, Xerr> {
+    let args: Vec<String> = env_args().collect();
     match get_args(&args, true) {
-        Ok(args) => args,
+        Ok(args) => Ok(args),
+        Err(Xerr::Help) => Err(Xerr::Help),
         Err(e) => {
             eprintln!("\n{R}Error: {e}{N}\n");
             print_help();
-            std::process::exit(1);
+            fatal("argument parsing failed");
         }
     }
 }
 
-fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, crate::error::Error> {
+fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
     s.split(',')
         .map(|p| {
             let (a, b) = p.trim().split_once('-').ok_or("invalid range")?;
@@ -158,11 +185,9 @@ fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = unsafe { args.input.file_stem().unwrap_unchecked() }.to_string_lossy();
         let ext = match args.encoder {
-            crate::encoder::Encoder::SvtAv1
-            | crate::encoder::Encoder::X265
-            | crate::encoder::Encoder::X264 => "mkv",
-            crate::encoder::Encoder::Avm => "ivf",
-            crate::encoder::Encoder::Vvenc => "mp4",
+            Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => "mkv",
+            Encoder::Avm => "ivf",
+            Encoder::Vvenc => "mp4",
         };
         args.output = args.input.with_file_name(format!("{stem}_xav.{ext}"));
     }
@@ -185,19 +210,28 @@ fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
     args.get(*i).map(String::as_str)
 }
 
-fn validate_output(
-    output: &Path,
-    encoder: crate::encoder::Encoder,
-) -> Result<(), crate::error::Error> {
+fn validate_output(output: &Path, encoder: Encoder) -> Result<(), Xerr> {
     let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("");
     let containers = match encoder {
-        crate::encoder::Encoder::SvtAv1 => "mkv, mp4, webm",
-        crate::encoder::Encoder::Avm => "ivf",
-        crate::encoder::Encoder::Vvenc => "mp4",
-        crate::encoder::Encoder::X265 | crate::encoder::Encoder::X264 => "mkv, mp4",
+        Encoder::SvtAv1 => "mkv, mp4, webm",
+        Encoder::Avm => "ivf",
+        Encoder::Vvenc => "mp4",
+        Encoder::X265 | Encoder::X264 => "mkv, mp4",
     };
     if !containers.split(", ").any(|c| c == ext) {
         return Err(format!("Invalid extension .{ext} for {encoder:?}. Use: {containers}").into());
+    }
+    Ok(())
+}
+
+#[cfg(feature = "vship")]
+fn validate_range(s: &str, name: &str) -> Result<(), Xerr> {
+    let parts: Vec<f64> = s.split('-').filter_map(|v| v.parse().ok()).collect();
+    if parts.len() != 2 {
+        return Err(format!("{name} requires a range: <min>-<max>").into());
+    }
+    if parts[0] >= parts[1] {
+        return Err(format!("{name} min must be less than max: {s}").into());
     }
     Ok(())
 }
@@ -230,10 +264,10 @@ macro_rules! arg {
     };
 }
 
-fn parse_args_loop(args: &[String]) -> Result<Args, crate::error::Error> {
+fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut worker, mut chunk_buffer, mut sc_only) = (1usize, None, false);
     let (mut scene_file, mut input, mut output) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
-    let (mut encoder, mut params) = (crate::encoder::Encoder::default(), String::new());
+    let (mut encoder, mut params) = (Encoder::default(), String::new());
     let (mut noise, mut audio, mut ranges) = (None, None, None);
     #[cfg(feature = "vship")]
     let (mut target_quality, mut qp_range, mut cvvdp_config, mut probe_params) = (
@@ -250,8 +284,8 @@ fn parse_args_loop(args: &[String]) -> Result<Args, crate::error::Error> {
         match args[i].as_str() {
             "-e" | "--encoder" => {
                 if let Some(v) = next_arg(args, &mut i) {
-                    encoder = crate::encoder::Encoder::from_str(v)
-                        .ok_or_else(|| format!("Unknown encoder: {v}"))?;
+                    encoder =
+                        Encoder::from_str(v).ok_or_else(|| format!("Unknown encoder: {v}"))?;
                 }
             }
             "-w" | "--worker" => arg!(parse args, i, worker),
@@ -265,7 +299,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, crate::error::Error> {
             }
             "-a" | "--audio" => {
                 if let Some(v) = next_arg(args, &mut i) {
-                    audio = Some(audio::parse_audio_arg(v)?);
+                    audio = Some(parse_audio_arg(v)?);
                 }
             }
             "-n" | "--noise" => {
@@ -292,7 +326,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, crate::error::Error> {
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
-                std::process::exit(0);
+                return Err(Xerr::Help);
             }
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
@@ -334,7 +368,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, crate::error::Error> {
     })
 }
 
-fn get_args(args: &[String], allow_resume: bool) -> Result<Args, crate::error::Error> {
+fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     if args.len() < 2 {
         return Err("Usage: xav [options] <input> <output>".into());
     }
@@ -356,6 +390,16 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, crate::error::E
     {
         return Err("Missing args".into());
     }
+
+    #[cfg(feature = "vship")]
+    if let Some(ref tq) = result.target_quality {
+        validate_range(tq, "-t/--tq")?;
+        validate_range(
+            unsafe { result.qp_range.as_ref().unwrap_unchecked() },
+            "-f/--qp",
+        )?;
+    }
+
     Ok(result)
 }
 
@@ -366,8 +410,8 @@ fn hash_input(path: &Path) -> String {
     format!("{:x}", hasher.finish())
 }
 
-fn save_args(work_dir: &Path) -> Result<(), crate::error::Error> {
-    let cmd: Vec<String> = std::env::args().collect();
+fn save_args(work_dir: &Path) -> Result<(), Xerr> {
+    let cmd: Vec<String> = env_args().collect();
     let quoted_cmd: Vec<String> = cmd
         .iter()
         .map(|arg| {
@@ -378,18 +422,18 @@ fn save_args(work_dir: &Path) -> Result<(), crate::error::Error> {
             }
         })
         .collect();
-    fs::write(work_dir.join("cmd.txt"), quoted_cmd.join(" "))?;
+    write_to(work_dir.join("cmd.txt"), quoted_cmd.join(" "))?;
     Ok(())
 }
 
-fn get_saved_args(input: &Path) -> Result<Args, crate::error::Error> {
+fn get_saved_args(input: &Path) -> Result<Args, Xerr> {
     let canonical = input.canonicalize()?;
     let hash = hash_input(&canonical);
     let work_dir = canonical.with_file_name(format!(".{}", &hash[..7]));
     let cmd_path = work_dir.join("cmd.txt");
 
     if cmd_path.exists() {
-        let cmd_line = fs::read_to_string(cmd_path)?;
+        let cmd_line = read_to_string(cmd_path)?;
         let saved_args = parse_quoted_args(&cmd_line);
         get_args(&saved_args, false)
     } else {
@@ -422,9 +466,9 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
     args
 }
 
-fn ensure_scene_file(args: &Args) -> Result<(), crate::error::Error> {
+fn ensure_scene_file(args: &Args) -> Result<(), Xerr> {
     if !args.scene_file.exists() {
-        scd::fd_scenes(&args.input, &args.scene_file)?;
+        fd_scenes(&args.input, &args.scene_file)?;
     }
     Ok(())
 }
@@ -442,16 +486,13 @@ const fn scale_crop(
     (scaled_v, scaled_h)
 }
 
-fn init_pipe_crop(
-    idx: &std::sync::Arc<ffms::VidIdx>,
-    inf: ffms::VidInf,
-) -> (ffms::VidInf, (u32, u32), Option<crate::y4m::PipeReader>) {
-    let pipe_init = y4m::init_pipe();
-    let config = crop::CropDetectConfig {
+fn init_pipe_crop(idx: &Arc<VidIdx>, inf: VidInf) -> (VidInf, (u32, u32), Option<PipeReader>) {
+    let pipe_init = init_pipe();
+    let config = CropDetectConfig {
         sample_count: 13,
         min_black_pixels: 2,
     };
-    let crop = match crop::detect_crop(idx, &inf, &config) {
+    let crop = match detect_crop(idx, &inf, &config) {
         Ok(detected) if detected.has_crop() => detected.to_tuple(),
         _ => (0, 0),
     };
@@ -480,28 +521,28 @@ fn init_pipe_crop(
     }
 }
 
-fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
+fn main_with_args(args: &Args) -> Result<(), Xerr> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
-    let _ = std::io::stdout().flush();
+    let _ = stdout().flush();
 
     ensure_scene_file(args)?;
 
     println!();
 
-    let idx = ffms::VidIdx::new(&args.input, true)?;
-    let inf = ffms::get_vidinf(&idx)?;
+    let idx = VidIdx::new(&args.input, true)?;
+    let inf = get_vidinf(&idx)?;
 
     let mut args = args.clone();
 
-    let scenes = chunk::load_scenes(&args.scene_file, inf.frames)?;
+    let scenes = load_scenes(&args.scene_file, inf.frames)?;
 
     let scenes = if let Some(ref r) = args.ranges {
-        chunk::translate_scenes(&scenes, r)
+        translate_scenes(&scenes, r)
     } else {
         scenes
     };
 
-    chunk::validate_scenes(&scenes)?;
+    validate_scenes(&scenes)?;
     if args.sc_only {
         return Ok(());
     }
@@ -514,8 +555,8 @@ fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
     #[cfg(feature = "vship")]
     TQ_RESUMED.get_or_init(|| !is_new_encode);
 
-    fs::create_dir_all(work_dir.join("split"))?;
-    fs::create_dir_all(work_dir.join("encode"))?;
+    create_dir_all(work_dir.join("split"))?;
+    create_dir_all(work_dir.join("encode"))?;
 
     if is_new_encode {
         save_args(&work_dir)?;
@@ -528,26 +569,26 @@ fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
         let fh = u64::from(inf.height - crop.0 * 2);
         let n = u64::from(dw) * u64::from(inf.height) * fw;
         let d = u64::from(dh) * u64::from(inf.width) * fh;
-        let g = ffms::gcd(n, d);
+        let g = gcd(n, d);
         inf.dar = Some(((n / g) as u32, (d / g) as u32));
     }
 
-    args.decode_strat = Some(ffms::get_decode_strat(&idx, &inf, crop)?);
+    args.decode_strat = Some(get_decode_strat(&idx, &inf, crop)?);
 
     let grain_table = if let Some(iso) = args.noise {
         let table_path = work_dir.join("grain.tbl");
-        noise::gen_table(iso, &inf, &table_path)?;
+        gen_table(iso, &inf, &table_path)?;
         Some(table_path)
     } else {
         None
     };
 
-    let chunks = chunk::chunkify(&scenes);
+    let chunks = chunkify(&scenes);
 
-    let prior_secs = chunk::get_resume(&work_dir).map_or(0, |r| r.prior_secs);
-    chunk::init_elapsed(prior_secs);
-    let enc_start = std::time::Instant::now();
-    encode::encode_all(
+    let prior_secs = get_resume(&work_dir).map_or(0, |r| r.prior_secs);
+    init_elapsed(prior_secs);
+    let enc_start = Instant::now();
+    encode_all(
         &chunks,
         &inf,
         &args,
@@ -556,19 +597,19 @@ fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
         grain_table.as_ref(),
         pipe_reader,
     );
-    let enc_time = enc_start.elapsed() + std::time::Duration::from_secs(prior_secs);
+    let enc_time = enc_start.elapsed() + Duration::from_secs(prior_secs);
 
     let video_mkv = work_dir.join("encode").join("video.mkv");
 
-    chunk::merge_out(
+    merge_out(
         &work_dir.join("encode"),
-        if args.audio.is_some() && args.encoder != encoder::Encoder::Avm {
+        if args.audio.is_some() && args.encoder != Encoder::Avm {
             &video_mkv
         } else {
             &args.output
         },
         &inf,
-        if args.audio.is_some() || args.encoder == encoder::Encoder::Avm {
+        if args.audio.is_some() || args.encoder == Encoder::Avm {
             None
         } else {
             Some(&args.input)
@@ -578,9 +619,9 @@ fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
     )?;
 
     if let Some(ref audio_spec) = args.audio
-        && args.encoder != encoder::Encoder::Avm
+        && args.encoder != Encoder::Avm
     {
-        audio::process_audio(
+        process_audio(
             audio_spec,
             &args.input,
             &video_mkv,
@@ -588,26 +629,26 @@ fn main_with_args(args: &Args) -> Result<(), crate::error::Error> {
             args.ranges.as_deref(),
             &inf,
         )?;
-        fs::remove_file(&video_mkv)?;
+        remove_file(&video_mkv)?;
     }
 
     print_summary(&args, &inf, &chunks, crop, enc_time);
-    fs::remove_dir_all(&work_dir)?;
+    remove_dir_all(&work_dir)?;
     Ok(())
 }
 
 fn print_summary(
     args: &Args,
-    inf: &ffms::VidInf,
-    chunks: &[chunk::Chunk],
+    inf: &VidInf,
+    chunks: &[Chunk],
     crop: (u32, u32),
-    enc_time: std::time::Duration,
+    enc_time: Duration,
 ) {
     print!("\x1b[?25h\x1b[?1049l");
-    let _ = std::io::stdout().flush();
+    let _ = stdout().flush();
 
-    let input_size = fs::metadata(&args.input).map_or(0, |m| m.len());
-    let output_size = fs::metadata(&args.output).map_or(0, |m| m.len());
+    let input_size = metadata(&args.input).map_or(0, |m| m.len());
+    let output_size = metadata(&args.output).map_or(0, |m| m.len());
     let total_frames: usize = chunks.iter().map(|c| c.end - c.start).sum();
     let duration = total_frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
     let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
@@ -651,13 +692,17 @@ fn print_summary(
 );
 }
 
-fn main() -> Result<(), crate::error::Error> {
-    let args = parse_args();
+fn main() -> Result<(), Xerr> {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(Xerr::Help) => return Ok(()),
+        Err(e) => return Err(e),
+    };
     let output = args.output.clone();
 
-    std::panic::set_hook(Box::new(move |panic_info| {
+    set_hook(Box::new(move |panic_info| {
         print!("\x1b[?25h\x1b[?1049l");
-        let _ = std::io::stdout().flush();
+        let _ = stdout().flush();
         eprintln!("{panic_info}");
         eprintln!("{}, FAIL", output.display());
     }));
@@ -671,14 +716,14 @@ fn main() -> Result<(), crate::error::Error> {
 
     if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");
-        let _ = std::io::stdout().flush();
+        let _ = stdout().flush();
         eprintln!("{e}\n{}, FAIL", args.output.display());
         return Err(e);
     }
 
     #[cfg(feature = "vship")]
     if args.target_quality.is_some()
-        && let Some(v) = crate::encode::TQ_SCORES.get()
+        && let Some(v) = TQ_SCORES.get()
     {
         let mut s = unsafe { v.lock().unwrap_unchecked() }.clone();
 
@@ -698,12 +743,8 @@ fn main() -> Result<(), crate::error::Error> {
         }
 
         let jod_mean = |scores: &[f64]| -> f64 {
-            let q = scores
-                .iter()
-                .map(|&x| crate::tq::inverse_jod(x))
-                .sum::<f64>()
-                / scores.len() as f64;
-            crate::tq::jod(q)
+            let q = scores.iter().map(|&x| inverse_jod(x)).sum::<f64>() / scores.len() as f64;
+            jod(q)
         };
 
         let m = if cvvdp_per_frame {

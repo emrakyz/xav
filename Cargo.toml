@@ -12,7 +12,7 @@ keywords = ["av1", "video", "multimedia", "encoding", "quality", "chunking"]
 categories = ["multimedia::video", "command-line-utilities"]
 
 [features]
-default = []
+default = [ "static", "vship", "libsvtav1" ]
 static = []
 vship = []
 libsvtav1 = []
@@ -66,3 +66,17 @@ panic_in_result_fn ="deny"
 unreachable = "deny"
 big_endian_bytes = "deny"
 as_pointer_underscore = "deny"
+absolute_paths = "deny"
+as_underscore = "deny"
+clone_on_ref_ptr = "deny"
+cognitive_complexity = "deny"
+create_dir = "deny"
+dbg_macro = "deny"
+decimal_literal_representation = "deny"
+default_union_representation = "deny"
+empty_drop = "deny"
+empty_enum_variants_with_brackets = "deny"
+empty_structs_with_brackets = "deny"
+error_impl_error = "deny"
+exhaustive_enums = "deny"
+exit = "deny"

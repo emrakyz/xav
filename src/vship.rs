@@ -1,11 +1,18 @@
-use std::{mem::MaybeUninit, ptr};
+use std::{
+    ffi::{CStr, CString},
+    mem,
+    mem::MaybeUninit,
+    ptr,
+};
+
+use crate::{error::Xerr, ffms::VidInf};
 
 #[inline]
 #[cold]
-fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> crate::error::Error {
+fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> Xerr {
     unsafe {
-        crate::error::Error::Msg(
-            std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+        Xerr::Msg(
+            CStr::from_ptr(buf.as_ptr().cast())
                 .to_string_lossy()
                 .into_owned(),
         )
@@ -242,7 +249,7 @@ pub struct VshipProcessor {
     butteraugli_handler: Option<VshipButteraugliHandler>,
 }
 
-pub fn init_device() -> Result<(), crate::error::Error> {
+pub fn init_device() -> Result<(), Xerr> {
     unsafe {
         let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
         let ret = Vship_SetDevice(0);
@@ -258,12 +265,12 @@ impl VshipProcessor {
     pub fn new(
         width: u32,
         height: u32,
-        inf: &crate::ffms::VidInf,
+        inf: &VidInf,
         use_cvvdp: bool,
         use_butteraugli: bool,
         cvvdp_model: Option<&str>,
         cvvdp_config: Option<&str>,
-    ) -> Result<Self, crate::error::Error> {
+    ) -> Result<Self, Xerr> {
         let fps = inf.fps_num as f32 / inf.fps_den as f32;
         unsafe {
             let src_colorspace = create_yuv_colorspace(width, height, inf.is_10bit, inf);
@@ -272,7 +279,7 @@ impl VshipProcessor {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
 
             let handler = if !use_cvvdp && !use_butteraugli {
-                let mut handler = std::mem::zeroed::<VshipSSIMU2Handler>();
+                let mut handler = mem::zeroed::<VshipSSIMU2Handler>();
                 let ret =
                     Vship_SSIMU2Init(ptr::from_mut(&mut handler), src_colorspace, dis_colorspace);
                 if ret as i32 != 0 {
@@ -285,9 +292,9 @@ impl VshipProcessor {
             };
 
             let cvvdp_handler = if use_cvvdp {
-                let mut handler = std::mem::zeroed::<VshipCVVDPHandler>();
-                let model_key = std::ffi::CString::new(cvvdp_model.unwrap_or("xav"))?;
-                let config_cstr = std::ffi::CString::new(
+                let mut handler = mem::zeroed::<VshipCVVDPHandler>();
+                let model_key = CString::new(cvvdp_model.unwrap_or("xav"))?;
+                let config_cstr = CString::new(
                     cvvdp_config.ok_or("CVVDP requires -d/--display <json_file> argument")?,
                 )?;
                 let ret = Vship_CVVDPInit2(
@@ -309,7 +316,7 @@ impl VshipProcessor {
             };
 
             let butteraugli_handler = if use_butteraugli {
-                let mut handler = std::mem::zeroed::<VshipButteraugliHandler>();
+                let mut handler = mem::zeroed::<VshipButteraugliHandler>();
                 let ret = Vship_ButteraugliInit(
                     ptr::from_mut(&mut handler),
                     src_colorspace,
@@ -340,7 +347,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, crate::error::Error> {
+    ) -> Result<f64, Xerr> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
@@ -380,14 +387,14 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, crate::error::Error> {
+    ) -> Result<f64, Xerr> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
             let ret = Vship_ComputeCVVDP(
                 self.cvvdp_handler.ok_or("CVVDP handler not initialized")?,
                 ptr::from_mut(&mut score),
-                std::ptr::null(),
+                ptr::null(),
                 0,
                 planes1.as_ptr(),
                 planes2.as_ptr(),
@@ -410,7 +417,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, crate::error::Error> {
+    ) -> Result<f64, Xerr> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = VshipButteraugliScore {
@@ -422,7 +429,7 @@ impl VshipProcessor {
                 self.butteraugli_handler
                     .ok_or("Butteraugli handler not initialized")?,
                 ptr::from_mut(&mut score),
-                std::ptr::null(),
+                ptr::null(),
                 0,
                 planes1.as_ptr(),
                 planes2.as_ptr(),
@@ -456,12 +463,7 @@ impl Drop for VshipProcessor {
     }
 }
 
-fn create_yuv_colorspace(
-    width: u32,
-    height: u32,
-    is_10bit: bool,
-    inf: &crate::ffms::VidInf,
-) -> VshipColorspace {
+fn create_yuv_colorspace(width: u32, height: u32, is_10bit: bool, inf: &VidInf) -> VshipColorspace {
     let chroma_loc = match inf.chroma_sample_position {
         Some(2) => VshipChromaLocation::TopLeft,
         _ => VshipChromaLocation::Left,

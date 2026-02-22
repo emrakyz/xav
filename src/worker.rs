@@ -1,6 +1,8 @@
 use std::sync::{Condvar, Mutex};
 
 use crate::chunk::Chunk;
+#[cfg(feature = "vship")]
+use crate::tq::Probe;
 
 pub struct WorkPkg {
     pub chunk: Chunk,
@@ -14,7 +16,7 @@ pub struct WorkPkg {
 
 #[cfg(feature = "vship")]
 pub struct TQState {
-    pub probes: Vec<crate::tq::Probe>,
+    pub probes: Vec<Probe>,
     pub probe_sizes: Vec<(f64, u64)>,
     pub search_min: f64,
     pub search_max: f64,

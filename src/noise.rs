@@ -2,9 +2,9 @@ use std::path::Path;
 
 use av1_grain::{NoiseGenArgs, TransferFunction, generate_photon_noise_params, write_grain_table};
 
-use crate::ffms::VidInf;
+use crate::{error::Xerr, ffms::VidInf};
 
-pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), crate::error::Error> {
+pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), Xerr> {
     let transfer = if inf.transfer_characteristics == Some(16) {
         TransferFunction::SMPTE2084
     } else {

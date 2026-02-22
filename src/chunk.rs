@@ -1,17 +1,21 @@
 use std::{
-    fs,
-    path::Path,
+    fs, io,
+    path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
 };
 
-use crate::encoder::Encoder;
+use crate::{encoder::Encoder, error::Xerr, ffms::VidInf};
 
 pub static PRIOR_SECS: AtomicU64 = AtomicU64::new(0);
-static ENC_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+static ENC_START: OnceLock<Instant> = OnceLock::new();
 pub fn init_elapsed(prior: u64) {
     PRIOR_SECS.store(prior, Ordering::Relaxed);
-    ENC_START.set(std::time::Instant::now()).ok();
+    ENC_START.set(Instant::now()).ok();
 }
 
 #[derive(Clone)]
@@ -42,7 +46,7 @@ pub struct ResumeInf {
     pub prior_secs: u64,
 }
 
-pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, crate::error::Error> {
+pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Xerr> {
     let content = fs::read_to_string(path)?;
     let mut parsed: Vec<_> = content
         .lines()
@@ -72,7 +76,7 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, crate::er
     Ok(scenes)
 }
 
-pub fn validate_scenes(scenes: &[Scene]) -> Result<(), crate::error::Error> {
+pub fn validate_scenes(scenes: &[Scene]) -> Result<(), Xerr> {
     let max_len = 300;
 
     for (i, scene) in scenes.iter().enumerate() {
@@ -136,7 +140,7 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
         .flatten()
 }
 
-pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), crate::error::Error> {
+pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Xerr> {
     use std::fmt::Write;
     let path = work_dir.join("done.txt");
     let mut content = String::new();
@@ -158,11 +162,7 @@ pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), crate::error
     Ok(())
 }
 
-fn concat_ivf(
-    files: &[std::path::PathBuf],
-    output: &Path,
-    total_frames: u32,
-) -> Result<(), crate::error::Error> {
+fn concat_ivf(files: &[PathBuf], output: &Path, total_frames: u32) -> Result<(), Xerr> {
     use std::io::{Read, Seek, SeekFrom, Write};
 
     let mut out = fs::File::create(output)?;
@@ -173,7 +173,7 @@ fn concat_ivf(
             let mut buf = [0u8; 32];
             f.read_exact(&mut buf)?;
         }
-        std::io::copy(&mut f, &mut out)?;
+        io::copy(&mut f, &mut out)?;
     }
 
     out.seek(SeekFrom::Start(24))?;
@@ -182,16 +182,12 @@ fn concat_ivf(
     Ok(())
 }
 
-fn concat_vvc(
-    files: &[std::path::PathBuf],
-    output: &Path,
-    inf: &crate::ffms::VidInf,
-) -> Result<(), crate::error::Error> {
+fn concat_vvc(files: &[PathBuf], output: &Path, inf: &VidInf) -> Result<(), Xerr> {
     let temp_266 = output.with_extension("266");
 
     let mut out = fs::File::create(&temp_266)?;
     for file in files {
-        std::io::copy(&mut fs::File::open(file)?, &mut out)?;
+        io::copy(&mut fs::File::open(file)?, &mut out)?;
     }
     drop(out);
 
@@ -216,16 +212,16 @@ fn concat_vvc(
 }
 
 fn concat_h26x(
-    files: &[std::path::PathBuf],
+    files: &[PathBuf],
     output: &Path,
-    inf: &crate::ffms::VidInf,
+    inf: &VidInf,
     encoder: Encoder,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     let temp_26x = output.with_extension(encoder.extension());
     {
         let mut out = fs::File::create(&temp_26x)?;
         for file in files {
-            std::io::copy(&mut fs::File::open(file)?, &mut out)?;
+            io::copy(&mut fs::File::open(file)?, &mut out)?;
         }
     }
 
@@ -317,11 +313,11 @@ pub fn add_mp4_subs(input: &Path, output: &Path) {
 pub fn merge_out(
     encode_dir: &Path,
     output: &Path,
-    inf: &crate::ffms::VidInf,
+    inf: &VidInf,
     input: Option<&Path>,
     encoder: Encoder,
     ranges: Option<&[(usize, usize)]>,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     let mut files: Vec<_> = fs::read_dir(encode_dir)?
         .filter_map(Result::ok)
         .filter(|e| {
@@ -374,10 +370,7 @@ pub fn merge_out(
     if matches!(encoder, Encoder::X265 | Encoder::X264) {
         let temp_video = encode_dir.join("temp_hevc.mkv");
         concat_h26x(
-            &files
-                .iter()
-                .map(std::fs::DirEntry::path)
-                .collect::<Vec<_>>(),
+            &files.iter().map(fs::DirEntry::path).collect::<Vec<_>>(),
             &temp_video,
             inf,
             encoder,
@@ -420,7 +413,7 @@ pub fn merge_out(
             )?;
             Ok(path)
         })
-        .collect::<Result<_, crate::error::Error>>()?;
+        .collect::<Result<_, Xerr>>()?;
 
     run_merge(&batches, output, inf, input, ranges)?;
     fs::remove_dir_all(&temp_dir)?;
@@ -428,12 +421,12 @@ pub fn merge_out(
 }
 
 fn run_merge(
-    files: &[std::path::PathBuf],
+    files: &[PathBuf],
     output: &Path,
-    inf: &crate::ffms::VidInf,
+    inf: &VidInf,
     input: Option<&Path>,
     ranges: Option<&[(usize, usize)]>,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     let concat_list = output.with_extension("txt");
     let mut content = String::new();
     for file in files {
@@ -541,10 +534,10 @@ fn run_merge(
 fn mux_av(
     video: &Path,
     output: &Path,
-    inf: &crate::ffms::VidInf,
+    inf: &VidInf,
     input: &Path,
     ranges: Option<&[(usize, usize)]>,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     let temp_dir = video.parent().unwrap_or_else(|| Path::new("."));
     let temp_audio = temp_dir.join("audio.mka");
 
@@ -659,10 +652,7 @@ fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Op
     output.exists() && fs::metadata(output).is_ok_and(|m| m.len() > 0)
 }
 
-fn concat_segments(
-    segments: &[std::path::PathBuf],
-    output: &Path,
-) -> Result<bool, crate::error::Error> {
+fn concat_segments(segments: &[PathBuf], output: &Path) -> Result<bool, Xerr> {
     let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let concat_list = temp_dir.join("audio_concat.txt");
 
@@ -691,11 +681,7 @@ fn extract_audio_full(input: &Path, output: &Path) -> bool {
     extract_segment(input, output, None, None)
 }
 
-fn extract_audio_ranges(
-    input: &Path,
-    times: &[(f64, f64)],
-    output: &Path,
-) -> Result<bool, crate::error::Error> {
+fn extract_audio_ranges(input: &Path, times: &[(f64, f64)], output: &Path) -> Result<bool, Xerr> {
     if times.len() == 1 {
         return Ok(extract_segment(
             input,

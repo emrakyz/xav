@@ -1,8 +1,11 @@
-use std::sync::Arc;
+use std::{ffi::CString, mem, sync::Arc, thread};
 
 use ffms2_sys::FFMS_VideoSource;
 
-use crate::ffms::{VidIdx, VidInf, destroy_vid_src};
+use crate::{
+    error::Xerr,
+    ffms::{self, VidIdx, VidInf, destroy_vid_src},
+};
 
 #[derive(Debug, Clone)]
 pub struct CropDetectConfig {
@@ -55,13 +58,13 @@ pub fn detect_crop(
     idx: &Arc<VidIdx>,
     inf: &VidInf,
     config: &CropDetectConfig,
-) -> Result<CropResult, crate::error::Error> {
+) -> Result<CropResult, Xerr> {
     unsafe {
-        let source = std::ffi::CString::new(idx.path.as_str())?;
-        let mut err = std::mem::zeroed::<ffms2_sys::FFMS_ErrorInfo>();
+        let source = CString::new(idx.path.as_str())?;
+        let mut err = mem::zeroed::<ffms2_sys::FFMS_ErrorInfo>();
 
         let threads =
-            std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
+            thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
 
         let src = ffms2_sys::FFMS_CreateVideoSource(
             source.as_ptr(),
@@ -69,7 +72,7 @@ pub fn detect_crop(
             idx.idx_handle,
             threads,
             1,
-            std::ptr::addr_of_mut!(err),
+            &raw mut err,
         );
 
         if src.is_null() {
@@ -115,7 +118,7 @@ fn detect_frame_crop(
     inf: &VidInf,
     min_pixels: usize,
 ) -> Option<CropResult> {
-    let frame = crate::ffms::get_raw_frame(src, frame_idx);
+    let frame = ffms::get_raw_frame(src, frame_idx);
 
     unsafe {
         let y_data = (*frame).Data[0];

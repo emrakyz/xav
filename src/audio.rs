@@ -1,4 +1,17 @@
-use std::{collections::HashSet, fs, path::Path, process::Command};
+use std::{
+    collections::HashSet,
+    fmt::Write,
+    fs::{remove_file, write as fs_write},
+    hint::unreachable_unchecked,
+    path::{Path, PathBuf},
+    process::{Command, ExitStatus},
+};
+
+use crate::{
+    chunk::{add_mp4_subs, ranges_to_times},
+    error::Xerr,
+    ffms::VidInf,
+};
 
 #[derive(Clone)]
 pub enum AudioBitrate {
@@ -42,7 +55,7 @@ const FF_FLAGS: [&str; 13] = [
     "0",
 ];
 
-pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, crate::error::Error> {
+pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Xerr> {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     if parts.len() != 2 {
         return Err("Audio format: -a <auto|norm|bitrate> <all|stream_ids>".into());
@@ -134,7 +147,7 @@ fn lang_name(code: &str) -> &str {
     }
 }
 
-fn get_streams(input: &Path) -> Result<Vec<AudioStream>, crate::error::Error> {
+fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
     let out = Command::new("ffprobe")
         .args([
             "-v",
@@ -160,10 +173,7 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, crate::error::Error> {
                 seen.insert(idx).then(|| AudioStream {
                     index: idx,
                     channels: p[1].parse().unwrap_or(2),
-                    lang: p
-                        .get(2)
-                        .filter(|s| !s.is_empty())
-                        .map(std::string::ToString::to_string),
+                    lang: p.get(2).filter(|s| !s.is_empty()).map(ToString::to_string),
                 })
             })?
         })
@@ -207,7 +217,7 @@ fn encode_stream(
     output: &Path,
     normalize: bool,
     times: Option<&[(f64, f64)]>,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     if let Some(t) = times
         && t.len() > 1
     {
@@ -258,7 +268,7 @@ fn encode_stream(
         .arg(output)
         .status()
         .ok()
-        .filter(std::process::ExitStatus::success)
+        .filter(ExitStatus::success)
         .ok_or_else(|| format!("Failed to encode stream {}", stream.index))?;
     Ok(())
 }
@@ -270,7 +280,7 @@ fn encode_stream_multi(
     output: &Path,
     normalize: bool,
     times: &[(f64, f64)],
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     let temp_dir = unsafe { output.parent().unwrap_unchecked() };
     let mut segments = Vec::new();
 
@@ -318,10 +328,9 @@ fn encode_stream_multi(
     let concat_list = temp_dir.join(format!("concat_{}.txt", stream.index));
     let mut content = String::new();
     for seg in &segments {
-        use std::fmt::Write;
         let _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
     }
-    fs::write(&concat_list, content)?;
+    fs_write(&concat_list, content)?;
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
@@ -332,9 +341,9 @@ fn encode_stream_multi(
 
     let status = cmd.status()?;
 
-    let _ = fs::remove_file(&concat_list);
+    let _ = remove_file(&concat_list);
     for seg in &segments {
-        let _ = fs::remove_file(seg);
+        let _ = remove_file(seg);
     }
 
     if !status.success() {
@@ -346,12 +355,12 @@ fn encode_stream_multi(
 
 fn mux_files(
     video: &Path,
-    files: &[(AudioStream, std::path::PathBuf)],
+    files: &[(AudioStream, PathBuf)],
     input: &Path,
     output: &Path,
     has_ranges: bool,
     dar: Option<(u32, u32)>,
-) -> Result<(), crate::error::Error> {
+) -> Result<(), Xerr> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
         "-loglevel",
@@ -405,7 +414,7 @@ fn mux_files(
         .arg(output)
         .status()
         .ok()
-        .filter(std::process::ExitStatus::success)
+        .filter(ExitStatus::success)
         .ok_or("Muxing failed")?;
     Ok(())
 }
@@ -416,15 +425,15 @@ pub fn process_audio(
     video: &Path,
     output: &Path,
     ranges: Option<&[(usize, usize)]>,
-    inf: &crate::ffms::VidInf,
-) -> Result<(), crate::error::Error> {
+    inf: &VidInf,
+) -> Result<(), Xerr> {
     let all = get_streams(input)?;
     let sel: Vec<_> = match &spec.streams {
         AudioStreams::All => all.iter().collect(),
         AudioStreams::Specific(ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
     };
 
-    let times = ranges.map(|r| crate::chunk::ranges_to_times(r, inf.fps_num, inf.fps_den));
+    let times = ranges.map(|r| ranges_to_times(r, inf.fps_num, inf.fps_den));
 
     let work = unsafe { input.parent().unwrap_unchecked() };
     let (use_norm, base_bitrate) = match &spec.bitrate {
@@ -454,7 +463,7 @@ pub fn process_audio(
                         (128.0 * (cc / 2.0_f64).powf(0.75)) as u32
                     }
                     AudioBitrate::Fixed(b) => *b,
-                    AudioBitrate::Norm => unsafe { std::hint::unreachable_unchecked() },
+                    AudioBitrate::Norm => unsafe { unreachable_unchecked() },
                 }
             };
             let path = work.join(format!(
@@ -464,18 +473,18 @@ pub fn process_audio(
             ));
 
             encode_stream(input, s, br, &path, use_norm, times.as_deref())?;
-            Ok::<_, crate::error::Error>(((*s).clone(), path))
+            Ok::<_, Xerr>(((*s).clone(), path))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     mux_files(video, &files, input, output, ranges.is_some(), inf.dar)?;
 
     if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
-        crate::chunk::add_mp4_subs(input, output);
+        add_mp4_subs(input, output);
     }
 
     for (_, p) in &files {
-        let _ = fs::remove_file(p);
+        let _ = remove_file(p);
     }
     Ok(())
 }

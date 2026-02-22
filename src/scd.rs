@@ -1,24 +1,30 @@
 use std::{
     cmp::min,
     fmt::Write,
-    fs,
+    fs::write as fs_write,
     path::Path,
     sync::{Arc, Mutex},
 };
 
-use av_scenechange::{DetectionOptions, SceneDetectionSpeed, av_decoders, detect_scene_changes};
+use av_scenechange::{
+    DetectionOptions, SceneDetectionSpeed, av_decoders::Decoder, detect_scene_changes,
+};
 
-use crate::{ffms, progs::ProgsBar};
+use crate::{
+    error::Xerr,
+    ffms::{VidIdx, get_vidinf},
+    progs::ProgsBar,
+};
 
-pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), crate::error::Error> {
-    let idx = ffms::VidIdx::new(vid_path, true)?;
-    let inf = ffms::get_vidinf(&idx)?;
+pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Xerr> {
+    let idx = VidIdx::new(vid_path, true)?;
+    let inf = get_vidinf(&idx)?;
 
     let max_dist = 300;
     let tot_frames = inf.frames;
     drop(idx);
 
-    let mut decoder = av_decoders::Decoder::from_file(vid_path).map_err(|e| e.to_string())?;
+    let mut decoder = Decoder::from_file(vid_path).map_err(|e| e.to_string())?;
     decoder.set_luma_only(true);
 
     let opts = DetectionOptions {
@@ -113,7 +119,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), crate::error:
         let _ = writeln!(content, "{scene_frame}");
     }
 
-    fs::write(scene_file, content)?;
+    fs_write(scene_file, content)?;
 
     Ok(())
 }

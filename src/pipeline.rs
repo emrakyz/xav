@@ -1,4 +1,6 @@
-use std::process::ChildStdin;
+#[cfg(feature = "vship")]
+use std::path::Path;
+use std::{io::Write, process::ChildStdin};
 
 use crate::{
     encode::get_frame,
@@ -7,6 +9,8 @@ use crate::{
         unpack_10bit_rem,
     },
 };
+#[cfg(feature = "vship")]
+use crate::{progs::ProgsTrack, tq, vship::VshipProcessor, worker::WorkPkg};
 
 pub type UnpackFn = fn(&[u8], &mut [u8], &Pipeline);
 pub type WriteFn = fn(&mut ChildStdin, &[u8], usize, &mut [u8], &Pipeline);
@@ -15,7 +19,7 @@ const fn unpack_noop(_: &[u8], _: &mut [u8], _: &Pipeline) {}
 
 #[cfg(feature = "vship")]
 pub struct MetricsProgress<'a> {
-    pub prog: &'a crate::progs::ProgsTrack,
+    pub prog: &'a ProgsTrack,
     pub slot: usize,
     pub crf: f32,
     pub last_score: Option<f64>,
@@ -23,10 +27,10 @@ pub struct MetricsProgress<'a> {
 
 #[cfg(feature = "vship")]
 pub type CalcMetricsFn = fn(
-    &crate::worker::WorkPkg,
-    &std::path::Path,
+    &WorkPkg,
+    &Path,
     &Pipeline,
-    &crate::vship::VshipProcessor,
+    &VshipProcessor,
     &str,
     &mut [u8],
     &MetricsProgress,
@@ -34,7 +38,7 @@ pub type CalcMetricsFn = fn(
 
 #[cfg(feature = "vship")]
 pub type ComputeMetricFn =
-    fn(&crate::vship::VshipProcessor, [*const u8; 3], [*const u8; 3], [i64; 3], [i64; 3]) -> f64;
+    fn(&VshipProcessor, [*const u8; 3], [*const u8; 3], [i64; 3], [i64; 3]) -> f64;
 
 #[cfg(feature = "vship")]
 pub type AggregateScoresFn = fn(&mut Vec<f64>) -> f64;
@@ -57,7 +61,7 @@ pub fn write_frames_10bit(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         (pipe.unpack)(frame, buf, pipe);
-        let _ = std::io::Write::write_all(stdin, buf);
+        let _ = Write::write_all(stdin, buf);
     }
 }
 
@@ -71,7 +75,7 @@ pub fn write_frames_8bit(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         conv_to_10bit(frame, buf);
-        let _ = std::io::Write::write_all(stdin, buf);
+        let _ = Write::write_all(stdin, buf);
     }
 }
 
@@ -159,9 +163,9 @@ impl Pipeline {
         ) = target_quality.map_or_else(
             || {
                 let calc: CalcMetricsFn = if inf.is_10bit {
-                    crate::tq::calc_metrics_10bit
+                    tq::calc_metrics_10bit
                 } else {
-                    crate::tq::calc_metrics_8bit
+                    tq::calc_metrics_8bit
                 };
                 (compute_ssimulacra2 as ComputeMetricFn, false, false, calc)
             },
@@ -181,9 +185,9 @@ impl Pipeline {
                 };
 
                 let calc: CalcMetricsFn = if inf.is_10bit {
-                    crate::tq::calc_metrics_10bit
+                    tq::calc_metrics_10bit
                 } else {
-                    crate::tq::calc_metrics_8bit
+                    tq::calc_metrics_8bit
                 };
 
                 (compute, use_cvvdp, use_butteraugli, calc)
@@ -213,7 +217,7 @@ impl Pipeline {
 
 #[cfg(feature = "vship")]
 fn compute_ssimulacra2(
-    vship: &crate::vship::VshipProcessor,
+    vship: &VshipProcessor,
     input_planes: [*const u8; 3],
     output_planes: [*const u8; 3],
     input_strides: [i64; 3],
@@ -228,7 +232,7 @@ fn compute_ssimulacra2(
 
 #[cfg(feature = "vship")]
 fn compute_butteraugli(
-    vship: &crate::vship::VshipProcessor,
+    vship: &VshipProcessor,
     input_planes: [*const u8; 3],
     output_planes: [*const u8; 3],
     input_strides: [i64; 3],
@@ -243,7 +247,7 @@ fn compute_butteraugli(
 
 #[cfg(feature = "vship")]
 fn compute_cvvdp(
-    vship: &crate::vship::VshipProcessor,
+    vship: &VshipProcessor,
     input_planes: [*const u8; 3],
     output_planes: [*const u8; 3],
     input_strides: [i64; 3],
