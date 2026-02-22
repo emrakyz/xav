@@ -1,4 +1,13 @@
-use crate::interp::{akima, fritsch_carlson, lerp, pchip};
+use std::{thread, time::Instant};
+
+use crate::{
+    error::fatal,
+    ffms::{VidIdx, destroy_vid_src, get_raw_frame, thr_vid_src},
+    interp::{akima, fritsch_carlson, lerp, pchip},
+    pipeline::{MetricsProgress, Pipeline},
+    vship::VshipProcessor,
+    worker::WorkPkg,
+};
 
 pub const JOD_A: f64 = 0.043_956_939_131_021_5;
 pub const JOD_EXP: f64 = 0.930_204_272_270_202_6;
@@ -58,39 +67,27 @@ pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f6
 macro_rules! calc_metrics_impl {
     ($name:ident, $is_10bit:expr) => {
         pub fn $name(
-            pkg: &crate::worker::WorkPkg,
+            pkg: &WorkPkg,
             probe_path: &std::path::Path,
-            pipe: &crate::pipeline::Pipeline,
-            vship: &crate::vship::VshipProcessor,
+            pipe: &Pipeline,
+            vship: &VshipProcessor,
             metric_mode: &str,
             unpacked_buf: &mut [u8],
-            mp: &crate::pipeline::MetricsProgress,
+            mp: &MetricsProgress,
         ) -> (f64, Vec<f64>) {
             let cvvdp_per_frame = pipe.reset_cvvdp && metric_mode.starts_with('p');
             if pipe.reset_cvvdp {
                 vship.reset_cvvdp();
             }
 
-            let idx = crate::ffms::VidIdx::new(probe_path, false).unwrap_or_else(|e| {
-                use std::io::Write;
-                print!("\x1b[?25h\x1b[?1049l");
-                let _ = std::io::stdout().flush();
-                eprintln!("{e}");
-                std::process::exit(1);
-            });
+            let idx = VidIdx::new(probe_path, false).unwrap_or_else(|e| fatal(e));
             let threads =
-                std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
-            let src = crate::ffms::thr_vid_src(&idx, threads).unwrap_or_else(|e| {
-                use std::io::Write;
-                print!("\x1b[?25h\x1b[?1049l");
-                let _ = std::io::stdout().flush();
-                eprintln!("{e}");
-                std::process::exit(1);
-            });
+                thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
+            let src = thr_vid_src(&idx, threads).unwrap_or_else(|e| fatal(e));
 
             let mut scores = Vec::with_capacity(pkg.frame_count);
             let frame_size = pipe.frame_size;
-            let start = std::time::Instant::now();
+            let start = Instant::now();
 
             let pixel_size = if $is_10bit { 2 } else { 1 };
             let y_size = pipe.final_w * pipe.final_h * pixel_size;
@@ -112,7 +109,7 @@ macro_rules! calc_metrics_impl {
 
                     let input_frame =
                         &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
-                    let of = crate::ffms::get_raw_frame(src, $frame_idx);
+                    let of = get_raw_frame(src, $frame_idx);
 
                     let input_yuv: &[u8] = if $is_10bit {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);
@@ -156,7 +153,7 @@ macro_rules! calc_metrics_impl {
                 }
             }
 
-            crate::ffms::destroy_vid_src(src);
+            destroy_vid_src(src);
 
             let result = aggregate_scores(&mut scores, pipe, metric_mode, cvvdp_per_frame);
             (result, scores)
@@ -166,7 +163,7 @@ macro_rules! calc_metrics_impl {
 
 fn aggregate_scores(
     scores: &mut [f64],
-    pipe: &crate::pipeline::Pipeline,
+    pipe: &Pipeline,
     metric_mode: &str,
     cvvdp_per_frame: bool,
 ) -> f64 {

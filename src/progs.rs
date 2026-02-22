@@ -1,14 +1,21 @@
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write, stdout as io_stdout},
+    str::from_utf8,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    thread,
+    thread::{JoinHandle, spawn},
     time::{Duration, Instant},
 };
 
-use crate::encoder::Encoder;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
+
+use crate::{
+    chunk::{Chunk, PRIOR_SECS},
+    encoder::Encoder,
+    ffms::VidInf,
+};
 
 const BAR_WIDTH: usize = 20;
 const INTERVAL_MS: u64 = 500;
@@ -40,7 +47,7 @@ struct ProgState {
     fps_den: usize,
     completed: Arc<AtomicUsize>,
     completed_frames: Arc<AtomicUsize>,
-    total_size: Arc<std::sync::atomic::AtomicU64>,
+    total_size: Arc<AtomicU64>,
 }
 
 impl ProgsBar {
@@ -80,7 +87,7 @@ impl ProgsBar {
             "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} \
              MBs{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
-        let _ = std::io::stdout().flush();
+        let _ = io_stdout().flush();
     }
 
     pub fn up_scenes(&mut self, current: usize, total: usize) {
@@ -108,17 +115,17 @@ impl ProgsBar {
             "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
              FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
-        let _ = std::io::stdout().flush();
+        let _ = io_stdout().flush();
     }
 
     pub fn finish() {
         print!("\r\x1b[2K");
-        let _ = std::io::stdout().flush();
+        let _ = io_stdout().flush();
     }
 
     pub fn finish_scenes() {
         print!("\r\x1b[2K");
-        let _ = std::io::stdout().flush();
+        let _ = io_stdout().flush();
     }
 }
 
@@ -132,23 +139,23 @@ enum WorkerMsg {
 }
 
 pub struct ProgsTrack {
-    tx: crossbeam_channel::Sender<WorkerMsg>,
+    tx: Sender<WorkerMsg>,
 }
 
 impl ProgsTrack {
     pub fn new(
-        chunks: &[crate::chunk::Chunk],
-        inf: &crate::ffms::VidInf,
+        chunks: &[Chunk],
+        inf: &VidInf,
         worker_count: usize,
         init_frames: usize,
         completed: Arc<AtomicUsize>,
         completed_frames: Arc<AtomicUsize>,
-        total_size: Arc<std::sync::atomic::AtomicU64>,
-    ) -> (Self, thread::JoinHandle<()>) {
-        let (tx, rx) = crossbeam_channel::unbounded();
+        total_size: Arc<AtomicU64>,
+    ) -> (Self, JoinHandle<()>) {
+        let (tx, rx) = unbounded();
 
         print!("\x1b[s");
-        let _ = std::io::stdout().flush();
+        let _ = io_stdout().flush();
 
         let total_chunks = chunks.len();
         let total_frames = chunks.iter().map(|c| c.end - c.start).sum();
@@ -165,7 +172,7 @@ impl ProgsTrack {
             total_size,
         };
 
-        let handle = thread::spawn(move || {
+        let handle = spawn(move || {
             display_loop(&rx, worker_count, init_frames, &state);
         });
 
@@ -174,7 +181,7 @@ impl ProgsTrack {
 
     pub fn watch_enc(
         &self,
-        stderr: impl std::io::Read + Send + 'static,
+        stderr: impl Read + Send + 'static,
         worker_id: usize,
         chunk_idx: usize,
         track_frames: bool,
@@ -183,7 +190,7 @@ impl ProgsTrack {
     ) {
         let tx = self.tx.clone();
 
-        thread::spawn(move || match encoder {
+        spawn(move || match encoder {
             Encoder::SvtAv1 => {
                 watch_svt(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
@@ -321,8 +328,8 @@ impl LibEncTracker {
 }
 
 fn watch_svt(
-    tx: &crossbeam_channel::Sender<WorkerMsg>,
-    stderr: impl std::io::Read,
+    tx: &Sender<WorkerMsg>,
+    stderr: impl Read,
     worker_id: usize,
     chunk_idx: usize,
     track_frames: bool,
@@ -332,14 +339,14 @@ fn watch_svt(
     let mut last_frames = 0;
 
     for line in reader.split(b'\r').filter_map(Result::ok) {
-        let Ok(text) = std::str::from_utf8(&line) else {
+        let Ok(text) = from_utf8(&line) else {
             continue;
         };
         let text = text.trim();
 
         if text.contains("error") || text.contains("Error") {
             print!("\x1b[?1049l");
-            let _ = std::io::stdout().flush();
+            let _ = io_stdout().flush();
             eprintln!("{text}");
         }
 
@@ -392,8 +399,8 @@ fn watch_svt(
 }
 
 fn watch_avm(
-    tx: &crossbeam_channel::Sender<WorkerMsg>,
-    mut stdout: impl std::io::Read,
+    tx: &Sender<WorkerMsg>,
+    mut stdout: impl Read,
     worker_id: usize,
     chunk_idx: usize,
     _track_frames: bool,
@@ -413,8 +420,8 @@ fn watch_avm(
 }
 
 fn watch_vvenc(
-    tx: &crossbeam_channel::Sender<WorkerMsg>,
-    mut stdout: impl std::io::Read,
+    tx: &Sender<WorkerMsg>,
+    mut stdout: impl Read,
     worker_id: usize,
     chunk_idx: usize,
     track_frames: bool,
@@ -440,7 +447,7 @@ fn watch_vvenc(
 
                     if line.contains("error") || line.contains("Error") {
                         print!("\x1b[?1049l");
-                        let _ = std::io::stdout().flush();
+                        let _ = io_stdout().flush();
                         eprintln!("{line}");
                     }
 
@@ -575,8 +582,8 @@ fn parse_svt(line: &str) -> Option<(usize, usize, f32, f32)> {
 }
 
 fn watch_x265(
-    tx: &crossbeam_channel::Sender<WorkerMsg>,
-    stderr: impl std::io::Read,
+    tx: &Sender<WorkerMsg>,
+    stderr: impl Read,
     worker_id: usize,
     chunk_idx: usize,
     track_frames: bool,
@@ -587,7 +594,7 @@ fn watch_x265(
     let mut last_update = Instant::now();
 
     for line in reader.split(b'\r').filter_map(Result::ok) {
-        let Ok(text) = std::str::from_utf8(&line) else {
+        let Ok(text) = from_utf8(&line) else {
             continue;
         };
         let text = text.trim();
@@ -601,7 +608,7 @@ fn watch_x265(
                 continue;
             }
             print!("\x1b[?1049l");
-            let _ = std::io::stdout().flush();
+            let _ = io_stdout().flush();
             eprintln!("{text}");
             continue;
         }
@@ -666,7 +673,7 @@ fn parse_x265(s: &str) -> Option<(usize, usize, f32, f32)> {
 }
 
 fn display_loop(
-    rx: &crossbeam_channel::Receiver<WorkerMsg>,
+    rx: &Receiver<WorkerMsg>,
     worker_count: usize,
     init_frames: usize,
     state: &ProgState,
@@ -695,8 +702,8 @@ fn display_loop(
                     lines[worker_id].clear();
                 }
             }
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
         }
 
         if last_draw.elapsed() >= Duration::from_millis(INTERVAL_MS) {
@@ -734,8 +741,8 @@ fn draw_screen(
     let processed_frames = processed.load(Ordering::Relaxed);
     let frames_done = completed_frames.max(init_frames + processed_frames);
 
-    let elapsed_secs = crate::chunk::PRIOR_SECS.load(Ordering::Relaxed) as usize
-        + start.elapsed().as_secs() as usize;
+    let elapsed_secs =
+        PRIOR_SECS.load(Ordering::Relaxed) as usize + start.elapsed().as_secs() as usize;
     let fps = frames_done as f32 / elapsed_secs.max(1) as f32;
     let remaining = state.total_frames.saturating_sub(frames_done);
     let eta_secs = remaining * elapsed_secs / frames_done.max(1);
@@ -774,5 +781,5 @@ fn draw_screen(
          {bitrate_str}{C}, {est_str}{C}{N})\n",
         state.total_chunks, state.total_frames
     );
-    let _ = std::io::stdout().flush();
+    let _ = io_stdout().flush();
 }

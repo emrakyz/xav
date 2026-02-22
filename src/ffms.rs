@@ -1,4 +1,10 @@
-use std::{ffi::CString, mem::MaybeUninit, path::Path, sync::Arc};
+use std::{
+    ffi::{CStr, CString, c_int, c_void},
+    mem::{self, MaybeUninit},
+    path::Path,
+    ptr, slice,
+    sync::Arc,
+};
 
 use ffms2_sys::{
     FFMS_CreateIndexer, FFMS_CreateVideoSource, FFMS_DestroyIndex, FFMS_DestroyVideoSource,
@@ -7,7 +13,7 @@ use ffms2_sys::{
     FFMS_SetProgressCallback, FFMS_TrackTypeIndexSettings, FFMS_VideoSource, FFMS_WriteIndex,
 };
 
-use crate::{decode::CropCalc, progs::ProgsBar};
+use crate::{decode::CropCalc, error::Xerr, progs::ProgsBar};
 
 macro_rules! ffms_err {
     ($buf:ident, $err:ident) => {
@@ -33,10 +39,10 @@ macro_rules! ffms_ok {
 
 #[inline]
 #[cold]
-fn ffms_err_str(buf: &MaybeUninit<[u8; 1024]>) -> crate::error::Error {
+fn ffms_err_str(buf: &MaybeUninit<[u8; 1024]>) -> Xerr {
     unsafe {
-        crate::error::Error::Msg(
-            std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+        Xerr::Msg(
+            CStr::from_ptr(buf.as_ptr().cast())
                 .to_string_lossy()
                 .into_owned(),
         )
@@ -76,20 +82,16 @@ pub struct VidIdx {
     pub idx_handle: *mut FFMS_Index,
 }
 
-extern "C" fn idx_progs(
-    current: i64,
-    total: i64,
-    ic_private: *mut ::std::os::raw::c_void,
-) -> ::std::os::raw::c_int {
+extern "C" fn idx_progs(current: i64, total: i64, ic_private: *mut c_void) -> c_int {
     unsafe {
-        let progs = &mut *ic_private.cast::<crate::progs::ProgsBar>();
+        let progs = &mut *ic_private.cast::<ProgsBar>();
         progs.up_idx(current as usize, total as usize);
     }
     0
 }
 
 impl VidIdx {
-    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, crate::error::Error> {
+    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, Xerr> {
         unsafe {
             FFMS_Init(0, 0);
 
@@ -99,22 +101,22 @@ impl VidIdx {
             let idx_path = format!("{}.ffindex", path.display());
             let idx_cstr = CString::new(idx_path.as_str())?;
 
-            let mut idx = if std::path::Path::new(&idx_path).exists() {
-                FFMS_ReadIndex(idx_cstr.as_ptr(), std::ptr::addr_of_mut!(err))
+            let mut idx = if Path::new(&idx_path).exists() {
+                FFMS_ReadIndex(idx_cstr.as_ptr(), ptr::addr_of_mut!(err))
             } else {
-                std::ptr::null_mut()
+                ptr::null_mut()
             };
 
             if !idx.is_null()
-                && FFMS_IndexBelongsToFile(idx, source.as_ptr(), std::ptr::addr_of_mut!(err)) != 0
+                && FFMS_IndexBelongsToFile(idx, source.as_ptr(), ptr::addr_of_mut!(err)) != 0
             {
                 FFMS_DestroyIndex(idx);
-                idx = std::ptr::null_mut();
+                idx = ptr::null_mut();
             }
 
             let idx = if idx.is_null() {
                 let idxer = ffms_ok!(
-                    FFMS_CreateIndexer(source.as_ptr(), std::ptr::addr_of_mut!(err)),
+                    FFMS_CreateIndexer(source.as_ptr(), ptr::addr_of_mut!(err)),
                     &errbuf
                 );
 
@@ -122,28 +124,28 @@ impl VidIdx {
                 FFMS_TrackTypeIndexSettings(idxer, 2, 0, 0);
 
                 let idx = if progs {
-                    let mut progs = crate::progs::ProgsBar::new();
+                    let mut progs = ProgsBar::new();
                     FFMS_SetProgressCallback(
                         idxer,
                         Some(idx_progs),
-                        std::ptr::addr_of_mut!(progs).cast::<libc::c_void>(),
+                        ptr::addr_of_mut!(progs).cast::<libc::c_void>(),
                     );
-                    let idx = FFMS_DoIndexing2(idxer, 0, std::ptr::addr_of_mut!(err));
+                    let idx = FFMS_DoIndexing2(idxer, 0, ptr::addr_of_mut!(err));
                     ProgsBar::finish();
                     idx
                 } else {
-                    FFMS_DoIndexing2(idxer, 0, std::ptr::addr_of_mut!(err))
+                    FFMS_DoIndexing2(idxer, 0, ptr::addr_of_mut!(err))
                 };
 
                 ffms_ok!(idx, &errbuf);
 
-                FFMS_WriteIndex(idx_cstr.as_ptr(), idx, std::ptr::addr_of_mut!(err));
+                FFMS_WriteIndex(idx_cstr.as_ptr(), idx, ptr::addr_of_mut!(err));
                 idx
             } else {
                 idx
             };
 
-            let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, std::ptr::addr_of_mut!(err));
+            let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, ptr::addr_of_mut!(err));
             if track < 0 {
                 FFMS_DestroyIndex(idx);
                 return Err(ffms_err_str(&errbuf));
@@ -171,7 +173,7 @@ impl Drop for VidIdx {
 unsafe impl Send for VidIdx {}
 unsafe impl Sync for VidIdx {}
 
-pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, crate::error::Error> {
+pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Xerr> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         ffms_err!(errbuf, err);
@@ -183,7 +185,7 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, crate::error::Error> {
                 idx.idx_handle,
                 1,
                 1,
-                std::ptr::addr_of_mut!(err)
+                ptr::addr_of_mut!(err)
             ),
             &errbuf
         );
@@ -280,10 +282,7 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, crate::error::Error> {
     }
 }
 
-pub fn thr_vid_src(
-    idx: &Arc<VidIdx>,
-    threads: i32,
-) -> Result<*mut FFMS_VideoSource, crate::error::Error> {
+pub fn thr_vid_src(idx: &Arc<VidIdx>, threads: i32) -> Result<*mut FFMS_VideoSource, Xerr> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         ffms_err!(errbuf, err);
@@ -295,7 +294,7 @@ pub fn thr_vid_src(
                 idx.idx_handle,
                 threads,
                 1,
-                std::ptr::addr_of_mut!(err)
+                ptr::addr_of_mut!(err)
             ),
             &errbuf
         );
@@ -322,7 +321,7 @@ pub const fn calc_packed_size(w: u32, h: u32) -> usize {
 fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, dst: *mut u8) {
     unsafe {
         for row in 0..height {
-            std::ptr::copy_nonoverlapping(src.add(row * stride), dst.add(row * width), width);
+            ptr::copy_nonoverlapping(src.add(row * stride), dst.add(row * width), width);
         }
     }
 }
@@ -370,7 +369,7 @@ pub fn extr_8bit_crop_fast(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &crate::decode::CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -378,13 +377,13 @@ pub fn extr_8bit_crop_fast(
         let y_sz = cc.new_w as usize * cc.new_h as usize;
         let uv_sz = y_sz / 4;
 
-        std::ptr::copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
-        std::ptr::copy_nonoverlapping(
+        ptr::copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
+        ptr::copy_nonoverlapping(
             (*frame).Data[1].add(cc.uv_off),
             output.as_mut_ptr().add(y_sz),
             uv_sz,
         );
-        std::ptr::copy_nonoverlapping(
+        ptr::copy_nonoverlapping(
             (*frame).Data[2].add(cc.uv_off),
             output.as_mut_ptr().add(y_sz + uv_sz),
             uv_sz,
@@ -396,7 +395,7 @@ pub fn extr_8bit_crop(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &crate::decode::CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -404,7 +403,7 @@ pub fn extr_8bit_crop(
         let mut pos = 0;
 
         for row in 0..cc.new_h as usize {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 (*frame).Data[0].add(cc.y_start + row * cc.y_stride),
                 output.as_mut_ptr().add(pos),
                 cc.y_len,
@@ -413,7 +412,7 @@ pub fn extr_8bit_crop(
         }
 
         for row in 0..cc.new_h as usize / 2 {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 (*frame).Data[1].add(cc.uv_off + row * cc.uv_stride),
                 output.as_mut_ptr().add(pos),
                 cc.uv_len,
@@ -422,7 +421,7 @@ pub fn extr_8bit_crop(
         }
 
         for row in 0..cc.new_h as usize / 2 {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 (*frame).Data[2].add(cc.uv_off + row * cc.uv_stride),
                 output.as_mut_ptr().add(pos),
                 cc.uv_len,
@@ -446,9 +445,9 @@ pub fn extr_8bit_fast(
         let y_size = width * height;
         let uv_size = y_size / 4;
 
-        std::ptr::copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
-        std::ptr::copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
-        std::ptr::copy_nonoverlapping(
+        ptr::copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
+        ptr::copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
+        ptr::copy_nonoverlapping(
             (*frame).Data[2],
             output.as_mut_ptr().add(y_size + uv_size),
             uv_size,
@@ -563,8 +562,8 @@ fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) 
         let mut pos = 0;
 
         for row in 0..h {
-            let src_row = std::slice::from_raw_parts(src.add(row * stride), w_bytes);
-            let dst_row = std::slice::from_raw_parts_mut(out.add(pos), pack_row);
+            let src_row = slice::from_raw_parts(src.add(row * stride), w_bytes);
+            let dst_row = slice::from_raw_parts_mut(out.add(pos), pack_row);
 
             src_row
                 .chunks_exact(8)
@@ -585,7 +584,7 @@ pub fn extr_10bit_crop_fast(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &crate::decode::CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -595,13 +594,13 @@ pub fn extr_10bit_crop_fast(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        let y_src = std::slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
+        let y_src = slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
         pack_10bit(y_src, &mut output[..y_pack]);
 
-        let u_src = std::slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
+        let u_src = slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
         pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
 
-        let v_src = std::slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
+        let v_src = slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
         pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
@@ -610,7 +609,7 @@ pub fn extr_10bit_crop(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &crate::decode::CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -667,7 +666,7 @@ pub fn get_decode_strat(
     idx: &Arc<VidIdx>,
     inf: &VidInf,
     crop: (u32, u32),
-) -> Result<DecodeStrat, crate::error::Error> {
+) -> Result<DecodeStrat, Xerr> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
         ffms_err!(errbuf, err);
@@ -679,7 +678,7 @@ pub fn get_decode_strat(
                 idx.idx_handle,
                 1,
                 1,
-                std::ptr::addr_of_mut!(err)
+                ptr::addr_of_mut!(err)
             ),
             &errbuf
         );
@@ -743,11 +742,11 @@ pub fn get_decode_strat(
 
 pub fn get_raw_frame(vid_src: *mut FFMS_VideoSource, frame_idx: usize) -> *const FFMS_Frame {
     unsafe {
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+        let mut err = mem::zeroed::<FFMS_ErrorInfo>();
         FFMS_GetFrame(
             vid_src,
             i32::try_from(frame_idx).unwrap_or(0),
-            std::ptr::addr_of_mut!(err),
+            ptr::addr_of_mut!(err),
         )
     }
 }
@@ -766,13 +765,13 @@ pub fn extr_10bit_pack(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        let y_src = std::slice::from_raw_parts((*frame).Data[0], w * h * 2);
+        let y_src = slice::from_raw_parts((*frame).Data[0], w * h * 2);
         pack_10bit(y_src, &mut output[..y_pack]);
 
-        let u_src = std::slice::from_raw_parts((*frame).Data[1], w * h / 2);
+        let u_src = slice::from_raw_parts((*frame).Data[1], w * h / 2);
         pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
 
-        let v_src = std::slice::from_raw_parts((*frame).Data[2], w * h / 2);
+        let v_src = slice::from_raw_parts((*frame).Data[2], w * h / 2);
         pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
@@ -835,7 +834,7 @@ pub fn extr_8bit_stride(
         let mut pos = 0;
 
         for row in 0..height {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 (*frame).Data[0].add(row * y_linesize),
                 output.as_mut_ptr().add(pos),
                 width,
@@ -844,7 +843,7 @@ pub fn extr_8bit_stride(
         }
 
         for row in 0..height / 2 {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 (*frame).Data[1].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 width / 2,
@@ -853,7 +852,7 @@ pub fn extr_8bit_stride(
         }
 
         for row in 0..height / 2 {
-            std::ptr::copy_nonoverlapping(
+            ptr::copy_nonoverlapping(
                 (*frame).Data[2].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 width / 2,
@@ -885,10 +884,8 @@ pub fn extr_10bit_crop_pack_stride(
         for row in 0..h {
             let src_off = (crop_calc.crop_h as usize * pix_sz)
                 + (row + crop_calc.crop_v as usize) * y_linesize;
-            let src_row =
-                std::slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
-            let dst_row =
-                std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
+            let src_row = slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
+            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
 
             src_row
                 .chunks_exact(8)
@@ -908,10 +905,8 @@ pub fn extr_10bit_crop_pack_stride(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row =
-                std::slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
-            let dst_row =
-                std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
+            let src_row = slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
+            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
             src_row
                 .chunks_exact(8)
@@ -929,10 +924,8 @@ pub fn extr_10bit_crop_pack_stride(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row =
-                std::slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
-            let dst_row =
-                std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
+            let src_row = slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
+            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
             src_row
                 .chunks_exact(8)
@@ -955,8 +948,8 @@ fn pack_stride_rem(src: *const u8, stride: usize, w: usize, h: usize, out: *mut 
 
     unsafe {
         for row in 0..h {
-            let src_row = std::slice::from_raw_parts(src.add(row * stride), w_bytes);
-            let dst_row = std::slice::from_raw_parts_mut(out.add(row * y_row), y_row);
+            let src_row = slice::from_raw_parts(src.add(row * stride), w_bytes);
+            let dst_row = slice::from_raw_parts_mut(out.add(row * y_row), y_row);
 
             src_row
                 .chunks_exact(8)
@@ -1025,13 +1018,13 @@ pub fn extr_10bit_pack_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        let y_src = std::slice::from_raw_parts((*frame).Data[0], w * h * 2);
+        let y_src = slice::from_raw_parts((*frame).Data[0], w * h * 2);
         pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
 
-        let u_src = std::slice::from_raw_parts((*frame).Data[1], w * h / 2);
+        let u_src = slice::from_raw_parts((*frame).Data[1], w * h / 2);
         pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
 
-        let v_src = std::slice::from_raw_parts((*frame).Data[2], w * h / 2);
+        let v_src = slice::from_raw_parts((*frame).Data[2], w * h / 2);
         pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
     }
 }
@@ -1081,7 +1074,7 @@ pub fn extr_10bit_crop_fast_rem(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &crate::decode::CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -1094,13 +1087,13 @@ pub fn extr_10bit_crop_fast_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        let y_src = std::slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
+        let y_src = slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
         pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
 
-        let u_src = std::slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
+        let u_src = slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
         pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
 
-        let v_src = std::slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
+        let v_src = slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
         pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
     }
 }
@@ -1109,7 +1102,7 @@ pub fn extr_10bit_crop_rem(
     vid_src: *mut FFMS_VideoSource,
     frame_idx: usize,
     output: &mut [u8],
-    cc: &crate::decode::CropCalc,
+    cc: &CropCalc,
 ) {
     unsafe {
         let frame = get_raw_frame(vid_src, frame_idx);
@@ -1170,9 +1163,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         for row in 0..h {
             let src_off = (crop_calc.crop_h as usize * pix_sz)
                 + (row + crop_calc.crop_v as usize) * y_linesize;
-            let src_row =
-                std::slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
-            let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
+            let src_row = slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
+            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
 
             src_row
                 .chunks_exact(8)
@@ -1200,9 +1192,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row =
-                std::slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
-            let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
+            let src_row = slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
+            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
             src_row
                 .chunks_exact(8)
@@ -1230,9 +1221,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row =
-                std::slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
-            let dst_row = std::slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
+            let src_row = slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
+            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
             src_row
                 .chunks_exact(8)

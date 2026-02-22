@@ -1,45 +1,83 @@
+#[cfg(any(feature = "vship", feature = "libsvtav1"))]
+use std::fs::File;
+#[cfg(feature = "vship")]
+use std::{
+    collections::BTreeMap,
+    fmt::Write as FmtWrite,
+    fs::{OpenOptions, copy},
+    io::{BufRead, BufReader as StdBufReader},
+    sync::OnceLock,
+};
 use std::{
     collections::HashSet,
+    fs::metadata,
+    io::Write,
+    panic::resume_unwind,
     path::{Path, PathBuf},
-    sync::Arc,
-    thread,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    thread::{JoinHandle, spawn},
+};
+#[cfg(feature = "libsvtav1")]
+use std::{
+    io::BufWriter,
+    mem::{size_of, zeroed},
+    ptr::null_mut,
+    slice::from_raw_parts,
 };
 
-use crossbeam_channel::bounded;
 #[cfg(feature = "vship")]
 use crossbeam_channel::select;
-
+use crossbeam_channel::{Receiver, Sender, bounded};
 #[cfg(feature = "vship")]
-use crate::worker::TQState;
+use sonic_rs::from_str;
+
 use crate::{
-    chunk::{Chunk, ChunkComp, ResumeInf, get_resume},
+    Args,
+    chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
     decode::{decode_chunks, decode_pipe},
     encoder::{EncConfig, Encoder, make_enc_cmd},
     ffms::{VidIdx, VidInf},
     pipeline::Pipeline,
     progs::ProgsTrack,
-    worker::Semaphore,
+    worker::{Semaphore, WorkPkg},
+    y4m::PipeReader,
+};
+#[cfg(feature = "libsvtav1")]
+use crate::{
+    encoder::set_svt_config,
+    ffms::conv_to_10bit,
+    progs::LibEncTracker,
+    svt::{
+        EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
+        EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
+        svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
+        svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
+    },
+};
+#[cfg(feature = "vship")]
+use crate::{
+    ffms::DecodeStrat,
+    pipeline::MetricsProgress,
+    tq::{Probe, ProbeLog, binary_search, interpolate_crf},
+    vship::{VshipProcessor, init_device},
+    worker::TQState,
 };
 
 #[cfg(feature = "vship")]
-pub static TQ_SCORES: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
+pub static TQ_SCORES: OnceLock<Mutex<Vec<f64>>> = OnceLock::new();
 
-#[cold]
-fn fatal(e: impl std::fmt::Display) -> ! {
-    use std::io::Write;
-    print!("\x1b[?25h\x1b[?1049l");
-    let _ = std::io::stdout().flush();
-    eprintln!("{e}");
-    std::process::exit(1);
-}
+use crate::error::fatal;
 
-fn join_one(handle: thread::JoinHandle<()>) {
+fn join_one(handle: JoinHandle<()>) {
     if let Err(e) = handle.join() {
-        std::panic::resume_unwind(e);
+        resume_unwind(e);
     }
 }
 
-fn join_all(handles: Vec<thread::JoinHandle<()>>) {
+fn join_all(handles: Vec<JoinHandle<()>>) {
     for h in handles {
         join_one(h);
     }
@@ -52,10 +90,10 @@ pub fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
 }
 
 struct WorkerStats {
-    completed: Arc<std::sync::atomic::AtomicUsize>,
-    completed_frames: Arc<std::sync::atomic::AtomicUsize>,
-    total_size: Arc<std::sync::atomic::AtomicU64>,
-    completions: Arc<std::sync::Mutex<ResumeInf>>,
+    completed: Arc<AtomicUsize>,
+    completed_frames: Arc<AtomicUsize>,
+    total_size: Arc<AtomicU64>,
+    completions: Arc<Mutex<ResumeInf>>,
 }
 
 impl WorkerStats {
@@ -63,21 +101,21 @@ impl WorkerStats {
         let init_frames: usize = resume_data.chnks_done.iter().map(|c| c.frames).sum();
         let init_size: u64 = resume_data.chnks_done.iter().map(|c| c.size).sum();
         Self {
-            completed: Arc::new(std::sync::atomic::AtomicUsize::new(completed_count)),
-            completed_frames: Arc::new(std::sync::atomic::AtomicUsize::new(init_frames)),
-            total_size: Arc::new(std::sync::atomic::AtomicU64::new(init_size)),
-            completions: Arc::new(std::sync::Mutex::new(resume_data.clone())),
+            completed: Arc::new(AtomicUsize::new(completed_count)),
+            completed_frames: Arc::new(AtomicUsize::new(init_frames)),
+            total_size: Arc::new(AtomicU64::new(init_size)),
+            completions: Arc::new(Mutex::new(resume_data.clone())),
         }
     }
 
     fn add_completion(&self, completion: ChunkComp, work_dir: &Path) {
         self.completed_frames
-            .fetch_add(completion.frames, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(completion.frames, Ordering::Relaxed);
         self.total_size
-            .fetch_add(completion.size, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(completion.size, Ordering::Relaxed);
         let mut data = unsafe { self.completions.lock().unwrap_unchecked() };
         data.chnks_done.push(completion);
-        let _ = crate::chunk::save_resume(&data, work_dir);
+        let _ = save_resume(&data, work_dir);
         drop(data);
     }
 }
@@ -116,10 +154,10 @@ struct TQWorkerCtx<'a> {
     work_dir: &'a Path,
     metric_mode: &'a str,
     prog: &'a Arc<ProgsTrack>,
-    done_tx: &'a crossbeam_channel::Sender<usize>,
-    resume_state: &'a Arc<std::sync::Mutex<ResumeInf>>,
+    done_tx: &'a Sender<usize>,
+    resume_state: &'a Arc<Mutex<ResumeInf>>,
     stats: Option<&'a Arc<WorkerStats>>,
-    tq_logger: &'a Arc<std::sync::Mutex<Vec<crate::tq::ProbeLog>>>,
+    tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
     tq_ctx: &'a TQCtx,
     encoder: Encoder,
     use_probe_params: bool,
@@ -129,11 +167,11 @@ struct TQWorkerCtx<'a> {
 pub fn encode_all(
     chunks: &[Chunk],
     inf: &VidInf,
-    args: &crate::Args,
+    args: &Args,
     idx: &Arc<VidIdx>,
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
-    pipe_reader: Option<crate::y4m::PipeReader>,
+    pipe_reader: Option<PipeReader>,
 ) {
     let resume_data = load_resume_data(work_dir);
 
@@ -167,7 +205,7 @@ pub fn encode_all(
         None,
     );
 
-    let (tx, rx) = bounded::<crate::worker::WorkPkg>(args.chunk_buffer);
+    let (tx, rx) = bounded::<WorkPkg>(args.chunk_buffer);
     let rx = Arc::new(rx);
     let sem = Arc::new(Semaphore::new(args.chunk_buffer));
 
@@ -176,7 +214,7 @@ pub fn encode_all(
         let idx = Arc::clone(idx);
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
-        thread::spawn(move || {
+        spawn(move || {
             if let Some(mut reader) = pipe_reader {
                 decode_pipe(&chunks, &mut reader, &inf, &tx, &skip_indices, strat, &sem);
             } else {
@@ -198,7 +236,7 @@ pub fn encode_all(
         let sem_clone = Arc::clone(&sem);
         let encoder = args.encoder;
 
-        let handle = thread::spawn(move || {
+        let handle = spawn(move || {
             let ctx = EncWorkerCtx {
                 inf: &inf,
                 pipe: &pipe,
@@ -266,7 +304,7 @@ impl TQCtx {
     }
 
     #[inline]
-    fn best_probe<'a>(&self, probes: &'a [crate::tq::Probe]) -> &'a crate::tq::Probe {
+    fn best_probe<'a>(&self, probes: &'a [Probe]) -> &'a Probe {
         unsafe {
             probes
                 .iter()
@@ -299,19 +337,19 @@ fn complete_chunk(
     probe_path: &Path,
     ctx: &TQWorkerCtx,
     tq_state: &TQState,
-    best: &crate::tq::Probe,
+    best: &Probe,
 ) {
     let dst = ctx
         .work_dir
         .join("encode")
         .join(format!("{chunk_idx:04}.{}", ctx.encoder.extension()));
     if probe_path != dst {
-        let _ = std::fs::copy(probe_path, &dst);
+        let _ = copy(probe_path, &dst);
     }
     let _ = ctx.done_tx.send(chunk_idx);
 
-    let file_size = std::fs::metadata(&dst).map_or(0, |m| m.len());
-    let comp = crate::chunk::ChunkComp {
+    let file_size = metadata(&dst).map_or(0, |m| m.len());
+    let comp = ChunkComp {
         idx: chunk_idx,
         frames: chunk_frames,
         size: file_size,
@@ -319,16 +357,13 @@ fn complete_chunk(
 
     let mut resume = unsafe { ctx.resume_state.lock().unwrap_unchecked() };
     resume.chnks_done.push(comp.clone());
-    crate::chunk::save_resume(&resume, ctx.work_dir).ok();
+    save_resume(&resume, ctx.work_dir).ok();
     drop(resume);
 
     if let Some(s) = ctx.stats {
-        s.completed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        s.completed_frames
-            .fetch_add(comp.frames, std::sync::atomic::Ordering::Relaxed);
-        s.total_size
-            .fetch_add(comp.size, std::sync::atomic::Ordering::Relaxed);
+        s.completed.fetch_add(1, Ordering::Relaxed);
+        s.completed_frames.fetch_add(comp.frames, Ordering::Relaxed);
+        s.total_size.fetch_add(comp.size, Ordering::Relaxed);
     }
 
     let probes_with_size: Vec<(f64, f64, u64)> = tq_state
@@ -344,7 +379,7 @@ fn complete_chunk(
         })
         .collect();
 
-    let log_entry = crate::tq::ProbeLog {
+    let log_entry = ProbeLog {
         chunk_idx,
         probes: probes_with_size,
         final_crf: best.crf,
@@ -358,7 +393,7 @@ fn complete_chunk(
 
     let mut tq_scores = unsafe {
         TQ_SCORES
-            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
             .unwrap_unchecked()
     };
@@ -384,12 +419,12 @@ fn probe_path(dir: &Path, idx: usize, crf: f64, ext: &str) -> PathBuf {
 
 #[cfg(feature = "vship")]
 fn run_metrics_worker(
-    rx: &Arc<crossbeam_channel::Receiver<crate::worker::WorkPkg>>,
-    rework_tx: &crossbeam_channel::Sender<crate::worker::WorkPkg>,
+    rx: &Arc<Receiver<WorkPkg>>,
+    rework_tx: &Sender<WorkPkg>,
     ctx: &TQWorkerCtx,
     worker_id: usize,
 ) {
-    let mut vship: Option<crate::vship::VshipProcessor> = None;
+    let mut vship: Option<VshipProcessor> = None;
     let mut unpacked_buf = vec![
         0u8;
         if ctx.inf.is_10bit {
@@ -413,7 +448,7 @@ fn run_metrics_worker(
         }
 
         if vship.is_none() {
-            let v = crate::vship::VshipProcessor::new(
+            let v = VshipProcessor::new(
                 pkg.width,
                 pkg.height,
                 ctx.inf,
@@ -432,12 +467,12 @@ fn run_metrics_worker(
         let last_score = tq_st.probes.last().map(|probe| probe.score);
         let metrics_slot = ctx.worker_count + worker_id;
 
-        let probe_size = std::fs::metadata(&pp).map_or(0, |m| m.len());
+        let probe_size = metadata(&pp).map_or(0, |m| m.len());
         unsafe { pkg.tq_state.as_mut().unwrap_unchecked() }
             .probe_sizes
             .push((crf, probe_size));
 
-        let mp = crate::pipeline::MetricsProgress {
+        let mp = MetricsProgress {
             prog: ctx.prog,
             slot: metrics_slot,
             crf: crf as f32,
@@ -454,7 +489,7 @@ fn run_metrics_worker(
         );
 
         let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
-        tq_state.probes.push(crate::tq::Probe {
+        tq_state.probes.push(Probe {
             crf,
             score,
             frame_scores,
@@ -486,7 +521,7 @@ fn run_metrics_worker(
 }
 
 #[cfg(feature = "vship")]
-fn parse_tq_ctx(args: &crate::Args) -> TQCtx {
+fn parse_tq_ctx(args: &Args) -> TQCtx {
     let tq_str = unsafe { args.target_quality.as_ref().unwrap_unchecked() };
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
     let tq_parts: Vec<f64> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
@@ -510,10 +545,10 @@ fn parse_tq_ctx(args: &crate::Args) -> TQCtx {
 
 #[cfg(feature = "vship")]
 fn tq_coordinate(
-    decode_rx: &crossbeam_channel::Receiver<crate::worker::WorkPkg>,
-    rework_rx: &crossbeam_channel::Receiver<crate::worker::WorkPkg>,
-    done_rx: &crossbeam_channel::Receiver<usize>,
-    enc_tx: &crossbeam_channel::Sender<crate::worker::WorkPkg>,
+    decode_rx: &Receiver<WorkPkg>,
+    rework_rx: &Receiver<WorkPkg>,
+    done_rx: &Receiver<usize>,
+    enc_tx: &Sender<WorkPkg>,
     total_chunks: usize,
     permits: &Semaphore,
 ) {
@@ -529,13 +564,13 @@ fn tq_coordinate(
 
 #[cfg(feature = "vship")]
 #[inline]
-fn tq_search_crf(tq: &mut crate::worker::TQState, encoder: Encoder) -> f64 {
+fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f64 {
     tq.round += 1;
     let c = if tq.round <= 2 {
-        crate::tq::binary_search(tq.search_min, tq.search_max)
+        binary_search(tq.search_min, tq.search_max)
     } else {
-        crate::tq::interpolate_crf(&tq.probes, tq.target, tq.round)
-            .unwrap_or_else(|| crate::tq::binary_search(tq.search_min, tq.search_max))
+        interpolate_crf(&tq.probes, tq.target, tq.round)
+            .unwrap_or_else(|| binary_search(tq.search_min, tq.search_max))
     }
     .clamp(tq.search_min, tq.search_max);
     let c = if encoder.integer_qp() { c.round() } else { c };
@@ -545,8 +580,8 @@ fn tq_search_crf(tq: &mut crate::worker::TQState, encoder: Encoder) -> f64 {
 
 #[cfg(feature = "vship")]
 fn tq_enc_loop(
-    rx: &crossbeam_channel::Receiver<crate::worker::WorkPkg>,
-    tx: &crossbeam_channel::Sender<crate::worker::WorkPkg>,
+    rx: &Receiver<WorkPkg>,
+    tx: &Sender<WorkPkg>,
     ctx: &EncWorkerCtx,
     params: &str,
     probe_params: Option<&str>,
@@ -555,7 +590,7 @@ fn tq_enc_loop(
 ) {
     let mut conv_buf = vec![0u8; ctx.pipe.conv_buf_size];
     while let Ok(mut pkg) = rx.recv() {
-        let tq = pkg.tq_state.get_or_insert_with(|| crate::worker::TQState {
+        let tq = pkg.tq_state.get_or_insert_with(|| TQState {
             probes: Vec::new(),
             probe_sizes: Vec::new(),
             search_min: tq_ctx.qp_min,
@@ -590,11 +625,11 @@ fn tq_enc_loop(
 
 #[cfg(feature = "vship")]
 struct TQDecodeResult {
-    enc_tx: crossbeam_channel::Sender<crate::worker::WorkPkg>,
-    enc_rx: crossbeam_channel::Receiver<crate::worker::WorkPkg>,
-    rework_tx: crossbeam_channel::Sender<crate::worker::WorkPkg>,
-    done_tx: crossbeam_channel::Sender<usize>,
-    handle: thread::JoinHandle<()>,
+    enc_tx: Sender<WorkPkg>,
+    enc_rx: Receiver<WorkPkg>,
+    rework_tx: Sender<WorkPkg>,
+    done_tx: Sender<usize>,
+    handle: JoinHandle<()>,
 }
 
 #[cfg(feature = "vship")]
@@ -603,13 +638,13 @@ fn spawn_tq_decode(
     idx: &Arc<VidIdx>,
     inf: &VidInf,
     skip: HashSet<usize>,
-    strat: crate::ffms::DecodeStrat,
+    strat: DecodeStrat,
     permits: &Arc<Semaphore>,
-    pipe_reader: Option<crate::y4m::PipeReader>,
+    pipe_reader: Option<PipeReader>,
 ) -> TQDecodeResult {
     let total = chunks.iter().filter(|c| !skip.contains(&c.idx)).count();
-    let (enc_tx, enc_rx) = bounded::<crate::worker::WorkPkg>(2);
-    let (rework_tx, rework_rx) = bounded::<crate::worker::WorkPkg>(2);
+    let (enc_tx, enc_rx) = bounded::<WorkPkg>(2);
+    let (rework_tx, rework_rx) = bounded::<WorkPkg>(2);
     let (done_tx, done_rx) = bounded::<usize>(4);
 
     let chunks = chunks.to_vec();
@@ -618,10 +653,10 @@ fn spawn_tq_decode(
     let enc_tx2 = enc_tx.clone();
     let permits_dec = Arc::clone(permits);
     let permits_done = Arc::clone(permits);
-    let handle = thread::spawn(move || {
-        let (dtx, drx) = bounded::<crate::worker::WorkPkg>(2);
+    let handle = spawn(move || {
+        let (dtx, drx) = bounded::<WorkPkg>(2);
         let inf2 = inf.clone();
-        let dec = thread::spawn(move || {
+        let dec = spawn(move || {
             if let Some(mut r) = pipe_reader {
                 decode_pipe(&chunks, &mut r, &inf2, &dtx, &skip, strat, &permits_dec);
             } else {
@@ -644,11 +679,11 @@ fn spawn_tq_decode(
 fn encode_tq(
     chunks: &[Chunk],
     inf: &VidInf,
-    args: &crate::Args,
+    args: &Args,
     idx: &Arc<VidIdx>,
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
-    pipe_reader: Option<crate::y4m::PipeReader>,
+    pipe_reader: Option<PipeReader>,
 ) {
     let resume_data = load_resume_data(work_dir);
     let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
@@ -658,11 +693,11 @@ fn encode_tq(
     let permits = Arc::new(Semaphore::new(args.chunk_buffer));
 
     let dec = spawn_tq_decode(chunks, idx, inf, skip_indices, strat, &permits, pipe_reader);
-    let (met_tx, met_rx) = bounded::<crate::worker::WorkPkg>(2);
+    let (met_tx, met_rx) = bounded::<WorkPkg>(2);
     let (enc_rx, met_rx) = (Arc::new(dec.enc_rx), Arc::new(met_rx));
 
-    let resume_state = Arc::new(std::sync::Mutex::new(resume_data.clone()));
-    let tq_logger = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let resume_state = Arc::new(Mutex::new(resume_data.clone()));
+    let tq_logger = Arc::new(Mutex::new(Vec::new()));
     let stats = create_stats(completed_count, &resume_data);
     let (prog, display_handle) = ProgsTrack::new(
         chunks,
@@ -689,7 +724,7 @@ fn encode_tq(
             Arc::clone(&tq_logger),
             Arc::clone(&prog),
         );
-        metrics_workers.push(thread::spawn(move || {
+        metrics_workers.push(spawn(move || {
             let ctx = TQWorkerCtx {
                 inf: &inf,
                 pipe: &pipe,
@@ -718,8 +753,8 @@ fn encode_tq(
             args.probe_params.clone(),
             grain_table.cloned(),
         );
-        let prog_clone = prog.clone();
-        workers.push(thread::spawn(move || {
+        let prog_clone = Arc::clone(&prog);
+        workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
                 inf: &inf,
                 pipe: &pipe,
@@ -740,7 +775,7 @@ fn encode_tq(
         }));
     }
 
-    crate::vship::init_device().unwrap_or_else(|e| fatal(e));
+    init_device().unwrap_or_else(|e| fatal(e));
     join_one(dec.handle);
     drop(dec.enc_tx);
     join_all(workers);
@@ -755,7 +790,7 @@ fn encode_tq(
 
 #[cfg(feature = "vship")]
 fn enc_tq_probe(
-    pkg: &crate::worker::WorkPkg,
+    pkg: &WorkPkg,
     crf: f64,
     params: &str,
     ctx: &EncWorkerCtx,
@@ -834,14 +869,14 @@ fn enc_tq_probe(
 
     let status = child.wait().unwrap_or_else(|e| fatal(e));
     if !status.success() {
-        std::process::exit(1);
+        fatal(format_args!("probe encode failed: {}", out.display()));
     }
 
     out.to_path_buf()
 }
 
 fn run_enc_worker(
-    rx: &Arc<crossbeam_channel::Receiver<crate::worker::WorkPkg>>,
+    rx: &Arc<Receiver<WorkPkg>>,
     params: &str,
     ctx: &EncWorkerCtx,
     stats: Option<&Arc<WorkerStats>>,
@@ -854,15 +889,14 @@ fn run_enc_worker(
         enc_chunk(&mut pkg, -1.0, params, ctx, &mut conv_buf, worker_id);
 
         if let Some(s) = stats {
-            s.completed
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            s.completed.fetch_add(1, Ordering::Relaxed);
             let out = ctx.work_dir.join("encode").join(format!(
                 "{:04}.{}",
                 pkg.chunk.idx,
                 ctx.encoder.extension()
             ));
-            let file_size = std::fs::metadata(&out).map_or(0, |m| m.len());
-            let comp = crate::chunk::ChunkComp {
+            let file_size = metadata(&out).map_or(0, |m| m.len());
+            let comp = ChunkComp {
                 idx: pkg.chunk.idx,
                 frames: pkg.frame_count,
                 size: file_size,
@@ -875,7 +909,7 @@ fn run_enc_worker(
 }
 
 fn enc_chunk(
-    pkg: &mut crate::worker::WorkPkg,
+    pkg: &mut WorkPkg,
     crf: f32,
     params: &str,
     ctx: &EncWorkerCtx,
@@ -938,14 +972,12 @@ fn enc_chunk(
 
     let status = child.wait().unwrap_or_else(|e| fatal(e));
     if !status.success() {
-        std::process::exit(1);
+        fatal(format_args!("encode failed: chunk {:04}", pkg.chunk.idx));
     }
 }
 
 #[cfg(feature = "vship")]
-pub fn write_chunk_log(chunk_log: &crate::tq::ProbeLog, work_dir: &Path) {
-    use std::{fs::OpenOptions, io::Write as IoWrite};
-
+pub fn write_chunk_log(chunk_log: &ProbeLog, work_dir: &Path) {
     let chunks_path = work_dir.join("chunks.json");
     let probes_str = chunk_log
         .probes
@@ -979,11 +1011,9 @@ fn format_tq_json(
     all_logs: &[TqChunkLine],
     metric_name: &str,
     fps: f64,
-    round_counts: &std::collections::BTreeMap<usize, usize>,
-    crf_counts: &std::collections::BTreeMap<u64, usize>,
+    round_counts: &BTreeMap<usize, usize>,
+    crf_counts: &BTreeMap<u64, usize>,
 ) -> String {
-    use std::fmt::Write;
-
     let total = all_logs.len();
     let avg_probes = all_logs.iter().map(|l| l.p.len()).sum::<usize>() as f64 / total as f64;
     let in_range = all_logs.iter().filter(|l| l.r <= 6).count();
@@ -1093,19 +1123,14 @@ struct TqChunkLine {
 
 #[cfg(feature = "vship")]
 fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
-    use std::{
-        fs::OpenOptions,
-        io::{BufRead, Write as IoWrite},
-    };
-
     let log_path = input.with_extension("json");
     let chunks_path = work_dir.join("chunks.json");
     let fps = f64::from(inf.fps_num) / f64::from(inf.fps_den);
 
     let mut all_logs: Vec<TqChunkLine> = Vec::new();
-    if let Ok(file) = std::fs::File::open(&chunks_path) {
-        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
-            if let Ok(cl) = sonic_rs::from_str::<TqChunkLine>(&line) {
+    if let Ok(file) = File::open(&chunks_path) {
+        for line in StdBufReader::new(file).lines().map_while(Result::ok) {
+            if let Ok(cl) = from_str::<TqChunkLine>(&line) {
                 all_logs.push(cl);
             }
         }
@@ -1114,9 +1139,8 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
         return;
     }
 
-    let mut round_counts: std::collections::BTreeMap<usize, usize> =
-        std::collections::BTreeMap::new();
-    let mut crf_counts: std::collections::BTreeMap<u64, usize> = std::collections::BTreeMap::new();
+    let mut round_counts: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut crf_counts: BTreeMap<u64, usize> = BTreeMap::new();
     for l in &all_logs {
         *round_counts.entry(l.p.len()).or_insert(0) += 1;
         *crf_counts.entry((l.fc * 100.0).round() as u64).or_insert(0) += 1;
@@ -1135,7 +1159,7 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
 }
 
 #[cfg(feature = "libsvtav1")]
-fn write_ivf_header(f: &mut impl std::io::Write, cfg: &EncConfig) {
+fn write_ivf_header(f: &mut impl Write, cfg: &EncConfig) {
     let mut hdr = [0u8; 32];
     hdr[0..4].copy_from_slice(b"DKIF");
     hdr[6..8].copy_from_slice(&32u16.to_le_bytes());
@@ -1148,32 +1172,24 @@ fn write_ivf_header(f: &mut impl std::io::Write, cfg: &EncConfig) {
 }
 
 #[cfg(feature = "libsvtav1")]
-fn write_ivf_frame(f: &mut impl std::io::Write, data: &[u8], pts: u64) {
+fn write_ivf_frame(f: &mut impl Write, data: &[u8], pts: u64) {
     let _ = f.write_all(&(data.len() as u32).to_le_bytes());
     let _ = f.write_all(&pts.to_le_bytes());
     let _ = f.write_all(data);
 }
 
 #[cfg(feature = "libsvtav1")]
-fn drain_svt_packets(
-    handle: *mut crate::svt::EbComponentType,
-    out: &mut impl std::io::Write,
-    done: bool,
-) -> usize {
-    use crate::svt::{
-        EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, svt_av1_enc_get_packet,
-        svt_av1_enc_release_out_buffer,
-    };
+fn drain_svt_packets(handle: *mut EbComponentType, out: &mut impl Write, done: bool) -> usize {
     let mut count = 0;
     loop {
-        let mut pkt: *mut EbBufferHeaderType = std::ptr::null_mut();
+        let mut pkt: *mut EbBufferHeaderType = null_mut();
         let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, u8::from(done)) };
         if ret != EB_ERROR_NONE {
             break;
         }
         let p = unsafe { &*pkt };
         if p.n_filled_len > 0 {
-            let data = unsafe { std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
+            let data = unsafe { from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
             write_ivf_frame(out, data, p.pts.cast_unsigned());
             count += 1;
         }
@@ -1187,32 +1203,28 @@ fn drain_svt_packets(
 }
 
 #[cfg(feature = "libsvtav1")]
-fn init_svt(cfg: &EncConfig) -> *mut crate::svt::EbComponentType {
-    use crate::svt::{
-        EB_ERROR_NONE, EbComponentType, EbSvtAv1EncConfiguration, svt_av1_enc_init,
-        svt_av1_enc_init_handle, svt_av1_enc_set_parameter,
-    };
-    let mut handle: *mut EbComponentType = std::ptr::null_mut();
-    let mut config = unsafe { std::mem::zeroed::<EbSvtAv1EncConfiguration>() };
+fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
+    let mut handle: *mut EbComponentType = null_mut();
+    let mut config = unsafe { zeroed::<EbSvtAv1EncConfiguration>() };
     let ret = unsafe { svt_av1_enc_init_handle(&raw mut handle, &raw mut config) };
     if ret != EB_ERROR_NONE {
-        std::process::exit(1);
+        fatal(format_args!("svt_av1_enc_init_handle failed: {ret}"));
     }
-    crate::encoder::set_svt_config(&raw mut config, cfg);
+    set_svt_config(&raw mut config, cfg);
     let ret = unsafe { svt_av1_enc_set_parameter(handle, &raw mut config) };
     if ret != EB_ERROR_NONE {
-        std::process::exit(1);
+        fatal(format_args!("svt_av1_enc_set_parameter failed: {ret}"));
     }
     let ret = unsafe { svt_av1_enc_init(handle) };
     if ret != EB_ERROR_NONE {
-        std::process::exit(1);
+        fatal(format_args!("svt_av1_enc_init failed: {ret}"));
     }
     handle
 }
 
 #[cfg(feature = "libsvtav1")]
 fn enc_svt_lib(
-    pkg: &crate::worker::WorkPkg,
+    pkg: &WorkPkg,
     cfg: &EncConfig,
     ctx: &EncWorkerCtx,
     conv_buf: &mut [u8],
@@ -1220,15 +1232,8 @@ fn enc_svt_lib(
     track_frames: bool,
     crf_score: Option<(f32, Option<f64>)>,
 ) {
-    use crate::svt::{
-        EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbSvtIOFormat, svt_av1_enc_deinit,
-        svt_av1_enc_deinit_handle, svt_av1_enc_get_packet, svt_av1_enc_release_out_buffer,
-        svt_av1_enc_send_picture,
-    };
-
     let handle = init_svt(cfg);
-    let mut out =
-        std::io::BufWriter::new(std::fs::File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
+    let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
     write_ivf_header(&mut out, cfg);
 
     let w = cfg.width as usize;
@@ -1245,13 +1250,13 @@ fn enc_svt_lib(
         cr_stride: (w / 2) as u32,
     };
 
-    let mut in_hdr = unsafe { std::mem::zeroed::<EbBufferHeaderType>() };
-    in_hdr.size = std::mem::size_of::<EbBufferHeaderType>() as u32;
+    let mut in_hdr = unsafe { zeroed::<EbBufferHeaderType>() };
+    in_hdr.size = size_of::<EbBufferHeaderType>() as u32;
     in_hdr.p_buffer = (&raw mut io_fmt).cast::<u8>();
     in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
     in_hdr.n_alloc_len = in_hdr.n_filled_len;
 
-    let mut tracker = crate::progs::LibEncTracker::new();
+    let mut tracker = LibEncTracker::new();
     ctx.prog.update_lib_enc(
         worker_id,
         pkg.chunk.idx,
@@ -1267,7 +1272,7 @@ fn enc_svt_lib(
         if cfg.inf.is_10bit {
             (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
         } else {
-            crate::ffms::conv_to_10bit(frame, conv_buf);
+            conv_to_10bit(frame, conv_buf);
         }
 
         in_hdr.pts = i as i64;
@@ -1275,7 +1280,9 @@ fn enc_svt_lib(
 
         let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
         if ret != EB_ERROR_NONE {
-            std::process::exit(1);
+            fatal(format_args!(
+                "svt_av1_enc_send_picture failed at frame {i}: {ret}"
+            ));
         }
 
         tracker.encoded += drain_svt_packets(handle, &mut out, false);
@@ -1289,19 +1296,19 @@ fn enc_svt_lib(
         );
     }
 
-    let mut eos = unsafe { std::mem::zeroed::<EbBufferHeaderType>() };
+    let mut eos = unsafe { zeroed::<EbBufferHeaderType>() };
     eos.flags = EB_BUFFERFLAG_EOS;
     unsafe { svt_av1_enc_send_picture(handle, &raw mut eos) };
 
     loop {
-        let mut pkt: *mut EbBufferHeaderType = std::ptr::null_mut();
+        let mut pkt: *mut EbBufferHeaderType = null_mut();
         let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, 1) };
         if ret != EB_ERROR_NONE {
             break;
         }
         let p = unsafe { &*pkt };
         if p.n_filled_len > 0 {
-            let data = unsafe { std::slice::from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
+            let data = unsafe { from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
             write_ivf_frame(&mut out, data, p.pts.cast_unsigned());
             tracker.encoded += 1;
         }

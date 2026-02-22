@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, thread};
 
 use crossbeam_channel::Sender;
 use ffms2_sys::FFMS_VideoSource;
@@ -6,13 +6,15 @@ use ffms2_sys::FFMS_VideoSource;
 use crate::{
     chunk::Chunk,
     ffms::{
-        DecodeStrat, VidIdx, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src,
+        DecodeStrat, VidIdx, VidInf, calc_8bit_size, calc_packed_size, destroy_vid_src, extr_8bit,
         extr_8bit_crop, extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10bit_crop,
         extr_10bit_crop_fast, extr_10bit_crop_fast_rem, extr_10bit_crop_pack_stride,
         extr_10bit_crop_pack_stride_rem, extr_10bit_crop_rem, extr_10bit_pack, extr_10bit_pack_rem,
-        extr_10bit_pack_stride, extr_10bit_pack_stride_rem, thr_vid_src,
+        extr_10bit_pack_stride, extr_10bit_pack_stride_rem, pack_10bit, pack_10bit_rem,
+        thr_vid_src,
     },
     worker::{Semaphore, WorkPkg},
+    y4m::PipeReader,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -97,7 +99,7 @@ pub fn decode_chunks(
     strat: DecodeStrat,
     sem: &Arc<Semaphore>,
 ) {
-    let thr = std::thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
+    let thr = thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
     let Ok(src) = thr_vid_src(idx, thr) else {
         return;
     };
@@ -429,7 +431,7 @@ fn dec_8_crop_stride(
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
     for (i, idx) in (ch.start..ch.end).enumerate() {
-        crate::ffms::extr_8bit(src, idx, buf, inf);
+        extr_8bit(src, idx, buf, inf);
         cc.crop(buf, &mut dat[i * fsz..(i + 1) * fsz]);
     }
     WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
@@ -522,7 +524,7 @@ fn dec_10_crop_stride_rem(
 
 pub fn decode_pipe(
     chunks: &[Chunk],
-    reader: &mut crate::y4m::PipeReader,
+    reader: &mut PipeReader,
     inf: &VidInf,
     tx: &Sender<WorkPkg>,
     skip: &HashSet<usize>,
@@ -590,7 +592,7 @@ pub fn decode_pipe(
 #[inline]
 fn pipe_loop<F>(
     chunks: &[Chunk],
-    reader: &mut crate::y4m::PipeReader,
+    reader: &mut PipeReader,
     skip: &HashSet<usize>,
     sem: &Arc<Semaphore>,
     tx: &Sender<WorkPkg>,
@@ -631,12 +633,12 @@ fn dec_pipe_10(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usi
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        crate::ffms::pack_10bit(&src[..y_raw], &mut dst[..y_pack]);
-        crate::ffms::pack_10bit(
+        pack_10bit(&src[..y_raw], &mut dst[..y_pack]);
+        pack_10bit(
             &src[y_raw..y_raw + uv_raw],
             &mut dst[y_pack..y_pack + uv_pack],
         );
-        crate::ffms::pack_10bit(&src[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
+        pack_10bit(&src[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
     }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
@@ -649,7 +651,7 @@ fn dec_pipe_10_rem(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz:
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        crate::ffms::pack_10bit_rem(&src[..y_raw], dst, w as usize, h as usize);
+        pack_10bit_rem(&src[..y_raw], dst, w as usize, h as usize);
     }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
@@ -673,12 +675,12 @@ fn dec_pipe_10_crop(
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let uv_raw = y_raw / 4;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        crate::ffms::pack_10bit(&crop_buf[..y_raw], &mut dst[..y_pack]);
-        crate::ffms::pack_10bit(
+        pack_10bit(&crop_buf[..y_raw], &mut dst[..y_pack]);
+        pack_10bit(
             &crop_buf[y_raw..y_raw + uv_raw],
             &mut dst[y_pack..y_pack + uv_pack],
         );
-        crate::ffms::pack_10bit(&crop_buf[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
+        pack_10bit(&crop_buf[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
     }
     WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
 }
@@ -699,7 +701,7 @@ fn dec_pipe_10_crop_rem(
         cc.crop(src, crop_buf);
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        crate::ffms::pack_10bit_rem(
+        pack_10bit_rem(
             &crop_buf[..y_raw],
             dst,
             cc.new_w as usize,

@@ -1,9 +1,13 @@
+#[cfg(feature = "libsvtav1")]
+use std::{ffi::CString, fs, mem};
 use std::{
     path::Path,
     process::{Command, Stdio},
 };
 
 use crate::ffms::VidInf;
+#[cfg(feature = "libsvtav1")]
+use crate::svt::{AomFilmGrain, EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Encoder {
@@ -754,18 +758,18 @@ const fn matrix_coeff_str(v: i32) -> &'static str {
 }
 
 #[cfg(feature = "libsvtav1")]
-fn parse_svt_param(config: *mut crate::svt::EbSvtAv1EncConfiguration, name: &str, value: &str) {
-    let Ok(n) = std::ffi::CString::new(name) else {
+fn parse_svt_param(config: *mut EbSvtAv1EncConfiguration, name: &str, value: &str) {
+    let Ok(n) = CString::new(name) else {
         return;
     };
-    let Ok(v) = std::ffi::CString::new(value) else {
+    let Ok(v) = CString::new(value) else {
         return;
     };
-    unsafe { crate::svt::svt_av1_enc_parse_parameter(config, n.as_ptr(), v.as_ptr()) };
+    unsafe { svt_av1_enc_parse_parameter(config, n.as_ptr(), v.as_ptr()) };
 }
 
 #[cfg(feature = "libsvtav1")]
-fn parse_svt_params(config: *mut crate::svt::EbSvtAv1EncConfiguration, params: &str) {
+fn parse_svt_params(config: *mut EbSvtAv1EncConfiguration, params: &str) {
     let mut iter = params.split_whitespace();
     while let Some(key) = iter.next() {
         if let Some(name) = key.strip_prefix("--")
@@ -777,7 +781,7 @@ fn parse_svt_params(config: *mut crate::svt::EbSvtAv1EncConfiguration, params: &
 }
 
 #[cfg(feature = "libsvtav1")]
-pub fn set_svt_config(config: *mut crate::svt::EbSvtAv1EncConfiguration, cfg: &EncConfig) {
+pub fn set_svt_config(config: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
     let w = cfg.width.to_string();
     let h = cfg.height.to_string();
 
@@ -839,8 +843,8 @@ pub fn set_svt_config(config: *mut crate::svt::EbSvtAv1EncConfiguration, cfg: &E
 }
 
 #[cfg(feature = "libsvtav1")]
-fn load_fgs_table(config: *mut crate::svt::EbSvtAv1EncConfiguration, path: &std::path::Path) {
-    let Ok(text) = std::fs::read_to_string(path) else {
+fn load_fgs_table(config: *mut EbSvtAv1EncConfiguration, path: &Path) {
+    let Ok(text) = fs::read_to_string(path) else {
         return;
     };
     let Ok(segments) = av1_grain::parse_grain_table(&text) else {
@@ -850,7 +854,7 @@ fn load_fgs_table(config: *mut crate::svt::EbSvtAv1EncConfiguration, path: &std:
         return;
     };
 
-    let mut fg = Box::new(unsafe { std::mem::zeroed::<crate::svt::AomFilmGrain>() });
+    let mut fg = Box::new(unsafe { mem::zeroed::<AomFilmGrain>() });
     fg.apply_grain = 1;
     fg.ignore_ref = 1;
     fg.update_parameters = 1;
