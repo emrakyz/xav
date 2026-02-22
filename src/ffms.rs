@@ -1,4 +1,4 @@
-use std::{ffi::CString, path::Path, sync::Arc};
+use std::{ffi::CString, mem::MaybeUninit, path::Path, sync::Arc};
 
 use ffms2_sys::{
     FFMS_CreateIndexer, FFMS_CreateVideoSource, FFMS_DestroyIndex, FFMS_DestroyVideoSource,
@@ -8,6 +8,38 @@ use ffms2_sys::{
 };
 
 use crate::{decode::CropCalc, progs::ProgsBar};
+
+macro_rules! ffms_err {
+    ($buf:ident, $err:ident) => {
+        let mut $buf = MaybeUninit::<[u8; 1024]>::uninit();
+        let mut $err = FFMS_ErrorInfo {
+            ErrorType: 0,
+            SubType: 0,
+            BufferSize: 1024,
+            Buffer: $buf.as_mut_ptr().cast(),
+        };
+    };
+}
+
+macro_rules! ffms_ok {
+    ($ptr:expr, $buf:expr) => {{
+        let p = $ptr;
+        if p.is_null() {
+            return Err(ffms_err_str($buf).into());
+        }
+        p
+    }};
+}
+
+#[inline]
+#[cold]
+fn ffms_err_str(buf: &MaybeUninit<[u8; 1024]>) -> String {
+    unsafe {
+        std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+            .to_string_lossy()
+            .into_owned()
+    }
+}
 
 pub const fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
@@ -60,7 +92,7 @@ impl VidIdx {
             FFMS_Init(0, 0);
 
             let source = CString::new(path.to_str().unwrap())?;
-            let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+            ffms_err!(errbuf, err);
 
             let idx_path = format!("{}.ffindex", path.display());
             let idx_cstr = CString::new(idx_path.as_str())?;
@@ -79,10 +111,10 @@ impl VidIdx {
             }
 
             let idx = if idx.is_null() {
-                let idxer = FFMS_CreateIndexer(source.as_ptr(), std::ptr::addr_of_mut!(err));
-                if idxer.is_null() {
-                    return Err("Failed to create idxer".into());
-                }
+                let idxer = ffms_ok!(
+                    FFMS_CreateIndexer(source.as_ptr(), std::ptr::addr_of_mut!(err)),
+                    &errbuf
+                );
 
                 FFMS_TrackTypeIndexSettings(idxer, 1, 0, 0);
                 FFMS_TrackTypeIndexSettings(idxer, 2, 0, 0);
@@ -101,9 +133,7 @@ impl VidIdx {
                     FFMS_DoIndexing2(idxer, 0, std::ptr::addr_of_mut!(err))
                 };
 
-                if idx.is_null() {
-                    return Err("Failed to idx file".into());
-                }
+                ffms_ok!(idx, &errbuf);
 
                 FFMS_WriteIndex(idx_cstr.as_ptr(), idx, std::ptr::addr_of_mut!(err));
                 idx
@@ -112,6 +142,10 @@ impl VidIdx {
             };
 
             let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, std::ptr::addr_of_mut!(err));
+            if track < 0 {
+                FFMS_DestroyIndex(idx);
+                return Err(ffms_err_str(&errbuf).into());
+            }
 
             Ok(Arc::new(Self {
                 path: path.to_str().unwrap().to_string(),
@@ -138,23 +172,22 @@ unsafe impl Sync for VidIdx {}
 pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+        ffms_err!(errbuf, err);
 
-        let video = FFMS_CreateVideoSource(
-            source.as_ptr(),
-            idx.track,
-            idx.idx_handle,
-            1,
-            1,
-            std::ptr::addr_of_mut!(err),
+        let video = ffms_ok!(
+            FFMS_CreateVideoSource(
+                source.as_ptr(),
+                idx.track,
+                idx.idx_handle,
+                1,
+                1,
+                std::ptr::addr_of_mut!(err)
+            ),
+            &errbuf
         );
 
-        if video.is_null() {
-            return Err("Failed to create vid src".into());
-        }
-
         let props = FFMS_GetVideoProperties(video);
-        let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
+        let frame = get_raw_frame(video, 0);
 
         let matrix_coeff = match if (*frame).ColorSpace == 3 {
             (*props).ColorSpace
@@ -251,15 +284,18 @@ pub fn thr_vid_src(
 ) -> Result<*mut FFMS_VideoSource, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+        ffms_err!(errbuf, err);
 
-        let video = FFMS_CreateVideoSource(
-            source.as_ptr(),
-            idx.track,
-            idx.idx_handle,
-            threads,
-            1,
-            std::ptr::addr_of_mut!(err),
+        let video = ffms_ok!(
+            FFMS_CreateVideoSource(
+                source.as_ptr(),
+                idx.track,
+                idx.idx_handle,
+                threads,
+                1,
+                std::ptr::addr_of_mut!(err)
+            ),
+            &errbuf
         );
 
         Ok(video)
@@ -624,22 +660,21 @@ pub fn get_decode_strat(
 ) -> Result<DecodeStrat, Box<dyn std::error::Error>> {
     unsafe {
         let source = CString::new(idx.path.as_str())?;
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
+        ffms_err!(errbuf, err);
 
-        let video = FFMS_CreateVideoSource(
-            source.as_ptr(),
-            idx.track,
-            idx.idx_handle,
-            1,
-            1,
-            std::ptr::addr_of_mut!(err),
+        let video = ffms_ok!(
+            FFMS_CreateVideoSource(
+                source.as_ptr(),
+                idx.track,
+                idx.idx_handle,
+                1,
+                1,
+                std::ptr::addr_of_mut!(err)
+            ),
+            &errbuf
         );
 
-        if video.is_null() {
-            return Err("Failed to create vid src".into());
-        }
-
-        let frame = FFMS_GetFrame(video, 0, std::ptr::addr_of_mut!(err));
+        let frame = get_raw_frame(video, 0);
         let y_ls = (*frame).Linesize[0] as usize;
         FFMS_DestroyVideoSource(video);
 
@@ -1174,26 +1209,6 @@ pub fn extr_10bit_crop_pack_stride_rem(
 
             dst_pos += uv_row;
         }
-    }
-}
-
-pub fn get_frame(
-    vid_src: *mut FFMS_VideoSource,
-    frame_idx: usize,
-) -> Result<*const FFMS_Frame, Box<dyn std::error::Error>> {
-    unsafe {
-        let mut err = std::mem::zeroed::<FFMS_ErrorInfo>();
-        let frame = FFMS_GetFrame(
-            vid_src,
-            i32::try_from(frame_idx).unwrap_or(0),
-            std::ptr::addr_of_mut!(err),
-        );
-
-        if frame.is_null() {
-            return Err("Failed to get frame".into());
-        }
-
-        Ok(frame)
     }
 }
 
