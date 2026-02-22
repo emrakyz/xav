@@ -42,7 +42,7 @@ pub struct ResumeInf {
     pub prior_secs: u64,
 }
 
-pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn std::error::Error>> {
+pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, crate::error::Error> {
     let content = fs::read_to_string(path)?;
     let mut parsed: Vec<_> = content
         .lines()
@@ -72,7 +72,7 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Box<dyn s
     Ok(scenes)
 }
 
-pub fn validate_scenes(scenes: &[Scene]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn validate_scenes(scenes: &[Scene]) -> Result<(), crate::error::Error> {
     let max_len = 300;
 
     for (i, scene) in scenes.iter().enumerate() {
@@ -136,7 +136,7 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
         .flatten()
 }
 
-pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), crate::error::Error> {
     use std::fmt::Write;
     let path = work_dir.join("done.txt");
     let mut content = String::new();
@@ -162,7 +162,7 @@ fn concat_ivf(
     files: &[std::path::PathBuf],
     output: &Path,
     total_frames: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     use std::io::{Read, Seek, SeekFrom, Write};
 
     let mut out = fs::File::create(output)?;
@@ -186,7 +186,7 @@ fn concat_vvc(
     files: &[std::path::PathBuf],
     output: &Path,
     inf: &crate::ffms::VidInf,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let temp_266 = output.with_extension("266");
 
     let mut out = fs::File::create(&temp_266)?;
@@ -220,7 +220,7 @@ fn concat_h26x(
     output: &Path,
     inf: &crate::ffms::VidInf,
     encoder: Encoder,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let temp_26x = output.with_extension(encoder.extension());
     {
         let mut out = fs::File::create(&temp_26x)?;
@@ -321,7 +321,7 @@ pub fn merge_out(
     input: Option<&Path>,
     encoder: Encoder,
     ranges: Option<&[(usize, usize)]>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let mut files: Vec<_> = fs::read_dir(encode_dir)?
         .filter_map(Result::ok)
         .filter(|e| {
@@ -360,7 +360,13 @@ pub fn merge_out(
             return Ok(());
         }
 
-        let result = mux_av(&temp_mp4, output, inf, input.unwrap(), ranges);
+        let result = mux_av(
+            &temp_mp4,
+            output,
+            inf,
+            unsafe { input.unwrap_unchecked() },
+            ranges,
+        );
         let _ = fs::remove_file(&temp_mp4);
         return result;
     }
@@ -414,7 +420,7 @@ pub fn merge_out(
             )?;
             Ok(path)
         })
-        .collect::<Result<_, Box<dyn std::error::Error>>>()?;
+        .collect::<Result<_, crate::error::Error>>()?;
 
     run_merge(&batches, output, inf, input, ranges)?;
     fs::remove_dir_all(&temp_dir)?;
@@ -427,7 +433,7 @@ fn run_merge(
     inf: &crate::ffms::VidInf,
     input: Option<&Path>,
     ranges: Option<&[(usize, usize)]>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let concat_list = output.with_extension("txt");
     let mut content = String::new();
     for file in files {
@@ -437,7 +443,7 @@ fn run_merge(
     }
     fs::write(&concat_list, content)?;
 
-    let temp_dir = output.parent().unwrap();
+    let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let video = if input.is_some() {
         temp_dir.join("video.mkv")
     } else {
@@ -538,8 +544,8 @@ fn mux_av(
     inf: &crate::ffms::VidInf,
     input: &Path,
     ranges: Option<&[(usize, usize)]>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = video.parent().unwrap();
+) -> Result<(), crate::error::Error> {
+    let temp_dir = video.parent().unwrap_or_else(|| Path::new("."));
     let temp_audio = temp_dir.join("audio.mka");
 
     let has_audio = if let Some(r) = ranges {
@@ -656,8 +662,8 @@ fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Op
 fn concat_segments(
     segments: &[std::path::PathBuf],
     output: &Path,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    let temp_dir = output.parent().unwrap();
+) -> Result<bool, crate::error::Error> {
+    let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let concat_list = temp_dir.join("audio_concat.txt");
 
     let mut content = String::new();
@@ -689,7 +695,7 @@ fn extract_audio_ranges(
     input: &Path,
     times: &[(f64, f64)],
     output: &Path,
-) -> Result<bool, Box<dyn std::error::Error>> {
+) -> Result<bool, crate::error::Error> {
     if times.len() == 1 {
         return Ok(extract_segment(
             input,
@@ -699,7 +705,7 @@ fn extract_audio_ranges(
         ));
     }
 
-    let temp_dir = output.parent().unwrap();
+    let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let mut segments = Vec::new();
 
     for (i, (start, end)) in times.iter().enumerate() {

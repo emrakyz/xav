@@ -42,7 +42,7 @@ const FF_FLAGS: [&str; 13] = [
     "0",
 ];
 
-pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Box<dyn std::error::Error>> {
+pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, crate::error::Error> {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     if parts.len() != 2 {
         return Err("Audio format: -a <auto|norm|bitrate> <all|stream_ids>".into());
@@ -134,7 +134,7 @@ fn lang_name(code: &str) -> &str {
     }
 }
 
-fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Box<dyn std::error::Error>> {
+fn get_streams(input: &Path) -> Result<Vec<AudioStream>, crate::error::Error> {
     let out = Command::new("ffprobe")
         .args([
             "-v",
@@ -207,7 +207,7 @@ fn encode_stream(
     output: &Path,
     normalize: bool,
     times: Option<&[(f64, f64)]>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     if let Some(t) = times
         && t.len() > 1
     {
@@ -270,8 +270,8 @@ fn encode_stream_multi(
     output: &Path,
     normalize: bool,
     times: &[(f64, f64)],
-) -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = output.parent().unwrap();
+) -> Result<(), crate::error::Error> {
+    let temp_dir = unsafe { output.parent().unwrap_unchecked() };
     let mut segments = Vec::new();
 
     for (i, (start, end)) in times.iter().enumerate() {
@@ -351,7 +351,7 @@ fn mux_files(
     output: &Path,
     has_ranges: bool,
     dar: Option<(u32, u32)>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let mut cmd = Command::new("ffmpeg");
     cmd.args([
         "-loglevel",
@@ -417,7 +417,7 @@ pub fn process_audio(
     output: &Path,
     ranges: Option<&[(usize, usize)]>,
     inf: &crate::ffms::VidInf,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), crate::error::Error> {
     let all = get_streams(input)?;
     let sel: Vec<_> = match &spec.streams {
         AudioStreams::All => all.iter().collect(),
@@ -426,7 +426,7 @@ pub fn process_audio(
 
     let times = ranges.map(|r| crate::chunk::ranges_to_times(r, inf.fps_num, inf.fps_den));
 
-    let work = input.parent().unwrap();
+    let work = unsafe { input.parent().unwrap_unchecked() };
     let (use_norm, base_bitrate) = match &spec.bitrate {
         AudioBitrate::Norm => (true, 128),
         AudioBitrate::Auto | AudioBitrate::Fixed(_) => (false, 0),
@@ -454,7 +454,7 @@ pub fn process_audio(
                         (128.0 * (cc / 2.0_f64).powf(0.75)) as u32
                     }
                     AudioBitrate::Fixed(b) => *b,
-                    AudioBitrate::Norm => unreachable!(),
+                    AudioBitrate::Norm => unsafe { std::hint::unreachable_unchecked() },
                 }
             };
             let path = work.join(format!(
@@ -464,7 +464,7 @@ pub fn process_audio(
             ));
 
             encode_stream(input, s, br, &path, use_norm, times.as_deref())?;
-            Ok::<_, Box<dyn std::error::Error>>(((*s).clone(), path))
+            Ok::<_, crate::error::Error>(((*s).clone(), path))
         })
         .collect::<Result<Vec<_>, _>>()?;
 

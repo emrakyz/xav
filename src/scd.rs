@@ -10,7 +10,7 @@ use av_scenechange::{DetectionOptions, SceneDetectionSpeed, av_decoders, detect_
 
 use crate::{ffms, progs::ProgsBar};
 
-pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), crate::error::Error> {
     let idx = ffms::VidIdx::new(vid_path, true)?;
     let inf = ffms::get_vidinf(&idx)?;
 
@@ -18,7 +18,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::
     let tot_frames = inf.frames;
     drop(idx);
 
-    let mut decoder = av_decoders::Decoder::from_file(vid_path)?;
+    let mut decoder = av_decoders::Decoder::from_file(vid_path).map_err(|e| e.to_string())?;
     decoder.set_luma_only(true);
 
     let opts = DetectionOptions {
@@ -41,9 +41,11 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::
     };
 
     let results = if inf.is_10bit {
-        detect_scene_changes::<u16>(&mut decoder, opts, None, Some(&progs_callback))?
+        detect_scene_changes::<u16>(&mut decoder, opts, None, Some(&progs_callback))
+            .map_err(|e| e.to_string())?
     } else {
-        detect_scene_changes::<u8>(&mut decoder, opts, None, Some(&progs_callback))?
+        detect_scene_changes::<u8>(&mut decoder, opts, None, Some(&progs_callback))
+            .map_err(|e| e.to_string())?
     };
 
     ProgsBar::finish_scenes();
@@ -69,7 +71,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::
     let mut new_scenes = vec![0];
 
     for &(s_frame, e_frame) in &scenes {
-        let mut current_start = s_frame.max(*new_scenes.last().unwrap());
+        let mut current_start = s_frame.max(*unsafe { new_scenes.last().unwrap_unchecked() });
         let mut distance = e_frame - current_start;
         let split_size = max_dist as usize;
 
@@ -92,7 +94,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::
                     })
                 })
                 .max_by_key(|(_, score)| (*score * 10000.0).round() as u64)
-                .expect("split scores is not empty")
+                .unwrap_or((middle_point, 0.0))
                 .0;
 
             current_start += split_point;
@@ -108,7 +110,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Box<dyn std::
 
     let mut content = String::new();
     for &scene_frame in &new_scenes {
-        writeln!(content, "{scene_frame}").unwrap();
+        let _ = writeln!(content, "{scene_frame}");
     }
 
     fs::write(scene_file, content)?;

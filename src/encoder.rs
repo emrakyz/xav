@@ -755,8 +755,12 @@ const fn matrix_coeff_str(v: i32) -> &'static str {
 
 #[cfg(feature = "libsvtav1")]
 fn parse_svt_param(config: *mut crate::svt::EbSvtAv1EncConfiguration, name: &str, value: &str) {
-    let n = std::ffi::CString::new(name).unwrap();
-    let v = std::ffi::CString::new(value).unwrap();
+    let Ok(n) = std::ffi::CString::new(name) else {
+        return;
+    };
+    let Ok(v) = std::ffi::CString::new(value) else {
+        return;
+    };
     unsafe { crate::svt::svt_av1_enc_parse_parameter(config, n.as_ptr(), v.as_ptr()) };
 }
 

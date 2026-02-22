@@ -219,9 +219,11 @@ fn compute_ssimulacra2(
     input_strides: [i64; 3],
     output_strides: [i64; 3],
 ) -> f64 {
-    vship
-        .compute_ssimulacra2(input_planes, output_planes, input_strides, output_strides)
-        .unwrap()
+    unsafe {
+        vship
+            .compute_ssimulacra2(input_planes, output_planes, input_strides, output_strides)
+            .unwrap_unchecked()
+    }
 }
 
 #[cfg(feature = "vship")]
@@ -232,9 +234,11 @@ fn compute_butteraugli(
     input_strides: [i64; 3],
     output_strides: [i64; 3],
 ) -> f64 {
-    vship
-        .compute_butteraugli(input_planes, output_planes, input_strides, output_strides)
-        .unwrap()
+    unsafe {
+        vship
+            .compute_butteraugli(input_planes, output_planes, input_strides, output_strides)
+            .unwrap_unchecked()
+    }
 }
 
 #[cfg(feature = "vship")]
@@ -245,7 +249,9 @@ fn compute_cvvdp(
     input_strides: [i64; 3],
     output_strides: [i64; 3],
 ) -> f64 {
-    vship
-        .compute_cvvdp(input_planes, output_planes, input_strides, output_strides)
-        .unwrap()
+    unsafe {
+        vship
+            .compute_cvvdp(input_planes, output_planes, input_strides, output_strides)
+            .unwrap_unchecked()
+    }
 }

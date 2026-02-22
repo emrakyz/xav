@@ -55,7 +55,7 @@ pub fn detect_crop(
     idx: &Arc<VidIdx>,
     inf: &VidInf,
     config: &CropDetectConfig,
-) -> Result<CropResult, Box<dyn std::error::Error>> {
+) -> Result<CropResult, crate::error::Error> {
     unsafe {
         let source = std::ffi::CString::new(idx.path.as_str())?;
         let mut err = std::mem::zeroed::<ffms2_sys::FFMS_ErrorInfo>();

@@ -80,7 +80,7 @@ impl ProgsBar {
             "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} \
              MBs{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
-        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdout().flush();
     }
 
     pub fn up_scenes(&mut self, current: usize, total: usize) {
@@ -108,17 +108,17 @@ impl ProgsBar {
             "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
              FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
-        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdout().flush();
     }
 
     pub fn finish() {
         print!("\r\x1b[2K");
-        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdout().flush();
     }
 
     pub fn finish_scenes() {
         print!("\r\x1b[2K");
-        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdout().flush();
     }
 }
 
@@ -148,7 +148,7 @@ impl ProgsTrack {
         let (tx, rx) = crossbeam_channel::unbounded();
 
         print!("\x1b[s");
-        std::io::stdout().flush().unwrap();
+        let _ = std::io::stdout().flush();
 
         let total_chunks = chunks.len();
         let total_frames = chunks.iter().map(|c| c.end - c.start).sum();
@@ -339,7 +339,7 @@ fn watch_svt(
 
         if text.contains("error") || text.contains("Error") {
             print!("\x1b[?1049l");
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
             eprintln!("{text}");
         }
 
@@ -440,7 +440,7 @@ fn watch_vvenc(
 
                     if line.contains("error") || line.contains("Error") {
                         print!("\x1b[?1049l");
-                        std::io::stdout().flush().unwrap();
+                        let _ = std::io::stdout().flush();
                         eprintln!("{line}");
                     }
 
@@ -601,7 +601,7 @@ fn watch_x265(
                 continue;
             }
             print!("\x1b[?1049l");
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
             eprintln!("{text}");
             continue;
         }
@@ -774,5 +774,5 @@ fn draw_screen(
          {bitrate_str}{C}, {est_str}{C}{N})\n",
         state.total_chunks, state.total_frames
     );
-    std::io::stdout().flush().unwrap();
+    let _ = std::io::stdout().flush();
 }

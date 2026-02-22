@@ -24,6 +24,27 @@ use crate::{
 #[cfg(feature = "vship")]
 pub static TQ_SCORES: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
 
+#[cold]
+fn fatal(e: impl std::fmt::Display) -> ! {
+    use std::io::Write;
+    print!("\x1b[?25h\x1b[?1049l");
+    let _ = std::io::stdout().flush();
+    eprintln!("{e}");
+    std::process::exit(1);
+}
+
+fn join_one(handle: thread::JoinHandle<()>) {
+    if let Err(e) = handle.join() {
+        std::panic::resume_unwind(e);
+    }
+}
+
+fn join_all(handles: Vec<thread::JoinHandle<()>>) {
+    for h in handles {
+        join_one(h);
+    }
+}
+
 #[inline]
 pub fn get_frame(frames: &[u8], i: usize, frame_size: usize) -> &[u8] {
     let start = i * frame_size;
@@ -54,7 +75,7 @@ impl WorkerStats {
             .fetch_add(completion.frames, std::sync::atomic::Ordering::Relaxed);
         self.total_size
             .fetch_add(completion.size, std::sync::atomic::Ordering::Relaxed);
-        let mut data = self.completions.lock().unwrap();
+        let mut data = unsafe { self.completions.lock().unwrap_unchecked() };
         data.chnks_done.push(completion);
         let _ = crate::chunk::save_resume(&data, work_dir);
         drop(data);
@@ -132,13 +153,13 @@ pub fn encode_all(
         inf,
         args.worker,
         completed_frames,
-        Arc::clone(&stats.as_ref().unwrap().completed),
-        Arc::clone(&stats.as_ref().unwrap().completed_frames),
-        Arc::clone(&stats.as_ref().unwrap().total_size),
+        Arc::clone(&unsafe { stats.as_ref().unwrap_unchecked() }.completed),
+        Arc::clone(&unsafe { stats.as_ref().unwrap_unchecked() }.completed_frames),
+        Arc::clone(&unsafe { stats.as_ref().unwrap_unchecked() }.total_size),
     );
     let prog = Arc::new(prog);
 
-    let strat = args.decode_strat.unwrap();
+    let strat = unsafe { args.decode_strat.unwrap_unchecked() };
     let pipe = Pipeline::new(
         inf,
         strat,
@@ -198,12 +219,10 @@ pub fn encode_all(
         workers.push(handle);
     }
 
-    decoder.join().unwrap();
-    for handle in workers {
-        handle.join().unwrap();
-    }
+    join_one(decoder);
+    join_all(workers);
     drop(prog);
-    display_handle.join().unwrap();
+    join_one(display_handle);
 }
 
 #[derive(Copy, Clone)]
@@ -248,15 +267,16 @@ impl TQCtx {
 
     #[inline]
     fn best_probe<'a>(&self, probes: &'a [crate::tq::Probe]) -> &'a crate::tq::Probe {
-        probes
-            .iter()
-            .min_by(|a, b| {
-                (a.score - self.target)
-                    .abs()
-                    .partial_cmp(&(b.score - self.target).abs())
-                    .unwrap()
-            })
-            .unwrap()
+        unsafe {
+            probes
+                .iter()
+                .min_by(|a, b| {
+                    (a.score - self.target)
+                        .abs()
+                        .total_cmp(&(b.score - self.target).abs())
+                })
+                .unwrap_unchecked()
+        }
     }
 
     #[inline]
@@ -286,9 +306,9 @@ fn complete_chunk(
         .join("encode")
         .join(format!("{chunk_idx:04}.{}", ctx.encoder.extension()));
     if probe_path != dst {
-        std::fs::copy(probe_path, &dst).unwrap();
+        let _ = std::fs::copy(probe_path, &dst);
     }
-    ctx.done_tx.send(chunk_idx).unwrap();
+    let _ = ctx.done_tx.send(chunk_idx);
 
     let file_size = std::fs::metadata(&dst).map_or(0, |m| m.len());
     let comp = crate::chunk::ChunkComp {
@@ -297,7 +317,7 @@ fn complete_chunk(
         size: file_size,
     };
 
-    let mut resume = ctx.resume_state.lock().unwrap();
+    let mut resume = unsafe { ctx.resume_state.lock().unwrap_unchecked() };
     resume.chnks_done.push(comp.clone());
     crate::chunk::save_resume(&resume, ctx.work_dir).ok();
     drop(resume);
@@ -334,20 +354,24 @@ fn complete_chunk(
         frames: chunk_frames,
     };
     write_chunk_log(&log_entry, ctx.work_dir);
-    ctx.tq_logger.lock().unwrap().push(log_entry);
+    unsafe { ctx.tq_logger.lock().unwrap_unchecked() }.push(log_entry);
 
-    let mut tq_scores = TQ_SCORES
-        .get_or_init(|| std::sync::Mutex::new(Vec::new()))
-        .lock()
-        .unwrap();
+    let mut tq_scores = unsafe {
+        TQ_SCORES
+            .get_or_init(|| std::sync::Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_unchecked()
+    };
     if ctx.tq_ctx.use_cvvdp && !ctx.tq_ctx.cvvdp_per_frame {
         tq_scores.push(best.score);
     } else {
-        let matched = tq_state
-            .probes
-            .iter()
-            .find(|p| (p.crf - best.crf).abs() < 0.001)
-            .unwrap();
+        let matched = unsafe {
+            tq_state
+                .probes
+                .iter()
+                .find(|p| (p.crf - best.crf).abs() < 0.001)
+                .unwrap_unchecked()
+        };
         tq_scores.extend_from_slice(&matched.frame_scores);
     }
 }
@@ -376,7 +400,7 @@ fn run_metrics_worker(
     ];
 
     while let Ok(mut pkg) = rx.recv() {
-        let tq_st = pkg.tq_state.as_ref().unwrap();
+        let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
         if tq_st.final_encode {
             let best = ctx.tq_ctx.best_probe(&tq_st.probes);
             let p = ctx.work_dir.join("encode").join(format!(
@@ -389,30 +413,27 @@ fn run_metrics_worker(
         }
 
         if vship.is_none() {
-            vship = Some(
-                crate::vship::VshipProcessor::new(
-                    pkg.width,
-                    pkg.height,
-                    ctx.inf,
-                    ctx.tq_ctx.use_cvvdp,
-                    ctx.tq_ctx.use_butteraugli,
-                    Some("xav"),
-                    ctx.tq_ctx.cvvdp_config,
-                )
-                .unwrap(),
-            );
+            let v = crate::vship::VshipProcessor::new(
+                pkg.width,
+                pkg.height,
+                ctx.inf,
+                ctx.tq_ctx.use_cvvdp,
+                ctx.tq_ctx.use_butteraugli,
+                Some("xav"),
+                ctx.tq_ctx.cvvdp_config,
+            )
+            .unwrap_or_else(|e| fatal(e));
+            vship = Some(v);
         }
 
-        let tq_st = pkg.tq_state.as_ref().unwrap();
+        let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
         let crf = tq_st.last_crf;
         let pp = probe_path(ctx.work_dir, pkg.chunk.idx, crf, ctx.encoder.extension());
         let last_score = tq_st.probes.last().map(|probe| probe.score);
         let metrics_slot = ctx.worker_count + worker_id;
 
         let probe_size = std::fs::metadata(&pp).map_or(0, |m| m.len());
-        pkg.tq_state
-            .as_mut()
-            .unwrap()
+        unsafe { pkg.tq_state.as_mut().unwrap_unchecked() }
             .probe_sizes
             .push((crf, probe_size));
 
@@ -426,13 +447,13 @@ fn run_metrics_worker(
             &pkg,
             &pp,
             ctx.pipe,
-            vship.as_ref().unwrap(),
+            unsafe { vship.as_ref().unwrap_unchecked() },
             ctx.metric_mode,
             &mut unpacked_buf,
             &mp,
         );
 
-        let tq_state = pkg.tq_state.as_mut().unwrap();
+        let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
         tq_state.probes.push(crate::tq::Probe {
             crf,
             score,
@@ -448,7 +469,7 @@ fn run_metrics_worker(
             if ctx.use_probe_params {
                 tq_state.final_encode = true;
                 tq_state.last_crf = best.crf;
-                rework_tx.send(pkg).unwrap();
+                let _ = rework_tx.send(pkg);
             } else {
                 let bp = probe_path(
                     ctx.work_dir,
@@ -459,15 +480,15 @@ fn run_metrics_worker(
                 complete_chunk(pkg.chunk.idx, pkg.frame_count, &bp, ctx, tq_state, best);
             }
         } else {
-            rework_tx.send(pkg).unwrap();
+            let _ = rework_tx.send(pkg);
         }
     }
 }
 
 #[cfg(feature = "vship")]
 fn parse_tq_ctx(args: &crate::Args) -> TQCtx {
-    let tq_str = args.target_quality.as_ref().unwrap();
-    let qp_str = args.qp_range.as_ref().unwrap();
+    let tq_str = unsafe { args.target_quality.as_ref().unwrap_unchecked() };
+    let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
     let tq_parts: Vec<f64> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let qp_parts: Vec<f64> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
@@ -499,8 +520,8 @@ fn tq_coordinate(
     let mut completed = 0;
     while completed < total_chunks {
         select! {
-            recv(decode_rx) -> pkg => { if let Ok(pkg) = pkg { enc_tx.send(pkg).unwrap(); } }
-            recv(rework_rx) -> pkg => { if let Ok(pkg) = pkg { enc_tx.send(pkg).unwrap(); } }
+            recv(decode_rx) -> pkg => { if let Ok(pkg) = pkg { let _ = enc_tx.send(pkg); } }
+            recv(rework_rx) -> pkg => { if let Ok(pkg) = pkg { let _ = enc_tx.send(pkg); } }
             recv(done_rx) -> result => { if result.is_ok() { permits.release(); completed += 1; } }
         }
     }
@@ -563,7 +584,7 @@ fn tq_enc_loop(
             (probe_params.unwrap_or(params), None)
         };
         enc_tq_probe(&pkg, crf, p, ctx, &mut conv_buf, worker_id, out.as_deref());
-        tx.send(pkg).unwrap();
+        let _ = tx.send(pkg);
     }
 }
 
@@ -608,7 +629,7 @@ fn spawn_tq_decode(
             }
         });
         tq_coordinate(&drx, &rework_rx, &done_rx, &enc_tx2, total, &permits_done);
-        dec.join().unwrap();
+        join_one(dec);
     });
     TQDecodeResult {
         enc_tx,
@@ -632,7 +653,7 @@ fn encode_tq(
     let resume_data = load_resume_data(work_dir);
     let (skip_indices, completed_count, completed_frames) = build_skip_set(&resume_data);
     let tq_ctx = parse_tq_ctx(args);
-    let strat = args.decode_strat.unwrap();
+    let strat = unsafe { args.decode_strat.unwrap_unchecked() };
     let pipe = Pipeline::new(inf, strat, args.target_quality.as_deref());
     let permits = Arc::new(Semaphore::new(args.chunk_buffer));
 
@@ -719,21 +740,17 @@ fn encode_tq(
         }));
     }
 
-    crate::vship::init_device().unwrap();
-    dec.handle.join().unwrap();
+    crate::vship::init_device().unwrap_or_else(|e| fatal(e));
+    join_one(dec.handle);
     drop(dec.enc_tx);
-    for w in workers {
-        w.join().unwrap();
-    }
+    join_all(workers);
     drop(dec.rework_tx);
     drop(met_tx);
-    for w in metrics_workers {
-        w.join().unwrap();
-    }
+    join_all(metrics_workers);
 
     write_tq_log(&args.input, work_dir, inf, tq_ctx.metric_name());
     drop(prog);
-    display_handle.join().unwrap();
+    join_one(display_handle);
 }
 
 #[cfg(feature = "vship")]
@@ -783,7 +800,7 @@ fn enc_tq_probe(
     }
 
     let mut cmd = make_enc_cmd(ctx.encoder, &cfg);
-    let mut child = cmd.spawn().unwrap();
+    let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     let last_score = pkg
         .tq_state
@@ -791,7 +808,7 @@ fn enc_tq_probe(
         .and_then(|tq| tq.probes.last().map(|probe| probe.score));
     match ctx.encoder {
         Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
-            child.stderr.take().unwrap(),
+            unsafe { child.stderr.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
             false,
@@ -799,7 +816,7 @@ fn enc_tq_probe(
             ctx.encoder,
         ),
         Encoder::Avm | Encoder::Vvenc => ctx.prog.watch_enc(
-            child.stdout.take().unwrap(),
+            unsafe { child.stdout.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
             false,
@@ -808,14 +825,14 @@ fn enc_tq_probe(
         ),
     }
     (ctx.pipe.write_frames)(
-        child.stdin.as_mut().unwrap(),
+        unsafe { child.stdin.as_mut().unwrap_unchecked() },
         &pkg.yuv,
         pkg.frame_count,
         conv_buf,
         ctx.pipe,
     );
 
-    let status = child.wait().unwrap();
+    let status = child.wait().unwrap_or_else(|e| fatal(e));
     if !status.success() {
         std::process::exit(1);
     }
@@ -889,11 +906,11 @@ fn enc_chunk(
     }
 
     let mut cmd = make_enc_cmd(ctx.encoder, &cfg);
-    let mut child = cmd.spawn().unwrap();
+    let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     match ctx.encoder {
         Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
-            child.stderr.take().unwrap(),
+            unsafe { child.stderr.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
             true,
@@ -901,7 +918,7 @@ fn enc_chunk(
             ctx.encoder,
         ),
         Encoder::Avm | Encoder::Vvenc => ctx.prog.watch_enc(
-            child.stdout.take().unwrap(),
+            unsafe { child.stdout.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
             true,
@@ -911,7 +928,7 @@ fn enc_chunk(
     }
 
     (ctx.pipe.write_frames)(
-        child.stdin.as_mut().unwrap(),
+        unsafe { child.stdin.as_mut().unwrap_unchecked() },
         &pkg.yuv,
         pkg.frame_count,
         conv_buf,
@@ -919,7 +936,7 @@ fn enc_chunk(
     );
     pkg.yuv = Vec::new();
 
-    let status = child.wait().unwrap();
+    let status = child.wait().unwrap_or_else(|e| fatal(e));
     if !status.success() {
         std::process::exit(1);
     }
@@ -994,7 +1011,7 @@ fn format_tq_json(
 
     for (i, l) in all_logs.iter().enumerate() {
         let mut sp: Vec<_> = l.p.iter().collect();
-        sp.sort_by(|(a, ..), (b, ..)| a.partial_cmp(b).unwrap());
+        sp.sort_by(|(a, ..), (b, ..)| a.total_cmp(b));
         let _ = writeln!(out, "    {{");
         let _ = writeln!(out, "      \"id\": {},", l.id);
         let _ = writeln!(out, "      \"probes\": [");
@@ -1210,7 +1227,8 @@ fn enc_svt_lib(
     };
 
     let handle = init_svt(cfg);
-    let mut out = std::io::BufWriter::new(std::fs::File::create(cfg.output).unwrap());
+    let mut out =
+        std::io::BufWriter::new(std::fs::File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
     write_ivf_header(&mut out, cfg);
 
     let w = cfg.width as usize;

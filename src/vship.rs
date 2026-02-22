@@ -2,11 +2,13 @@ use std::{mem::MaybeUninit, ptr};
 
 #[inline]
 #[cold]
-fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> String {
+fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> crate::error::Error {
     unsafe {
-        std::ffi::CStr::from_ptr(buf.as_ptr().cast())
-            .to_string_lossy()
-            .into_owned()
+        crate::error::Error::Msg(
+            std::ffi::CStr::from_ptr(buf.as_ptr().cast())
+                .to_string_lossy()
+                .into_owned(),
+        )
     }
 }
 
@@ -240,13 +242,13 @@ pub struct VshipProcessor {
     butteraugli_handler: Option<VshipButteraugliHandler>,
 }
 
-pub fn init_device() -> Result<(), Box<dyn std::error::Error>> {
+pub fn init_device() -> Result<(), crate::error::Error> {
     unsafe {
         let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
         let ret = Vship_SetDevice(0);
         if ret as i32 != 0 {
             vship_get_err(&mut errbuf);
-            return Err(vship_err_str(&errbuf).into());
+            return Err(vship_err_str(&errbuf));
         }
         Ok(())
     }
@@ -261,7 +263,7 @@ impl VshipProcessor {
         use_butteraugli: bool,
         cvvdp_model: Option<&str>,
         cvvdp_config: Option<&str>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, crate::error::Error> {
         let fps = inf.fps_num as f32 / inf.fps_den as f32;
         unsafe {
             let src_colorspace = create_yuv_colorspace(width, height, inf.is_10bit, inf);
@@ -275,7 +277,7 @@ impl VshipProcessor {
                     Vship_SSIMU2Init(ptr::from_mut(&mut handler), src_colorspace, dis_colorspace);
                 if ret as i32 != 0 {
                     vship_get_err(&mut errbuf);
-                    return Err(vship_err_str(&errbuf).into());
+                    return Err(vship_err_str(&errbuf));
                 }
                 Some(handler)
             } else {
@@ -284,11 +286,10 @@ impl VshipProcessor {
 
             let cvvdp_handler = if use_cvvdp {
                 let mut handler = std::mem::zeroed::<VshipCVVDPHandler>();
-                let model_key = std::ffi::CString::new(cvvdp_model.unwrap_or("xav")).unwrap();
+                let model_key = std::ffi::CString::new(cvvdp_model.unwrap_or("xav"))?;
                 let config_cstr = std::ffi::CString::new(
                     cvvdp_config.ok_or("CVVDP requires -d/--display <json_file> argument")?,
-                )
-                .unwrap();
+                )?;
                 let ret = Vship_CVVDPInit2(
                     ptr::from_mut(&mut handler),
                     src_colorspace,
@@ -300,7 +301,7 @@ impl VshipProcessor {
                 );
                 if ret as i32 != 0 {
                     vship_get_err(&mut errbuf);
-                    return Err(vship_err_str(&errbuf).into());
+                    return Err(vship_err_str(&errbuf));
                 }
                 Some(handler)
             } else {
@@ -318,7 +319,7 @@ impl VshipProcessor {
                 );
                 if ret as i32 != 0 {
                     vship_get_err(&mut errbuf);
-                    return Err(vship_err_str(&errbuf).into());
+                    return Err(vship_err_str(&errbuf));
                 }
                 Some(handler)
             } else {
@@ -339,7 +340,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, Box<dyn std::error::Error>> {
+    ) -> Result<f64, crate::error::Error> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
@@ -354,7 +355,7 @@ impl VshipProcessor {
 
             if ret as i32 != 0 {
                 vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf).into());
+                return Err(vship_err_str(&errbuf));
             }
 
             Ok(score)
@@ -379,7 +380,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, Box<dyn std::error::Error>> {
+    ) -> Result<f64, crate::error::Error> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
@@ -396,7 +397,7 @@ impl VshipProcessor {
 
             if ret as i32 != 0 {
                 vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf).into());
+                return Err(vship_err_str(&errbuf));
             }
 
             Ok(score)
@@ -409,7 +410,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, Box<dyn std::error::Error>> {
+    ) -> Result<f64, crate::error::Error> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = VshipButteraugliScore {
@@ -431,7 +432,7 @@ impl VshipProcessor {
 
             if ret as i32 != 0 {
                 vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf).into());
+                return Err(vship_err_str(&errbuf));
             }
 
             Ok(score.norm_q)
