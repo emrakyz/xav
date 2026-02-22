@@ -100,7 +100,7 @@ macro_rules! calc_metrics_impl {
 
                     let input_frame =
                         &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
-                    let of = crate::ffms::get_frame(src, $frame_idx).unwrap();
+                    let of = crate::ffms::get_raw_frame(src, $frame_idx);
 
                     let input_yuv: &[u8] = if $is_10bit {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);

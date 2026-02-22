@@ -115,7 +115,7 @@ fn detect_frame_crop(
     inf: &VidInf,
     min_pixels: usize,
 ) -> Option<CropResult> {
-    let frame = crate::ffms::get_frame(src, frame_idx).ok()?;
+    let frame = crate::ffms::get_raw_frame(src, frame_idx);
 
     unsafe {
         let y_data = (*frame).Data[0];
