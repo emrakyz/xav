@@ -716,8 +716,7 @@ fn main() -> Result<(), Xerr> {
     if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");
         _ = stdout().flush();
-        eprint(format_args!("{e}\n{}, FAIL", args.output.display()));
-        return Err(e);
+        fatal(format_args!("{e}\n{}, FAIL", args.output.display()));
     }
 
     #[cfg(feature = "vship")]
