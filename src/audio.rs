@@ -2,7 +2,6 @@ use std::{
     collections::HashSet,
     fmt::Write,
     fs::{remove_file, write as fs_write},
-    hint::unreachable_unchecked,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
 };
@@ -11,6 +10,7 @@ use crate::{
     chunk::{add_mp4_subs, ranges_to_times},
     error::Xerr,
     ffms::VidInf,
+    util::assume_unreachable,
 };
 
 #[derive(Clone)]
@@ -463,7 +463,7 @@ pub fn process_audio(
                         (128.0 * (cc / 2.0_f64).powf(0.75)) as u32
                     }
                     AudioBitrate::Fixed(b) => *b,
-                    AudioBitrate::Norm => unsafe { unreachable_unchecked() },
+                    AudioBitrate::Norm => assume_unreachable(),
                 }
             };
             let path = work.join(format!(

@@ -13,6 +13,7 @@ use crate::{
         extr_10bit_pack_stride, extr_10bit_pack_stride_rem, pack_10bit, pack_10bit_rem,
         thr_vid_src,
     },
+    util::assume_unreachable,
     worker::{Semaphore, WorkPkg},
     y4m::PipeReader,
 };
@@ -208,7 +209,7 @@ fn dispatch_10bit(
                     .ok();
             }
         }
-        _ => {}
+        _ => assume_unreachable(),
     }
 }
 
@@ -262,7 +263,7 @@ fn dispatch_8bit(
                     .ok();
             }
         }
-        _ => {}
+        _ => assume_unreachable(),
     }
 }
 
