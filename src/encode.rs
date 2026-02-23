@@ -29,10 +29,10 @@ use std::{
 };
 
 #[cfg(feature = "vship")]
+use crossbeam_channel::Sender;
+#[cfg(feature = "vship")]
 use crossbeam_channel::select;
 use crossbeam_channel::{Receiver, bounded};
-#[cfg(feature = "vship")]
-use crossbeam_channel::Sender;
 #[cfg(feature = "vship")]
 use sonic_rs::from_str;
 
