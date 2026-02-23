@@ -161,7 +161,6 @@ fn parse_args() -> Result<Args, Xerr> {
         Err(Xerr::Help) => Err(Xerr::Help),
         Err(e) => {
             eprint(format_args!("\n{R}Error: {e}{N}\n"));
-            print_help();
             fatal("argument parsing failed");
         }
     }
