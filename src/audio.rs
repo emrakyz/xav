@@ -10,7 +10,7 @@ use crate::{
     chunk::{add_mp4_subs, ranges_to_times},
     error::Xerr,
     ffms::VidInf,
-    util::debug_unreachable,
+    util::assume_unreachable,
 };
 
 #[derive(Clone)]
@@ -463,9 +463,7 @@ pub fn process_audio(
                         (128.0 * (cc / 2.0_f64).powf(0.75)) as u32
                     }
                     AudioBitrate::Fixed(b) => *b,
-                    AudioBitrate::Norm => {
-                        debug_unreachable();
-                    }
+                    AudioBitrate::Norm => assume_unreachable(),
                 }
             };
             let path = work.join(format!(
