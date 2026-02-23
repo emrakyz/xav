@@ -32,6 +32,7 @@ mod scd;
 mod svt;
 #[cfg(feature = "vship")]
 mod tq;
+mod util;
 #[cfg(feature = "vship")]
 mod vship;
 mod worker;
