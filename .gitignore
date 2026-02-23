@@ -3,6 +3,7 @@
 !/src/
 !/.cargo/
 !/test_files/
+test_files/*.ffindex
 !.rustfmt.toml
 !build.rs
 !build.sh
