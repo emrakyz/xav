@@ -3,9 +3,9 @@ use std::fs::File;
 #[cfg(feature = "vship")]
 use std::{
     collections::BTreeMap,
-    fmt::Write as FmtWrite,
+    fmt::Write as _,
     fs::{OpenOptions, copy},
-    io::{BufRead, BufReader as StdBufReader},
+    io::{BufRead as _, BufReader as StdBufReader},
     sync::OnceLock,
 };
 use std::{
@@ -115,7 +115,7 @@ impl WorkerStats {
             .fetch_add(completion.size, Ordering::Relaxed);
         let mut data = unsafe { self.completions.lock().unwrap_unchecked() };
         data.chnks_done.push(completion);
-        let _ = save_resume(&data, work_dir);
+        _ = save_resume(&data, work_dir);
         drop(data);
     }
 }
@@ -344,9 +344,9 @@ fn complete_chunk(
         .join("encode")
         .join(format!("{chunk_idx:04}.{}", ctx.encoder.extension()));
     if probe_path != dst {
-        let _ = copy(probe_path, &dst);
+        _ = copy(probe_path, &dst);
     }
-    let _ = ctx.done_tx.send(chunk_idx);
+    _ = ctx.done_tx.send(chunk_idx);
 
     let file_size = metadata(&dst).map_or(0, |m| m.len());
     let comp = ChunkComp {
@@ -357,7 +357,7 @@ fn complete_chunk(
 
     let mut resume = unsafe { ctx.resume_state.lock().unwrap_unchecked() };
     resume.chnks_done.push(comp.clone());
-    save_resume(&resume, ctx.work_dir).ok();
+    _ = save_resume(&resume, ctx.work_dir);
     drop(resume);
 
     if let Some(s) = ctx.stats {
@@ -373,8 +373,8 @@ fn complete_chunk(
             let sz = tq_state
                 .probe_sizes
                 .iter()
-                .find(|(c, _)| (*c - p.crf).abs() < 0.001)
-                .map_or(0, |(_, s)| *s);
+                .find(|&&(c, _)| (c - p.crf).abs() < 0.001)
+                .map_or(0, |&(_, s)| s);
             (p.crf, p.score, sz)
         })
         .collect();
@@ -504,7 +504,7 @@ fn run_metrics_worker(
             if ctx.use_probe_params {
                 tq_state.final_encode = true;
                 tq_state.last_crf = best.crf;
-                let _ = rework_tx.send(pkg);
+                _ = rework_tx.send(pkg);
             } else {
                 let bp = probe_path(
                     ctx.work_dir,
@@ -515,7 +515,7 @@ fn run_metrics_worker(
                 complete_chunk(pkg.chunk.idx, pkg.frame_count, &bp, ctx, tq_state, best);
             }
         } else {
-            let _ = rework_tx.send(pkg);
+            _ = rework_tx.send(pkg);
         }
     }
 }
@@ -555,8 +555,8 @@ fn tq_coordinate(
     let mut completed = 0;
     while completed < total_chunks {
         select! {
-            recv(decode_rx) -> pkg => { if let Ok(pkg) = pkg { let _ = enc_tx.send(pkg); } }
-            recv(rework_rx) -> pkg => { if let Ok(pkg) = pkg { let _ = enc_tx.send(pkg); } }
+            recv(decode_rx) -> pkg => { if let Ok(pkg) = pkg { _ =enc_tx.send(pkg); } }
+            recv(rework_rx) -> pkg => { if let Ok(pkg) = pkg { _ =enc_tx.send(pkg); } }
             recv(done_rx) -> result => { if result.is_ok() { permits.release(); completed += 1; } }
         }
     }
@@ -619,7 +619,7 @@ fn tq_enc_loop(
             (probe_params.unwrap_or(params), None)
         };
         enc_tq_probe(&pkg, crf, p, ctx, &mut conv_buf, worker_id, out.as_deref());
-        let _ = tx.send(pkg);
+        _ = tx.send(pkg);
     }
 }
 
@@ -982,7 +982,7 @@ pub fn write_chunk_log(chunk_log: &ProbeLog, work_dir: &Path) {
     let probes_str = chunk_log
         .probes
         .iter()
-        .map(|(c, s, sz)| format!("[{c:.2},{s:.4},{sz}]"))
+        .map(|&(c, s, sz)| format!("[{c:.2},{s:.4},{sz}]"))
         .collect::<Vec<_>>()
         .join(",");
 
@@ -1002,7 +1002,7 @@ pub fn write_chunk_log(chunk_log: &ProbeLog, work_dir: &Path) {
         .append(true)
         .open(chunks_path)
     {
-        let _ = file.write_all(line.as_bytes());
+        _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -1036,25 +1036,25 @@ fn format_tq_json(
     };
 
     let mut out = String::new();
-    let _ = writeln!(out, "{{");
-    let _ = writeln!(out, "  \"chunks_{metric_name}\": [");
+    _ = writeln!(out, "{{");
+    _ = writeln!(out, "  \"chunks_{metric_name}\": [");
 
     for (i, l) in all_logs.iter().enumerate() {
         let mut sp: Vec<_> = l.p.iter().collect();
-        sp.sort_by(|(a, ..), (b, ..)| a.total_cmp(b));
-        let _ = writeln!(out, "    {{");
-        let _ = writeln!(out, "      \"id\": {},", l.id);
-        let _ = writeln!(out, "      \"probes\": [");
-        for (j, (c, s, sz)) in sp.iter().enumerate() {
+        sp.sort_by(|&&(a, ..), &&(b, ..)| a.total_cmp(&b));
+        _ = writeln!(out, "    {{");
+        _ = writeln!(out, "      \"id\": {},", l.id);
+        _ = writeln!(out, "      \"probes\": [");
+        for (j, &&(c, s, sz)) in sp.iter().enumerate() {
             let comma = if j + 1 < sp.len() { "," } else { "" };
-            let _ = writeln!(
+            _ = writeln!(
                 out,
                 "        {{ \"crf\": {c:.2}, \"score\": {s:.3}, \"kbs\": {:.0} }}{comma}",
-                calc_kbs(*sz, l.f)
+                calc_kbs(sz, l.f)
             );
         }
-        let _ = writeln!(out, "      ],");
-        let _ = writeln!(
+        _ = writeln!(out, "      ],");
+        _ = writeln!(
             out,
             "      \"final\": {{ \"crf\": {:.2}, \"score\": {:.3}, \"kbs\": {:.0} }}",
             l.fc,
@@ -1062,50 +1062,50 @@ fn format_tq_json(
             calc_kbs(l.fz, l.f)
         );
         let comma = if i + 1 < all_logs.len() { "," } else { "" };
-        let _ = writeln!(out, "    }}{comma}");
+        _ = writeln!(out, "    }}{comma}");
         if i + 1 < all_logs.len() {
-            let _ = writeln!(out);
+            _ = writeln!(out);
         }
     }
 
-    let _ = writeln!(out, "  ],");
-    let _ = writeln!(out);
-    let _ = writeln!(
+    _ = writeln!(out, "  ],");
+    _ = writeln!(out);
+    _ = writeln!(
         out,
         "  \"average_probes\": {:.1},",
         (avg_probes * 10.0).round() / 10.0
     );
-    let _ = writeln!(out, "  \"in_range\": {in_range},");
-    let _ = writeln!(out, "  \"out_range\": {},", total - in_range);
-    let _ = writeln!(out);
-    let _ = writeln!(out, "  \"rounds\": {{");
+    _ = writeln!(out, "  \"in_range\": {in_range},");
+    _ = writeln!(out, "  \"out_range\": {},", total - in_range);
+    _ = writeln!(out);
+    _ = writeln!(out, "  \"rounds\": {{");
     let rv: Vec<_> = round_counts.iter().collect();
-    for (i, (round, count)) in rv.iter().enumerate() {
-        let pct = (**count as f64 / total as f64 * 100.0 * 100.0).round() / 100.0;
+    for (i, &(round, count)) in rv.iter().enumerate() {
+        let pct = (*count as f64 / total as f64 * 100.0 * 100.0).round() / 100.0;
         let comma = if i + 1 < rv.len() { "," } else { "" };
-        let _ = writeln!(
+        _ = writeln!(
             out,
             "    \"{round}\": {{ \"count\": {count}, \"method\": \"{}\", \"%\": {pct:.2} }}{comma}",
-            method_name(**round)
+            method_name(*round)
         );
     }
-    let _ = writeln!(out, "  }},");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "  \"common_crfs\": [");
+    _ = writeln!(out, "  }},");
+    _ = writeln!(out);
+    _ = writeln!(out, "  \"common_crfs\": [");
     let mut cv: Vec<_> = crf_counts.iter().collect();
-    cv.sort_by(|(_, a), (_, b)| b.cmp(a));
+    cv.sort_by(|&(_, a), &(_, b)| b.cmp(a));
     let top: Vec<_> = cv.iter().take(25).collect();
-    for (i, (crf, count)) in top.iter().enumerate() {
+    for (i, &&(&crf, &count)) in top.iter().enumerate() {
         let comma = if i + 1 < top.len() { "," } else { "" };
-        let _ = writeln!(
+        _ = writeln!(
             out,
             "    {{ \"crf\": {:.2}, \"count\": {} }}{comma}",
-            **crf as f64 / 100.0,
-            **count
+            crf as f64 / 100.0,
+            count
         );
     }
-    let _ = writeln!(out, "  ]");
-    let _ = write!(out, "}}");
+    _ = writeln!(out, "  ]");
+    _ = write!(out, "}}");
     out
 }
 
@@ -1154,7 +1154,7 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
         .truncate(true)
         .open(&log_path)
     {
-        let _ = file.write_all(out.as_bytes());
+        _ = file.write_all(out.as_bytes());
     }
 }
 
@@ -1168,14 +1168,14 @@ fn write_ivf_header(f: &mut impl Write, cfg: &EncConfig) {
     hdr[14..16].copy_from_slice(&(cfg.height as u16).to_le_bytes());
     hdr[16..20].copy_from_slice(&cfg.inf.fps_num.to_le_bytes());
     hdr[20..24].copy_from_slice(&cfg.inf.fps_den.to_le_bytes());
-    let _ = f.write_all(&hdr);
+    _ = f.write_all(&hdr);
 }
 
 #[cfg(feature = "libsvtav1")]
 fn write_ivf_frame(f: &mut impl Write, data: &[u8], pts: u64) {
-    let _ = f.write_all(&(data.len() as u32).to_le_bytes());
-    let _ = f.write_all(&pts.to_le_bytes());
-    let _ = f.write_all(data);
+    _ = f.write_all(&(data.len() as u32).to_le_bytes());
+    _ = f.write_all(&pts.to_le_bytes());
+    _ = f.write_all(data);
 }
 
 #[cfg(feature = "libsvtav1")]

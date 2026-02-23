@@ -731,42 +731,42 @@ main() {
         case "${mode_choice}" in
                 1)
                         config_file=".cargo/config.toml.static"
-                        cargo_features="--features static,vship"
+                        cargo_features="--no-default-features --features static,vship"
                         build_static=true
                         ;;
                 2)
                         config_file=".cargo/config.toml.dynamic"
-                        cargo_features="--features vship"
+                        cargo_features="--no-default-features --features vship"
                         build_static=false
                         ;;
                 3)
                         config_file=".cargo/config.toml.static_notq"
-                        cargo_features="--features static"
+                        cargo_features="--no-default-features --features static"
                         build_static=true
                         ;;
                 4)
                         config_file=".cargo/config.toml.dynamic_notq"
-                        cargo_features=""
+                        cargo_features="--no-default-features"
                         build_static=false
                         ;;
                 5)
                         config_file=".cargo/config.toml.static"
-                        cargo_features="--features static,vship,libsvtav1"
+                        cargo_features="--no-default-features --features static,vship,libsvtav1"
                         build_static=true
                         ;;
                 6)
                         config_file=".cargo/config.toml.static_notq"
-                        cargo_features="--features static,libsvtav1"
+                        cargo_features="--no-default-features --features static,libsvtav1"
                         build_static=true
                         ;;
                 7)
                         config_file=".cargo/config.toml.dynamic"
-                        cargo_features="--features vship,libsvtav1"
+                        cargo_features="--no-default-features --features vship,libsvtav1"
                         build_static=false
                         ;;
                 8)
                         config_file=".cargo/config.toml.dynamic_notq"
-                        cargo_features="--features libsvtav1"
+                        cargo_features="--no-default-features --features libsvtav1"
                         build_static=false
                         ;;
         esac

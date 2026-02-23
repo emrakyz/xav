@@ -873,16 +873,16 @@ fn load_fgs_table(config: *mut EbSvtAv1EncConfiguration, path: &Path) {
     fg.cr_offset = i32::from(seg.cr_offset);
 
     fg.num_y_points = i32::from(seg.scaling_points_y.len() as u8);
-    for (i, [x, y]) in seg.scaling_points_y.iter().enumerate() {
-        fg.scaling_points_y[i] = [i32::from(*x), i32::from(*y)];
+    for (i, &[x, y]) in seg.scaling_points_y.iter().enumerate() {
+        fg.scaling_points_y[i] = [i32::from(x), i32::from(y)];
     }
     fg.num_cb_points = i32::from(seg.scaling_points_cb.len() as u8);
-    for (i, [x, y]) in seg.scaling_points_cb.iter().enumerate() {
-        fg.scaling_points_cb[i] = [i32::from(*x), i32::from(*y)];
+    for (i, &[x, y]) in seg.scaling_points_cb.iter().enumerate() {
+        fg.scaling_points_cb[i] = [i32::from(x), i32::from(y)];
     }
     fg.num_cr_points = i32::from(seg.scaling_points_cr.len() as u8);
-    for (i, [x, y]) in seg.scaling_points_cr.iter().enumerate() {
-        fg.scaling_points_cr[i] = [i32::from(*x), i32::from(*y)];
+    for (i, &[x, y]) in seg.scaling_points_cr.iter().enumerate() {
+        fg.scaling_points_cr[i] = [i32::from(x), i32::from(y)];
     }
     for (i, v) in seg.ar_coeffs_y.iter().enumerate() {
         fg.ar_coeffs_y[i] = i32::from(*v);

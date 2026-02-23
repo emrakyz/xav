@@ -1,8 +1,9 @@
 use std::{
     ffi::NulError,
-    fmt::Display,
-    io::{self, Write, stdout},
+    fmt::{Arguments, Display},
+    io::{self, Write as _, stderr, stdout},
     num::ParseIntError,
+    process,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -37,10 +38,15 @@ impl From<String> for Xerr {
 
 #[cold]
 #[allow(clippy::exit)]
-pub fn fatal(e: impl Display) -> ! {
-    use std::process;
+pub fn fatal<E: Display>(e: E) -> ! {
     print!("\x1b[?25h\x1b[?1049l");
-    let _ = stdout().flush();
-    eprintln!("{e}");
+    _ = stdout().flush();
+    _ = writeln!(stderr(), "{e}");
     process::exit(1)
+}
+
+pub fn eprint(args: Arguments<'_>) {
+    print!("\x1b[?1049l");
+    _ = stdout().flush();
+    _ = writeln!(stderr(), "{args}");
 }

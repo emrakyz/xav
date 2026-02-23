@@ -61,7 +61,7 @@ pub fn write_frames_10bit(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         (pipe.unpack)(frame, buf, pipe);
-        let _ = Write::write_all(stdin, buf);
+        _ = Write::write_all(stdin, buf);
     }
 }
 
@@ -75,7 +75,7 @@ pub fn write_frames_8bit(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         conv_to_10bit(frame, buf);
-        let _ = Write::write_all(stdin, buf);
+        _ = Write::write_all(stdin, buf);
     }
 }
 

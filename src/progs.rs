@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, BufReader, Read, Write, stdout as io_stdout},
+    io::{BufRead as _, BufReader, Read, Write as _, stdout as io_stdout},
     str::from_utf8,
     sync::{
         Arc,
@@ -14,20 +14,14 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use crate::{
     chunk::{Chunk, PRIOR_SECS},
     encoder::Encoder,
+    error::eprint,
     ffms::VidInf,
 };
 
 const BAR_WIDTH: usize = 20;
 const INTERVAL_MS: u64 = 500;
 
-const G: &str = "\x1b[1;92m";
-const R: &str = "\x1b[1;91m";
-const B: &str = "\x1b[1;94m";
-const P: &str = "\x1b[1;95m";
-const Y: &str = "\x1b[1;93m";
-const C: &str = "\x1b[1;96m";
-const W: &str = "\x1b[1;97m";
-const N: &str = "\x1b[0m";
+use crate::util::{B, C, G, N, P, R, W, Y};
 
 const G_HASH: &str = "\x1b[1;92m#";
 const R_DASH: &str = "\x1b[1;91m-";
@@ -87,7 +81,7 @@ impl ProgsBar {
             "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} \
              MBs{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
-        let _ = io_stdout().flush();
+        _ = io_stdout().flush();
     }
 
     pub fn up_scenes(&mut self, current: usize, total: usize) {
@@ -115,17 +109,17 @@ impl ProgsBar {
             "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
              FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
         );
-        let _ = io_stdout().flush();
+        _ = io_stdout().flush();
     }
 
     pub fn finish() {
         print!("\r\x1b[2K");
-        let _ = io_stdout().flush();
+        _ = io_stdout().flush();
     }
 
     pub fn finish_scenes() {
         print!("\r\x1b[2K");
-        let _ = io_stdout().flush();
+        _ = io_stdout().flush();
     }
 }
 
@@ -155,7 +149,7 @@ impl ProgsTrack {
         let (tx, rx) = unbounded();
 
         print!("\x1b[s");
-        let _ = io_stdout().flush();
+        _ = io_stdout().flush();
 
         let total_chunks = chunks.len();
         let total_frames = chunks.iter().map(|c| c.end - c.start).sum();
@@ -179,9 +173,9 @@ impl ProgsTrack {
         (Self { tx }, handle)
     }
 
-    pub fn watch_enc(
+    pub fn watch_enc<R: Read + Send + 'static>(
         &self,
-        stderr: impl Read + Send + 'static,
+        stderr: R,
         worker_id: usize,
         chunk_idx: usize,
         track_frames: bool,
@@ -229,13 +223,11 @@ impl ProgsTrack {
              {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
         );
 
-        self.tx
-            .send(WorkerMsg::Update {
-                worker_id,
-                line,
-                frames: None,
-            })
-            .ok();
+        _ = self.tx.send(WorkerMsg::Update {
+            worker_id,
+            line,
+            frames: None,
+        });
     }
 
     #[cfg(feature = "libsvtav1")]
@@ -269,18 +261,16 @@ impl ProgsTrack {
             "{prefix} {P}[{bar}{P}] {W}{perc}%{C}, {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
         );
 
-        self.tx
-            .send(WorkerMsg::Update {
-                worker_id,
-                line,
-                frames: frames_delta,
-            })
-            .ok();
+        _ = self.tx.send(WorkerMsg::Update {
+            worker_id,
+            line,
+            frames: frames_delta,
+        });
     }
 
     #[cfg(feature = "libsvtav1")]
     pub fn clear_lib_enc(&self, worker_id: usize) {
-        self.tx.send(WorkerMsg::Clear(worker_id)).ok();
+        _ = self.tx.send(WorkerMsg::Clear(worker_id));
     }
 }
 
@@ -321,7 +311,7 @@ impl LibEncTracker {
             chunk_idx,
             (self.encoded, total),
             fps,
-            if track_frames { Some(delta) } else { None },
+            track_frames.then_some(delta),
             crf_score,
         );
     }
@@ -345,9 +335,7 @@ fn watch_svt(
         let text = text.trim();
 
         if text.contains("error") || text.contains("Error") {
-            print!("\x1b[?1049l");
-            let _ = io_stdout().flush();
-            eprintln!("{text}");
+            eprint(format_args!("{text}"));
         }
 
         if text.is_empty() || !text.contains("Encoding:") || text.contains("SUMMARY") {
@@ -379,23 +367,20 @@ fn watch_svt(
              kb/s"
         );
 
-        let frames_delta = if track_frames {
+        let frames_delta = track_frames.then(|| {
             let delta = current.saturating_sub(last_frames);
             last_frames = current;
-            Some(delta)
-        } else {
-            None
-        };
+            delta
+        });
 
-        tx.send(WorkerMsg::Update {
+        _ = tx.send(WorkerMsg::Update {
             worker_id,
             line: display_line,
             frames: frames_delta,
-        })
-        .ok();
+        });
     }
 
-    tx.send(WorkerMsg::Clear(worker_id)).ok();
+    _ = tx.send(WorkerMsg::Clear(worker_id));
 }
 
 fn watch_avm(
@@ -406,17 +391,16 @@ fn watch_avm(
     _track_frames: bool,
     _crf_score: Option<(f32, Option<f64>)>,
 ) {
-    tx.send(WorkerMsg::Update {
+    _ = tx.send(WorkerMsg::Update {
         worker_id,
         line: format!("{C}[{chunk_idx:04}]{W} Encoding: Progress updates when chunk finishes"),
         frames: None,
-    })
-    .ok();
+    });
 
     let mut buf = [0u8; 4096];
     while stdout.read(&mut buf).unwrap_or(0) > 0 {}
 
-    tx.send(WorkerMsg::Clear(worker_id)).ok();
+    _ = tx.send(WorkerMsg::Clear(worker_id));
 }
 
 fn watch_vvenc(
@@ -442,13 +426,11 @@ fn watch_vvenc(
                 line_buf.push_str(&String::from_utf8_lossy(&buf[..n]));
 
                 while let Some(pos) = line_buf.find('\n') {
-                    let line = line_buf[..pos].trim().to_string();
+                    let line = line_buf[..pos].trim().to_owned();
                     line_buf = line_buf[pos + 1..].to_string();
 
                     if line.contains("error") || line.contains("Error") {
-                        print!("\x1b[?1049l");
-                        let _ = io_stdout().flush();
-                        eprintln!("{line}");
+                        eprint(format_args!("{line}"));
                     }
 
                     if total_frames == 0 && line.contains("encode ") {
@@ -489,26 +471,23 @@ fn watch_vvenc(
                          {G}{poc_count}{C}/{R}{total}"
                     );
 
-                    let delta = if track_frames {
+                    let delta = track_frames.then(|| {
                         let d = poc_count.saturating_sub(last_poc_count);
                         last_poc_count = poc_count;
-                        Some(d)
-                    } else {
-                        None
-                    };
+                        d
+                    });
 
-                    tx.send(WorkerMsg::Update {
+                    _ = tx.send(WorkerMsg::Update {
                         worker_id,
                         line: display,
                         frames: delta,
-                    })
-                    .ok();
+                    });
                 }
             }
         }
     }
 
-    tx.send(WorkerMsg::Clear(worker_id)).ok();
+    _ = tx.send(WorkerMsg::Clear(worker_id));
 }
 
 fn strip_ansi(s: &str) -> String {
@@ -607,9 +586,7 @@ fn watch_x265(
             if text.starts_with("encoded") {
                 continue;
             }
-            print!("\x1b[?1049l");
-            let _ = io_stdout().flush();
-            eprintln!("{text}");
+            eprint(format_args!("{text}"));
             continue;
         }
 
@@ -646,15 +623,14 @@ fn watch_x265(
             d
         });
 
-        tx.send(WorkerMsg::Update {
+        _ = tx.send(WorkerMsg::Update {
             worker_id,
             line,
             frames: delta,
-        })
-        .ok();
+        });
     }
 
-    tx.send(WorkerMsg::Clear(worker_id)).ok();
+    _ = tx.send(WorkerMsg::Clear(worker_id));
 }
 
 fn parse_x265(s: &str) -> Option<(usize, usize, f32, f32)> {
@@ -781,5 +757,5 @@ fn draw_screen(
          {bitrate_str}{C}, {est_str}{C}{N})\n",
         state.total_chunks, state.total_frames
     );
-    let _ = io_stdout().flush();
+    _ = io_stdout().flush();
 }

@@ -131,6 +131,8 @@ pub fn akima(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
 }
 
 pub fn fritsch_carlson(x: &[f64], y: &[f64], xi: f64) -> Option<f64> {
+    assert!(x.len() > 2, "x must have at least 3 elements");
+    assert!(y.len() > 2, "y must have at least 3 elements");
     let n = x.len();
     if n != 3 || xi < x[0] || xi > x[n - 1] {
         return None;

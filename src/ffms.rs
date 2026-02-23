@@ -152,7 +152,7 @@ impl VidIdx {
             }
 
             Ok(Arc::new(Self {
-                path: path.to_str().unwrap_unchecked().to_string(),
+                path: path.to_str().unwrap_unchecked().to_owned(),
                 track,
                 idx_handle: idx,
             }))
@@ -219,45 +219,39 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Xerr> {
             _ => None,
         };
 
-        let mastering_display = if (*props).HasMasteringDisplayPrimaries != 0
-            && (*props).HasMasteringDisplayLuminance != 0
-        {
-            Some(format!(
-                "G({:.4},{:.4})B({:.4},{:.4})R({:.4},{:.4})WP({:.4},{:.4})L({:.4},{:.4})",
-                (*props).MasteringDisplayPrimariesX[1],
-                (*props).MasteringDisplayPrimariesY[1],
-                (*props).MasteringDisplayPrimariesX[2],
-                (*props).MasteringDisplayPrimariesY[2],
-                (*props).MasteringDisplayPrimariesX[0],
-                (*props).MasteringDisplayPrimariesY[0],
-                (*props).MasteringDisplayWhitePointX,
-                (*props).MasteringDisplayWhitePointY,
-                (*props).MasteringDisplayMaxLuminance,
-                (*props).MasteringDisplayMinLuminance
-            ))
-        } else {
-            None
-        };
+        let mastering_display = ((*props).HasMasteringDisplayPrimaries != 0
+            && (*props).HasMasteringDisplayLuminance != 0)
+            .then(|| {
+                format!(
+                    "G({:.4},{:.4})B({:.4},{:.4})R({:.4},{:.4})WP({:.4},{:.4})L({:.4},{:.4})",
+                    (*props).MasteringDisplayPrimariesX[1],
+                    (*props).MasteringDisplayPrimariesY[1],
+                    (*props).MasteringDisplayPrimariesX[2],
+                    (*props).MasteringDisplayPrimariesY[2],
+                    (*props).MasteringDisplayPrimariesX[0],
+                    (*props).MasteringDisplayPrimariesY[0],
+                    (*props).MasteringDisplayWhitePointX,
+                    (*props).MasteringDisplayWhitePointY,
+                    (*props).MasteringDisplayMaxLuminance,
+                    (*props).MasteringDisplayMinLuminance
+                )
+            });
 
-        let content_light = if (*props).HasContentLightLevel != 0 {
-            Some(format!(
+        let content_light = ((*props).HasContentLightLevel != 0).then(|| {
+            format!(
                 "{},{}",
                 (*props).ContentLightLevelMax,
                 (*props).ContentLightLevelAverage
-            ))
-        } else {
-            None
-        };
+            )
+        });
 
         let (sar_n, sar_d) = ((*props).SARNum, (*props).SARDen);
-        let dar = if sar_n > 0 && sar_d > 0 && sar_n != sar_d {
+        let dar = (sar_n > 0 && sar_d > 0 && sar_n != sar_d).then(|| {
             let dw = u64::from(width) * sar_n as u64;
             let dh = u64::from(height) * sar_d as u64;
             let g = gcd(dw, dh);
-            Some(((dw / g) as u32, (dh / g) as u32))
-        } else {
-            None
-        };
+            ((dw / g) as u32, (dh / g) as u32)
+        });
 
         let inf = VidInf {
             width,

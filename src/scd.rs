@@ -1,6 +1,6 @@
 use std::{
     cmp::min,
-    fmt::Write,
+    fmt::Write as _,
     fs::write as fs_write,
     path::Path,
     sync::{Arc, Mutex},
@@ -99,7 +99,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Xerr> {
                         (size, inter_score * distance_weighting)
                     })
                 })
-                .max_by_key(|(_, score)| (*score * 10000.0).round() as u64)
+                .max_by_key(|&(_, score)| (score * 10000.0).round() as u64)
                 .unwrap_or((middle_point, 0.0))
                 .0;
 
@@ -116,7 +116,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Xerr> {
 
     let mut content = String::new();
     for &scene_frame in &new_scenes {
-        let _ = writeln!(content, "{scene_frame}");
+        _ = writeln!(content, "{scene_frame}");
     }
 
     fs_write(scene_file, content)?;

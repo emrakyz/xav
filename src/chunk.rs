@@ -1,5 +1,7 @@
 use std::{
+    fmt::Write as _,
     fs, io,
+    io::{Read as _, Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -15,7 +17,7 @@ pub static PRIOR_SECS: AtomicU64 = AtomicU64::new(0);
 static ENC_START: OnceLock<Instant> = OnceLock::new();
 pub fn init_elapsed(prior: u64) {
     PRIOR_SECS.store(prior, Ordering::Relaxed);
-    ENC_START.set(Instant::now()).ok();
+    _ = ENC_START.set(Instant::now());
 }
 
 #[derive(Clone)]
@@ -60,14 +62,14 @@ pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Xerr> {
         })
         .collect();
 
-    parsed.sort_unstable_by_key(|(f, _)| *f);
+    parsed.sort_unstable_by_key(|&(f, _)| f);
 
     let mut scenes = Vec::new();
     for i in 0..parsed.len() {
-        let (s, params) = &parsed[i];
-        let e = parsed.get(i + 1).map_or(t_frames, |(f, _)| *f);
+        let (s, ref params) = parsed[i];
+        let e = parsed.get(i + 1).map_or(t_frames, |&(f, _)| f);
         scenes.push(Scene {
-            s_frame: *s,
+            s_frame: s,
             e_frame: e,
             params: params.clone(),
         });
@@ -141,15 +143,14 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
 }
 
 pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Xerr> {
-    use std::fmt::Write;
     let path = work_dir.join("done.txt");
     let mut content = String::new();
     let elapsed =
         PRIOR_SECS.load(Ordering::Relaxed) + ENC_START.get().map_or(0, |s| s.elapsed().as_secs());
-    let _ = writeln!(content, "elapsed {elapsed}");
+    _ = writeln!(content, "elapsed {elapsed}");
 
     for chunk in &data.chnks_done {
-        let _ = writeln!(
+        _ = writeln!(
             content,
             "{idx} {frames} {size}",
             idx = chunk.idx,
@@ -163,8 +164,6 @@ pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Xerr> {
 }
 
 fn concat_ivf(files: &[PathBuf], output: &Path, total_frames: u32) -> Result<(), Xerr> {
-    use std::io::{Read, Seek, SeekFrom, Write};
-
     let mut out = fs::File::create(output)?;
 
     for (i, file) in files.iter().enumerate() {
@@ -202,7 +201,7 @@ fn concat_vvc(files: &[PathBuf], output: &Path, inf: &VidInf) -> Result<(), Xerr
         .arg(output)
         .status()?;
 
-    let _ = fs::remove_file(&temp_266);
+    _ = fs::remove_file(&temp_266);
 
     if !status.success() {
         return Err("MP4Box VVC import failed".into());
@@ -234,7 +233,7 @@ fn concat_h26x(
             .arg(output)
             .status()?;
 
-        let _ = fs::remove_file(&temp_26x);
+        _ = fs::remove_file(&temp_26x);
         if status.success() {
             return Ok(());
         }
@@ -247,13 +246,13 @@ fn concat_h26x(
         cmd.arg(&temp_26x);
 
         let status = cmd.status()?;
-        let _ = fs::remove_file(&temp_26x);
+        _ = fs::remove_file(&temp_26x);
         if status.success() {
             return Ok(());
         }
     }
 
-    let _ = fs::remove_file(&temp_26x);
+    _ = fs::remove_file(&temp_26x);
     Err("Neither MP4Box nor mkvmerge available for H.26x concat".into())
 }
 
@@ -306,7 +305,7 @@ pub fn add_mp4_subs(input: &Path, output: &Path) {
 
     if has_tracks {
         cmd.arg(output);
-        let _ = cmd.status();
+        _ = cmd.status();
     }
 }
 
@@ -363,7 +362,7 @@ pub fn merge_out(
             unsafe { input.unwrap_unchecked() },
             ranges,
         );
-        let _ = fs::remove_file(&temp_mp4);
+        _ = fs::remove_file(&temp_mp4);
         return result;
     }
 
@@ -378,7 +377,7 @@ pub fn merge_out(
 
         if let Some(input_file) = input {
             let result = mux_av(&temp_video, output, inf, input_file, ranges);
-            let _ = fs::remove_file(&temp_video);
+            _ = fs::remove_file(&temp_video);
             return result;
         }
 
@@ -430,9 +429,8 @@ fn run_merge(
     let concat_list = output.with_extension("txt");
     let mut content = String::new();
     for file in files {
-        use std::fmt::Write;
         let abs_path = file.canonicalize()?;
-        let _ = writeln!(content, "file '{}'", abs_path.display());
+        _ = writeln!(content, "file '{}'", abs_path.display());
     }
     fs::write(&concat_list, content)?;
 
@@ -461,11 +459,11 @@ fn run_merge(
         .arg(&video);
 
     let status = cmd.status()?;
-    let _ = fs::remove_file(&concat_list);
+    _ = fs::remove_file(&concat_list);
 
     if !status.success() {
         if input.is_some() {
-            let _ = fs::remove_file(&video);
+            _ = fs::remove_file(&video);
         }
         return Err("FFmpeg video concat failed".into());
     }
@@ -520,8 +518,8 @@ fn run_merge(
         cmd2.args(FF_FLAGS).arg(output);
 
         let status2 = cmd2.status()?;
-        let _ = fs::remove_file(&video);
-        let _ = fs::remove_file(&temp_audio);
+        _ = fs::remove_file(&video);
+        _ = fs::remove_file(&temp_audio);
 
         if !status2.success() {
             return Err("FFmpeg mux failed".into());
@@ -589,7 +587,7 @@ fn mux_av(
     cmd.args(FF_FLAGS).arg(output);
 
     let status = cmd.status()?;
-    let _ = fs::remove_file(&temp_audio);
+    _ = fs::remove_file(&temp_audio);
 
     if !status.success() {
         return Err("FFmpeg mux failed".into());
@@ -648,7 +646,7 @@ fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Op
         .args(FF_FLAGS)
         .arg(output);
 
-    let _ = cmd.status();
+    _ = cmd.status();
     output.exists() && fs::metadata(output).is_ok_and(|m| m.len() > 0)
 }
 
@@ -658,8 +656,7 @@ fn concat_segments(segments: &[PathBuf], output: &Path) -> Result<bool, Xerr> {
 
     let mut content = String::new();
     for seg in segments {
-        use std::fmt::Write;
-        let _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
+        _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
     }
     fs::write(&concat_list, content)?;
 
@@ -671,8 +668,8 @@ fn concat_segments(segments: &[PathBuf], output: &Path) -> Result<bool, Xerr> {
         .args(FF_FLAGS)
         .arg(output);
 
-    let _ = cmd.status();
-    let _ = fs::remove_file(&concat_list);
+    _ = cmd.status();
+    _ = fs::remove_file(&concat_list);
 
     Ok(output.exists() && fs::metadata(output).is_ok_and(|m| m.len() > 0))
 }
@@ -694,9 +691,9 @@ fn extract_audio_ranges(input: &Path, times: &[(f64, f64)], output: &Path) -> Re
     let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
     let mut segments = Vec::new();
 
-    for (i, (start, end)) in times.iter().enumerate() {
+    for (i, &(start, end)) in times.iter().enumerate() {
         let seg_path = temp_dir.join(format!("audio_seg_{i}.mka"));
-        if extract_segment(input, &seg_path, Some(*start), Some(end - start)) {
+        if extract_segment(input, &seg_path, Some(start), Some(end - start)) {
             segments.push(seg_path);
         }
     }
@@ -708,7 +705,7 @@ fn extract_audio_ranges(input: &Path, times: &[(f64, f64)], output: &Path) -> Re
     let result = concat_segments(&segments, output)?;
 
     for seg in &segments {
-        let _ = fs::remove_file(seg);
+        _ = fs::remove_file(seg);
     }
 
     Ok(result)
