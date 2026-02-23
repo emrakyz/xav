@@ -22,7 +22,7 @@ libc = "0.2.182"
 crossbeam-channel = "0.5.15"
 ffms2-sys = { version = "0.3.0", features = ["static"] }
 av-decoders = { git = "https://github.com/rust-av/av-decoders", default-features = false, features = ["ffms2"] }
-av-scenechange = { git = "https://github.com/rust-av/av-scenechange", default-features = false, features = ["ffms2", "asm", "nasm-rs", "cc", "libc"] }
+av-scenechange = { git = "https://github.com/rust-av/av-scenechange", default-features = false, features = ["ffms2", "asm", "nasm-rs", "cc", "libc", "static_simd"] }
 av1-grain = { version = "0.4.0", default-features = false, features = ["create", "parse"] }
 sonic-rs = "0.5.6"
 serde = { version = "1.0.228", features = ["derive"] }
