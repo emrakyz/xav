@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Stdin};
+use std::io::{self, BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin};
 
 pub fn is_pipe() -> bool {
     !io::stdin().is_terminal()
@@ -27,8 +27,8 @@ impl PipeReader {
     pub fn skip_frames(&mut self, count: usize) {
         let mut discard = vec![0u8; self.frame_size];
         for _ in 0..count {
-            let _ = self.reader.read_exact(&mut self.frame_header);
-            let _ = self.reader.read_exact(&mut discard);
+            _ = self.reader.read_exact(&mut self.frame_header);
+            _ = self.reader.read_exact(&mut discard);
         }
     }
 }
@@ -41,7 +41,7 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
     let stdin = io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut header = String::new();
-    let _ = reader.read_line(&mut header);
+    _ = reader.read_line(&mut header);
 
     let mut width = 0;
     let mut height = 0;

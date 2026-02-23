@@ -6,8 +6,9 @@ use std::{
     fs::{
         create_dir_all, metadata, read_to_string, remove_dir_all, remove_file, write as write_to,
     },
-    hash::{Hash, Hasher},
-    io::{Write, stdout},
+    hash::{Hash as _, Hasher as _},
+    io::{Write as _, stdout},
+    mem::transmute_copy,
     panic::set_hook,
     path::{Path, PathBuf},
     sync::Arc,
@@ -48,7 +49,7 @@ use crop::{CropDetectConfig, detect_crop};
 use encode::TQ_SCORES;
 use encode::encode_all;
 use encoder::Encoder;
-use error::{Xerr, fatal};
+use error::{Xerr, eprint, fatal};
 use ffms::{DecodeStrat, VidIdx, VidInf, gcd, get_decode_strat, get_vidinf};
 use noise::gen_table;
 use scd::fd_scenes;
@@ -60,14 +61,7 @@ use y4m::{PipeReader, init_pipe};
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
-const G: &str = "\x1b[1;92m";
-const R: &str = "\x1b[1;91m";
-const P: &str = "\x1b[1;95m";
-const B: &str = "\x1b[1;94m";
-const Y: &str = "\x1b[1;93m";
-const C: &str = "\x1b[1;96m";
-const W: &str = "\x1b[1;97m";
-const N: &str = "\x1b[0m";
+use util::{B, C, G, N, P, R, W, Y};
 
 #[cfg(feature = "vship")]
 static TQ_RESUMED: OnceLock<bool> = OnceLock::new();
@@ -102,7 +96,7 @@ pub struct Args {
 
 extern "C" fn restore() {
     print!("\x1b[?25h\x1b[?1049l");
-    let _ = stdout().flush();
+    _ = stdout().flush();
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
@@ -166,7 +160,7 @@ fn parse_args() -> Result<Args, Xerr> {
         Ok(args) => Ok(args),
         Err(Xerr::Help) => Err(Xerr::Help),
         Err(e) => {
-            eprintln!("\n{R}Error: {e}{N}\n");
+            eprint(format_args!("\n{R}Error: {e}{N}\n"));
             print_help();
             fatal("argument parsing failed");
         }
@@ -201,7 +195,7 @@ fn apply_defaults(args: &mut Args) {
     #[cfg(feature = "vship")]
     {
         if args.target_quality.is_some() && args.qp_range.is_none() {
-            args.qp_range = Some("8.0-48.0".to_string());
+            args.qp_range = Some("8.0-48.0".to_owned());
         }
     }
 }
@@ -278,7 +272,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         None::<String>,
     );
     #[cfg(feature = "vship")]
-    let (mut metric_mode, mut metric_worker) = ("mean".to_string(), 1usize);
+    let (mut metric_mode, mut metric_worker) = ("mean".to_owned(), 1usize);
 
     let mut i = 1;
     while i < args.len() {
@@ -524,7 +518,7 @@ fn init_pipe_crop(idx: &Arc<VidIdx>, inf: VidInf) -> (VidInf, (u32, u32), Option
 
 fn main_with_args(args: &Args) -> Result<(), Xerr> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
-    let _ = stdout().flush();
+    _ = stdout().flush();
 
     ensure_scene_file(args)?;
 
@@ -646,7 +640,7 @@ fn print_summary(
     enc_time: Duration,
 ) {
     print!("\x1b[?25h\x1b[?1049l");
-    let _ = stdout().flush();
+    _ = stdout().flush();
 
     let input_size = metadata(&args.input).map_or(0, |m| m.len());
     let output_size = metadata(&args.output).map_or(0, |m| m.len());
@@ -664,7 +658,11 @@ fn print_summary(
         }
     };
 
-    let arrow = if change < 0.0 { "󰛀" } else { "󰛃" };
+    let arrow = if change < 0.0 {
+        "\u{f06c0}"
+    } else {
+        "\u{f06c3}"
+    };
     let change_color = if change < 0.0 { G } else { R };
     let fps_rate = f64::from(inf.fps_num) / f64::from(inf.fps_den);
     let enc_speed = total_frames as f64 / enc_time.as_secs_f64();
@@ -703,22 +701,23 @@ fn main() -> Result<(), Xerr> {
 
     set_hook(Box::new(move |panic_info| {
         print!("\x1b[?25h\x1b[?1049l");
-        let _ = stdout().flush();
-        eprintln!("{panic_info}");
-        eprintln!("{}, FAIL", output.display());
+        _ = stdout().flush();
+        eprint(format_args!("{panic_info}"));
+        eprint(format_args!("{}, FAIL", output.display()));
     }));
 
     unsafe {
         libc::atexit(restore);
 
-        libc::signal(libc::SIGINT, exit_restore as *const () as usize);
-        libc::signal(libc::SIGSEGV, exit_restore as *const () as usize);
+        let h: usize = transmute_copy(&(exit_restore as extern "C" fn(i32)));
+        libc::signal(libc::SIGINT, h);
+        libc::signal(libc::SIGSEGV, h);
     }
 
     if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");
-        let _ = stdout().flush();
-        eprintln!("{e}\n{}, FAIL", args.output.display());
+        _ = stdout().flush();
+        eprint(format_args!("{e}\n{}, FAIL", args.output.display()));
         return Err(e);
     }
 

@@ -1,6 +1,6 @@
 use std::{
     collections::HashSet,
-    fmt::Write,
+    fmt::Write as _,
     fs::{remove_file, write as fs_write},
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
@@ -284,7 +284,7 @@ fn encode_stream_multi(
     let temp_dir = unsafe { output.parent().unwrap_unchecked() };
     let mut segments = Vec::new();
 
-    for (i, (start, end)) in times.iter().enumerate() {
+    for (i, &(start, end)) in times.iter().enumerate() {
         let seg_path = temp_dir.join(format!("audio_enc_{i}.opus"));
 
         let mut cmd = Command::new("ffmpeg");
@@ -328,7 +328,7 @@ fn encode_stream_multi(
     let concat_list = temp_dir.join(format!("concat_{}.txt", stream.index));
     let mut content = String::new();
     for seg in &segments {
-        let _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
+        _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
     }
     fs_write(&concat_list, content)?;
 
@@ -341,9 +341,9 @@ fn encode_stream_multi(
 
     let status = cmd.status()?;
 
-    let _ = remove_file(&concat_list);
+    _ = remove_file(&concat_list);
     for seg in &segments {
-        let _ = remove_file(seg);
+        _ = remove_file(seg);
     }
 
     if !status.success() {
@@ -373,8 +373,8 @@ fn mux_files(
     ])
     .arg(video);
 
-    for (_, path) in files {
-        cmd.arg("-i").arg(path);
+    for item in files {
+        cmd.arg("-i").arg(&item.1);
     }
 
     let is_mp4 = output.extension().is_some_and(|e| e == "mp4");
@@ -397,8 +397,8 @@ fn mux_files(
             .args(["-map_chapters", &input_idx.to_string()]);
     }
 
-    for (i, (info, _)) in files.iter().enumerate() {
-        let code = info.lang.as_deref().unwrap_or("und");
+    for (i, item) in files.iter().enumerate() {
+        let code = item.0.lang.as_deref().unwrap_or("und");
         cmd.args([&format!("-metadata:s:a:{i}"), &format!("language={code}")]);
         cmd.args([
             &format!("-metadata:s:a:{i}"),
@@ -428,15 +428,15 @@ pub fn process_audio(
     inf: &VidInf,
 ) -> Result<(), Xerr> {
     let all = get_streams(input)?;
-    let sel: Vec<_> = match &spec.streams {
+    let sel: Vec<_> = match spec.streams {
         AudioStreams::All => all.iter().collect(),
-        AudioStreams::Specific(ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
+        AudioStreams::Specific(ref ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
     };
 
     let times = ranges.map(|r| ranges_to_times(r, inf.fps_num, inf.fps_den));
 
     let work = unsafe { input.parent().unwrap_unchecked() };
-    let (use_norm, base_bitrate) = match &spec.bitrate {
+    let (use_norm, base_bitrate) = match spec.bitrate {
         AudioBitrate::Norm => (true, 128),
         AudioBitrate::Auto | AudioBitrate::Fixed(_) => (false, 0),
     };
@@ -447,7 +447,7 @@ pub fn process_audio(
             let br = if use_norm {
                 base_bitrate
             } else {
-                match &spec.bitrate {
+                match spec.bitrate {
                     AudioBitrate::Auto => {
                         let cc = match s.channels {
                             1 => 1.0,
@@ -460,9 +460,9 @@ pub fn process_audio(
                             8 => 7.1,
                             _ => f64::from(s.channels),
                         };
-                        (128.0 * (cc / 2.0_f64).powf(0.75)) as u32
+                        (128.0 * (cc / 2.0f64).powf(0.75)) as u32
                     }
-                    AudioBitrate::Fixed(b) => *b,
+                    AudioBitrate::Fixed(b) => b,
                     AudioBitrate::Norm => assume_unreachable(),
                 }
             };
@@ -483,8 +483,8 @@ pub fn process_audio(
         add_mp4_subs(input, output);
     }
 
-    for (_, p) in &files {
-        let _ = remove_file(p);
+    for item in &files {
+        _ = remove_file(&item.1);
     }
     Ok(())
 }
