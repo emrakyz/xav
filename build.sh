@@ -492,7 +492,7 @@ build_ffmpeg() {
                 --strip="${STRIP}" \
                 --extra-cflags="${CFLAGS}" \
                 --extra-cxxflags="${CXXFLAGS}" \
-                --extra-ldflags="${LDFLAGS}" \
+                --extra-ldflags="" \
                 --disable-shared \
                 --enable-static \
                 --pkg-config-flags="--static" \
@@ -621,6 +621,7 @@ build_opus() {
                 -DCMAKE_C_COMPILER="${CC}" \
                 -DCMAKE_C_FLAGS="${CFLAGS}" \
                 -DCMAKE_INSTALL_LIBDIR=lib \
+                -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
                 -DOPUS_BUILD_TESTING=OFF \
                 -DOPUS_BUILD_SHARED_LIBRARY=OFF \
                 -DOPUS_BUILD_PROGRAMS=OFF \
@@ -651,7 +652,7 @@ build_opusenc() {
         PKG_CONFIG_PATH="${BUILD_DIR}/opus/install/lib/pkgconfig" \
                 CC="${CC}" \
                 CFLAGS="${CFLAGS} -I${BUILD_DIR}/opus/install/include" \
-                LDFLAGS="${LDFLAGS} -L${BUILD_DIR}/opus/install/lib" \
+                LDFLAGS="-L${BUILD_DIR}/opus/install/lib" \
                 ./configure \
                 --enable-static \
                 --disable-shared \
@@ -690,7 +691,7 @@ build_ffms2() {
                 RANLIB="${RANLIB}" \
                 CFLAGS="${CFLAGS} -I${BUILD_DIR}/FFmpeg/install/include -I${BUILD_DIR}/zlib/install/include" \
                 CXXFLAGS="${CXXFLAGS} -I${BUILD_DIR}/FFmpeg/install/include -I${BUILD_DIR}/zlib/install/include" \
-                LDFLAGS="${LDFLAGS} -L${BUILD_DIR}/FFmpeg/install/lib -L${BUILD_DIR}/zlib/install/lib" \
+                LDFLAGS="-L${BUILD_DIR}/FFmpeg/install/lib -L${BUILD_DIR}/zlib/install/lib" \
                 LIBS="-lpthread -lm -lz" \
                 ./configure \
                 --enable-static \
@@ -777,7 +778,7 @@ setup_toolchain() {
         export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -static -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
-        export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=safe -static -fno-pic -fno-pie"
+        unset LDFLAGS
 }
 
 SVT_FORK_NAMES=("hdr" "essential" "5fish" "mainline")
