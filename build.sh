@@ -154,8 +154,8 @@ detect_deps() {
         LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
         [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
 
-        LLVM_LIBUNWIND_STATIC_PATH="$(find_lib libunwind.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
-        [[ -n "${LLVM_LIBUNWIND_STATIC_PATH}" ]] && HAS_LLVM_LIBUNWIND_STATIC=true || HAS_LLVM_LIBUNWIND_STATIC=false
+        LIBUNWIND_STATIC_PATH="$(find_lib libunwind.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+        [[ -n "${LIBUNWIND_STATIC_PATH}" ]] && HAS_LIBUNWIND_STATIC=true || HAS_LIBUNWIND_STATIC=false
 
         COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
         [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
@@ -168,7 +168,7 @@ detect_deps() {
         [[ -n "${RUST_STDLIB_PATH}" ]] && HAS_RUST_STDLIB=true || HAS_RUST_STDLIB=false
 
         HAS_STATIC_LIBS=true
-        for req in HAS_GLIBC_STATIC HAS_LIBSTDCXX_STATIC HAS_LLVM_LIBUNWIND_STATIC HAS_COMPILERRT_STATIC; do
+        for req in HAS_GLIBC_STATIC HAS_LIBSTDCXX_STATIC HAS_LIBUNWIND_STATIC HAS_COMPILERRT_STATIC; do
                 [[ "${!req}" == false ]] && {
                         HAS_STATIC_LIBS=false
                         break
@@ -334,7 +334,7 @@ show_build_menu() {
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
         printf "  ${Y}%-30b${N} %b\n" "Glibc static:" "$(dep_status "${HAS_GLIBC_STATIC}" "${GLIBC_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "libstdc++ static:" "$(dep_status "${HAS_LIBSTDCXX_STATIC}" "${LIBSTDCXX_STATIC_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "llvm-libunwind static:" "$(dep_status "${HAS_LLVM_LIBUNWIND_STATIC}" "${LLVM_LIBUNWIND_STATIC_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "libunwind static:" "$(dep_status "${HAS_LIBUNWIND_STATIC}" "${LIBUNWIND_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "compiler-rt static:" "$(dep_status "${HAS_COMPILERRT_STATIC}" "${COMPILERRT_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "Rust STDLIB static:" "$(dep_status "${HAS_RUST_STDLIB}" "${RUST_STDLIB_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${VSHIP_SEARCH_DIRS[@]}")"
