@@ -16,7 +16,7 @@ use crate::{
     progs::ProgsBar,
 };
 
-pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Xerr> {
+pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), Xerr> {
     let idx = VidIdx::new(vid_path, true)?;
     let inf = get_vidinf(&idx)?;
 
@@ -41,7 +41,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path) -> Result<(), Xerr> {
         let progs_clone = Arc::clone(&progs);
         move |current: usize, _keyframes: usize| {
             if let Ok(mut pb) = progs_clone.lock() {
-                pb.up_scenes(current, tot_frames);
+                pb.up_scenes(current, tot_frames, line);
             }
         }
     };

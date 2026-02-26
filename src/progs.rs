@@ -84,7 +84,7 @@ impl ProgsBar {
         _ = io_stdout().flush();
     }
 
-    pub fn up_scenes(&mut self, current: usize, total: usize) {
+    pub fn up_scenes(&mut self, current: usize, total: usize, line: usize) {
         if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
             return;
         }
@@ -105,10 +105,17 @@ impl ProgsBar {
         let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
         let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
 
-        print!(
-            "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
-             FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
-        );
+        if line > 0 {
+            print!(
+                "\x1b[{line};1H\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, \
+                 {Y}{fps} FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
+            );
+        } else {
+            print!(
+                "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
+                 FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
+            );
+        }
         _ = io_stdout().flush();
     }
 
@@ -118,6 +125,49 @@ impl ProgsBar {
     }
 
     pub fn finish_scenes() {
+        print!("\r\x1b[2K");
+        _ = io_stdout().flush();
+    }
+
+    pub fn up_audio(&mut self, current: usize, total: usize, line: usize, pass: u8) {
+        if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
+            return;
+        }
+        self.last_update = Instant::now();
+
+        self.total = total;
+        let elapsed = self.start.elapsed().as_secs() as usize;
+        let sps = current / elapsed.max(1);
+        let ksps = sps / 1000;
+        let remaining = total.saturating_sub(current);
+        let eta_secs = remaining * elapsed / current.max(1);
+        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
+        let bar = format!(
+            "{}{}",
+            G_HASH.repeat(filled),
+            R_DASH.repeat(BAR_WIDTH - filled)
+        );
+        let perc = (current * 100 / total.max(1)).min(100);
+        let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
+        let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
+
+        if line > 0 {
+            print!(
+                "\x1b[{line};1H\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}AU P{pass}: {C}[{bar}{C}] \
+                 {W}{perc}%{C}, {Y}{ksps} kSps{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
+                 {G}{current}{C}/{R}{total}{N}"
+            );
+        } else {
+            print!(
+                "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}AU P{pass}: {C}[{bar}{C}] {W}{perc}%{C}, \
+                 {Y}{ksps} kSps{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
+                 {G}{current}{C}/{R}{total}{N}"
+            );
+        }
+        _ = io_stdout().flush();
+    }
+
+    pub fn finish_audio() {
         print!("\r\x1b[2K");
         _ = io_stdout().flush();
     }

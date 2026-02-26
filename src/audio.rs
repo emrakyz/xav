@@ -1,26 +1,52 @@
 use std::{
     collections::HashSet,
-    fmt::Write as _,
-    fs::{remove_file, write as fs_write},
+    fs::remove_file,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
+    sync::Arc,
 };
+
+use ebur128::{EbuR128, Mode};
 
 use crate::{
-    chunk::{add_mp4_subs, ranges_to_times},
+    chunk::add_mp4_subs,
     error::Xerr,
-    ffms::VidInf,
-    util::assume_unreachable,
+    ffms::{
+        VidIdx, VidInf, aud_src_new, destroy_aud_src, get_audinf, get_audio, set_aud_output_fmt,
+    },
+    opus,
+    progs::ProgsBar,
 };
 
-#[derive(Clone)]
-pub enum AudioBitrate {
-    Auto,
-    Fixed(u32),
-    Norm,
+#[derive(Clone, Copy)]
+pub struct NormParams {
+    pub i: f64,
+    pub tp: f32,
+    pub lra: f64,
+    pub bitrate: u32,
+}
+
+impl NormParams {
+    const fn default() -> Self {
+        Self {
+            i: -16.0,
+            tp: -1.5,
+            lra: 16.0,
+            bitrate: 128,
+        }
+    }
 }
 
 #[derive(Clone)]
+#[non_exhaustive]
+pub enum AudioBitrate {
+    Auto,
+    Fixed(u32),
+    Norm(NormParams),
+}
+
+#[derive(Clone)]
+#[non_exhaustive]
 pub enum AudioStreams {
     All,
     Specific(Vec<usize>),
@@ -33,10 +59,10 @@ pub struct AudioSpec {
 }
 
 #[derive(Clone)]
-struct AudioStream {
-    index: usize,
-    channels: u32,
-    lang: Option<String>,
+pub struct AudioStream {
+    pub index: usize,
+    pub channels: u32,
+    pub lang: Option<String>,
 }
 
 const FF_FLAGS: [&str; 13] = [
@@ -55,17 +81,39 @@ const FF_FLAGS: [&str; 13] = [
     "0",
 ];
 
+fn parse_norm(s: &str) -> Result<NormParams, Xerr> {
+    if s == "norm" {
+        return Ok(NormParams::default());
+    }
+    let inner = s
+        .strip_prefix("norm(")
+        .and_then(|r| r.strip_suffix(')'))
+        .ok_or("norm format: norm or norm(I,TP,LRA)")?;
+    let vals: Vec<&str> = inner.split(',').collect();
+    if vals.len() != 3 {
+        return Err("norm format: norm(I,TP,LRA) e.g. norm(-16,-1.5,16)".into());
+    }
+    Ok(NormParams {
+        i: vals[0].parse()?,
+        tp: vals[1].parse()?,
+        lra: vals[2].parse()?,
+        bitrate: 128,
+    })
+}
+
 pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Xerr> {
     let parts: Vec<&str> = arg.split_whitespace().collect();
     if parts.len() != 2 {
-        return Err("Audio format: -a <auto|norm|bitrate> <all|stream_ids>".into());
+        return Err("Audio format: -a <auto|norm|norm(I,TP,LRA)|bitrate> <all|stream_ids>".into());
     }
 
     Ok(AudioSpec {
-        bitrate: match parts[0] {
-            "auto" => AudioBitrate::Auto,
-            "norm" => AudioBitrate::Norm,
-            _ => AudioBitrate::Fixed(parts[0].parse()?),
+        bitrate: if parts[0] == "auto" {
+            AudioBitrate::Auto
+        } else if parts[0].starts_with("norm") {
+            AudioBitrate::Norm(parse_norm(parts[0])?)
+        } else {
+            AudioBitrate::Fixed(parts[0].parse()?)
         },
         streams: if parts[1] == "all" {
             AudioStreams::All
@@ -183,174 +231,280 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
     Ok(streams)
 }
 
-fn add_opus_args(cmd: &mut Command, bitrate: u32, channels: u32, normalize: bool) {
-    if !normalize && matches!(channels, 6..=8) {
-        let layout = ["5.1", "6.1", "7.1"][channels as usize - 6];
-        cmd.args(["-af", &format!("channelmap=channel_layout={layout}")]);
-    }
-    cmd.args([
-        "-c:a",
-        "libopus",
-        "-ar",
-        "48000",
-        "-b:a",
-        &format!("{bitrate}k"),
-        "-application",
-        "audio",
-        "-compression_level",
-        "10",
-        "-vbr",
-        "on",
-        "-mapping_family",
-        if normalize || channels <= 2 { "0" } else { "1" },
-        "-apply_phase_inv",
-        "true",
-        "-packet_loss",
-        "0",
-    ]);
+fn frame_to_sample(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
+    #[allow(clippy::cast_possible_wrap)]
+    let f = frame as i64;
+    (f * i64::from(fps_den) * i64::from(rate)) / i64::from(fps_num)
 }
 
-fn encode_stream(
-    input: &Path,
+fn reorder_surround(buf: &mut [f32], channels: usize, num_samples: usize) {
+    let map: &[usize] = match channels {
+        6 => &[0, 2, 1, 4, 5, 3],
+        7 => &[0, 2, 1, 5, 6, 4, 3],
+        8 => &[0, 2, 1, 6, 7, 4, 5, 3],
+        _ => return,
+    };
+    let mut tmp = [0.0f32; 8];
+    for i in 0..num_samples {
+        let base = i * channels;
+        for (j, &m) in map.iter().enumerate() {
+            tmp[j] = buf[base + m];
+        }
+        buf[base..base + channels].copy_from_slice(&tmp[..channels]);
+    }
+}
+
+fn downmix_to_stereo(input: &[f32], channels: usize, num_samples: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(num_samples * 2);
+    for i in 0..num_samples {
+        let b = i * channels;
+        let fl = input[b];
+        let fr = input[b + 1];
+        let fc = if channels >= 3 { input[b + 2] } else { 0.0 };
+        let (sl, sr, bl, br, bc) = match channels {
+            6 => (input[b + 4], input[b + 5], 0.0, 0.0, 0.0),
+            7 => (input[b + 5], input[b + 6], 0.0, 0.0, input[b + 4]),
+            8 => (input[b + 6], input[b + 7], input[b + 4], input[b + 5], 0.0),
+            _ => (0.0, 0.0, 0.0, 0.0, 0.0),
+        };
+        out.push(0.707f32.mul_add(
+            fc,
+            0.707f32.mul_add(sl, 0.5f32.mul_add(bl, 0.5f32.mul_add(bc, fl))),
+        ));
+        out.push(0.707f32.mul_add(
+            fc,
+            0.707f32.mul_add(sr, 0.5f32.mul_add(br, 0.5f32.mul_add(bc, fr))),
+        ));
+    }
+    out
+}
+
+fn encode_direct(
+    idx: &VidIdx,
     stream: &AudioStream,
     bitrate: u32,
     output: &Path,
-    normalize: bool,
-    times: Option<&[(f64, f64)]>,
+    ranges: Option<&[(usize, usize)]>,
+    inf: &VidInf,
+    progs_line: usize,
 ) -> Result<(), Xerr> {
-    if let Some(t) = times
-        && t.len() > 1
-    {
-        return encode_stream_multi(input, stream, bitrate, output, normalize, t);
+    #[allow(clippy::cast_possible_wrap)]
+    let aud = aud_src_new(idx, stream.index as i32)?;
+    set_aud_output_fmt(aud, 48000)?;
+    let ainf = get_audinf(aud);
+
+    let ch = ainf.channels as usize;
+    let channels = ainf.channels as u8;
+    let family = if channels <= 2 {
+        opus::FAMILY_MONO_STEREO
+    } else {
+        opus::FAMILY_SURROUND
+    };
+
+    let sample_ranges: Vec<(i64, i64)> = ranges.map_or_else(
+        || vec![(0, ainf.num_samples)],
+        |r| {
+            r.iter()
+                .map(|&(s, e)| {
+                    (
+                        frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
+                        frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
+                    )
+                })
+                .collect()
+        },
+    );
+
+    let total_samples: i64 = sample_ranges.iter().map(|&(s, e)| e - s).sum();
+    let mut enc = opus::Encoder::new(output, channels, bitrate, family)?;
+
+    let chunk_size: i64 = 48000;
+    let mut buf = vec![0f32; chunk_size as usize * ch];
+    let mut progs = ProgsBar::new();
+    let mut encoded: i64 = 0;
+
+    for &(start, end) in &sample_ranges {
+        let mut pos = start;
+        while pos < end {
+            let count = chunk_size.min(end - pos);
+            let sl = &mut buf[..count as usize * ch];
+            get_audio(aud, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
+
+            if ch > 2 {
+                reorder_surround(sl, ch, count as usize);
+            }
+
+            enc.write_float(sl, ch)?;
+
+            encoded += count;
+            progs.up_audio(encoded as usize, total_samples as usize, progs_line, 1);
+            pos += count;
+        }
     }
 
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-loglevel",
-        "error",
-        "-hide_banner",
-        "-nostdin",
-        "-stats",
-        "-y",
-    ]);
-
-    if let Some(t) = times
-        && t.len() == 1
-    {
-        cmd.args(["-ss", &format!("{:.6}", t[0].0)]);
-        cmd.args(["-t", &format!("{:.6}", t[0].1 - t[0].0)]);
-    }
-
-    cmd.arg("-i")
-        .arg(input)
-        .args([
-            "-map_metadata",
-            "-1",
-            "-map_chapters",
-            "-1",
-            "-dn",
-            "-sn",
-            "-vn",
-            "-map",
-        ])
-        .arg(format!("0:{}", stream.index));
-
-    if normalize {
-        cmd.args([
-            "-af",
-            "pan=stereo|FL=FL+0.707*FC+0.707*SL+0.5*BL+0.5*BC|FR=FR+0.707*FC+0.707*SR+0.5*BR+0.5*\
-             BC,loudnorm=I=-14:TP=-2.5:LRA=14",
-        ]);
-    }
-
-    add_opus_args(&mut cmd, bitrate, stream.channels, normalize);
-    cmd.args(FF_FLAGS)
-        .arg(output)
-        .status()
-        .ok()
-        .filter(ExitStatus::success)
-        .ok_or_else(|| format!("Failed to encode stream {}", stream.index))?;
+    drop(enc);
+    destroy_aud_src(aud);
+    ProgsBar::finish_audio();
     Ok(())
 }
 
-fn encode_stream_multi(
-    input: &Path,
+fn encode_norm(
+    idx: &VidIdx,
     stream: &AudioStream,
-    bitrate: u32,
     output: &Path,
-    normalize: bool,
-    times: &[(f64, f64)],
+    ranges: Option<&[(usize, usize)]>,
+    inf: &VidInf,
+    np: NormParams,
+    progs_line: usize,
 ) -> Result<(), Xerr> {
-    let temp_dir = unsafe { output.parent().unwrap_unchecked() };
-    let mut segments = Vec::new();
+    #[allow(clippy::cast_possible_wrap)]
+    let aud = aud_src_new(idx, stream.index as i32)?;
+    set_aud_output_fmt(aud, 48000)?;
+    let ainf = get_audinf(aud);
 
-    for (i, &(start, end)) in times.iter().enumerate() {
-        let seg_path = temp_dir.join(format!("audio_enc_{i}.opus"));
+    let ch = ainf.channels as usize;
 
-        let mut cmd = Command::new("ffmpeg");
-        cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
-            .args(["-ss", &format!("{start:.6}")])
-            .args(["-t", &format!("{:.6}", end - start)])
-            .arg("-i")
-            .arg(input)
-            .args([
-                "-map_metadata",
-                "-1",
-                "-map_chapters",
-                "-1",
-                "-dn",
-                "-sn",
-                "-vn",
-                "-map",
-            ])
-            .arg(format!("0:{}", stream.index));
+    let sample_ranges: Vec<(i64, i64)> = ranges.map_or_else(
+        || vec![(0, ainf.num_samples)],
+        |r| {
+            r.iter()
+                .map(|&(s, e)| {
+                    (
+                        frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
+                        frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
+                    )
+                })
+                .collect()
+        },
+    );
 
-        if normalize {
-            cmd.args([
-                "-af",
-                "pan=stereo|FL=FL+0.707*FC+0.707*SL+0.5*BL+0.5*BC|FR=FR+0.707*FC+0.707*SR+0.5*\
-                 BR+0.5*BC,loudnorm=I=-14:TP=-2.5:LRA=14",
-            ]);
+    let total_samples: i64 = sample_ranges.iter().map(|&(s, e)| e - s).sum();
+
+    let mut progs = ProgsBar::new();
+
+    let mut raw = Vec::with_capacity(total_samples as usize * ch);
+    let chunk_size: i64 = 48000;
+    let mut buf = vec![0f32; chunk_size as usize * ch];
+    let mut decoded: i64 = 0;
+
+    for &(start, end) in &sample_ranges {
+        let mut pos = start;
+        while pos < end {
+            let count = chunk_size.min(end - pos);
+            let sl = &mut buf[..count as usize * ch];
+            get_audio(aud, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
+            raw.extend_from_slice(sl);
+            decoded += count;
+            progs.up_audio(decoded as usize, total_samples as usize, progs_line, 1);
+            pos += count;
         }
-
-        add_opus_args(&mut cmd, bitrate, stream.channels, normalize);
-        cmd.arg(&seg_path);
-
-        if cmd.status().is_ok_and(|s| s.success()) {
-            segments.push(seg_path);
-        }
     }
 
-    if segments.is_empty() {
-        return Err("No audio segments encoded".into());
+    destroy_aud_src(aud);
+
+    let mut stereo = if ch > 2 {
+        downmix_to_stereo(&raw, ch, total_samples as usize)
+    } else {
+        raw
+    };
+
+    let mut ebur =
+        EbuR128::new(2, 48000, Mode::I | Mode::TRUE_PEAK | Mode::LRA).map_err(|e| e.to_string())?;
+    ebur.add_frames_f32(&stereo).map_err(|e| e.to_string())?;
+    let lufs = ebur.loudness_global().map_err(|e| e.to_string())?;
+    let lra = ebur.loudness_range().map_err(|e| e.to_string())?;
+
+    let mut gain = 10f64.powf((np.i - lufs) / 20.0);
+    if lra > np.lra {
+        gain *= np.lra / lra;
+    }
+    let tp_limit = 10f32.powf(np.tp / 20.0);
+
+    for s in &mut stereo {
+        *s = (f64::from(*s) * gain) as f32;
+        *s = s.clamp(-tp_limit, tp_limit);
     }
 
-    let concat_list = temp_dir.join(format!("concat_{}.txt", stream.index));
-    let mut content = String::new();
-    for seg in &segments {
-        _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
-    }
-    fs_write(&concat_list, content)?;
+    let stereo_samples = stereo.len() / 2;
+    let mut enc = opus::Encoder::new(output, 2, np.bitrate, opus::FAMILY_MONO_STEREO)?;
+    progs = ProgsBar::new();
+    let enc_chunk = 48000usize;
+    let mut pos = 0;
 
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
-        .args(["-f", "concat", "-safe", "0", "-i"])
-        .arg(&concat_list)
-        .args(["-c", "copy"])
-        .arg(output);
-
-    let status = cmd.status()?;
-
-    _ = remove_file(&concat_list);
-    for seg in &segments {
-        _ = remove_file(seg);
+    while pos < stereo_samples {
+        let count = enc_chunk.min(stereo_samples - pos);
+        let start = pos * 2;
+        let end = start + count * 2;
+        enc.write_float(&stereo[start..end], 2)?;
+        pos += count;
+        progs.up_audio(pos, stereo_samples, progs_line, 2);
     }
 
-    if !status.success() {
-        return Err(format!("Failed to concat stream {}", stream.index).into());
-    }
-
+    drop(enc);
+    ProgsBar::finish_audio();
     Ok(())
+}
+
+pub fn encode_audio_streams(
+    spec: &AudioSpec,
+    input: &Path,
+    idx: &Arc<VidIdx>,
+    ranges: Option<&[(usize, usize)]>,
+    inf: &VidInf,
+    work_dir: &Path,
+    progs_line: usize,
+) -> Result<Vec<(AudioStream, PathBuf)>, Xerr> {
+    let all = get_streams(input)?;
+    let sel: Vec<_> = match spec.streams {
+        AudioStreams::All => all.iter().collect(),
+        AudioStreams::Specific(ref ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
+    };
+
+    let norm_params = match spec.bitrate {
+        AudioBitrate::Norm(p) => Some(p),
+        _ => None,
+    };
+
+    sel.iter()
+        .map(|s| {
+            let do_norm = norm_params.is_some() && s.channels > 2;
+            let br = if do_norm {
+                128
+            } else {
+                match spec.bitrate {
+                    AudioBitrate::Auto | AudioBitrate::Norm(_) => {
+                        let cc = match s.channels {
+                            1 => 1.0,
+                            2 => 2.0,
+                            3 => 2.1,
+                            4 => 3.1,
+                            5 => 4.1,
+                            6 => 5.1,
+                            7 => 6.1,
+                            8 => 7.1,
+                            _ => f64::from(s.channels),
+                        };
+                        (128.0 * (cc / 2.0f64).powf(0.75)) as u32
+                    }
+                    AudioBitrate::Fixed(b) => b,
+                }
+            };
+            let path = work_dir.join(format!(
+                "{}_{:02}.opus",
+                s.lang.as_deref().unwrap_or("und"),
+                s.index
+            ));
+
+            if let Some(np) = norm_params
+                && do_norm
+            {
+                encode_norm(idx, s, &path, ranges, inf, np, progs_line)?;
+            } else {
+                encode_direct(idx, s, br, &path, ranges, inf, progs_line)?;
+            }
+            Ok::<_, Xerr>(((*s).clone(), path))
+        })
+        .collect()
 }
 
 fn mux_files(
@@ -419,71 +573,21 @@ fn mux_files(
     Ok(())
 }
 
-pub fn process_audio(
-    spec: &AudioSpec,
-    input: &Path,
+pub fn mux_audio(
+    files: &[(AudioStream, PathBuf)],
     video: &Path,
+    input: &Path,
     output: &Path,
-    ranges: Option<&[(usize, usize)]>,
-    inf: &VidInf,
+    has_ranges: bool,
+    dar: Option<(u32, u32)>,
 ) -> Result<(), Xerr> {
-    let all = get_streams(input)?;
-    let sel: Vec<_> = match spec.streams {
-        AudioStreams::All => all.iter().collect(),
-        AudioStreams::Specific(ref ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
-    };
+    mux_files(video, files, input, output, has_ranges, dar)?;
 
-    let times = ranges.map(|r| ranges_to_times(r, inf.fps_num, inf.fps_den));
-
-    let work = unsafe { input.parent().unwrap_unchecked() };
-    let (use_norm, base_bitrate) = match spec.bitrate {
-        AudioBitrate::Norm => (true, 128),
-        AudioBitrate::Auto | AudioBitrate::Fixed(_) => (false, 0),
-    };
-
-    let files: Vec<_> = sel
-        .iter()
-        .map(|s| {
-            let br = if use_norm {
-                base_bitrate
-            } else {
-                match spec.bitrate {
-                    AudioBitrate::Auto => {
-                        let cc = match s.channels {
-                            1 => 1.0,
-                            2 => 2.0,
-                            3 => 2.1,
-                            4 => 3.1,
-                            5 => 4.1,
-                            6 => 5.1,
-                            7 => 6.1,
-                            8 => 7.1,
-                            _ => f64::from(s.channels),
-                        };
-                        (128.0 * (cc / 2.0f64).powf(0.75)) as u32
-                    }
-                    AudioBitrate::Fixed(b) => b,
-                    AudioBitrate::Norm => assume_unreachable(),
-                }
-            };
-            let path = work.join(format!(
-                "{}_{:02}.opus",
-                s.lang.as_deref().unwrap_or("und"),
-                s.index
-            ));
-
-            encode_stream(input, s, br, &path, use_norm, times.as_deref())?;
-            Ok::<_, Xerr>(((*s).clone(), path))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    mux_files(video, &files, input, output, ranges.is_some(), inf.dar)?;
-
-    if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
+    if !has_ranges && output.extension().is_some_and(|e| e == "mp4") {
         add_mp4_subs(input, output);
     }
 
-    for item in &files {
+    for item in files {
         _ = remove_file(&item.1);
     }
     Ok(())
