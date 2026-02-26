@@ -397,16 +397,20 @@ cleanup_existing() {
         echo -e "\n${Y}Found existing build directories:${N}"
         printf "  ${P}- %s${N}\n" "${found[@]}"
 
-        echo -ne "\n${C}Remove and rebuild? (y/n): ${N}"
-        read -r choice
+        if [[ -n "${preset}" ]]; then
+                loginf b "Using existing builds"
+        else
+                echo -ne "\n${C}Remove and rebuild? (y/n): ${N}"
+                read -r choice
 
-        [[ "${choice}" =~ ^[Yy]$ ]] && {
-                for dir in "${found[@]}"; do
-                        loginf b "Removing ${BUILD_DIR}/${dir}"
-                        rm -rf "${BUILD_DIR:?}/${dir}" > "/dev/null" 2>&1
-                done
-                loginf g "Cleanup complete"
-        } || loginf b "Using existing builds"
+                [[ "${choice}" =~ ^[Yy]$ ]] && {
+                        for dir in "${found[@]}"; do
+                                loginf b "Removing ${BUILD_DIR}/${dir}"
+                                rm -rf "${BUILD_DIR:?}/${dir}" > "/dev/null" 2>&1
+                        done
+                        loginf g "Cleanup complete"
+                } || loginf b "Using existing builds"
+        fi
 
         echo
 }
@@ -738,7 +742,7 @@ setup_toolchain() {
         export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -static -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
-        export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=safe -static -fno-pic -fno-pie"
+        export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=safe -static -fno-pic -fno-pie"
 }
 
 SVT_FORK_NAMES=("hdr" "essential" "5fish" "mainline")
