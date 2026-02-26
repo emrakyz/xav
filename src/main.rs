@@ -12,6 +12,7 @@ use std::{
     panic::set_hook,
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
     time::{Duration, Instant},
 };
 
@@ -26,6 +27,7 @@ mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
 mod noise;
+mod opus;
 pub mod pipeline;
 mod progs;
 mod scd;
@@ -39,7 +41,7 @@ mod vship;
 mod worker;
 mod y4m;
 
-use audio::{AudioSpec, parse_audio_arg, process_audio};
+use audio::{AudioSpec, AudioStream, encode_audio_streams, mux_audio, parse_audio_arg};
 use chunk::{
     Chunk, chunkify, get_resume, init_elapsed, load_scenes, merge_out, translate_scenes,
     validate_scenes,
@@ -460,9 +462,9 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
     args
 }
 
-fn ensure_scene_file(args: &Args) -> Result<(), Xerr> {
+fn ensure_scene_file(args: &Args, line: usize) -> Result<(), Xerr> {
     if !args.scene_file.exists() {
-        fd_scenes(&args.input, &args.scene_file)?;
+        fd_scenes(&args.input, &args.scene_file, line)?;
     }
     Ok(())
 }
@@ -515,11 +517,113 @@ fn init_pipe_crop(idx: &Arc<VidIdx>, inf: VidInf) -> (VidInf, (u32, u32), Option
     }
 }
 
+fn adjust_dar(inf: &mut VidInf, crop: (u32, u32)) {
+    if let Some((dw, dh)) = inf.dar {
+        let fw = u64::from(inf.width - crop.1 * 2);
+        let fh = u64::from(inf.height - crop.0 * 2);
+        let n = u64::from(dw) * u64::from(inf.height) * fw;
+        let d = u64::from(dh) * u64::from(inf.width) * fh;
+        let g = gcd(n, d);
+        inf.dar = Some(((n / g) as u32, (d / g) as u32));
+    }
+}
+
+fn finalize_audio(
+    spec: &AudioSpec,
+    cached: Option<Vec<(AudioStream, PathBuf)>>,
+    args: &Args,
+    idx: &Arc<VidIdx>,
+    inf: &VidInf,
+    video_mkv: &Path,
+    work_dir: &Path,
+) -> Result<(), Xerr> {
+    let files = if let Some(f) = cached {
+        f
+    } else {
+        encode_audio_streams(
+            spec,
+            &args.input,
+            idx,
+            args.ranges.as_deref(),
+            inf,
+            work_dir,
+            0,
+        )?
+    };
+    mux_audio(
+        &files,
+        video_mkv,
+        &args.input,
+        &args.output,
+        args.ranges.is_some(),
+        inf.dar,
+    )?;
+    remove_file(video_mkv)?;
+    Ok(())
+}
+
+fn scd_and_audio(
+    args: &Args,
+    work_dir: &Path,
+) -> Result<Option<Vec<(AudioStream, PathBuf)>>, Xerr> {
+    if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Encoder::Avm {
+        let pre_idx = VidIdx::new(&args.input, true)?;
+        let pre_inf = get_vidinf(&pre_idx)?;
+
+        let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
+        let input = args.input.clone();
+        let ranges = args.ranges.clone();
+        let idx_for_audio = Arc::clone(&pre_idx);
+        let inf_for_audio = pre_inf;
+        let wd = work_dir.to_path_buf();
+        drop(pre_idx);
+
+        let audio_handle = thread::spawn(move || {
+            encode_audio_streams(
+                &spec,
+                &input,
+                &idx_for_audio,
+                ranges.as_deref(),
+                &inf_for_audio,
+                &wd,
+                3,
+            )
+        });
+
+        fd_scenes(&args.input, &args.scene_file, 1)?;
+
+        print!("\x1b[1;1H\x1b[2K\x1b[3;1H\x1b[2K\x1b[1;1H");
+        _ = stdout().flush();
+
+        let result = audio_handle
+            .join()
+            .map_err(|_e| Xerr::Msg("Audio encoding thread panicked".into()))?;
+        Ok(Some(result?))
+    } else {
+        ensure_scene_file(args, 0)?;
+        Ok(None)
+    }
+}
+
 fn main_with_args(args: &Args) -> Result<(), Xerr> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     _ = stdout().flush();
 
-    ensure_scene_file(args)?;
+    let canonical_input = args.input.canonicalize()?;
+    let hash = hash_input(&canonical_input);
+    let work_dir = canonical_input.with_file_name(format!(".{}", &hash[..7]));
+
+    let is_new_encode = !work_dir.exists();
+    create_dir_all(&work_dir)?;
+
+    #[cfg(feature = "vship")]
+    TQ_RESUMED.get_or_init(|| !is_new_encode);
+
+    if is_new_encode {
+        save_args(&work_dir)?;
+    }
+
+    let audio_files = scd_and_audio(args, &work_dir)?;
 
     println!();
 
@@ -541,31 +645,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         return Ok(());
     }
 
-    let canonical_input = args.input.canonicalize()?;
-    let hash = hash_input(&canonical_input);
-    let work_dir = canonical_input.with_file_name(format!(".{}", &hash[..7]));
-
-    let is_new_encode = !work_dir.exists();
-    #[cfg(feature = "vship")]
-    TQ_RESUMED.get_or_init(|| !is_new_encode);
-
     create_dir_all(work_dir.join("split"))?;
     create_dir_all(work_dir.join("encode"))?;
 
-    if is_new_encode {
-        save_args(&work_dir)?;
-    }
-
     let (mut inf, crop, pipe_reader) = init_pipe_crop(&idx, inf);
 
-    if let Some((dw, dh)) = inf.dar {
-        let fw = u64::from(inf.width - crop.1 * 2);
-        let fh = u64::from(inf.height - crop.0 * 2);
-        let n = u64::from(dw) * u64::from(inf.height) * fw;
-        let d = u64::from(dh) * u64::from(inf.width) * fh;
-        let g = gcd(n, d);
-        inf.dar = Some(((n / g) as u32, (d / g) as u32));
-    }
+    adjust_dar(&mut inf, crop);
 
     args.decode_strat = Some(get_decode_strat(&idx, &inf, crop)?);
 
@@ -615,15 +700,15 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     if let Some(ref audio_spec) = args.audio
         && args.encoder != Encoder::Avm
     {
-        process_audio(
+        finalize_audio(
             audio_spec,
-            &args.input,
-            &video_mkv,
-            &args.output,
-            args.ranges.as_deref(),
+            audio_files,
+            &args,
+            &idx,
             &inf,
+            &video_mkv,
+            &work_dir,
         )?;
-        remove_file(&video_mkv)?;
     }
 
     print_summary(&args, &inf, &chunks, crop, enc_time);

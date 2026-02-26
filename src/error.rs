@@ -2,7 +2,7 @@ use std::{
     ffi::NulError,
     fmt::{Arguments, Display},
     io::{self, Write as _, stderr, stdout},
-    num::ParseIntError,
+    num::{ParseFloatError, ParseIntError},
     process,
 };
 
@@ -16,6 +16,9 @@ pub enum Xerr {
 
     #[error("{0}")]
     ParseInt(#[from] ParseIntError),
+
+    #[error("{0}")]
+    ParseFloat(#[from] ParseFloatError),
 
     #[error("{0}")]
     Msg(String),

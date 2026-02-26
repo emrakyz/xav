@@ -1,5 +1,7 @@
 #[cfg(any(feature = "vship", feature = "libsvtav1"))]
 use std::fs::File;
+#[cfg(any(feature = "vship", feature = "libsvtav1"))]
+use std::io::Write;
 #[cfg(feature = "vship")]
 use std::{
     collections::BTreeMap,
@@ -11,7 +13,6 @@ use std::{
 use std::{
     collections::HashSet,
     fs::metadata,
-    io::Write,
     panic::resume_unwind,
     path::{Path, PathBuf},
     sync::{

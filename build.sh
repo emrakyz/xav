@@ -12,7 +12,7 @@ R='\e[1;91m' B='\e[1;94m' P='\e[1;95m' Y='\e[1;93m'
 N='\033[0m' C='\e[1;96m' G='\e[1;92m' W='\e[1;97m'
 
 loginf() {
-        sleep "0.3"
+        sleep "0.1"
 
         case "${1}" in
                 g) COL="${G}" MSG="DONE!" ;;
@@ -187,18 +187,13 @@ detect_deps() {
         VSHIP_STATIC_PATH="$(find_lib libvship.a "${VSHIP_SEARCH_DIRS[@]}" || true)"
         [[ -n "${VSHIP_STATIC_PATH}" ]] && HAS_VSHIP_STATIC=true || HAS_VSHIP_STATIC=false
 
-        SVT_SEARCH_DIRS=(
-                "${HOME}/.local/src/svt-av1-hdr/Bin/Release"
-                "${HOME}/.local/src/SVT-AV1/Bin/Release"
-                "/usr/lib64"
-                "/usr/lib"
-                "/usr/local/lib64"
-                "/usr/local/lib"
-                "/lib64"
-                "/lib"
-        )
-        SVT_STATIC_PATH="$(find_lib libSvtAv1Enc.a "${SVT_SEARCH_DIRS[@]}" || true)"
-        [[ -n "${SVT_STATIC_PATH}" ]] && HAS_SVT_STATIC=true || HAS_SVT_STATIC=false
+        LLVM_LIB_DIRS=()
+        while IFS= read -r d; do
+                LLVM_LIB_DIRS+=("${d}")
+        done < <(find /usr/lib/llvm /usr/lib64/llvm -maxdepth 3 -type d -name "lib64" -o -type d -name "lib" 2> /dev/null || true)
+        POLLY_PATH="$(find_lib libPolly.so "${SYS_LIB_DIRS[@]}" "${LLVM_LIB_DIRS[@]}" || true)"
+        [[ -z "${POLLY_PATH}" ]] && POLLY_PATH="$(find_lib LLVMPolly.so "${SYS_LIB_DIRS[@]}" "${LLVM_LIB_DIRS[@]}" || true)"
+        [[ -n "${POLLY_PATH}" ]] && HAS_POLLY=true || HAS_POLLY=false
 
         FFMS2_PATH="$(find_lib libffms2.so "${SYS_LIB_DIRS[@]}" || true)"
         [[ -n "${FFMS2_PATH}" ]] && HAS_FFMS2=true || HAS_FFMS2=false
@@ -284,10 +279,10 @@ detect_deps() {
                 [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_FFMS2}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_FFMS2}" == true && "${HAS_SVT_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_FFMS2}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
         else
                 ELIGIBLE=(false false false false false false false false)
         fi
@@ -342,7 +337,6 @@ show_build_menu() {
         printf "  ${Y}%-30b${N} %b\n" "llvm-libunwind static:" "$(dep_status "${HAS_LLVM_LIBUNWIND_STATIC}" "${LLVM_LIBUNWIND_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "compiler-rt static:" "$(dep_status "${HAS_COMPILERRT_STATIC}" "${COMPILERRT_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "Rust STDLIB static:" "$(dep_status "${HAS_RUST_STDLIB}" "${RUST_STDLIB_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) SVT-AV1 static:" "$(dep_status_locations "${HAS_SVT_STATIC}" "${SVT_STATIC_PATH}" "${SVT_SEARCH_DIRS[@]}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${VSHIP_SEARCH_DIRS[@]}")"
         echo
 
@@ -351,14 +345,12 @@ show_build_menu() {
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
         printf "  ${Y}%-30b${N} %b\n" "FFMS2:" "$(dep_status "${HAS_FFMS2}" "${FFMS2_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP:" "$(dep_status "${HAS_VSHIP}" "${VSHIP_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) SVT-AV1 static:" "$(dep_status_locations "${HAS_SVT_STATIC}" "${SVT_STATIC_PATH}" "${SVT_SEARCH_DIRS[@]}")"
-        echo -e "  ${P}Note: Even with dynamic builds, SVT-AV1 library (libSvtAv1Enc.a) is linked statically.${N}"
         echo
 
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
         echo -e "${C}║${W}  Runtime Requirements                                                 ${C}║${N}"
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
-        printf "  ${Y}%-30b${N} %b\n" "ffmpeg (Always needed for final muxing and audio encoding):" " $(dep_status "${HAS_FFMPEG}" "${FFMPEG_PATH}" "${FFMPEG_VERSION}")"
+        printf "  ${Y}%-30b${N} %b\n" "ffmpeg (Always needed for final muxing):" " $(dep_status "${HAS_FFMPEG}" "${FFMPEG_PATH}" "${FFMPEG_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) MP4Box (create VVC timestamps):                 " " $(dep_status "${HAS_MP4BOX}" "${MP4BOX_PATH}" "${MP4BOX_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) mkvmerge (create h26* timestamps):" "               $(dep_status "${HAS_MKVMERGE}" "${MKVMERGE_PATH}" "${MKVMERGE_VERSION}")"
         echo
@@ -393,9 +385,7 @@ show_build_menu() {
 }
 
 cleanup_existing() {
-        [[ "${build_static}" == false ]] && return 0
-
-        local dirs=("dav1d" "FFmpeg" "ffms2" "zlib")
+        local dirs=("dav1d" "FFmpeg" "ffms2" "zlib" "opus" "libopusenc" "SVT-AV1")
         local found=()
 
         for dir in "${dirs[@]}"; do
@@ -540,6 +530,14 @@ build_ffmpeg() {
                 --enable-decoder=vp9 \
                 --enable-decoder=vc1 \
                 --enable-decoder=vvc \
+                --enable-decoder=aac \
+                --enable-decoder=ac3 \
+                --enable-decoder=eac3 \
+                --enable-decoder=dts \
+                --enable-decoder=opus \
+                --enable-decoder=vorbis \
+                --enable-decoder=flac \
+                --enable-decoder=truehd \
                 --enable-libdav1d \
                 --enable-parser=h264 \
                 --enable-parser=hevc \
@@ -548,12 +546,83 @@ build_ffmpeg() {
                 --enable-parser=av1 \
                 --enable-parser=vp9 \
                 --enable-parser=vvc \
-                --enable-parser=vc1 >> "${logfile}" 2>&1
+                --enable-parser=vc1 \
+                --enable-parser=aac \
+                --enable-parser=ac3 \
+                --enable-parser=dca \
+                --enable-parser=mpegaudio \
+                --enable-parser=opus \
+                --enable-parser=vorbis \
+                --enable-parser=flac >> "${logfile}" 2>&1
 
         make -j"$(nproc)" >> "${logfile}" 2>&1
         make install DESTDIR="${BUILD_DIR}/FFmpeg/install" prefix="" >> "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
                 loginf g "FFmpeg built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
+build_opus() {
+        [[ -d "${BUILD_DIR}/opus" ]] && return
+
+        loginf b "Building opus"
+
+        local logfile="/tmp/build_opus_$.log"
+
+        git clone https://gitlab.xiph.org/xiph/opus.git "${BUILD_DIR}/opus" > "${logfile}" 2>&1
+        cd "${BUILD_DIR}/opus"
+        cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_INSTALL_PREFIX="${BUILD_DIR}/opus/install" \
+                -DCMAKE_C_COMPILER="${CC}" \
+                -DCMAKE_C_FLAGS="${CFLAGS}" \
+                -DCMAKE_INSTALL_LIBDIR=lib \
+                -DOPUS_BUILD_TESTING=OFF \
+                -DOPUS_BUILD_SHARED_LIBRARY=OFF \
+                -DOPUS_BUILD_PROGRAMS=OFF \
+                -DOPUS_ENABLE_FLOAT_API=ON \
+                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE >> "${logfile}" 2>&1
+        ninja -C build >> "${logfile}" 2>&1
+        ninja -C build install >> "${logfile}" 2>&1 && {
+                rm -f "${logfile}"
+                loginf g "opus built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
+build_opusenc() {
+        [[ -d "${BUILD_DIR}/libopusenc" ]] && return
+
+        loginf b "Building libopusenc"
+
+        local logfile="/tmp/build_opusenc_$.log"
+
+        git clone https://gitlab.xiph.org/xiph/libopusenc.git "${BUILD_DIR}/libopusenc" > "${logfile}" 2>&1
+        cd "${BUILD_DIR}/libopusenc"
+        ./autogen.sh >> "${logfile}" 2>&1
+        PKG_CONFIG_PATH="${BUILD_DIR}/opus/install/lib/pkgconfig" \
+                CC="${CC}" \
+                CFLAGS="${CFLAGS} -I${BUILD_DIR}/opus/install/include" \
+                LDFLAGS="${LDFLAGS} -L${BUILD_DIR}/opus/install/lib" \
+                ./configure \
+                --enable-static \
+                --disable-shared \
+                --disable-doc \
+                --disable-examples \
+                --prefix="${BUILD_DIR}/libopusenc/install" >> "${logfile}" 2>&1
+        make -j"$(nproc)" >> "${logfile}" 2>&1
+        make install >> "${logfile}" 2>&1 && {
+                rm -f "${logfile}"
+                loginf g "libopusenc built successfully"
         } || {
                 echo -e "\n${R}Build failed! Output:${N}\n"
                 cat "${logfile}"
@@ -600,6 +669,39 @@ build_ffms2() {
         }
 }
 
+build_svtav1() {
+        [[ -d "${BUILD_DIR}/SVT-AV1" ]] && return
+
+        loginf b "Building SVT-AV1 (${svt_fork_name})"
+
+        local logfile="/tmp/build_svtav1_$.log"
+
+        git clone "${svt_fork_url}" "${BUILD_DIR}/SVT-AV1" > "${logfile}" 2>&1
+        cd "${BUILD_DIR}/SVT-AV1"
+
+        sed -i 's/set(CMAKE_POSITION_INDEPENDENT_CODE OFF)/set(CMAKE_POSITION_INDEPENDENT_CODE ON)/' CMakeLists.txt
+        sed -i 's/set(CMAKE_C_STANDARD 99)/set(CMAKE_C_STANDARD 23)/' CMakeLists.txt
+        sed -i 's/set(CMAKE_CXX_STANDARD 11)/set(CMAKE_CXX_STANDARD 23)/' CMakeLists.txt
+        sed -i '/relro/s/^/#/' CMakeLists.txt
+        sed -i '/mno-avx/s/^/#/' CMakeLists.txt
+        sed -i '/fstack-protector-strong/s/^/#/' CMakeLists.txt
+        sed -i '/FORTIFY_SOURCE/s/^/#/' CMakeLists.txt
+        sed -i '/gdwarf/s/^/#/' CMakeLists.txt
+        sed -i '/gnull/s/^/#/' CMakeLists.txt
+
+        cd Build/linux
+        grep -q avx512f /proc/cpuinfo && HAS_512="enable-avx512" || HAS_512="disable-avx512"
+        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo >> "${logfile}" 2>&1 && {
+                rm -f "${logfile}"
+                loginf g "SVT-AV1 built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
 setup_toolchain() {
         export CC="clang"
         export CXX="clang++"
@@ -611,7 +713,7 @@ setup_toolchain() {
         export OBJCOPY="llvm-objcopy"
         export OBJDUMP="llvm-objdump"
 
-        [[ "${polly}" == "ON" ]] && export POLLY_FLAGS="-mllvm -polly \
+        [[ "${HAS_POLLY}" == true ]] && export POLLY_FLAGS="-mllvm -polly \
 -mllvm -polly-position=before-vectorizer \
 -mllvm -polly-parallel \
 -mllvm -polly-omp-backend=LLVM \
@@ -635,37 +737,40 @@ setup_toolchain() {
 
         export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -static -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
-        export CXXFLAGS="${COMMON_FLAGS} -stdlib=${selected_cxx}"
+        export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         export LDFLAGS="-fuse-ld=lld -rtlib=compiler-rt -unwindlib=libunwind -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,--strip-all -Wl,--no-eh-frame-hdr -Wl,-znow -Wl,--gc-sections -Wl,--discard-all -Wl,--icf=safe -static -fno-pic -fno-pie"
 }
 
+SVT_FORK_NAMES=("hdr" "essential" "5fish" "mainline")
+SVT_FORK_URLS=(
+        "https://github.com/juliobbv-p/svt-av1-hdr"
+        "https://github.com/nekotrix/SVT-AV1-Essential"
+        "https://github.com/5fish/svt-av1-psy"
+        "https://gitlab.com/AOMediaCodec/SVT-AV1"
+)
+
 main() {
         preset="${1:-}"
-
-        selected_cxx="libstdc++"
+        svt_fork="${2:-}"
 
         case "$preset" in
                 static_tq)
                         mode_choice=1
-                        polly="ON"
                         ;;
                 dynamic_tq)
                         mode_choice=2
                         ;;
                 static_notq)
                         mode_choice=3
-                        polly="ON"
                         ;;
                 dynamic_notq)
                         mode_choice=4
                         ;;
                 static_tq_lib)
                         mode_choice=5
-                        polly="ON"
                         ;;
                 static_notq_lib)
                         mode_choice=6
-                        polly="ON"
                         ;;
                 dynamic_tq_lib)
                         mode_choice=7
@@ -690,7 +795,7 @@ main() {
         esac
 
         BUILD_MODES=(
-                "Build everything statically with TQ"
+                "Build statically with TQ"
                 "Build dynamically with TQ"
                 "Build statically without TQ"
                 "Build dynamically without TQ"
@@ -701,17 +806,17 @@ main() {
         )
 
         BUILD_DESCS=(
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
-                "Just compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P} (without target quality feature)."
-                "Just compile ${G}xav${P} by using ${G}ffms2${P} library from your system (without target quality feature)."
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P}; all statically (you need to have the static libraries for ${G}vship${P} and ${G}libsvtav1${P} yourself)."
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}libsvtav1${P} yourself) without TQ."
-                "Just compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} / ${G}libsvtav1${P} libraries from your system."
-                "Just compile ${G}xav${P} by using ${G}ffms2${P} / ${G}libsvtav1${P} libraries from your system without TQ."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
+                "Build ${G}opus${P} and compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P} and ${G}xav${P} (without target quality feature)."
+                "Build ${G}opus${P} and compile ${G}xav${P} by using ${G}ffms2${P} library from your system (without target quality feature)."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically without TQ."
+                "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
+                "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}ffms2${P} library from your system without TQ."
         )
 
-        [[ "${preset}" ]] || {
+        [[ "${preset}" ]] && detect_deps || {
                 show_build_menu
 
                 while true; do
@@ -771,29 +876,53 @@ main() {
                         ;;
         esac
 
-        [[ "${build_static}" == true && -z "${preset}" ]] && {
-                OPTS=("ON" "OFF")
+        use_svtav1=false
+        [[ "${mode_choice}" -ge 5 && "${mode_choice}" -le 8 ]] && use_svtav1=true
 
-                while true; do
-                        show_opts "${OPTS[@]}"
-                        echo -ne "${C}Polly Optimizations: ${N}"
-                        read -r polly_choice
-
-                        [[ "${polly_choice}" =~ ^[12]$ ]] && {
-                                polly="${OPTS[polly_choice - 1]}"
-                                loginf g "Polly: ${polly}"
-                                break
+        if [[ "${use_svtav1}" == true ]]; then
+                if [[ -n "${svt_fork}" ]]; then
+                        local fork_idx=-1
+                        for i in "${!SVT_FORK_NAMES[@]}"; do
+                                [[ "${SVT_FORK_NAMES[i]}" == "${svt_fork}" ]] && {
+                                        fork_idx="${i}"
+                                        break
+                                }
+                        done
+                        [[ "${fork_idx}" -eq -1 ]] && {
+                                echo -e "${R}Unknown SVT-AV1 fork: ${svt_fork}${N}"
+                                echo "Valid forks: ${SVT_FORK_NAMES[*]}"
+                                exit 1
                         }
-                done
-
-                echo
-        }
+                else
+                        echo -e "\n${C}Select SVT-AV1 fork:${N}"
+                        for i in "${!SVT_FORK_NAMES[@]}"; do
+                                printf "  ${Y}%d) ${P}%s${N}\n" "$((i + 1))" "${SVT_FORK_NAMES[i]}"
+                        done
+                        echo
+                        while true; do
+                                echo -ne "${C}Fork: ${N}"
+                                read -r fork_choice
+                                [[ "${fork_choice}" =~ ^[1-4]$ ]] && {
+                                        fork_idx=$((fork_choice - 1))
+                                        break
+                                }
+                        done
+                fi
+                svt_fork_name="${SVT_FORK_NAMES[fork_idx]}"
+                svt_fork_url="${SVT_FORK_URLS[fork_idx]}"
+                loginf g "SVT-AV1 fork: ${svt_fork_name}"
+        fi
 
         cleanup_existing
 
-        [[ "${build_static}" == true ]] && {
-                setup_toolchain
+        setup_toolchain
 
+        build_opus
+        build_opusenc
+
+        [[ "${use_svtav1}" == true ]] && build_svtav1
+
+        [[ "${build_static}" == true ]] && {
                 loginf b "Starting static build process"
 
                 build_zlib
