@@ -195,6 +195,16 @@ fn lang_name(code: &str) -> &str {
     }
 }
 
+pub fn get_audio_tracks(input: &Path, spec: &AudioSpec) -> Result<Vec<i32>, Xerr> {
+    let all = get_streams(input)?;
+    let sel: Vec<_> = match spec.streams {
+        AudioStreams::All => all.iter().collect(),
+        AudioStreams::Specific(ref ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
+    };
+    #[allow(clippy::cast_possible_wrap)]
+    Ok(sel.iter().map(|s| s.index as i32).collect())
+}
+
 fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
     let out = Command::new("ffprobe")
         .args([

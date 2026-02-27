@@ -17,7 +17,7 @@ use crate::{
 };
 
 pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), Xerr> {
-    let idx = VidIdx::new(vid_path, true)?;
+    let idx = VidIdx::new(vid_path, true, &[])?;
     let inf = get_vidinf(&idx)?;
 
     let max_dist = 300;

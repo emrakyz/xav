@@ -13,7 +13,7 @@ use ffms2_sys::{
     FFMS_Frame, FFMS_GetAudio, FFMS_GetAudioProperties, FFMS_GetFirstIndexedTrackOfType,
     FFMS_GetFrame, FFMS_GetVideoProperties, FFMS_Index, FFMS_IndexBelongsToFile, FFMS_Init,
     FFMS_ReadIndex, FFMS_SampleFormat, FFMS_SetOutputFormatA, FFMS_SetProgressCallback,
-    FFMS_TrackTypeIndexSettings, FFMS_VideoSource, FFMS_WriteIndex,
+    FFMS_TrackIndexSettings, FFMS_VideoSource, FFMS_WriteIndex,
 };
 
 use crate::{decode::CropCalc, error::Xerr, progs::ProgsBar};
@@ -96,7 +96,7 @@ extern "C" fn idx_progs(current: i64, total: i64, ic_private: *mut c_void) -> c_
 static FFMS_ONCE: Once = Once::new();
 
 impl VidIdx {
-    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, Xerr> {
+    pub fn new(path: &Path, progs: bool, audio_tracks: &[i32]) -> Result<Arc<Self>, Xerr> {
         unsafe {
             FFMS_ONCE.call_once(|| FFMS_Init(0, 0));
 
@@ -125,8 +125,9 @@ impl VidIdx {
                     &errbuf
                 );
 
-                FFMS_TrackTypeIndexSettings(idxer, 1, 0, 0);
-                FFMS_TrackTypeIndexSettings(idxer, 2, 0, 0);
+                for &track in audio_tracks {
+                    FFMS_TrackIndexSettings(idxer, track, 1, 0);
+                }
 
                 let idx = if progs {
                     let mut progs = ProgsBar::new();

@@ -76,7 +76,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
         .join("test_files")
         .join(filename);
 
-    let idx = ffms::VidIdx::new(&input, false).unwrap();
+    let idx = ffms::VidIdx::new(&input, false, &[]).unwrap();
     let inf = ffms::get_vidinf(&idx).unwrap();
     let decode_strat = ffms::get_decode_strat(&idx, &inf, crop).unwrap();
     let (tx, rx) = bounded::<WorkPkg>(1);
