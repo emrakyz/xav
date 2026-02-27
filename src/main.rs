@@ -41,7 +41,9 @@ mod vship;
 mod worker;
 mod y4m;
 
-use audio::{AudioSpec, AudioStream, encode_audio_streams, mux_audio, parse_audio_arg};
+use audio::{
+    AudioSpec, AudioStream, encode_audio_streams, get_audio_tracks, mux_audio, parse_audio_arg,
+};
 use chunk::{
     Chunk, chunkify, get_resume, init_elapsed, load_scenes, merge_out, translate_scenes,
     validate_scenes,
@@ -567,10 +569,10 @@ fn scd_and_audio(
     work_dir: &Path,
 ) -> Result<Option<Vec<(AudioStream, PathBuf)>>, Xerr> {
     if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Encoder::Avm {
-        let pre_idx = VidIdx::new(&args.input, true)?;
-        let pre_inf = get_vidinf(&pre_idx)?;
-
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
+        let tracks = get_audio_tracks(&args.input, &spec)?;
+        let pre_idx = VidIdx::new(&args.input, true, &tracks)?;
+        let pre_inf = get_vidinf(&pre_idx)?;
         let input = args.input.clone();
         let ranges = args.ranges.clone();
         let idx_for_audio = Arc::clone(&pre_idx);
@@ -627,7 +629,15 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     println!();
 
-    let idx = VidIdx::new(&args.input, true)?;
+    let aud_tracks =
+        if audio_files.is_none() && args.audio.is_some() && args.encoder != Encoder::Avm {
+            get_audio_tracks(&args.input, unsafe {
+                args.audio.as_ref().unwrap_unchecked()
+            })?
+        } else {
+            vec![]
+        };
+    let idx = VidIdx::new(&args.input, true, &aud_tracks)?;
     let inf = get_vidinf(&idx)?;
 
     let mut args = args.clone();
