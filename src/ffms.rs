@@ -125,7 +125,7 @@ impl VidIdx {
                     &errbuf
                 );
 
-                FFMS_TrackTypeIndexSettings(idxer, 1, 1, 0);
+                FFMS_TrackTypeIndexSettings(idxer, 1, 0, 0);
                 FFMS_TrackTypeIndexSettings(idxer, 2, 0, 0);
 
                 let idx = if progs {
