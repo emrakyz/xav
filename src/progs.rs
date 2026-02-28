@@ -119,17 +119,25 @@ impl ProgsBar {
         _ = io_stdout().flush();
     }
 
-    pub fn finish() {
-        print!("\r\x1b[2K");
-        _ = io_stdout().flush();
+    pub fn up_scenes_final(&mut self, total: usize, line: usize) {
+        self.last_update = unsafe {
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_unchecked()
+        };
+        self.up_scenes(total, total, line);
     }
 
-    pub fn finish_scenes() {
-        print!("\r\x1b[2K");
-        _ = io_stdout().flush();
-    }
+    pub const fn finish() {}
 
-    pub fn up_audio(&mut self, current: usize, total: usize, line: usize, pass: u8) {
+    pub fn up_audio(
+        &mut self,
+        current: usize,
+        total: usize,
+        line: usize,
+        pass: u8,
+        track_id: usize,
+    ) {
         if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
             return;
         }
@@ -153,24 +161,32 @@ impl ProgsBar {
 
         if line > 0 {
             print!(
-                "\x1b[{line};1H\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}AU P{pass}: {C}[{bar}{C}] \
-                 {W}{perc}%{C}, {Y}{ksps} kSps{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
-                 {G}{current}{C}/{R}{total}{N}"
+                "\x1b[{line};1H\x1b[2K{C}[{W}{track_id:02}{C}] {W}{h:02}{P}:{W}{m:02} {W}AU \
+                 P{pass}: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{ksps} kSps{C}, \
+                 {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
             );
         } else {
             print!(
-                "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}AU P{pass}: {C}[{bar}{C}] {W}{perc}%{C}, \
-                 {Y}{ksps} kSps{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
-                 {G}{current}{C}/{R}{total}{N}"
+                "\r\x1b[2K{C}[{W}{track_id:02}{C}] {W}{h:02}{P}:{W}{m:02} {W}AU P{pass}: \
+                 {C}[{bar}{C}] {W}{perc}%{C}, {Y}{ksps} kSps{C}, \
+                 {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
             );
         }
         _ = io_stdout().flush();
     }
 
-    pub fn finish_audio() {
-        print!("\r\x1b[2K");
-        _ = io_stdout().flush();
+    pub fn up_audio_final(&mut self, total: usize, line: usize, pass: u8, track_id: usize) {
+        self.last_update = unsafe {
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_unchecked()
+        };
+        self.up_audio(total, total, line, pass, track_id);
     }
+
+    pub const fn finish_audio() {}
+
+    pub const fn finish_scenes() {}
 }
 
 enum WorkerMsg {

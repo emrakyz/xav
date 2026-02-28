@@ -542,6 +542,8 @@ fn finalize_audio(
     let files = if let Some(f) = cached {
         f
     } else {
+        print!("\x1b[H\x1b[2J");
+        _ = stdout().flush();
         encode_audio_streams(
             spec,
             &args.input,
@@ -549,7 +551,7 @@ fn finalize_audio(
             args.ranges.as_deref(),
             inf,
             work_dir,
-            0,
+            1,
         )?
     };
     mux_audio(
@@ -564,13 +566,13 @@ fn finalize_audio(
     Ok(())
 }
 
-fn scd_and_audio(
-    args: &Args,
-    work_dir: &Path,
-) -> Result<Option<Vec<(AudioStream, PathBuf)>>, Xerr> {
+type AudioResult = Vec<(AudioStream, PathBuf)>;
+
+fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<(Option<AudioResult>, usize), Xerr> {
     if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Encoder::Avm {
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
         let tracks = get_audio_tracks(&args.input, &spec)?;
+        let num_tracks = tracks.len();
         let pre_idx = VidIdx::new(&args.input, true, &tracks)?;
         let pre_inf = get_vidinf(&pre_idx)?;
         let input = args.input.clone();
@@ -594,16 +596,13 @@ fn scd_and_audio(
 
         fd_scenes(&args.input, &args.scene_file, 1)?;
 
-        print!("\x1b[1;1H\x1b[2K\x1b[3;1H\x1b[2K\x1b[1;1H");
-        _ = stdout().flush();
-
         let result = audio_handle
             .join()
             .map_err(|_e| Xerr::Msg("Audio encoding thread panicked".into()))?;
-        Ok(Some(result?))
+        Ok((Some(result?), num_tracks))
     } else {
         ensure_scene_file(args, 0)?;
-        Ok(None)
+        Ok((None, 0))
     }
 }
 
@@ -625,9 +624,10 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         save_args(&work_dir)?;
     }
 
-    let audio_files = scd_and_audio(args, &work_dir)?;
+    let (audio_files, _) = scd_and_audio(args, &work_dir)?;
 
-    println!();
+    print!("\x1b[H\x1b[2J");
+    _ = stdout().flush();
 
     let aud_tracks =
         if audio_files.is_none() && args.audio.is_some() && args.encoder != Encoder::Avm {

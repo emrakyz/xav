@@ -719,7 +719,7 @@ build_svtav1() {
         git clone "${svt_fork_url}" "${BUILD_DIR}/SVT-AV1" > "${logfile}" 2>&1
         cd "${BUILD_DIR}/SVT-AV1"
 
-        sed -i 's/set(CMAKE_POSITION_INDEPENDENT_CODE OFF)/set(CMAKE_POSITION_INDEPENDENT_CODE ON)/' CMakeLists.txt
+        sed -i 's/set(CMAKE_POSITION_INDEPENDENT_CODE ON)/set(CMAKE_POSITION_INDEPENDENT_CODE OFF)/' CMakeLists.txt
         sed -i 's/set(CMAKE_C_STANDARD 99)/set(CMAKE_C_STANDARD 23)/' CMakeLists.txt
         sed -i 's/set(CMAKE_CXX_STANDARD 11)/set(CMAKE_CXX_STANDARD 23)/' CMakeLists.txt
         sed -i '/relro/s/^/#/' CMakeLists.txt
@@ -731,6 +731,7 @@ build_svtav1() {
 
         cd Build/linux
         grep -q avx512f /proc/cpuinfo && HAS_512="enable-avx512" || HAS_512="disable-avx512"
+        export LLVM_PROFILE_FILE="${BUILD_DIR}/SVT-AV1/Build/linux/Release/%p.profraw"
         ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo >> "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
                 loginf g "SVT-AV1 built successfully"

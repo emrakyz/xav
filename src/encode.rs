@@ -1269,7 +1269,6 @@ fn enc_svt_lib(
         crf_score,
     );
 
-    #[allow(clippy::cast_possible_wrap)]
     for i in 0..pkg.frame_count {
         let frame = get_frame(&pkg.yuv, i, ctx.pipe.frame_size);
         if cfg.inf.is_10bit {
