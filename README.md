@@ -13,7 +13,7 @@
 - Implements and optimizes its own internals without relying on VapourSynth and/or FFmpeg or any other external calls
 
 ## Features
-- Fastest and most efficient chunked video encoding (now optionally with even faster library interface)
+- Fastest and most efficient chunked VIDEO & AUDIO encoding (now optionally with even faster library interface)
 - Fastest and most efficient target quality encoding with state-of-the-art metrics such as [CVVDP](https://achapiro.github.io/Man24/man24.pdf) and Butteraugli 5p-norm & SSIMULACRA2 from JPEG XL (Google/Cloudinary)
 - Very fast, state-of-the-art scene change detection with pre-configured sane defaults. Optionally, other SCD methods such as TransNetv2 can be used externally
 - Automated color & HDR metadata and frame/container metadata parsing

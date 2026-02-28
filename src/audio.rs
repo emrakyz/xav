@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     sync::Arc,
+    thread,
 };
 
 use ebur128::{EbuR128, Mode};
@@ -201,7 +202,6 @@ pub fn get_audio_tracks(input: &Path, spec: &AudioSpec) -> Result<Vec<i32>, Xerr
         AudioStreams::All => all.iter().collect(),
         AudioStreams::Specific(ref ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
     };
-    #[allow(clippy::cast_possible_wrap)]
     Ok(sel.iter().map(|s| s.index as i32).collect())
 }
 
@@ -242,7 +242,6 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
 }
 
 fn frame_to_sample(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
-    #[allow(clippy::cast_possible_wrap)]
     let f = frame as i64;
     (f * i64::from(fps_den) * i64::from(rate)) / i64::from(fps_num)
 }
@@ -264,29 +263,28 @@ fn reorder_surround(buf: &mut [f32], channels: usize, num_samples: usize) {
     }
 }
 
-fn downmix_to_stereo(input: &[f32], channels: usize, num_samples: usize) -> Vec<f32> {
-    let mut out = Vec::with_capacity(num_samples * 2);
-    for i in 0..num_samples {
-        let b = i * channels;
-        let fl = input[b];
-        let fr = input[b + 1];
-        let fc = if channels >= 3 { input[b + 2] } else { 0.0 };
-        let (sl, sr, bl, br, bc) = match channels {
-            6 => (input[b + 4], input[b + 5], 0.0, 0.0, 0.0),
-            7 => (input[b + 5], input[b + 6], 0.0, 0.0, input[b + 4]),
-            8 => (input[b + 6], input[b + 7], input[b + 4], input[b + 5], 0.0),
+fn downmix_chunk(src: &[f32], dst: &mut [f32], ch: usize, n: usize) {
+    for i in 0..n {
+        let b = i * ch;
+        let fl = src[b];
+        let fr = src[b + 1];
+        let fc = if ch >= 3 { src[b + 2] } else { 0.0 };
+        let (sl, sr, bl, br, bc) = match ch {
+            6 => (src[b + 4], src[b + 5], 0.0, 0.0, 0.0),
+            7 => (src[b + 5], src[b + 6], 0.0, 0.0, src[b + 4]),
+            8 => (src[b + 6], src[b + 7], src[b + 4], src[b + 5], 0.0),
             _ => (0.0, 0.0, 0.0, 0.0, 0.0),
         };
-        out.push(0.707f32.mul_add(
+        let o = i * 2;
+        dst[o] = 0.707f32.mul_add(
             fc,
             0.707f32.mul_add(sl, 0.5f32.mul_add(bl, 0.5f32.mul_add(bc, fl))),
-        ));
-        out.push(0.707f32.mul_add(
+        );
+        dst[o + 1] = 0.707f32.mul_add(
             fc,
             0.707f32.mul_add(sr, 0.5f32.mul_add(br, 0.5f32.mul_add(bc, fr))),
-        ));
+        );
     }
-    out
 }
 
 fn encode_direct(
@@ -298,7 +296,6 @@ fn encode_direct(
     inf: &VidInf,
     progs_line: usize,
 ) -> Result<(), Xerr> {
-    #[allow(clippy::cast_possible_wrap)]
     let aud = aud_src_new(idx, stream.index as i32)?;
     set_aud_output_fmt(aud, 48000)?;
     let ainf = get_audinf(aud);
@@ -332,6 +329,7 @@ fn encode_direct(
     let mut buf = vec![0f32; chunk_size as usize * ch];
     let mut progs = ProgsBar::new();
     let mut encoded: i64 = 0;
+    let tid = stream.index;
 
     for &(start, end) in &sample_ranges {
         let mut pos = start;
@@ -347,11 +345,12 @@ fn encode_direct(
             enc.write_float(sl, ch)?;
 
             encoded += count;
-            progs.up_audio(encoded as usize, total_samples as usize, progs_line, 1);
+            progs.up_audio(encoded as usize, total_samples as usize, progs_line, 1, tid);
             pos += count;
         }
     }
 
+    progs.up_audio_final(total_samples as usize, progs_line, 1, tid);
     drop(enc);
     destroy_aud_src(aud);
     ProgsBar::finish_audio();
@@ -367,7 +366,6 @@ fn encode_norm(
     np: NormParams,
     progs_line: usize,
 ) -> Result<(), Xerr> {
-    #[allow(clippy::cast_possible_wrap)]
     let aud = aud_src_new(idx, stream.index as i32)?;
     set_aud_output_fmt(aud, 48000)?;
     let ainf = get_audinf(aud);
@@ -389,38 +387,40 @@ fn encode_norm(
     );
 
     let total_samples: i64 = sample_ranges.iter().map(|&(s, e)| e - s).sum();
+    let tid = stream.index;
 
     let mut progs = ProgsBar::new();
-
-    let mut raw = Vec::with_capacity(total_samples as usize * ch);
     let chunk_size: i64 = 48000;
     let mut buf = vec![0f32; chunk_size as usize * ch];
-    let mut decoded: i64 = 0;
+    let mut stereo = vec![0f32; chunk_size as usize * 2];
 
+    let mut ebur =
+        EbuR128::new(2, 48000, Mode::I | Mode::TRUE_PEAK | Mode::LRA).map_err(|e| e.to_string())?;
+
+    let mut decoded: i64 = 0;
     for &(start, end) in &sample_ranges {
         let mut pos = start;
         while pos < end {
             let count = chunk_size.min(end - pos);
-            let sl = &mut buf[..count as usize * ch];
+            let n = count as usize;
+            let sl = &mut buf[..n * ch];
             get_audio(aud, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
-            raw.extend_from_slice(sl);
+            let st = &mut stereo[..n * 2];
+            if ch > 2 {
+                downmix_chunk(sl, st, ch, n);
+            } else {
+                st.copy_from_slice(sl);
+            }
+            ebur.add_frames_f32(st).map_err(|e| e.to_string())?;
             decoded += count;
-            progs.up_audio(decoded as usize, total_samples as usize, progs_line, 1);
+            progs.up_audio(decoded as usize, total_samples as usize, progs_line, 1, tid);
             pos += count;
         }
     }
 
+    progs.up_audio_final(total_samples as usize, progs_line, 1, tid);
     destroy_aud_src(aud);
 
-    let mut stereo = if ch > 2 {
-        downmix_to_stereo(&raw, ch, total_samples as usize)
-    } else {
-        raw
-    };
-
-    let mut ebur =
-        EbuR128::new(2, 48000, Mode::I | Mode::TRUE_PEAK | Mode::LRA).map_err(|e| e.to_string())?;
-    ebur.add_frames_f32(&stereo).map_err(|e| e.to_string())?;
     let lufs = ebur.loudness_global().map_err(|e| e.to_string())?;
     let lra = ebur.loudness_range().map_err(|e| e.to_string())?;
 
@@ -430,29 +430,50 @@ fn encode_norm(
     }
     let tp_limit = 10f32.powf(np.tp / 20.0);
 
-    for s in &mut stereo {
-        *s = (f64::from(*s) * gain) as f32;
-        *s = s.clamp(-tp_limit, tp_limit);
-    }
+    let aud2 = aud_src_new(idx, stream.index as i32)?;
+    set_aud_output_fmt(aud2, 48000)?;
 
-    let stereo_samples = stereo.len() / 2;
     let mut enc = opus::Encoder::new(output, 2, np.bitrate, opus::FAMILY_MONO_STEREO)?;
     progs = ProgsBar::new();
-    let enc_chunk = 48000usize;
-    let mut pos = 0;
+    let mut encoded: i64 = 0;
 
-    while pos < stereo_samples {
-        let count = enc_chunk.min(stereo_samples - pos);
-        let start = pos * 2;
-        let end = start + count * 2;
-        enc.write_float(&stereo[start..end], 2)?;
-        pos += count;
-        progs.up_audio(pos, stereo_samples, progs_line, 2);
+    for &(start, end) in &sample_ranges {
+        let mut pos = start;
+        while pos < end {
+            let count = chunk_size.min(end - pos);
+            let n = count as usize;
+            let sl = &mut buf[..n * ch];
+            get_audio(aud2, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
+            let st = &mut stereo[..n * 2];
+            if ch > 2 {
+                downmix_chunk(sl, st, ch, n);
+            } else {
+                st.copy_from_slice(sl);
+            }
+            for s in st.iter_mut() {
+                *s = (f64::from(*s) * gain) as f32;
+                *s = s.clamp(-tp_limit, tp_limit);
+            }
+            enc.write_float(st, 2)?;
+            encoded += count;
+            progs.up_audio(encoded as usize, total_samples as usize, progs_line, 2, tid);
+            pos += count;
+        }
     }
 
+    progs.up_audio_final(total_samples as usize, progs_line, 2, tid);
     drop(enc);
+    destroy_aud_src(aud2);
     ProgsBar::finish_audio();
     Ok(())
+}
+
+struct TrackJob {
+    stream: AudioStream,
+    do_norm: bool,
+    bitrate: u32,
+    path: PathBuf,
+    line: usize,
 }
 
 pub fn encode_audio_streams(
@@ -475,10 +496,12 @@ pub fn encode_audio_streams(
         _ => None,
     };
 
-    sel.iter()
-        .map(|s| {
+    let jobs: Vec<_> = sel
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
             let do_norm = norm_params.is_some() && s.channels > 2;
-            let br = if do_norm {
+            let bitrate = if do_norm {
                 128
             } else {
                 match spec.bitrate {
@@ -499,22 +522,42 @@ pub fn encode_audio_streams(
                     AudioBitrate::Fixed(b) => b,
                 }
             };
-            let path = work_dir.join(format!(
-                "{}_{:02}.opus",
-                s.lang.as_deref().unwrap_or("und"),
-                s.index
-            ));
-
-            if let Some(np) = norm_params
-                && do_norm
-            {
-                encode_norm(idx, s, &path, ranges, inf, np, progs_line)?;
-            } else {
-                encode_direct(idx, s, br, &path, ranges, inf, progs_line)?;
+            TrackJob {
+                stream: (*s).clone(),
+                do_norm,
+                bitrate,
+                path: work_dir.join(format!(
+                    "{}_{:02}.opus",
+                    s.lang.as_deref().unwrap_or("und"),
+                    s.index
+                )),
+                line: if progs_line > 0 { progs_line + i } else { 0 },
             }
-            Ok::<_, Xerr>(((*s).clone(), path))
         })
-        .collect()
+        .collect();
+
+    thread::scope(|scope| {
+        jobs.iter()
+            .map(|j| {
+                scope.spawn(|| {
+                    if let Some(np) = norm_params
+                        && j.do_norm
+                    {
+                        encode_norm(idx, &j.stream, &j.path, ranges, inf, np, j.line)?;
+                    } else {
+                        encode_direct(idx, &j.stream, j.bitrate, &j.path, ranges, inf, j.line)?;
+                    }
+                    Ok::<_, Xerr>((j.stream.clone(), j.path.clone()))
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|h| {
+                h.join()
+                    .map_err(|_e| Xerr::Msg("Audio thread panicked".into()))?
+            })
+            .collect()
+    })
 }
 
 fn mux_files(

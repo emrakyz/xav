@@ -117,7 +117,6 @@ impl Encoder {
         Ok(Self { ptr })
     }
 
-    #[allow(clippy::cast_possible_wrap)]
     pub fn write_float(&mut self, pcm: &[f32], channels: usize) -> Result<(), Xerr> {
         check(unsafe {
             ope_encoder_write_float(self.ptr, pcm.as_ptr(), (pcm.len() / channels) as c_int)

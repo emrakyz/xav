@@ -54,6 +54,9 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), 
             .map_err(|e| e.to_string())?
     };
 
+    if let Ok(mut pb) = progs.lock() {
+        pb.up_scenes_final(tot_frames, line);
+    }
     ProgsBar::finish_scenes();
 
     let mut scores: Vec<Option<(f64, f64)>> = vec![None; tot_frames];
