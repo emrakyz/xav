@@ -430,7 +430,7 @@ fn get_saved_args(input: &Path) -> Result<Args, Xerr> {
     let work_dir = canonical.with_file_name(format!(".{}", &hash[..7]));
     let cmd_path = work_dir.join("cmd.txt");
 
-    if cmd_path.exists() {
+    if cmd_path.exists() && get_resume(&work_dir).is_some_and(|r| !r.chnks_done.is_empty()) {
         let cmd_line = read_to_string(cmd_path)?;
         let saved_args = parse_quoted_args(&cmd_line);
         get_args(&saved_args, false)
@@ -622,6 +622,10 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     if is_new_encode {
         save_args(&work_dir)?;
+    }
+
+    if args.sc_only && args.scene_file.exists() {
+        return Err(format!("Scene file already exists: {}", args.scene_file.display()).into());
     }
 
     let (audio_files, _) = scd_and_audio(args, &work_dir)?;
