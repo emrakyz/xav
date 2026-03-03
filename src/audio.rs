@@ -3,21 +3,12 @@ use std::{
     fs::remove_file,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
-    sync::Arc,
     thread,
 };
 
 use ebur128::{EbuR128, Mode};
 
-use crate::{
-    chunk::add_mp4_subs,
-    error::Xerr,
-    ffms::{
-        VidIdx, VidInf, aud_src_new, destroy_aud_src, get_audinf, get_audio, set_aud_output_fmt,
-    },
-    opus,
-    progs::ProgsBar,
-};
+use crate::{chunk::add_mp4_subs, error::Xerr, lavf::AudioDecoder, opus, progs::ProgsBar};
 
 #[derive(Clone, Copy)]
 pub struct NormParams {
@@ -196,15 +187,6 @@ fn lang_name(code: &str) -> &str {
     }
 }
 
-pub fn get_audio_tracks(input: &Path, spec: &AudioSpec) -> Result<Vec<i32>, Xerr> {
-    let all = get_streams(input)?;
-    let sel: Vec<_> = match spec.streams {
-        AudioStreams::All => all.iter().collect(),
-        AudioStreams::Specific(ref ids) => all.iter().filter(|s| ids.contains(&s.index)).collect(),
-    };
-    Ok(sel.iter().map(|s| s.index as i32).collect())
-}
-
 fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
     let out = Command::new("ffprobe")
         .args([
@@ -241,9 +223,29 @@ fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
     Ok(streams)
 }
 
-fn frame_to_sample(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
+pub fn frame_to_sample(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
     let f = frame as i64;
     (f * i64::from(fps_den) * i64::from(rate)) / i64::from(fps_num)
+}
+
+pub fn get_fps(input: &Path) -> Result<(u32, u32), Xerr> {
+    let out = Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=r_frame_rate",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(input)
+        .output()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    let s = s.trim();
+    let (num, den) = s.split_once('/').ok_or("Failed to parse fps")?;
+    Ok((num.parse()?, den.parse()?))
 }
 
 fn reorder_surround(buf: &mut [f32], channels: usize, num_samples: usize) {
@@ -288,139 +290,161 @@ fn downmix_chunk(src: &[f32], dst: &mut [f32], ch: usize, n: usize) {
 }
 
 fn encode_direct(
-    idx: &VidIdx,
+    input: &Path,
     stream: &AudioStream,
     bitrate: u32,
     output: &Path,
-    ranges: Option<&[(usize, usize)]>,
-    inf: &VidInf,
+    sample_ranges: Option<&[(i64, i64)]>,
     progs_line: usize,
 ) -> Result<(), Xerr> {
-    let aud = aud_src_new(idx, stream.index as i32)?;
-    set_aud_output_fmt(aud, 48000)?;
-    let ainf = get_audinf(aud);
-
-    let ch = ainf.channels as usize;
-    let channels = ainf.channels as u8;
-    let family = if channels <= 2 {
+    let mut dec = AudioDecoder::new(input, stream.index as i32)?;
+    let ch = dec.channels() as usize;
+    let total: i64 = sample_ranges.map_or_else(
+        || dec.total_samples(),
+        |r| r.iter().map(|&(s, e)| e - s).sum(),
+    );
+    let family = if ch <= 2 {
         opus::FAMILY_MONO_STEREO
     } else {
         opus::FAMILY_SURROUND
     };
-
-    let sample_ranges: Vec<(i64, i64)> = ranges.map_or_else(
-        || vec![(0, ainf.num_samples)],
-        |r| {
-            r.iter()
-                .map(|&(s, e)| {
-                    (
-                        frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
-                        frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
-                    )
-                })
-                .collect()
-        },
-    );
-
-    let total_samples: i64 = sample_ranges.iter().map(|&(s, e)| e - s).sum();
-    let mut enc = opus::Encoder::new(output, channels, bitrate, family)?;
-
-    let chunk_size: i64 = 48000;
-    let mut buf = vec![0f32; chunk_size as usize * ch];
+    let mut enc = opus::Encoder::new(output, ch as u8, bitrate, family)?;
     let mut progs = ProgsBar::new();
     let mut encoded: i64 = 0;
     let tid = stream.index;
+    let needs_reorder = ch > 2;
+    let mut pos: i64 = 0;
+    let mut ri: usize = 0;
 
-    for &(start, end) in &sample_ranges {
-        let mut pos = start;
-        while pos < end {
-            let count = chunk_size.min(end - pos);
-            let sl = &mut buf[..count as usize * ch];
-            get_audio(aud, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
-
-            if ch > 2 {
-                reorder_surround(sl, ch, count as usize);
+    dec.decode_to(|chunk| {
+        let n = (chunk.len() / ch) as i64;
+        if let Some(ranges) = sample_ranges {
+            let chunk_end = pos + n;
+            while ri < ranges.len() && ranges[ri].0 < chunk_end {
+                let (rs, re) = ranges[ri];
+                let start = (rs - pos).max(0) as usize;
+                let end = ((re - pos).min(n)) as usize;
+                if start < end {
+                    let sl = &mut chunk[start * ch..end * ch];
+                    if needs_reorder {
+                        reorder_surround(sl, ch, end - start);
+                    }
+                    enc.write_float(sl, ch)?;
+                    encoded += (end - start) as i64;
+                }
+                if re <= chunk_end {
+                    ri += 1;
+                } else {
+                    break;
+                }
             }
-
-            enc.write_float(sl, ch)?;
-
-            encoded += count;
-            progs.up_audio(encoded as usize, total_samples as usize, progs_line, 1, tid);
-            pos += count;
+        } else {
+            if needs_reorder {
+                reorder_surround(chunk, ch, n as usize);
+            }
+            enc.write_float(chunk, ch)?;
+            encoded += n;
         }
-    }
+        pos += n;
+        progs.up_audio(encoded as usize, total as usize, progs_line, 1, tid);
+        Ok(())
+    })?;
 
-    progs.up_audio_final(total_samples as usize, progs_line, 1, tid);
+    progs.up_audio_final(total as usize, progs_line, 1, tid);
     drop(enc);
-    destroy_aud_src(aud);
     ProgsBar::finish_audio();
     Ok(())
 }
 
+fn analyze_loudness(
+    input: &Path,
+    stream_idx: i32,
+    ch: usize,
+    sample_ranges: Option<&[(i64, i64)]>,
+    total: i64,
+    progs_line: usize,
+    tid: usize,
+) -> Result<EbuR128, Xerr> {
+    let mut dec = AudioDecoder::new(input, stream_idx)?;
+    let mut ebur =
+        EbuR128::new(2, 48000, Mode::I | Mode::TRUE_PEAK | Mode::LRA).map_err(|e| e.to_string())?;
+    let mut stereo = vec![0f32; 96000 * 2];
+    let mut progs = ProgsBar::new();
+    let mut decoded: i64 = 0;
+    let mut pos: i64 = 0;
+    let mut ri: usize = 0;
+
+    dec.decode_to(|chunk| {
+        let n = (chunk.len() / ch) as i64;
+        if let Some(ranges) = sample_ranges {
+            let chunk_end = pos + n;
+            while ri < ranges.len() && ranges[ri].0 < chunk_end {
+                let (rs, re) = ranges[ri];
+                let start = (rs - pos).max(0) as usize;
+                let end = ((re - pos).min(n)) as usize;
+                if start < end {
+                    let cnt = end - start;
+                    let st = &mut stereo[..cnt * 2];
+                    if ch > 2 {
+                        downmix_chunk(&chunk[start * ch..end * ch], st, ch, cnt);
+                    } else {
+                        st.copy_from_slice(&chunk[start * ch..end * ch]);
+                    }
+                    ebur.add_frames_f32(st).map_err(|e| e.to_string())?;
+                    decoded += cnt as i64;
+                }
+                if re <= chunk_end {
+                    ri += 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            let n = n as usize;
+            let st = &mut stereo[..n * 2];
+            if ch > 2 {
+                downmix_chunk(chunk, st, ch, n);
+            } else {
+                st.copy_from_slice(chunk);
+            }
+            ebur.add_frames_f32(st).map_err(|e| e.to_string())?;
+            decoded += n as i64;
+        }
+        pos += (chunk.len() / ch) as i64;
+        progs.up_audio(decoded as usize, total as usize, progs_line, 1, tid);
+        Ok(())
+    })?;
+
+    progs.up_audio_final(total as usize, progs_line, 1, tid);
+    Ok(ebur)
+}
+
 fn encode_norm(
-    idx: &VidIdx,
+    input: &Path,
     stream: &AudioStream,
     output: &Path,
-    ranges: Option<&[(usize, usize)]>,
-    inf: &VidInf,
+    sample_ranges: Option<&[(i64, i64)]>,
     np: NormParams,
     progs_line: usize,
 ) -> Result<(), Xerr> {
-    let aud = aud_src_new(idx, stream.index as i32)?;
-    set_aud_output_fmt(aud, 48000)?;
-    let ainf = get_audinf(aud);
-
-    let ch = ainf.channels as usize;
-
-    let sample_ranges: Vec<(i64, i64)> = ranges.map_or_else(
-        || vec![(0, ainf.num_samples)],
-        |r| {
-            r.iter()
-                .map(|&(s, e)| {
-                    (
-                        frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
-                        frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
-                    )
-                })
-                .collect()
-        },
+    let dec = AudioDecoder::new(input, stream.index as i32)?;
+    let ch = dec.channels() as usize;
+    let total: i64 = sample_ranges.map_or_else(
+        || dec.total_samples(),
+        |r| r.iter().map(|&(s, e)| e - s).sum(),
     );
-
-    let total_samples: i64 = sample_ranges.iter().map(|&(s, e)| e - s).sum();
     let tid = stream.index;
+    drop(dec);
 
-    let mut progs = ProgsBar::new();
-    let chunk_size: i64 = 48000;
-    let mut buf = vec![0f32; chunk_size as usize * ch];
-    let mut stereo = vec![0f32; chunk_size as usize * 2];
-
-    let mut ebur =
-        EbuR128::new(2, 48000, Mode::I | Mode::TRUE_PEAK | Mode::LRA).map_err(|e| e.to_string())?;
-
-    let mut decoded: i64 = 0;
-    for &(start, end) in &sample_ranges {
-        let mut pos = start;
-        while pos < end {
-            let count = chunk_size.min(end - pos);
-            let n = count as usize;
-            let sl = &mut buf[..n * ch];
-            get_audio(aud, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
-            let st = &mut stereo[..n * 2];
-            if ch > 2 {
-                downmix_chunk(sl, st, ch, n);
-            } else {
-                st.copy_from_slice(sl);
-            }
-            ebur.add_frames_f32(st).map_err(|e| e.to_string())?;
-            decoded += count;
-            progs.up_audio(decoded as usize, total_samples as usize, progs_line, 1, tid);
-            pos += count;
-        }
-    }
-
-    progs.up_audio_final(total_samples as usize, progs_line, 1, tid);
-    destroy_aud_src(aud);
-
+    let ebur = analyze_loudness(
+        input,
+        stream.index as i32,
+        ch,
+        sample_ranges,
+        total,
+        progs_line,
+        tid,
+    )?;
     let lufs = ebur.loudness_global().map_err(|e| e.to_string())?;
     let lra = ebur.loudness_range().map_err(|e| e.to_string())?;
 
@@ -430,40 +454,65 @@ fn encode_norm(
     }
     let tp_limit = 10f32.powf(np.tp / 20.0);
 
-    let aud2 = aud_src_new(idx, stream.index as i32)?;
-    set_aud_output_fmt(aud2, 48000)?;
-
+    let mut dec2 = AudioDecoder::new(input, stream.index as i32)?;
     let mut enc = opus::Encoder::new(output, 2, np.bitrate, opus::FAMILY_MONO_STEREO)?;
-    progs = ProgsBar::new();
+    let mut stereo = vec![0f32; 96000 * 2];
+    let mut progs = ProgsBar::new();
     let mut encoded: i64 = 0;
+    let mut pos: i64 = 0;
+    let mut ri: usize = 0;
 
-    for &(start, end) in &sample_ranges {
-        let mut pos = start;
-        while pos < end {
-            let count = chunk_size.min(end - pos);
-            let n = count as usize;
-            let sl = &mut buf[..n * ch];
-            get_audio(aud2, sl.as_mut_ptr().cast::<u8>(), pos, count)?;
+    dec2.decode_to(|chunk| {
+        let n = (chunk.len() / ch) as i64;
+        if let Some(ranges) = sample_ranges {
+            let chunk_end = pos + n;
+            while ri < ranges.len() && ranges[ri].0 < chunk_end {
+                let (rs, re) = ranges[ri];
+                let start = (rs - pos).max(0) as usize;
+                let end = ((re - pos).min(n)) as usize;
+                if start < end {
+                    let cnt = end - start;
+                    let st = &mut stereo[..cnt * 2];
+                    if ch > 2 {
+                        downmix_chunk(&chunk[start * ch..end * ch], st, ch, cnt);
+                    } else {
+                        st.copy_from_slice(&chunk[start * ch..end * ch]);
+                    }
+                    for s in st.iter_mut() {
+                        *s = (f64::from(*s) * gain) as f32;
+                        *s = s.clamp(-tp_limit, tp_limit);
+                    }
+                    enc.write_float(st, 2)?;
+                    encoded += cnt as i64;
+                }
+                if re <= chunk_end {
+                    ri += 1;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            let n = n as usize;
             let st = &mut stereo[..n * 2];
             if ch > 2 {
-                downmix_chunk(sl, st, ch, n);
+                downmix_chunk(chunk, st, ch, n);
             } else {
-                st.copy_from_slice(sl);
+                st.copy_from_slice(chunk);
             }
             for s in st.iter_mut() {
                 *s = (f64::from(*s) * gain) as f32;
                 *s = s.clamp(-tp_limit, tp_limit);
             }
             enc.write_float(st, 2)?;
-            encoded += count;
-            progs.up_audio(encoded as usize, total_samples as usize, progs_line, 2, tid);
-            pos += count;
+            encoded += n as i64;
         }
-    }
+        pos += (chunk.len() / ch) as i64;
+        progs.up_audio(encoded as usize, total as usize, progs_line, 2, tid);
+        Ok(())
+    })?;
 
-    progs.up_audio_final(total_samples as usize, progs_line, 2, tid);
+    progs.up_audio_final(total as usize, progs_line, 2, tid);
     drop(enc);
-    destroy_aud_src(aud2);
     ProgsBar::finish_audio();
     Ok(())
 }
@@ -479,10 +528,8 @@ struct TrackJob {
 pub fn encode_audio_streams(
     spec: &AudioSpec,
     input: &Path,
-    idx: &Arc<VidIdx>,
-    ranges: Option<&[(usize, usize)]>,
-    inf: &VidInf,
     work_dir: &Path,
+    sample_ranges: Option<&[(i64, i64)]>,
     progs_line: usize,
 ) -> Result<Vec<(AudioStream, PathBuf)>, Xerr> {
     let all = get_streams(input)?;
@@ -543,9 +590,9 @@ pub fn encode_audio_streams(
                     if let Some(np) = norm_params
                         && j.do_norm
                     {
-                        encode_norm(idx, &j.stream, &j.path, ranges, inf, np, j.line)?;
+                        encode_norm(input, &j.stream, &j.path, sample_ranges, np, j.line)?;
                     } else {
-                        encode_direct(idx, &j.stream, j.bitrate, &j.path, ranges, inf, j.line)?;
+                        encode_direct(input, &j.stream, j.bitrate, &j.path, sample_ranges, j.line)?;
                     }
                     Ok::<_, Xerr>((j.stream.clone(), j.path.clone()))
                 })
