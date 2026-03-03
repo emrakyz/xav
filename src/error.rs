@@ -4,7 +4,10 @@ use std::{
     io::{self, Write as _, stderr, stdout},
     num::{ParseFloatError, ParseIntError},
     process,
+    sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
+
+pub static IN_ALT_SCREEN: AtomicBool = AtomicBool::new(false);
 
 #[derive(thiserror::Error, Debug)]
 pub enum Xerr {
@@ -42,14 +45,18 @@ impl From<String> for Xerr {
 #[cold]
 #[allow(clippy::exit)]
 pub fn fatal<E: Display>(e: E) -> ! {
-    print!("\x1b[?25h\x1b[?1049l");
-    _ = stdout().flush();
+    if IN_ALT_SCREEN.load(Relaxed) {
+        print!("\x1b[?25h\x1b[?1049l");
+        _ = stdout().flush();
+    }
     _ = writeln!(stderr(), "{e}");
     process::exit(1)
 }
 
 pub fn eprint(args: Arguments<'_>) {
-    print!("\x1b[?1049l");
-    _ = stdout().flush();
+    if IN_ALT_SCREEN.load(Relaxed) {
+        print!("\x1b[?1049l");
+        _ = stdout().flush();
+    }
     _ = writeln!(stderr(), "{args}");
 }
