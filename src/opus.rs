@@ -18,7 +18,8 @@ struct OggOpusEnc {
 const OPUS_SET_APPLICATION_REQUEST: c_int = 4000;
 const OPUS_SET_BITRATE_REQUEST: c_int = 4002;
 const OPUS_SET_VBR_REQUEST: c_int = 4006;
-const OPUS_SET_BANDWIDTH_REQUEST: c_int = 4008;
+const OPUS_SET_VBR_CONSTRAINT_REQUEST: c_int = 4020;
+const OPUS_SET_MAX_BANDWIDTH_REQUEST: c_int = 4004;
 const OPUS_SET_COMPLEXITY_REQUEST: c_int = 4010;
 const OPUS_APPLICATION_AUDIO: c_int = 2049;
 const OPUS_BANDWIDTH_FULLBAND: c_int = 1105;
@@ -101,10 +102,11 @@ impl Encoder {
                 bitrate.cast_signed() * 1000,
             ))?;
             check(ope_encoder_ctl(ptr, OPUS_SET_VBR_REQUEST, 1i32))?;
+            check(ope_encoder_ctl(ptr, OPUS_SET_VBR_CONSTRAINT_REQUEST, 0i32))?;
             check(ope_encoder_ctl(ptr, OPUS_SET_COMPLEXITY_REQUEST, 10i32))?;
             check(ope_encoder_ctl(
                 ptr,
-                OPUS_SET_BANDWIDTH_REQUEST,
+                OPUS_SET_MAX_BANDWIDTH_REQUEST,
                 OPUS_BANDWIDTH_FULLBAND,
             ))?;
             check(ope_encoder_ctl(

@@ -11,7 +11,7 @@ use std::{
     mem::transmute_copy,
     panic::set_hook,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, atomic::Ordering::Relaxed},
     thread,
     time::{Duration, Instant},
 };
@@ -55,7 +55,7 @@ use crop::{CropDetectConfig, detect_crop};
 use encode::TQ_SCORES;
 use encode::encode_all;
 use encoder::Encoder;
-use error::{Xerr, eprint, fatal};
+use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
 use ffms::{DecodeStrat, VidIdx, VidInf, gcd, get_decode_strat, get_vidinf};
 use noise::gen_table;
 use scd::fd_scenes;
@@ -101,8 +101,10 @@ pub struct Args {
 }
 
 extern "C" fn restore() {
-    print!("\x1b[?25h\x1b[?1049l");
-    _ = stdout().flush();
+    if IN_ALT_SCREEN.load(Relaxed) {
+        print!("\x1b[?25h\x1b[?1049l");
+        _ = stdout().flush();
+    }
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
@@ -612,6 +614,7 @@ fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<Option<AudioResult>, Xe
 fn main_with_args(args: &Args) -> Result<(), Xerr> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     _ = stdout().flush();
+    IN_ALT_SCREEN.store(true, Relaxed);
 
     let canonical_input = args.input.canonicalize()?;
     let hash = hash_input(&canonical_input);
