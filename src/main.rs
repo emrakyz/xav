@@ -26,6 +26,7 @@ mod error;
 mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
+mod lavf;
 mod noise;
 mod opus;
 pub mod pipeline;
@@ -42,7 +43,8 @@ mod worker;
 mod y4m;
 
 use audio::{
-    AudioSpec, AudioStream, encode_audio_streams, get_audio_tracks, mux_audio, parse_audio_arg,
+    AudioSpec, AudioStream, encode_audio_streams, frame_to_sample, get_fps, mux_audio,
+    parse_audio_arg,
 };
 use chunk::{
     Chunk, chunkify, get_resume, init_elapsed, load_scenes, merge_out, translate_scenes,
@@ -534,7 +536,6 @@ fn finalize_audio(
     spec: &AudioSpec,
     cached: Option<Vec<(AudioStream, PathBuf)>>,
     args: &Args,
-    idx: &Arc<VidIdx>,
     inf: &VidInf,
     video_mkv: &Path,
     work_dir: &Path,
@@ -544,15 +545,17 @@ fn finalize_audio(
     } else {
         print!("\x1b[H\x1b[2J");
         _ = stdout().flush();
-        encode_audio_streams(
-            spec,
-            &args.input,
-            idx,
-            args.ranges.as_deref(),
-            inf,
-            work_dir,
-            1,
-        )?
+        let sample_ranges = args.ranges.as_ref().map(|r| {
+            r.iter()
+                .map(|&(s, e)| {
+                    (
+                        frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
+                        frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
+                    )
+                })
+                .collect::<Vec<_>>()
+        });
+        encode_audio_streams(spec, &args.input, work_dir, sample_ranges.as_deref(), 1)?
     };
     mux_audio(
         &files,
@@ -568,30 +571,30 @@ fn finalize_audio(
 
 type AudioResult = Vec<(AudioStream, PathBuf)>;
 
-fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<(Option<AudioResult>, usize), Xerr> {
+fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<Option<AudioResult>, Xerr> {
     if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Encoder::Avm {
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
-        let tracks = get_audio_tracks(&args.input, &spec)?;
-        let num_tracks = tracks.len();
-        let pre_idx = VidIdx::new(&args.input, true, &tracks)?;
-        let pre_inf = get_vidinf(&pre_idx)?;
         let input = args.input.clone();
-        let ranges = args.ranges.clone();
-        let idx_for_audio = Arc::clone(&pre_idx);
-        let inf_for_audio = pre_inf;
         let wd = work_dir.to_path_buf();
-        drop(pre_idx);
+        let ranges = args.ranges.clone();
 
         let audio_handle = thread::spawn(move || {
-            encode_audio_streams(
-                &spec,
-                &input,
-                &idx_for_audio,
-                ranges.as_deref(),
-                &inf_for_audio,
-                &wd,
-                3,
-            )
+            let sample_ranges = if let Some(ref r) = ranges {
+                let (fps_num, fps_den) = get_fps(&input)?;
+                Some(
+                    r.iter()
+                        .map(|&(s, e)| {
+                            (
+                                frame_to_sample(s, fps_num, fps_den, 48000),
+                                frame_to_sample(e, fps_num, fps_den, 48000),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+            encode_audio_streams(&spec, &input, &wd, sample_ranges.as_deref(), 3)
         });
 
         fd_scenes(&args.input, &args.scene_file, 1)?;
@@ -599,10 +602,10 @@ fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<(Option<AudioResult>, u
         let result = audio_handle
             .join()
             .map_err(|_e| Xerr::Msg("Audio encoding thread panicked".into()))?;
-        Ok((Some(result?), num_tracks))
+        Ok(Some(result?))
     } else {
         ensure_scene_file(args, 0)?;
-        Ok((None, 0))
+        Ok(None)
     }
 }
 
@@ -628,20 +631,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         return Err(format!("Scene file already exists: {}", args.scene_file.display()).into());
     }
 
-    let (audio_files, _) = scd_and_audio(args, &work_dir)?;
+    let audio_files = scd_and_audio(args, &work_dir)?;
 
     print!("\x1b[H\x1b[2J");
     _ = stdout().flush();
 
-    let aud_tracks =
-        if audio_files.is_none() && args.audio.is_some() && args.encoder != Encoder::Avm {
-            get_audio_tracks(&args.input, unsafe {
-                args.audio.as_ref().unwrap_unchecked()
-            })?
-        } else {
-            vec![]
-        };
-    let idx = VidIdx::new(&args.input, true, &aud_tracks)?;
+    let idx = VidIdx::new(&args.input, true)?;
     let inf = get_vidinf(&idx)?;
 
     let mut args = args.clone();
@@ -714,15 +709,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     if let Some(ref audio_spec) = args.audio
         && args.encoder != Encoder::Avm
     {
-        finalize_audio(
-            audio_spec,
-            audio_files,
-            &args,
-            &idx,
-            &inf,
-            &video_mkv,
-            &work_dir,
-        )?;
+        finalize_audio(audio_spec, audio_files, &args, &inf, &video_mkv, &work_dir)?;
     }
 
     print_summary(&args, &inf, &chunks, crop, enc_time);

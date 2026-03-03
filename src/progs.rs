@@ -28,6 +28,22 @@ const R_DASH: &str = "\x1b[1;91m-";
 const B_HASH: &str = "\x1b[1;94m#";
 const Y_DASH: &str = "\x1b[1;93m-";
 
+fn fmt_el(h: usize, m: usize) -> String {
+    if h == 0 && m == 0 {
+        String::new()
+    } else {
+        format!("{W}{h:02}{P}:{W}{m:02} ")
+    }
+}
+
+fn fmt_eta(h: usize, m: usize) -> String {
+    if h == 0 && m == 0 {
+        String::new()
+    } else {
+        format!("{C}, {W}-{h:02}{P}:{W}{m:02}")
+    }
+}
+
 pub struct ProgsBar {
     start: Instant,
     total: usize,
@@ -74,12 +90,12 @@ impl ProgsBar {
             R_DASH.repeat(BAR_WIDTH - filled)
         );
         let perc = (current * 100 / total.max(1)).min(100);
-        let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
-        let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
+        let el = fmt_el(elapsed / 3600, (elapsed % 3600) / 60);
+        let eta = fmt_eta(eta_secs / 3600, (eta_secs % 3600) / 60);
 
         print!(
-            "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} \
-             MBs{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{mb_current}{C}/{R}{mb_total}{N}"
+            "\r\x1b[2K{el}{W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} MBs{eta}{C}, \
+             {G}{mb_current}{C}/{R}{mb_total}{N}"
         );
         _ = io_stdout().flush();
     }
@@ -102,18 +118,18 @@ impl ProgsBar {
             R_DASH.repeat(BAR_WIDTH - filled)
         );
         let perc = (current * 100 / total.max(1)).min(100);
-        let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
-        let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
+        let el = fmt_el(elapsed / 3600, (elapsed % 3600) / 60);
+        let eta = fmt_eta(eta_secs / 3600, (eta_secs % 3600) / 60);
 
         if line > 0 {
             print!(
-                "\x1b[{line};1H\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, \
-                 {Y}{fps} FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
+                "\x1b[{line};1H\x1b[2K{el}{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
+                 FPS{eta}{C}, {G}{current}{C}/{R}{total}{N}"
             );
         } else {
             print!(
-                "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} \
-                 FPS{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
+                "\r\x1b[2K{el}{W}SCD: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{fps} FPS{eta}{C}, \
+                 {G}{current}{C}/{R}{total}{N}"
             );
         }
         _ = io_stdout().flush();
@@ -145,8 +161,7 @@ impl ProgsBar {
 
         self.total = total;
         let elapsed = self.start.elapsed().as_secs() as usize;
-        let sps = current / elapsed.max(1);
-        let ksps = sps / 1000;
+        let speed = current as f64 / elapsed.max(1) as f64 / 48000.0;
         let remaining = total.saturating_sub(current);
         let eta_secs = remaining * elapsed / current.max(1);
         let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
@@ -156,20 +171,20 @@ impl ProgsBar {
             R_DASH.repeat(BAR_WIDTH - filled)
         );
         let perc = (current * 100 / total.max(1)).min(100);
-        let (h, m) = (elapsed / 3600, (elapsed % 3600) / 60);
-        let (eta_h, eta_m) = (eta_secs / 3600, (eta_secs % 3600) / 60);
+        let el = fmt_el(elapsed / 3600, (elapsed % 3600) / 60);
+        let eta = fmt_eta(eta_secs / 3600, (eta_secs % 3600) / 60);
+        let dur = total / 48000;
+        let (dh, dm, ds) = (dur / 3600, (dur % 3600) / 60, dur % 60);
 
         if line > 0 {
             print!(
-                "\x1b[{line};1H\x1b[2K{C}[{W}{track_id:02}{C}] {W}{h:02}{P}:{W}{m:02} {W}AU \
-                 P{pass}: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{ksps} kSps{C}, \
-                 {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
+                "\x1b[{line};1H\x1b[2K{C}[{W}{track_id:02}{C}] {el}{W}AU P{pass}: {C}[{bar}{C}] \
+                 {W}{perc}%{C}, {Y}{speed:.1}x{eta}{C}, {G}{dh:02}{P}:{G}{dm:02}{P}:{G}{ds:02}{N}"
             );
         } else {
             print!(
-                "\r\x1b[2K{C}[{W}{track_id:02}{C}] {W}{h:02}{P}:{W}{m:02} {W}AU P{pass}: \
-                 {C}[{bar}{C}] {W}{perc}%{C}, {Y}{ksps} kSps{C}, \
-                 {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, {G}{current}{C}/{R}{total}{N}"
+                "\r\x1b[2K{C}[{W}{track_id:02}{C}] {el}{W}AU P{pass}: {C}[{bar}{C}] \
+                 {W}{perc}%{C}, {Y}{speed:.1}x{eta}{C}, {G}{dh:02}{P}:{G}{dm:02}{P}:{G}{ds:02}{N}"
             );
         }
         _ = io_stdout().flush();
@@ -813,14 +828,16 @@ fn draw_screen(
         R_DASH.repeat(BAR_WIDTH - progress)
     );
 
-    let (h, m) = (elapsed_secs / 3600, (elapsed_secs % 3600) / 60);
-    let eta_h = (eta_secs / 3600).min(99);
-    let eta_m = (eta_secs % 3600) / 60;
+    let el = fmt_el(elapsed_secs / 3600, (elapsed_secs % 3600) / 60);
+    let eta = if eta_secs >= 99 * 3600 {
+        format!("{C}, {W}-99:99")
+    } else {
+        fmt_eta(eta_secs / 3600, (eta_secs % 3600) / 60)
+    };
 
     print!(
-        "\r\x1b[2K{W}{h:02}{P}:{W}{m:02} {C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
-         {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2}{C}, {W}{eta_h:02}{P}:{W}{eta_m:02}{C}, \
-         {bitrate_str}{C}, {est_str}{C}{N})\n",
+        "\r\x1b[2K{el}{C}[{G}{chunks_done}{C}/{R}{}{C}] [{bar}{C}] {W}{perc}% \
+         {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2}{eta}{C}, {bitrate_str}{C}, {est_str}{C}{N})\n",
         state.total_chunks, state.total_frames
     );
     _ = io_stdout().flush();

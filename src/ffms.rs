@@ -7,13 +7,10 @@ use std::{
 };
 
 use ffms2_sys::{
-    FFMS_AudioSource, FFMS_CreateAudioSource, FFMS_CreateIndexer, FFMS_CreateResampleOptions,
-    FFMS_CreateVideoSource, FFMS_DestroyAudioSource, FFMS_DestroyIndex,
-    FFMS_DestroyResampleOptions, FFMS_DestroyVideoSource, FFMS_DoIndexing2, FFMS_ErrorInfo,
-    FFMS_Frame, FFMS_GetAudio, FFMS_GetAudioProperties, FFMS_GetFirstIndexedTrackOfType,
-    FFMS_GetFrame, FFMS_GetVideoProperties, FFMS_Index, FFMS_IndexBelongsToFile, FFMS_Init,
-    FFMS_ReadIndex, FFMS_SampleFormat, FFMS_SetOutputFormatA, FFMS_SetProgressCallback,
-    FFMS_TrackIndexSettings, FFMS_VideoSource, FFMS_WriteIndex,
+    FFMS_CreateIndexer, FFMS_CreateVideoSource, FFMS_DestroyIndex, FFMS_DestroyVideoSource,
+    FFMS_DoIndexing2, FFMS_ErrorInfo, FFMS_Frame, FFMS_GetFirstIndexedTrackOfType, FFMS_GetFrame,
+    FFMS_GetVideoProperties, FFMS_Index, FFMS_IndexBelongsToFile, FFMS_Init, FFMS_ReadIndex,
+    FFMS_SetProgressCallback, FFMS_VideoSource, FFMS_WriteIndex,
 };
 
 use crate::{decode::CropCalc, error::Xerr, progs::ProgsBar};
@@ -96,7 +93,7 @@ extern "C" fn idx_progs(current: i64, total: i64, ic_private: *mut c_void) -> c_
 static FFMS_ONCE: Once = Once::new();
 
 impl VidIdx {
-    pub fn new(path: &Path, progs: bool, audio_tracks: &[i32]) -> Result<Arc<Self>, Xerr> {
+    pub fn new(path: &Path, progs: bool) -> Result<Arc<Self>, Xerr> {
         unsafe {
             FFMS_ONCE.call_once(|| FFMS_Init(0, 0));
 
@@ -124,10 +121,6 @@ impl VidIdx {
                     FFMS_CreateIndexer(source.as_ptr(), ptr::addr_of_mut!(err)),
                     &errbuf
                 );
-
-                for &track in audio_tracks {
-                    FFMS_TrackIndexSettings(idxer, track, 1, 0);
-                }
 
                 let idx = if progs {
                     let mut progs = ProgsBar::new();
@@ -1252,85 +1245,5 @@ pub fn extr_10bit_crop_pack_stride_rem(
 pub fn destroy_vid_src(vid_src: *mut FFMS_VideoSource) {
     unsafe {
         FFMS_DestroyVideoSource(vid_src);
-    }
-}
-
-pub struct AudInf {
-    pub channels: u32,
-    pub num_samples: i64,
-}
-
-pub fn aud_src_new(idx: &VidIdx, track: i32) -> Result<*mut FFMS_AudioSource, Xerr> {
-    unsafe {
-        let source = CString::new(idx.path.as_str())?;
-        ffms_err!(errbuf, err);
-
-        let aud = ffms_ok!(
-            FFMS_CreateAudioSource(
-                source.as_ptr(),
-                track,
-                idx.idx_handle,
-                -2,
-                ptr::addr_of_mut!(err)
-            ),
-            &errbuf
-        );
-
-        Ok(aud)
-    }
-}
-
-pub fn get_audinf(src: *mut FFMS_AudioSource) -> AudInf {
-    unsafe {
-        let props = FFMS_GetAudioProperties(src);
-        AudInf {
-            channels: (*props).Channels as u32,
-            num_samples: (*props).NumSamples,
-        }
-    }
-}
-
-pub fn set_aud_output_fmt(src: *mut FFMS_AudioSource, rate: i32) -> Result<(), Xerr> {
-    unsafe {
-        ffms_err!(errbuf, err);
-
-        let opts = FFMS_CreateResampleOptions(src);
-        if opts.is_null() {
-            return Err("Failed to create resample options".into());
-        }
-
-        (*opts).SampleFormat = FFMS_SampleFormat::FFMS_FMT_FLT;
-        (*opts).SampleRate = rate;
-
-        let ret = FFMS_SetOutputFormatA(src, opts, ptr::addr_of_mut!(err));
-        FFMS_DestroyResampleOptions(opts);
-
-        if ret != 0 {
-            return Err(ffms_err_str(&errbuf));
-        }
-        Ok(())
-    }
-}
-
-pub fn get_audio(
-    src: *mut FFMS_AudioSource,
-    buf: *mut u8,
-    start: i64,
-    count: i64,
-) -> Result<(), Xerr> {
-    unsafe {
-        ffms_err!(errbuf, err);
-
-        let ret = FFMS_GetAudio(src, buf.cast(), start, count, ptr::addr_of_mut!(err));
-        if ret != 0 {
-            return Err(ffms_err_str(&errbuf));
-        }
-        Ok(())
-    }
-}
-
-pub fn destroy_aud_src(src: *mut FFMS_AudioSource) {
-    unsafe {
-        FFMS_DestroyAudioSource(src);
     }
 }
