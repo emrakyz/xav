@@ -300,8 +300,8 @@ impl ProgsTrack {
         let score_str = last_score.map_or(String::new(), |s| format!(" / {s:.2}"));
 
         let line = format!(
-            "{C}[{chunk_idx:04} / F {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc}%{C}, \
-             {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
+            "{C}[{chunk_idx:04} / F {crf:.2}{score_str}{C}] [{bar}{C}] {W}{perc:3}%{C}, \
+             {Y}{fps:6.2}{C}, {G}{current:3}{C}/{R}{total}"
         );
 
         _ = self.tx.send(WorkerMsg::Update {
@@ -339,7 +339,7 @@ impl ProgsTrack {
         };
 
         let line = format!(
-            "{prefix} {P}[{bar}{P}] {W}{perc}%{C}, {Y}{fps:.2}{C}, {G}{current}{C}/{R}{total}"
+            "{prefix} {P}[{bar}{P}] {W}{perc:2}%{C}, {Y}{fps:6.2}{C}, {G}{current:3}{C}/{R}{total}"
         );
 
         _ = self.tx.send(WorkerMsg::Update {
@@ -444,8 +444,8 @@ fn watch_svt(
         let perc = (current * 100 / total.max(1)).min(100);
 
         let display_line = format!(
-            "{prefix} {P}[{bar}{P}] {W}{perc}% {Y}{current}/{total} {G}{fps:.2} {W}| {P}{kbps:.0} \
-             kb/s"
+            "{prefix} {P}[{bar}{P}] {W}{perc:2}% {Y}{current:3}/{total} {G}{fps:6.2} {W}| \
+             {P}{kbps:.0} kb/s"
         );
 
         let frames_delta = track_frames.then(|| {
@@ -548,8 +548,8 @@ fn watch_vvenc(
                     };
 
                     let display = format!(
-                        "{prefix} {P}[{bar}{P}] {W}{perc}%{C}, {Y}{fps:.2}{C}, \
-                         {G}{poc_count}{C}/{R}{total}"
+                        "{prefix} {P}[{bar}{P}] {W}{perc:2}%{C}, {Y}{fps:6.2}{C}, \
+                         {G}{poc_count:3}{C}/{R}{total}"
                     );
 
                     let delta = track_frames.then(|| {
@@ -694,7 +694,7 @@ fn watch_x265(
         };
 
         let line = format!(
-            "{prefix} {P}[{bar}{P}] {W}{}% {Y}{cur}/{tot} {G}{fps:.2} {W}| {P}{kbps:.0} kb/s",
+            "{prefix} {P}[{bar}{P}] {W}{:2}% {Y}{cur:3}/{tot} {G}{fps:6.2} {W}| {P}{kbps:.0} kb/s",
             cur * 100 / tot.max(1)
         );
 
