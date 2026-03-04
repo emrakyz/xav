@@ -273,45 +273,52 @@ impl AudioDecoder {
         &mut self,
         mut cb: F,
     ) -> Result<(), Xerr> {
-        const MAX_OUT: usize = 96000;
-        let ch = self.channels as usize;
-        let mut out_buf = vec![0f32; MAX_OUT * ch];
+        let result = (|| -> Result<(), Xerr> {
+            const MAX_OUT: usize = 96000;
+            let ch = self.channels as usize;
+            let mut out_buf = vec![0f32; MAX_OUT * ch];
 
-        unsafe {
-            loop {
-                if av_read_frame(self.fmt_ctx, self.pkt) < 0 {
-                    break;
-                }
-
-                if (*self.pkt).stream_index != self.stream_idx {
-                    av_packet_unref(self.pkt);
-                    continue;
-                }
-
+            unsafe {
                 loop {
-                    if avcodec_send_packet(self.codec_ctx, self.pkt) != AVERROR_EAGAIN {
+                    if av_read_frame(self.fmt_ctx, self.pkt) < 0 {
                         break;
                     }
+
+                    if (*self.pkt).stream_index != self.stream_idx {
+                        av_packet_unref(self.pkt);
+                        continue;
+                    }
+
+                    loop {
+                        if avcodec_send_packet(self.codec_ctx, self.pkt) != AVERROR_EAGAIN {
+                            break;
+                        }
+                        self.drain_frames(&mut out_buf, &mut cb)?;
+                    }
+                    av_packet_unref(self.pkt);
                     self.drain_frames(&mut out_buf, &mut cb)?;
                 }
-                av_packet_unref(self.pkt);
+
+                avcodec_send_packet(self.codec_ctx, ptr::null());
                 self.drain_frames(&mut out_buf, &mut cb)?;
-            }
 
-            avcodec_send_packet(self.codec_ctx, ptr::null());
-            self.drain_frames(&mut out_buf, &mut cb)?;
-
-            loop {
-                let mut out_ptr = out_buf.as_mut_ptr().cast::<u8>();
-                let n = swr_convert(self.swr, &raw mut out_ptr, MAX_OUT as c_int, ptr::null(), 0);
-                if n <= 0 {
-                    break;
+                loop {
+                    let mut out_ptr = out_buf.as_mut_ptr().cast::<u8>();
+                    let n =
+                        swr_convert(self.swr, &raw mut out_ptr, MAX_OUT as c_int, ptr::null(), 0);
+                    if n <= 0 {
+                        break;
+                    }
+                    cb(&mut out_buf[..n as usize * ch])?;
                 }
-                cb(&mut out_buf[..n as usize * ch])?;
             }
-        }
 
-        Ok(())
+            Ok(())
+        })();
+        match result {
+            Err(Xerr::Done) => Ok(()),
+            r => r,
+        }
     }
 
     unsafe fn drain_frames<F: FnMut(&mut [f32]) -> Result<(), Xerr>>(
