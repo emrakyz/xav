@@ -28,6 +28,9 @@ pub enum Xerr {
 
     #[error("")]
     Help,
+
+    #[error("")]
+    Done,
 }
 
 impl From<&str> for Xerr {

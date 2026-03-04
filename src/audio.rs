@@ -334,6 +334,9 @@ fn encode_direct(
                 }
                 if re <= chunk_end {
                     ri += 1;
+                    if ri >= ranges.len() {
+                        return Err(Xerr::Done);
+                    }
                 } else {
                     break;
                 }
@@ -395,6 +398,9 @@ fn analyze_loudness(
                 }
                 if re <= chunk_end {
                     ri += 1;
+                    if ri >= ranges.len() {
+                        return Err(Xerr::Done);
+                    }
                 } else {
                     break;
                 }
