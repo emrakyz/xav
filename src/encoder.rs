@@ -1,13 +1,15 @@
-#[cfg(feature = "libsvtav1")]
-use std::{ffi::CString, fs, mem};
 use std::{
+    ffi::CString,
+    fs, mem,
     path::Path,
     process::{Command, Stdio},
 };
 
-use crate::ffms::VidInf;
-#[cfg(feature = "libsvtav1")]
-use crate::svt::{AomFilmGrain, EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter};
+use crate::{
+    ffms::VidInf,
+    svt::{AomFilmGrain, EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter},
+    util::assume_unreachable,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Encoder {
@@ -52,6 +54,7 @@ pub struct EncConfig<'a> {
     pub crf: f32,
     pub output: &'a Path,
     pub grain_table: Option<&'a Path>,
+    pub chunk_idx: usize,
     pub width: u32,
     pub height: u32,
     pub frames: usize,
@@ -59,7 +62,7 @@ pub struct EncConfig<'a> {
 
 pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
     let mut cmd = match encoder {
-        Encoder::SvtAv1 => make_svt_cmd(cfg),
+        Encoder::SvtAv1 => assume_unreachable(),
         Encoder::Avm => make_avm_cmd(cfg),
         Encoder::Vvenc => make_vvenc_cmd(cfg),
         Encoder::X265 => make_x265_cmd(cfg),
@@ -69,101 +72,6 @@ pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
         cmd.args(z.split_whitespace());
     }
     cmd
-}
-
-fn make_svt_cmd(cfg: &EncConfig) -> Command {
-    let mut cmd = Command::new("SvtAv1EncApp");
-
-    let width_str = cfg.width.to_string();
-    let height_str = cfg.height.to_string();
-    let fps_num_str = cfg.inf.fps_num.to_string();
-    let fps_den_str = cfg.inf.fps_den.to_string();
-    let frames_str = cfg.frames.to_string();
-
-    let base_args = [
-        "-i",
-        "stdin",
-        "--input-depth",
-        "10",
-        "--color-format",
-        "1",
-        "--profile",
-        "0",
-        "--passes",
-        "1",
-        "--tile-rows",
-        "0",
-        "--tile-columns",
-        "0",
-        "--width",
-        &width_str,
-        "--forced-max-frame-width",
-        &width_str,
-        "--height",
-        &height_str,
-        "--forced-max-frame-height",
-        &height_str,
-        "--fps-num",
-        &fps_num_str,
-        "--fps-denom",
-        &fps_den_str,
-        "--keyint",
-        "0",
-        "--rc",
-        "0",
-        "--scd",
-        "0",
-        "--progress",
-        "2",
-        "--frames",
-        &frames_str,
-    ];
-
-    for i in (0..base_args.len()).step_by(2) {
-        cmd.arg(base_args[i]).arg(base_args[i + 1]);
-    }
-
-    if cfg.crf >= 0.0 {
-        cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
-    }
-
-    colorize_svt(&mut cmd, cfg.inf);
-
-    if let Some(grain_path) = cfg.grain_table {
-        cmd.arg("--fgs-table").arg(grain_path);
-    }
-
-    cmd.args(cfg.params.split_whitespace())
-        .arg("-b")
-        .arg(cfg.output)
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    cmd
-}
-
-fn colorize_svt(cmd: &mut Command, inf: &VidInf) {
-    if let Some(cp) = inf.color_primaries {
-        cmd.args(["--color-primaries", &cp.to_string()]);
-    }
-    if let Some(tc) = inf.transfer_characteristics {
-        cmd.args(["--transfer-characteristics", &tc.to_string()]);
-    }
-    if let Some(mc) = inf.matrix_coefficients {
-        cmd.args(["--matrix-coefficients", &mc.to_string()]);
-    }
-    if let Some(cr) = inf.color_range {
-        cmd.args(["--color-range", &cr.to_string()]);
-    }
-    if let Some(csp) = inf.chroma_sample_position {
-        cmd.args(["--chroma-sample-position", &csp.to_string()]);
-    }
-    if let Some(ref md) = inf.mastering_display {
-        cmd.args(["--mastering-display", md]);
-    }
-    if let Some(ref cl) = inf.content_light {
-        cmd.args(["--content-light", cl]);
-    }
 }
 
 fn make_avm_cmd(cfg: &EncConfig) -> Command {
@@ -757,7 +665,6 @@ const fn matrix_coeff_str(v: i32) -> &'static str {
     }
 }
 
-#[cfg(feature = "libsvtav1")]
 fn parse_svt_param(config: *mut EbSvtAv1EncConfiguration, name: &str, value: &str) {
     let Ok(n) = CString::new(name) else {
         return;
@@ -768,7 +675,6 @@ fn parse_svt_param(config: *mut EbSvtAv1EncConfiguration, name: &str, value: &st
     unsafe { svt_av1_enc_parse_parameter(config, n.as_ptr(), v.as_ptr()) };
 }
 
-#[cfg(feature = "libsvtav1")]
 fn parse_svt_params(config: *mut EbSvtAv1EncConfiguration, params: &str) {
     let mut iter = params.split_whitespace();
     while let Some(key) = iter.next() {
@@ -780,7 +686,6 @@ fn parse_svt_params(config: *mut EbSvtAv1EncConfiguration, params: &str) {
     }
 }
 
-#[cfg(feature = "libsvtav1")]
 pub fn set_svt_config(config: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
     let w = cfg.width.to_string();
     let h = cfg.height.to_string();
@@ -842,7 +747,6 @@ pub fn set_svt_config(config: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
     }
 }
 
-#[cfg(feature = "libsvtav1")]
 fn load_fgs_table(config: *mut EbSvtAv1EncConfiguration, path: &Path) {
     let Ok(text) = fs::read_to_string(path) else {
         return;

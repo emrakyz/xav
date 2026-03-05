@@ -10,7 +10,7 @@ install_deps() {
         case "${pm}" in
                 "pacman")
                         pkgs=(base-devel rustup nasm clang compiler-rt cmake ffms2 llvm lld ninja)
-                        "${priv:-}" pacman -S --needed --noconfirm "${pkgs[@]}"
+                        ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
                         ;;
                 "dnf")
                         pkgs=(
@@ -18,7 +18,7 @@ install_deps() {
                                 llvm lld compiler-rt llvm-libunwind-static autoconf automake
                                 libtool cmake ninja-build pkgconf
                         )
-                        "${priv:-}" dnf install -y "${pkgs[@]}"
+                        ${priv:-} dnf install -y "${pkgs[@]}"
                         ;;
                 "emerge")
                         echo "You need Rust Nightly (-9999), nasm, clang/llvm toolchain"
@@ -260,15 +260,6 @@ detect_deps() {
                 HAS_MKVMERGE=false
         fi
 
-        SVTAV1ENC_PATH="$(find_bin SvtAv1EncApp || true)"
-        SVTAV1ENC_VERSION=""
-        if [[ -n "${SVTAV1ENC_PATH}" ]]; then
-                HAS_SVTAV1ENC=true
-                SVTAV1ENC_VERSION="$(SvtAv1EncApp --version 2>&1 | head -1 || true)"
-        else
-                HAS_SVTAV1ENC=false
-        fi
-
         AVMENC_PATH="$(find_bin avmenc || true)"
         AVMENC_VERSION=""
         if [[ -n "${AVMENC_PATH}" ]]; then
@@ -311,12 +302,8 @@ detect_deps() {
                 [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_FFMS2}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_FFMS2}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
         else
-                ELIGIBLE=(false false false false false false false false)
+                ELIGIBLE=(false false false false)
         fi
 }
 
@@ -391,7 +378,6 @@ show_build_menu() {
         printf "  ${Y}%-30b${N} %b\n" "(Optional) mkvmerge (create h26* timestamps):" "               $(dep_status "${HAS_MKVMERGE}" "${MKVMERGE_PATH}" "${MKVMERGE_VERSION}")"
         echo
         echo -e "  ${W}Encoder Binaries (Optional):${N}"
-        printf "  ${Y}%-30b${N} %b\n" "SvtAv1EncApp:" "$(dep_status "${HAS_SVTAV1ENC}" "${SVTAV1ENC_PATH}" "${SVTAV1ENC_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "avmenc:" "$(dep_status "${HAS_AVMENC}" "${AVMENC_PATH}" "${AVMENC_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "vvencFFapp:" "$(dep_status "${HAS_VVENCFFAPP}" "${VVENCFFAPP_PATH}" "${VVENCFFAPP_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "x265:" "$(dep_status "${HAS_X265}" "${X265_PATH}" "${X265_VERSION}")"
@@ -842,18 +828,6 @@ main() {
                 dynamic_notq)
                         mode_choice=4
                         ;;
-                static_tq_lib)
-                        mode_choice=5
-                        ;;
-                static_notq_lib)
-                        mode_choice=6
-                        ;;
-                dynamic_tq_lib)
-                        mode_choice=7
-                        ;;
-                dynamic_notq_lib)
-                        mode_choice=8
-                        ;;
                 "") ;;
                 *)
                         echo -e "Unknown preset: $preset"
@@ -862,10 +836,6 @@ main() {
                         echo "  dynamic_tq"
                         echo "  static_notq"
                         echo "  dynamic_notq"
-                        echo "  static_tq_lib"
-                        echo "  static_notq_lib"
-                        echo "  dynamic_tq_lib"
-                        echo "  dynamic_notq_lib"
                         exit 1
                         ;;
         esac
@@ -875,20 +845,12 @@ main() {
                 "Build dynamically with TQ"
                 "Build statically without TQ"
                 "Build dynamically without TQ"
-                "Build statically with TQ + libsvtav1"
-                "Build statically without TQ + libsvtav1"
-                "Build dynamically with TQ + libsvtav1"
-                "Build dynamically without TQ + libsvtav1"
         )
 
         BUILD_DESCS=(
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
-                "Build ${G}opus${P} and compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P} and ${G}xav${P} (without target quality feature)."
-                "Build ${G}opus${P} and compile ${G}xav${P} by using ${G}ffms2${P} library from your system (without target quality feature)."
                 "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically without TQ."
                 "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
+                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically without TQ."
                 "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}ffms2${P} library from your system without TQ."
         )
 
@@ -898,7 +860,7 @@ main() {
                 while true; do
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
-                        [[ "${mode_choice}" =~ ^[1-8]$ ]] && {
+                        [[ "${mode_choice}" =~ ^[1-4]$ ]] && {
                                 if [[ "${ELIGIBLE[mode_choice - 1]}" == false ]]; then
                                         echo -e "${R}Mode ${mode_choice} is not eligible on this system.${N}"
                                         continue
@@ -930,64 +892,39 @@ main() {
                         cargo_features="--no-default-features"
                         build_static=false
                         ;;
-                5)
-                        config_file=".cargo/config.toml.static"
-                        cargo_features="--no-default-features --features static,vship,libsvtav1"
-                        build_static=true
-                        ;;
-                6)
-                        config_file=".cargo/config.toml.static_notq"
-                        cargo_features="--no-default-features --features static,libsvtav1"
-                        build_static=true
-                        ;;
-                7)
-                        config_file=".cargo/config.toml.dynamic"
-                        cargo_features="--no-default-features --features vship,libsvtav1"
-                        build_static=false
-                        ;;
-                8)
-                        config_file=".cargo/config.toml.dynamic_notq"
-                        cargo_features="--no-default-features --features libsvtav1"
-                        build_static=false
-                        ;;
         esac
 
-        use_svtav1=false
-        [[ "${mode_choice}" -ge 5 && "${mode_choice}" -le 8 ]] && use_svtav1=true
-
-        if [[ "${use_svtav1}" == true ]]; then
-                if [[ -n "${svt_fork}" ]]; then
-                        local fork_idx=-1
-                        for i in "${!SVT_FORK_NAMES[@]}"; do
-                                [[ "${SVT_FORK_NAMES[i]}" == "${svt_fork}" ]] && {
-                                        fork_idx="${i}"
-                                        break
-                                }
-                        done
-                        [[ "${fork_idx}" -eq -1 ]] && {
-                                echo -e "${R}Unknown SVT-AV1 fork: ${svt_fork}${N}"
-                                echo "Valid forks: ${SVT_FORK_NAMES[*]}"
-                                exit 1
+        if [[ -n "${svt_fork}" ]]; then
+                local fork_idx=-1
+                for i in "${!SVT_FORK_NAMES[@]}"; do
+                        [[ "${SVT_FORK_NAMES[i]}" == "${svt_fork}" ]] && {
+                                fork_idx="${i}"
+                                break
                         }
-                else
-                        echo -e "\n${C}Select SVT-AV1 fork:${N}"
-                        for i in "${!SVT_FORK_NAMES[@]}"; do
-                                printf "  ${Y}%d) ${P}%s${N}\n" "$((i + 1))" "${SVT_FORK_NAMES[i]}"
-                        done
-                        echo
-                        while true; do
-                                echo -ne "${C}Fork: ${N}"
-                                read -r fork_choice
-                                [[ "${fork_choice}" =~ ^[1-4]$ ]] && {
-                                        fork_idx=$((fork_choice - 1))
-                                        break
-                                }
-                        done
-                fi
-                svt_fork_name="${SVT_FORK_NAMES[fork_idx]}"
-                svt_fork_url="${SVT_FORK_URLS[fork_idx]}"
-                loginf g "SVT-AV1 fork: ${svt_fork_name}"
+                done
+                [[ "${fork_idx}" -eq -1 ]] && {
+                        echo -e "${R}Unknown SVT-AV1 fork: ${svt_fork}${N}"
+                        echo "Valid forks: ${SVT_FORK_NAMES[*]}"
+                        exit 1
+                }
+        else
+                echo -e "\n${C}Select SVT-AV1 fork:${N}"
+                for i in "${!SVT_FORK_NAMES[@]}"; do
+                        printf "  ${Y}%d) ${P}%s${N}\n" "$((i + 1))" "${SVT_FORK_NAMES[i]}"
+                done
+                echo
+                while true; do
+                        echo -ne "${C}Fork: ${N}"
+                        read -r fork_choice
+                        [[ "${fork_choice}" =~ ^[1-4]$ ]] && {
+                                fork_idx=$((fork_choice - 1))
+                                break
+                        }
+                done
         fi
+        svt_fork_name="${SVT_FORK_NAMES[fork_idx]}"
+        svt_fork_url="${SVT_FORK_URLS[fork_idx]}"
+        loginf g "SVT-AV1 fork: ${svt_fork_name}"
 
         cleanup_existing
 
@@ -996,7 +933,7 @@ main() {
         build_opus
         build_opusenc
 
-        [[ "${use_svtav1}" == true ]] && build_svtav1
+        build_svtav1
 
         [[ "${build_static}" == true ]] && {
                 loginf b "Starting static build process"

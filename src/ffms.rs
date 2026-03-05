@@ -648,11 +648,42 @@ pub enum DecodeStrat {
     B10CropFastRem { cc: CropCalc },
     B10CropStride { cc: CropCalc },
     B10CropStrideRem { cc: CropCalc },
+    B10Raw,
+    B10RawStride,
+    B10RawCropFast { cc: CropCalc },
+    B10RawCrop { cc: CropCalc },
+    B10RawCropStride { cc: CropCalc },
     B8Fast,
     B8Stride,
     B8Crop { cc: CropCalc },
     B8CropFast { cc: CropCalc },
     B8CropStride { cc: CropCalc },
+}
+
+impl DecodeStrat {
+    pub const fn to_raw(self) -> Self {
+        match self {
+            Self::B10Fast | Self::B10FastRem => Self::B10Raw,
+            Self::B10Stride | Self::B10StrideRem => Self::B10RawStride,
+            Self::B10CropFast { cc } | Self::B10CropFastRem { cc } => Self::B10RawCropFast { cc },
+            Self::B10Crop { cc } | Self::B10CropRem { cc } => Self::B10RawCrop { cc },
+            Self::B10CropStride { cc } | Self::B10CropStrideRem { cc } => {
+                Self::B10RawCropStride { cc }
+            }
+            other => other,
+        }
+    }
+
+    pub const fn is_raw(self) -> bool {
+        matches!(
+            self,
+            Self::B10Raw
+                | Self::B10RawStride
+                | Self::B10RawCropFast { .. }
+                | Self::B10RawCrop { .. }
+                | Self::B10RawCropStride { .. }
+        )
+    }
 }
 
 pub fn get_decode_strat(
@@ -1238,6 +1269,183 @@ pub fn extr_10bit_crop_pack_stride_rem(
             }
 
             dst_pos += uv_row;
+        }
+    }
+}
+
+pub fn extr_10bit_raw(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+        let y_size = w * h * 2;
+        let uv_size = y_size / 4;
+
+        ptr::copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
+        ptr::copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
+        ptr::copy_nonoverlapping(
+            (*frame).Data[2],
+            output.as_mut_ptr().add(y_size + uv_size),
+            uv_size,
+        );
+    }
+}
+
+pub fn extr_10bit_raw_stride(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    inf: &VidInf,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+        let y_linesize = (*frame).Linesize[0] as usize;
+        let uv_linesize = (*frame).Linesize[1] as usize;
+        let w_bytes = w * 2;
+        let uv_w_bytes = w;
+
+        let mut pos = 0;
+        for row in 0..h {
+            ptr::copy_nonoverlapping(
+                (*frame).Data[0].add(row * y_linesize),
+                output.as_mut_ptr().add(pos),
+                w_bytes,
+            );
+            pos += w_bytes;
+        }
+        for row in 0..h / 2 {
+            ptr::copy_nonoverlapping(
+                (*frame).Data[1].add(row * uv_linesize),
+                output.as_mut_ptr().add(pos),
+                uv_w_bytes,
+            );
+            pos += uv_w_bytes;
+        }
+        for row in 0..h / 2 {
+            ptr::copy_nonoverlapping(
+                (*frame).Data[2].add(row * uv_linesize),
+                output.as_mut_ptr().add(pos),
+                uv_w_bytes,
+            );
+            pos += uv_w_bytes;
+        }
+    }
+}
+
+pub fn extr_10bit_raw_crop_fast(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+        let y_sz = cc.new_w as usize * cc.new_h as usize * 2;
+        let uv_sz = y_sz / 4;
+
+        ptr::copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
+        ptr::copy_nonoverlapping(
+            (*frame).Data[1].add(cc.uv_off),
+            output.as_mut_ptr().add(y_sz),
+            uv_sz,
+        );
+        ptr::copy_nonoverlapping(
+            (*frame).Data[2].add(cc.uv_off),
+            output.as_mut_ptr().add(y_sz + uv_sz),
+            uv_sz,
+        );
+    }
+}
+
+pub fn extr_10bit_raw_crop(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+        let mut pos = 0;
+
+        for row in 0..cc.new_h as usize {
+            ptr::copy_nonoverlapping(
+                (*frame).Data[0].add(cc.y_start + row * cc.y_stride),
+                output.as_mut_ptr().add(pos),
+                cc.y_len,
+            );
+            pos += cc.y_len;
+        }
+        for row in 0..cc.new_h as usize / 2 {
+            ptr::copy_nonoverlapping(
+                (*frame).Data[1].add(cc.uv_off + row * cc.uv_stride),
+                output.as_mut_ptr().add(pos),
+                cc.uv_len,
+            );
+            pos += cc.uv_len;
+        }
+        for row in 0..cc.new_h as usize / 2 {
+            ptr::copy_nonoverlapping(
+                (*frame).Data[2].add(cc.uv_off + row * cc.uv_stride),
+                output.as_mut_ptr().add(pos),
+                cc.uv_len,
+            );
+            pos += cc.uv_len;
+        }
+    }
+}
+
+pub fn extr_10bit_raw_crop_stride(
+    vid_src: *mut FFMS_VideoSource,
+    frame_idx: usize,
+    output: &mut [u8],
+    cc: &CropCalc,
+) {
+    unsafe {
+        let frame = get_raw_frame(vid_src, frame_idx);
+        let w = cc.new_w as usize;
+        let h = cc.new_h as usize;
+        let pix_sz = 2;
+        let y_linesize = (*frame).Linesize[0] as usize;
+        let uv_linesize = (*frame).Linesize[1] as usize;
+        let w_bytes = w * pix_sz;
+        let uv_w_bytes = w / 2 * pix_sz;
+
+        let mut pos = 0;
+        for row in 0..h {
+            let src_off = cc.crop_h as usize * pix_sz + (row + cc.crop_v as usize) * y_linesize;
+            ptr::copy_nonoverlapping(
+                (*frame).Data[0].add(src_off),
+                output.as_mut_ptr().add(pos),
+                w_bytes,
+            );
+            pos += w_bytes;
+        }
+        for row in 0..h / 2 {
+            let src_off =
+                cc.crop_h as usize / 2 * pix_sz + (row + cc.crop_v as usize / 2) * uv_linesize;
+            ptr::copy_nonoverlapping(
+                (*frame).Data[1].add(src_off),
+                output.as_mut_ptr().add(pos),
+                uv_w_bytes,
+            );
+            pos += uv_w_bytes;
+        }
+        for row in 0..h / 2 {
+            let src_off =
+                cc.crop_h as usize / 2 * pix_sz + (row + cc.crop_v as usize / 2) * uv_linesize;
+            ptr::copy_nonoverlapping(
+                (*frame).Data[2].add(src_off),
+                output.as_mut_ptr().add(pos),
+                uv_w_bytes,
+            );
+            pos += uv_w_bytes;
         }
     }
 }

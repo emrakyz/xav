@@ -63,11 +63,9 @@ fn main() {
     println!("cargo:rustc-link-lib=static=opusenc");
     println!("cargo:rustc-link-lib=static=opus");
 
-    if cfg!(feature = "libsvtav1") {
-        find_static_lib(
-            &[format!("{home}/.local/src/SVT-AV1/Bin/Release")],
-            "libSvtAv1Enc.a",
-        );
-        println!("cargo:rustc-link-lib=static=SvtAv1Enc");
-    }
+    find_static_lib(
+        &[format!("{home}/.local/src/SVT-AV1/Bin/Release")],
+        "libSvtAv1Enc.a",
+    );
+    println!("cargo:rustc-link-lib=static=SvtAv1Enc");
 }

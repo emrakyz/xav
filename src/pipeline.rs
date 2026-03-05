@@ -115,11 +115,19 @@ impl Pipeline {
             | DecodeStrat::B10CropStrideRem { cc }
             | DecodeStrat::B8CropFast { cc }
             | DecodeStrat::B8Crop { cc }
-            | DecodeStrat::B8CropStride { cc } => (cc.new_w as usize, cc.new_h as usize),
+            | DecodeStrat::B8CropStride { cc }
+            | DecodeStrat::B10RawCropFast { cc }
+            | DecodeStrat::B10RawCrop { cc }
+            | DecodeStrat::B10RawCropStride { cc } => (cc.new_w as usize, cc.new_h as usize),
             _ => (inf.width as usize, inf.height as usize),
         };
 
         let frame_size = match strat {
+            DecodeStrat::B10Raw
+            | DecodeStrat::B10RawStride
+            | DecodeStrat::B10RawCropFast { .. }
+            | DecodeStrat::B10RawCrop { .. }
+            | DecodeStrat::B10RawCropStride { .. } => final_w * final_h * 3,
             DecodeStrat::B10Fast
             | DecodeStrat::B10FastRem
             | DecodeStrat::B10Stride
@@ -142,11 +150,19 @@ impl Pipeline {
         let pixel_size = if inf.is_10bit { 2 } else { 1 };
         let y_size = final_w * final_h * pixel_size;
         let uv_size = y_size / 4;
-        let conv_buf_size = final_w * final_h * 3 / 2 * 2;
+
+        let is_raw = strat.is_raw();
+        let conv_buf_size = if is_raw {
+            0
+        } else {
+            final_w * final_h * 3 / 2 * 2
+        };
 
         let has_rem = inf.is_10bit && (final_w % 8) != 0;
 
-        let (unpack, write_frames): (UnpackFn, WriteFn) = if !inf.is_10bit {
+        let (unpack, write_frames): (UnpackFn, WriteFn) = if is_raw {
+            (unpack_noop, write_frames_10bit)
+        } else if !inf.is_10bit {
             (unpack_noop, write_frames_8bit)
         } else if has_rem {
             (unpack_10bit_rem_wrap, write_frames_10bit)
@@ -155,44 +171,8 @@ impl Pipeline {
         };
 
         #[cfg(feature = "vship")]
-        let (compute_metric, reset_cvvdp, sort_descending, calc_metrics): (
-            ComputeMetricFn,
-            bool,
-            bool,
-            CalcMetricsFn,
-        ) = target_quality.map_or_else(
-            || {
-                let calc: CalcMetricsFn = if inf.is_10bit {
-                    tq::calc_metrics_10bit
-                } else {
-                    tq::calc_metrics_8bit
-                };
-                (compute_ssimulacra2 as ComputeMetricFn, false, false, calc)
-            },
-            |tq| {
-                let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-                let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
-
-                let use_butteraugli = tq_target < 8.0;
-                let use_cvvdp = tq_target > 8.0 && tq_target <= 10.0;
-
-                let compute = if use_butteraugli {
-                    compute_butteraugli as ComputeMetricFn
-                } else if use_cvvdp {
-                    compute_cvvdp as ComputeMetricFn
-                } else {
-                    compute_ssimulacra2 as ComputeMetricFn
-                };
-
-                let calc: CalcMetricsFn = if inf.is_10bit {
-                    tq::calc_metrics_10bit
-                } else {
-                    tq::calc_metrics_8bit
-                };
-
-                (compute, use_cvvdp, use_butteraugli, calc)
-            },
-        );
+        let (compute_metric, reset_cvvdp, sort_descending, calc_metrics) =
+            resolve_metrics(inf.is_10bit, target_quality);
 
         Self {
             final_w,
@@ -213,6 +193,39 @@ impl Pipeline {
             sort_descending,
         }
     }
+}
+
+#[cfg(feature = "vship")]
+fn resolve_metrics(
+    is_10bit: bool,
+    target_quality: Option<&str>,
+) -> (ComputeMetricFn, bool, bool, CalcMetricsFn) {
+    let calc: CalcMetricsFn = if is_10bit {
+        tq::calc_metrics_10bit
+    } else {
+        tq::calc_metrics_8bit
+    };
+
+    target_quality.map_or(
+        (compute_ssimulacra2 as ComputeMetricFn, false, false, calc),
+        |tq| {
+            let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
+            let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
+
+            let use_butteraugli = tq_target < 8.0;
+            let use_cvvdp = tq_target > 8.0 && tq_target <= 10.0;
+
+            let compute = if use_butteraugli {
+                compute_butteraugli as ComputeMetricFn
+            } else if use_cvvdp {
+                compute_cvvdp as ComputeMetricFn
+            } else {
+                compute_ssimulacra2 as ComputeMetricFn
+            };
+
+            (compute, use_cvvdp, use_butteraugli, calc)
+        },
+    )
 }
 
 #[cfg(feature = "vship")]
