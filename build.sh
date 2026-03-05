@@ -36,9 +36,6 @@ install_deps() {
         }
 }
 
-cargo clean > /dev/null 2>&1
-rm -f Cargo.lock
-
 BUILD_DIR="${HOME}/.local/src"
 XAV_DIR="$(pwd)"
 
@@ -351,6 +348,9 @@ dep_status_locations() {
 show_build_menu() {
         detect_deps
         [[ ! " ${ELIGIBLE[*]} " =~ " true " ]] && install_deps && detect_deps
+
+        cargo clean > /dev/null 2>&1
+        rm -f Cargo.lock
 
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
         echo -e "${C}║${W}  Required Compiler Toolchain (needed for all build types)             ${C}║${N}"
