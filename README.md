@@ -29,15 +29,10 @@
 - **Zoning:** Parameters can be added next to keyframe positions in the scenes file to encode different scenes with different parameters
 
 ## Dependencies
-**Build Time:**
-- Rust Nightly, NASM, Clang
-
-**Runtime:**
-- One encoder binary (or SVT-AV1 library): [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) | [AVM](https://gitlab.com/AOMediaCodec/avm) | [VVENC](https://github.com/fraunhoferhhi/vvenc) | [X265](https://bitbucket.org/multicoreware/x265_git/wiki/Home) | [X264](https://www.videolan.org/developers/x264.html)
-- [FFMS2](https://github.com/FFMS/ffms2) (used to access decoders and provides frame accuracy)
-
-**Runtime (Optional):**
-- [VSHIP](https://codeberg.org/Line-fr/Vship) (for GPU based target quality encoding)
+- One encoder binary (or [SVT-AV1](https://gitlab.com/AOMediaCodec/SVT-AV1) Library): [AVM](https://gitlab.com/AOMediaCodec/avm) | [VVENC](https://github.com/fraunhoferhhi/vvenc) | [X265](https://bitbucket.org/multicoreware/x265_git/wiki/Home) | [X264](https://www.videolan.org/developers/x264.html)
+- Your system svt-av1 is not needed because it is compiled into the `xav` executable statically, even with dynamic builds.
+- [FFMS2](https://github.com/FFMS/ffms2)
+- **OPTIONAL:** [VSHIP](https://codeberg.org/Line-fr/Vship) (for GPU based target quality encoding)
 
 ## Build
 

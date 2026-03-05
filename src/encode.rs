@@ -1,7 +1,3 @@
-#[cfg(any(feature = "vship", feature = "libsvtav1"))]
-use std::fs::File;
-#[cfg(any(feature = "vship", feature = "libsvtav1"))]
-use std::io::Write;
 #[cfg(feature = "vship")]
 use std::{
     collections::BTreeMap,
@@ -12,21 +8,18 @@ use std::{
 };
 use std::{
     collections::HashSet,
-    fs::metadata,
+    fs::{File, metadata},
+    io::{BufWriter, Write},
+    mem::{size_of, zeroed},
     panic::resume_unwind,
     path::{Path, PathBuf},
+    ptr::null_mut,
+    slice::from_raw_parts,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     thread::{JoinHandle, spawn},
-};
-#[cfg(feature = "libsvtav1")]
-use std::{
-    io::BufWriter,
-    mem::{size_of, zeroed},
-    ptr::null_mut,
-    slice::from_raw_parts,
 };
 
 #[cfg(feature = "vship")]
@@ -37,32 +30,27 @@ use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
 use sonic_rs::from_str;
 
+#[cfg(feature = "vship")]
+use crate::ffms::DecodeStrat;
 use crate::{
     Args,
     chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
     decode::{decode_chunks, decode_pipe},
-    encoder::{EncConfig, Encoder, make_enc_cmd},
-    ffms::{VidIdx, VidInf},
+    encoder::{EncConfig, Encoder, make_enc_cmd, set_svt_config},
+    ffms::{VidIdx, VidInf, conv_to_10bit},
     pipeline::Pipeline,
-    progs::ProgsTrack,
-    worker::{Semaphore, WorkPkg},
-    y4m::PipeReader,
-};
-#[cfg(feature = "libsvtav1")]
-use crate::{
-    encoder::set_svt_config,
-    ffms::conv_to_10bit,
-    progs::LibEncTracker,
+    progs::{LibEncTracker, ProgsTrack},
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
         EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
         svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
         svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
     },
+    worker::{Semaphore, WorkPkg},
+    y4m::PipeReader,
 };
 #[cfg(feature = "vship")]
 use crate::{
-    ffms::DecodeStrat,
     pipeline::MetricsProgress,
     tq::{Probe, ProbeLog, binary_search, interpolate_crf},
     vship::{VshipProcessor, init_device},
@@ -72,7 +60,7 @@ use crate::{
 #[cfg(feature = "vship")]
 pub static TQ_SCORES: OnceLock<Mutex<Vec<f64>>> = OnceLock::new();
 
-use crate::error::fatal;
+use crate::{error::fatal, util::assume_unreachable};
 
 fn join_one(handle: JoinHandle<()>) {
     if let Err(e) = handle.join() {
@@ -141,6 +129,9 @@ fn create_stats(completed_count: usize, resume_data: &ResumeInf) -> Arc<WorkerSt
     Arc::new(WorkerStats::new(completed_count, resume_data))
 }
 
+type SvtEncFn =
+    fn(&mut Vec<u8>, &EncConfig, &EncWorkerCtx, &mut [u8], usize, bool, Option<(f32, Option<f64>)>);
+
 struct EncWorkerCtx<'a> {
     inf: &'a VidInf,
     pipe: &'a Pipeline,
@@ -148,6 +139,7 @@ struct EncWorkerCtx<'a> {
     grain: Option<&'a Path>,
     prog: &'a Arc<ProgsTrack>,
     encoder: Encoder,
+    svt_enc: SvtEncFn,
 }
 
 #[cfg(feature = "vship")]
@@ -201,6 +193,12 @@ pub fn encode_all(
     let prog = Arc::new(prog);
 
     let strat = unsafe { args.decode_strat.unwrap_unchecked() };
+    let (strat, svt_enc_fn): (_, SvtEncFn) =
+        if args.encoder == Encoder::SvtAv1 && inf.is_10bit && args.chunk_buffer == args.worker {
+            (strat.to_raw(), enc_svt_direct)
+        } else {
+            (strat, enc_svt_drop)
+        };
     let pipe = Pipeline::new(
         inf,
         strat,
@@ -247,6 +245,7 @@ pub fn encode_all(
                 grain: grain.as_deref(),
                 prog: &prog_clone,
                 encoder,
+                svt_enc: svt_enc_fn,
             };
             run_enc_worker(
                 &rx_clone,
@@ -621,7 +620,15 @@ fn tq_enc_loop(
         } else {
             (probe_params.unwrap_or(params), None)
         };
-        enc_tq_probe(&pkg, crf, p, ctx, &mut conv_buf, worker_id, out.as_deref());
+        enc_tq_probe(
+            &mut pkg,
+            crf,
+            p,
+            ctx,
+            &mut conv_buf,
+            worker_id,
+            out.as_deref(),
+        );
         _ = tx.send(pkg);
     }
 }
@@ -765,6 +772,7 @@ fn encode_tq(
                 grain: grain.as_deref(),
                 prog: &prog_clone,
                 encoder,
+                svt_enc: enc_svt_lib,
             };
             tq_enc_loop(
                 &rx,
@@ -793,7 +801,7 @@ fn encode_tq(
 
 #[cfg(feature = "vship")]
 fn enc_tq_probe(
-    pkg: &WorkPkg,
+    pkg: &mut WorkPkg,
     crf: f64,
     params: &str,
     ctx: &EncWorkerCtx,
@@ -808,25 +816,25 @@ fn enc_tq_probe(
         default_out = probe_path(ctx.work_dir, pkg.chunk.idx, crf, ctx.encoder.extension());
         &default_out
     };
-    let cfg = EncConfig {
-        inf: ctx.inf,
-        params,
-        zone_params: pkg.chunk.params.as_deref(),
-        crf: crf as f32,
-        output: out,
-        grain_table: ctx.grain,
-        width: pkg.width,
-        height: pkg.height,
-        frames: pkg.frame_count,
-    };
-    #[cfg(feature = "libsvtav1")]
     if ctx.encoder == Encoder::SvtAv1 {
         let last_score = pkg
             .tq_state
             .as_ref()
             .and_then(|tq| tq.probes.last().map(|probe| probe.score));
-        enc_svt_lib(
-            pkg,
+        let cfg = EncConfig {
+            inf: ctx.inf,
+            params,
+            zone_params: pkg.chunk.params.as_deref(),
+            crf: crf as f32,
+            output: out,
+            grain_table: ctx.grain,
+            chunk_idx: pkg.chunk.idx,
+            width: pkg.width,
+            height: pkg.height,
+            frames: pkg.frame_count,
+        };
+        (ctx.svt_enc)(
+            &mut pkg.yuv,
             &cfg,
             ctx,
             conv_buf,
@@ -836,6 +844,18 @@ fn enc_tq_probe(
         );
         return out.to_path_buf();
     }
+    let cfg = EncConfig {
+        inf: ctx.inf,
+        params,
+        zone_params: pkg.chunk.params.as_deref(),
+        crf: crf as f32,
+        output: out,
+        grain_table: ctx.grain,
+        chunk_idx: pkg.chunk.idx,
+        width: pkg.width,
+        height: pkg.height,
+        frames: pkg.frame_count,
+    };
 
     let mut cmd = make_enc_cmd(ctx.encoder, &cfg);
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
@@ -845,7 +865,8 @@ fn enc_tq_probe(
         .as_ref()
         .and_then(|tq| tq.probes.last().map(|probe| probe.score));
     match ctx.encoder {
-        Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
+        Encoder::SvtAv1 => assume_unreachable(),
+        Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
             unsafe { child.stderr.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
@@ -924,6 +945,22 @@ fn enc_chunk(
         pkg.chunk.idx,
         ctx.encoder.extension()
     ));
+    if ctx.encoder == Encoder::SvtAv1 {
+        let cfg = EncConfig {
+            inf: ctx.inf,
+            params,
+            zone_params: pkg.chunk.params.as_deref(),
+            crf,
+            output: &out,
+            grain_table: ctx.grain,
+            chunk_idx: pkg.chunk.idx,
+            width: pkg.width,
+            height: pkg.height,
+            frames: pkg.frame_count,
+        };
+        (ctx.svt_enc)(&mut pkg.yuv, &cfg, ctx, conv_buf, worker_id, true, None);
+        return;
+    }
     let cfg = EncConfig {
         inf: ctx.inf,
         params,
@@ -931,22 +968,18 @@ fn enc_chunk(
         crf,
         output: &out,
         grain_table: ctx.grain,
+        chunk_idx: pkg.chunk.idx,
         width: pkg.width,
         height: pkg.height,
         frames: pkg.frame_count,
     };
-    #[cfg(feature = "libsvtav1")]
-    if ctx.encoder == Encoder::SvtAv1 {
-        enc_svt_lib(pkg, &cfg, ctx, conv_buf, worker_id, true, None);
-        pkg.yuv = Vec::new();
-        return;
-    }
 
     let mut cmd = make_enc_cmd(ctx.encoder, &cfg);
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     match ctx.encoder {
-        Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
+        Encoder::SvtAv1 => assume_unreachable(),
+        Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
             unsafe { child.stderr.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
@@ -1161,7 +1194,6 @@ fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) 
     }
 }
 
-#[cfg(feature = "libsvtav1")]
 fn write_ivf_header(f: &mut impl Write, cfg: &EncConfig) {
     let mut hdr = [0u8; 32];
     hdr[0..4].copy_from_slice(b"DKIF");
@@ -1174,14 +1206,12 @@ fn write_ivf_header(f: &mut impl Write, cfg: &EncConfig) {
     _ = f.write_all(&hdr);
 }
 
-#[cfg(feature = "libsvtav1")]
 fn write_ivf_frame(f: &mut impl Write, data: &[u8], pts: u64) {
     _ = f.write_all(&(data.len() as u32).to_le_bytes());
     _ = f.write_all(&pts.to_le_bytes());
     _ = f.write_all(data);
 }
 
-#[cfg(feature = "libsvtav1")]
 fn drain_svt_packets(handle: *mut EbComponentType, out: &mut impl Write, done: bool) -> usize {
     let mut count = 0;
     loop {
@@ -1205,7 +1235,6 @@ fn drain_svt_packets(handle: *mut EbComponentType, out: &mut impl Write, done: b
     count
 }
 
-#[cfg(feature = "libsvtav1")]
 fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
     let mut handle: *mut EbComponentType = null_mut();
     let mut config = unsafe { zeroed::<EbSvtAv1EncConfiguration>() };
@@ -1225,16 +1254,15 @@ fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
     handle
 }
 
-#[cfg(feature = "libsvtav1")]
-fn enc_svt_lib(
-    pkg: &WorkPkg,
+fn send_svt_conv(
+    yuv: &[u8],
     cfg: &EncConfig,
     ctx: &EncWorkerCtx,
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
     crf_score: Option<(f32, Option<f64>)>,
-) {
+) -> (*mut EbComponentType, BufWriter<File>, LibEncTracker) {
     let handle = init_svt(cfg);
     let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
     write_ivf_header(&mut out, cfg);
@@ -1259,18 +1287,24 @@ fn enc_svt_lib(
     in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
     in_hdr.n_alloc_len = in_hdr.n_filled_len;
 
-    let mut tracker = LibEncTracker::new();
+    let mut tracker = LibEncTracker::new(
+        worker_id,
+        cfg.chunk_idx,
+        cfg.frames,
+        track_frames,
+        crf_score,
+    );
     ctx.prog.update_lib_enc(
         worker_id,
-        pkg.chunk.idx,
-        (0, pkg.frame_count),
+        cfg.chunk_idx,
+        (0, cfg.frames),
         0.0,
         None,
         crf_score,
     );
 
-    for i in 0..pkg.frame_count {
-        let frame = get_frame(&pkg.yuv, i, ctx.pipe.frame_size);
+    for i in 0..cfg.frames {
+        let frame = get_frame(yuv, i, ctx.pipe.frame_size);
         if cfg.inf.is_10bit {
             (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
         } else {
@@ -1288,16 +1322,130 @@ fn enc_svt_lib(
         }
 
         tracker.encoded += drain_svt_packets(handle, &mut out, false);
-        tracker.report(
-            ctx.prog,
-            worker_id,
-            pkg.chunk.idx,
-            pkg.frame_count,
-            track_frames,
-            crf_score,
-        );
+        tracker.report(ctx.prog);
     }
 
+    (handle, out, tracker)
+}
+
+fn enc_svt_lib(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let (handle, mut out, mut tracker) = send_svt_conv(
+        yuv.as_slice(),
+        cfg,
+        ctx,
+        conv_buf,
+        worker_id,
+        track_frames,
+        crf_score,
+    );
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
+fn enc_svt_drop(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let (handle, mut out, mut tracker) =
+        send_svt_conv(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
+    *yuv = Vec::new();
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
+fn enc_svt_direct(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    _conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let handle = init_svt(cfg);
+    let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
+    write_ivf_header(&mut out, cfg);
+
+    let w = cfg.width as usize;
+    let h = cfg.height as usize;
+    let y_size = w * h * 2;
+    let uv_size = (w / 2) * (h / 2) * 2;
+
+    let mut io_fmt = EbSvtIOFormat {
+        luma: null_mut(),
+        cb: null_mut(),
+        cr: null_mut(),
+        y_stride: w as u32,
+        cb_stride: (w / 2) as u32,
+        cr_stride: (w / 2) as u32,
+    };
+    let io_ptr = &raw mut io_fmt;
+
+    let mut in_hdr = unsafe { zeroed::<EbBufferHeaderType>() };
+    in_hdr.size = size_of::<EbBufferHeaderType>() as u32;
+    in_hdr.p_buffer = io_ptr.cast::<u8>();
+    in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
+    in_hdr.n_alloc_len = in_hdr.n_filled_len;
+
+    let mut tracker = LibEncTracker::new(
+        worker_id,
+        cfg.chunk_idx,
+        cfg.frames,
+        track_frames,
+        crf_score,
+    );
+    ctx.prog.update_lib_enc(
+        worker_id,
+        cfg.chunk_idx,
+        (0, cfg.frames),
+        0.0,
+        None,
+        crf_score,
+    );
+
+    for i in 0..cfg.frames {
+        let off = i * ctx.pipe.frame_size;
+        unsafe {
+            (*io_ptr).luma = yuv[off..].as_ptr().cast_mut();
+            (*io_ptr).cb = yuv[off + y_size..].as_ptr().cast_mut();
+            (*io_ptr).cr = yuv[off + y_size + uv_size..].as_ptr().cast_mut();
+        }
+
+        in_hdr.pts = i as i64;
+        in_hdr.flags = 0;
+
+        let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
+        if ret != EB_ERROR_NONE {
+            fatal(format_args!(
+                "svt_av1_enc_send_picture failed at frame {i}: {ret}"
+            ));
+        }
+
+        tracker.encoded += drain_svt_packets(handle, &mut out, false);
+        tracker.report(ctx.prog);
+    }
+    *yuv = Vec::new();
+
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
+fn finish_svt(
+    handle: *mut EbComponentType,
+    out: &mut BufWriter<File>,
+    tracker: &mut LibEncTracker,
+    prog: &ProgsTrack,
+) {
     let mut eos = unsafe { zeroed::<EbBufferHeaderType>() };
     eos.flags = EB_BUFFERFLAG_EOS;
     unsafe { svt_av1_enc_send_picture(handle, &raw mut eos) };
@@ -1311,25 +1459,18 @@ fn enc_svt_lib(
         let p = unsafe { &*pkt };
         if p.n_filled_len > 0 {
             let data = unsafe { from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
-            write_ivf_frame(&mut out, data, p.pts.cast_unsigned());
+            write_ivf_frame(out, data, p.pts.cast_unsigned());
             tracker.encoded += 1;
         }
         let is_eos = p.flags & EB_BUFFERFLAG_EOS != 0;
         unsafe { svt_av1_enc_release_out_buffer(&raw mut pkt) };
-        tracker.report(
-            ctx.prog,
-            worker_id,
-            pkg.chunk.idx,
-            pkg.frame_count,
-            track_frames,
-            crf_score,
-        );
+        tracker.report(prog);
         if is_eos {
             break;
         }
     }
 
-    ctx.prog.clear_lib_enc(worker_id);
+    prog.clear_lib_enc(tracker.worker_id);
 
     unsafe {
         svt_av1_enc_deinit(handle);

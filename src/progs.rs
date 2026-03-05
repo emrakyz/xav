@@ -21,7 +21,7 @@ use crate::{
 const BAR_WIDTH: usize = 20;
 const INTERVAL_MS: u64 = 500;
 
-use crate::util::{B, C, G, N, P, R, W, Y};
+use crate::util::{B, C, G, N, P, R, W, Y, assume_unreachable};
 
 const G_HASH: &str = "\x1b[1;92m#";
 const R_DASH: &str = "\x1b[1;91m-";
@@ -266,9 +266,7 @@ impl ProgsTrack {
         let tx = self.tx.clone();
 
         spawn(move || match encoder {
-            Encoder::SvtAv1 => {
-                watch_svt(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
-            }
+            Encoder::SvtAv1 => assume_unreachable(),
             Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
             Encoder::X265 | Encoder::X264 => {
                 watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
@@ -311,7 +309,6 @@ impl ProgsTrack {
         });
     }
 
-    #[cfg(feature = "libsvtav1")]
     pub fn update_lib_enc(
         &self,
         worker_id: usize,
@@ -349,38 +346,43 @@ impl ProgsTrack {
         });
     }
 
-    #[cfg(feature = "libsvtav1")]
     pub fn clear_lib_enc(&self, worker_id: usize) {
         _ = self.tx.send(WorkerMsg::Clear(worker_id));
     }
 }
 
-#[cfg(feature = "libsvtav1")]
 pub struct LibEncTracker {
     start: Instant,
     pub encoded: usize,
     last_reported: usize,
+    pub worker_id: usize,
+    chunk_idx: usize,
+    total: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
 }
 
-#[cfg(feature = "libsvtav1")]
 impl LibEncTracker {
-    pub fn new() -> Self {
-        Self {
-            start: Instant::now(),
-            encoded: 0,
-            last_reported: 0,
-        }
-    }
-
-    pub fn report(
-        &mut self,
-        prog: &ProgsTrack,
+    pub fn new(
         worker_id: usize,
         chunk_idx: usize,
         total: usize,
         track_frames: bool,
         crf_score: Option<(f32, Option<f64>)>,
-    ) {
+    ) -> Self {
+        Self {
+            start: Instant::now(),
+            encoded: 0,
+            last_reported: 0,
+            worker_id,
+            chunk_idx,
+            total,
+            track_frames,
+            crf_score,
+        }
+    }
+
+    pub fn report(&mut self, prog: &ProgsTrack) {
         if self.encoded == self.last_reported {
             return;
         }
@@ -388,80 +390,14 @@ impl LibEncTracker {
         let delta = self.encoded - self.last_reported;
         self.last_reported = self.encoded;
         prog.update_lib_enc(
-            worker_id,
-            chunk_idx,
-            (self.encoded, total),
+            self.worker_id,
+            self.chunk_idx,
+            (self.encoded, self.total),
             fps,
-            track_frames.then_some(delta),
-            crf_score,
+            self.track_frames.then_some(delta),
+            self.crf_score,
         );
     }
-}
-
-fn watch_svt(
-    tx: &Sender<WorkerMsg>,
-    stderr: impl Read,
-    worker_id: usize,
-    chunk_idx: usize,
-    track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
-) {
-    let reader = BufReader::new(stderr);
-    let mut last_frames = 0;
-
-    for line in reader.split(b'\r').filter_map(Result::ok) {
-        let Ok(text) = from_utf8(&line) else {
-            continue;
-        };
-        let text = text.trim();
-
-        if text.contains("error") || text.contains("Error") {
-            eprint(format_args!("{text}"));
-        }
-
-        if text.is_empty() || !text.contains("Encoding:") || text.contains("SUMMARY") {
-            continue;
-        }
-
-        let Some((current, total, fps, kbps)) = parse_svt(text) else {
-            continue;
-        };
-
-        let prefix = match crf_score {
-            Some((crf, Some(score))) => {
-                format!("{C}[{chunk_idx:04} / F {crf:.2} / {score:.2}{C}]")
-            }
-            Some((crf, None)) => format!("{C}[{chunk_idx:04} / F {crf:.2}{C}]"),
-            None => format!("{C}[{chunk_idx:04}{C}]"),
-        };
-
-        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!(
-            "{}{}",
-            B_HASH.repeat(filled),
-            Y_DASH.repeat(BAR_WIDTH - filled)
-        );
-        let perc = (current * 100 / total.max(1)).min(100);
-
-        let display_line = format!(
-            "{prefix} {P}[{bar}{P}] {W}{perc:2}% {Y}{current:3}/{total} {G}{fps:6.2} {W}| \
-             {P}{kbps:.0} kb/s"
-        );
-
-        let frames_delta = track_frames.then(|| {
-            let delta = current.saturating_sub(last_frames);
-            last_frames = current;
-            delta
-        });
-
-        _ = tx.send(WorkerMsg::Update {
-            worker_id,
-            line: display_line,
-            frames: frames_delta,
-        });
-    }
-
-    _ = tx.send(WorkerMsg::Clear(worker_id));
 }
 
 fn watch_avm(
@@ -569,76 +505,6 @@ fn watch_vvenc(
     }
 
     _ = tx.send(WorkerMsg::Clear(worker_id));
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
-            i += 2;
-            while i < bytes.len() && !bytes[i].is_ascii_alphabetic() {
-                i += 1;
-            }
-        } else {
-            out.push(bytes[i] as char);
-        }
-        i += 1;
-    }
-    out
-}
-
-fn parse_svt(line: &str) -> Option<(usize, usize, f32, f32)> {
-    let clean = strip_ansi(line);
-
-    let frames_pos = clean.find(" Frames")?;
-    let bytes = clean.as_bytes();
-
-    let mut start = frames_pos;
-    while start > 0 {
-        let b = bytes[start - 1];
-        if b.is_ascii_digit() || b == b'/' {
-            start -= 1;
-        } else {
-            break;
-        }
-    }
-
-    let num_part = &clean[start..frames_pos];
-    let mut frame_parts = num_part.split('/');
-    let current: usize = frame_parts.next()?.parse().ok()?;
-    let total: usize = frame_parts.next()?.parse().ok()?;
-
-    let after_frames = &clean[frames_pos + 7..];
-
-    let fps = if let Some(fpm_pos) = after_frames.find(" fpm") {
-        let before = &after_frames[..fpm_pos];
-        let num_str = before
-            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
-            .next()?;
-        num_str.parse::<f32>().ok()? / 60.0
-    } else if let Some(fps_pos) = after_frames.find(" fps") {
-        let before = &after_frames[..fps_pos];
-        let num_str = before
-            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
-            .next()?;
-        num_str.parse().ok()?
-    } else {
-        return None;
-    };
-
-    let kbps = if let Some(kbps_pos) = after_frames.find(" kb/s") {
-        let before = &after_frames[..kbps_pos];
-        let num_str = before
-            .rsplit(|c: char| !c.is_ascii_digit() && c != '.')
-            .next()?;
-        num_str.parse().unwrap_or(0.0)
-    } else {
-        0.0
-    };
-
-    Some((current, total, fps, kbps))
 }
 
 fn watch_x265(

@@ -12,10 +12,9 @@ keywords = ["av1", "video", "multimedia", "encoding", "quality", "chunking"]
 categories = ["multimedia::video", "command-line-utilities"]
 
 [features]
-default = [ "static", "vship", "libsvtav1" ]
+default = [ "static", "vship" ]
 static = []
 vship = []
-libsvtav1 = []
 
 [dependencies]
 libc = "0.2.182"
