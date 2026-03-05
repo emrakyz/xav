@@ -37,6 +37,7 @@ install_deps() {
 }
 
 BUILD_DIR="${HOME}/.local/src"
+mkdir -p "${BUILD_DIR}"
 XAV_DIR="$(pwd)"
 
 R='\e[1;91m' B='\e[1;94m' P='\e[1;95m' Y='\e[1;93m'
