@@ -1328,6 +1328,7 @@ fn send_svt_conv(
     (handle, out, tracker)
 }
 
+#[cfg(feature = "vship")]
 fn enc_svt_lib(
     yuv: &mut Vec<u8>,
     cfg: &EncConfig,
