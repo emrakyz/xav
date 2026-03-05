@@ -2,6 +2,40 @@
 
 set -Eeuo pipefail
 
+install_deps() {
+        ((UID != 0)) && { for i in sudo doas; do command -v "${i}" > /dev/null 2>&1 && priv="${i}"; done; }
+
+        for i in pacman dnf emerge; do command -v "${i}" > /dev/null 2>&1 && pm="${i}"; done
+
+        case "${pm}" in
+                "pacman")
+                        pkgs=(base-devel rustup nasm clang compiler-rt cmake ffms2 llvm lld ninja)
+                        "${priv:-}" pacman -S --needed --noconfirm "${pkgs[@]}"
+                        ;;
+                "dnf")
+                        pkgs=(
+                                glibc-static libstdc++-static nasm rustup clang clang-libs
+                                llvm lld compiler-rt llvm-libunwind-static autoconf automake
+                                libtool cmake ninja-build pkgconf
+                        )
+                        "${priv:-}" dnf install -y "${pkgs[@]}"
+                        ;;
+                "emerge")
+                        echo "You need Rust Nightly (-9999), nasm, clang/llvm toolchain"
+                        echo "USEFLAGS needed for toolchain: atomic-builtins profile static-libs sanitize compiler-rt"
+                        ;;
+                *)
+                        echo "ERROR: You need Rust Nightly, nasm, clang/llvm/lld/compiler-rt toolchain and FFMS2"
+                        ;;
+        esac
+
+        command -v rustup > /dev/null 2>&1 && {
+                rustup toolchain install nightly
+                rustup default nightly
+                rustup update
+        }
+}
+
 cargo clean > /dev/null 2>&1
 rm -f Cargo.lock
 
@@ -316,6 +350,7 @@ dep_status_locations() {
 
 show_build_menu() {
         detect_deps
+        [[ ! " ${ELIGIBLE[*]} " =~ " true " ]] && install_deps && detect_deps
 
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
         echo -e "${C}║${W}  Required Compiler Toolchain (needed for all build types)             ${C}║${N}"
@@ -492,7 +527,6 @@ build_ffmpeg() {
                 --strip="${STRIP}" \
                 --extra-cflags="${CFLAGS}" \
                 --extra-cxxflags="${CXXFLAGS}" \
-                --extra-ldflags="" \
                 --disable-shared \
                 --enable-static \
                 --pkg-config-flags="--static" \
