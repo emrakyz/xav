@@ -1,4 +1,4 @@
-use std::{collections::HashSet, path::Path, ptr, sync::Arc, thread};
+use std::{collections::HashSet, path::Path, ptr::copy_nonoverlapping, sync::Arc, thread};
 
 use crossbeam_channel::bounded;
 use ffms2_sys::FFMS_VideoSource;
@@ -7,7 +7,10 @@ use crate::{
     chunk::Chunk,
     decode::decode_chunks,
     encode::get_frame,
-    ffms::{self, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, thr_vid_src},
+    ffms::{
+        self, VidIdx, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, get_vidinf,
+        thr_vid_src,
+    },
     pipeline::Pipeline,
     worker::{Semaphore, WorkPkg},
 };
@@ -39,7 +42,7 @@ fn extr_raw_data(
         for row in 0..cropped_height {
             let src_off = (crop_h * pix_sz) + ((row + crop_v) * y_linesize);
             let len = cropped_width * pix_sz;
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[0].add(src_off),
                 output.as_mut_ptr().add(pos),
                 len,
@@ -50,7 +53,7 @@ fn extr_raw_data(
         for row in 0..cropped_height / 2 {
             let src_off = (crop_h / 2 * pix_sz) + ((row + crop_v / 2) * u_linesize);
             let len = cropped_width / 2 * pix_sz;
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[1].add(src_off),
                 output.as_mut_ptr().add(pos),
                 len,
@@ -61,7 +64,7 @@ fn extr_raw_data(
         for row in 0..cropped_height / 2 {
             let src_off = (crop_h / 2 * pix_sz) + ((row + crop_v / 2) * v_linesize);
             let len = cropped_width / 2 * pix_sz;
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[2].add(src_off),
                 output.as_mut_ptr().add(pos),
                 len,
@@ -76,8 +79,8 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
         .join("test_files")
         .join(filename);
 
-    let idx = ffms::VidIdx::new(&input, false).unwrap();
-    let inf = ffms::get_vidinf(&idx).unwrap();
+    let idx = VidIdx::new(&input, false).unwrap();
+    let inf = get_vidinf(&idx).unwrap();
     let decode_strat = ffms::get_decode_strat(&idx, &inf, crop).unwrap();
     let (tx, rx) = bounded::<WorkPkg>(1);
     let sem = Arc::new(Semaphore::new(1));

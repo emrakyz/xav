@@ -1,7 +1,7 @@
-use std::io::{self, BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin};
+use std::io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin};
 
 pub fn is_pipe() -> bool {
-    !io::stdin().is_terminal()
+    !stdin().is_terminal()
 }
 
 pub struct Y4mInfo {
@@ -38,7 +38,7 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
         return None;
     }
 
-    let stdin = io::stdin();
+    let stdin = stdin();
     let mut reader = BufReader::new(stdin);
     let mut header = String::new();
     _ = reader.read_line(&mut header);

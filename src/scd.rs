@@ -7,7 +7,7 @@ use std::{
 };
 
 use av_scenechange::{
-    DetectionOptions, SceneDetectionSpeed, av_decoders::Decoder, detect_scene_changes,
+    DetectionOptions, SceneDetectionSpeed::Standard, av_decoders::Decoder, detect_scene_changes,
 };
 
 use crate::{
@@ -28,7 +28,7 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), 
     decoder.set_luma_only(true);
 
     let opts = DetectionOptions {
-        analysis_speed: SceneDetectionSpeed::Standard,
+        analysis_speed: Standard,
         detect_flashes: true,
         min_scenecut_distance: None,
         max_scenecut_distance: None,
