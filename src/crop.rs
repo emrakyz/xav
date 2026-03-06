@@ -1,10 +1,10 @@
-use std::{ffi::CString, mem, sync::Arc, thread};
+use std::{sync::Arc, thread::available_parallelism};
 
 use ffms2_sys::FFMS_VideoSource;
 
 use crate::{
     error::Xerr,
-    ffms::{self, VidIdx, VidInf, destroy_vid_src},
+    ffms::{self, VidIdx, VidInf, destroy_vid_src, thr_vid_src},
 };
 
 #[derive(Debug, Clone)]
@@ -59,41 +59,21 @@ pub fn detect_crop(
     inf: &VidInf,
     config: &CropDetectConfig,
 ) -> Result<CropResult, Xerr> {
-    unsafe {
-        let source = CString::new(idx.path.as_str())?;
-        let mut err = mem::zeroed::<ffms2_sys::FFMS_ErrorInfo>();
+    let threads = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
 
-        let threads =
-            thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
+    let src = thr_vid_src(idx, threads)?;
+    let frame_indices = calculate_sample_frames(inf.frames, config.sample_count);
 
-        let src = ffms2_sys::FFMS_CreateVideoSource(
-            source.as_ptr(),
-            idx.track,
-            idx.idx_handle,
-            threads,
-            1,
-            &raw mut err,
-        );
-
-        if src.is_null() {
-            return Err("Failed to create video source".into());
+    let mut crop_samples = Vec::with_capacity(frame_indices.len());
+    for &frame_idx in &frame_indices {
+        if let Some(crop) = detect_frame_crop(src, frame_idx, inf, config.min_black_pixels) {
+            crop_samples.push(crop);
         }
-
-        let frame_indices = calculate_sample_frames(inf.frames, config.sample_count);
-
-        let mut crop_samples = Vec::with_capacity(frame_indices.len());
-        for &frame_idx in &frame_indices {
-            if let Some(crop) = detect_frame_crop(src, frame_idx, inf, config.min_black_pixels) {
-                crop_samples.push(crop);
-            }
-        }
-
-        destroy_vid_src(src);
-
-        let result = min_crop(&crop_samples);
-
-        Ok(result)
     }
+
+    destroy_vid_src(src);
+
+    Ok(min_crop(&crop_samples))
 }
 
 fn calculate_sample_frames(total_frames: usize, sample_count: usize) -> Vec<usize> {

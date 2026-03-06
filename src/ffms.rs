@@ -1,8 +1,9 @@
 use std::{
     ffi::{CStr, CString, c_int, c_void},
-    mem::{self, MaybeUninit},
+    mem::{MaybeUninit, zeroed},
     path::Path,
-    ptr, slice,
+    ptr::{addr_of_mut, copy_nonoverlapping, null_mut},
+    slice::{from_raw_parts, from_raw_parts_mut},
     sync::{Arc, Once},
 };
 
@@ -13,7 +14,17 @@ use ffms2_sys::{
     FFMS_SetProgressCallback, FFMS_VideoSource, FFMS_WriteIndex,
 };
 
-use crate::{decode::CropCalc, error::Xerr, progs::ProgsBar};
+use crate::{
+    Xerr,
+    decode::CropCalc,
+    error::Xerr::Msg,
+    ffms::DecodeStrat::{
+        B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast, B10CropFastRem,
+        B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem, B10Raw, B10RawCrop,
+        B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride, B10StrideRem,
+    },
+    progs::ProgsBar,
+};
 
 macro_rules! ffms_err {
     ($buf:ident, $err:ident) => {
@@ -41,11 +52,9 @@ macro_rules! ffms_ok {
 #[cold]
 fn ffms_err_str(buf: &MaybeUninit<[u8; 1024]>) -> Xerr {
     unsafe {
-        Xerr::Msg(
-            CStr::from_ptr(buf.as_ptr().cast())
-                .to_string_lossy()
-                .into_owned(),
-        )
+        Msg(CStr::from_ptr(buf.as_ptr().cast())
+            .to_string_lossy()
+            .into_owned())
     }
 }
 
@@ -104,21 +113,21 @@ impl VidIdx {
             let idx_cstr = CString::new(idx_path.as_str())?;
 
             let mut idx = if Path::new(&idx_path).exists() {
-                FFMS_ReadIndex(idx_cstr.as_ptr(), ptr::addr_of_mut!(err))
+                FFMS_ReadIndex(idx_cstr.as_ptr(), addr_of_mut!(err))
             } else {
-                ptr::null_mut()
+                null_mut()
             };
 
             if !idx.is_null()
-                && FFMS_IndexBelongsToFile(idx, source.as_ptr(), ptr::addr_of_mut!(err)) != 0
+                && FFMS_IndexBelongsToFile(idx, source.as_ptr(), addr_of_mut!(err)) != 0
             {
                 FFMS_DestroyIndex(idx);
-                idx = ptr::null_mut();
+                idx = null_mut();
             }
 
             let idx = if idx.is_null() {
                 let idxer = ffms_ok!(
-                    FFMS_CreateIndexer(source.as_ptr(), ptr::addr_of_mut!(err)),
+                    FFMS_CreateIndexer(source.as_ptr(), addr_of_mut!(err)),
                     &errbuf
                 );
 
@@ -127,24 +136,24 @@ impl VidIdx {
                     FFMS_SetProgressCallback(
                         idxer,
                         Some(idx_progs),
-                        ptr::addr_of_mut!(progs).cast::<libc::c_void>(),
+                        addr_of_mut!(progs).cast::<c_void>(),
                     );
-                    let idx = FFMS_DoIndexing2(idxer, 0, ptr::addr_of_mut!(err));
+                    let idx = FFMS_DoIndexing2(idxer, 0, addr_of_mut!(err));
                     ProgsBar::finish();
                     idx
                 } else {
-                    FFMS_DoIndexing2(idxer, 0, ptr::addr_of_mut!(err))
+                    FFMS_DoIndexing2(idxer, 0, addr_of_mut!(err))
                 };
 
                 ffms_ok!(idx, &errbuf);
 
-                FFMS_WriteIndex(idx_cstr.as_ptr(), idx, ptr::addr_of_mut!(err));
+                FFMS_WriteIndex(idx_cstr.as_ptr(), idx, addr_of_mut!(err));
                 idx
             } else {
                 idx
             };
 
-            let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, ptr::addr_of_mut!(err));
+            let track = FFMS_GetFirstIndexedTrackOfType(idx, 0, addr_of_mut!(err));
             if track < 0 {
                 FFMS_DestroyIndex(idx);
                 return Err(ffms_err_str(&errbuf));
@@ -184,7 +193,7 @@ pub fn get_vidinf(idx: &Arc<VidIdx>) -> Result<VidInf, Xerr> {
                 idx.idx_handle,
                 1,
                 1,
-                ptr::addr_of_mut!(err)
+                addr_of_mut!(err)
             ),
             &errbuf
         );
@@ -287,7 +296,7 @@ pub fn thr_vid_src(idx: &Arc<VidIdx>, threads: i32) -> Result<*mut FFMS_VideoSou
                 idx.idx_handle,
                 threads,
                 1,
-                ptr::addr_of_mut!(err)
+                addr_of_mut!(err)
             ),
             &errbuf
         );
@@ -314,7 +323,7 @@ pub const fn calc_packed_size(w: u32, h: u32) -> usize {
 fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, dst: *mut u8) {
     unsafe {
         for row in 0..height {
-            ptr::copy_nonoverlapping(src.add(row * stride), dst.add(row * width), width);
+            copy_nonoverlapping(src.add(row * stride), dst.add(row * width), width);
         }
     }
 }
@@ -370,13 +379,13 @@ pub fn extr_8bit_crop_fast(
         let y_sz = cc.new_w as usize * cc.new_h as usize;
         let uv_sz = y_sz / 4;
 
-        ptr::copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
-        ptr::copy_nonoverlapping(
+        copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
+        copy_nonoverlapping(
             (*frame).Data[1].add(cc.uv_off),
             output.as_mut_ptr().add(y_sz),
             uv_sz,
         );
-        ptr::copy_nonoverlapping(
+        copy_nonoverlapping(
             (*frame).Data[2].add(cc.uv_off),
             output.as_mut_ptr().add(y_sz + uv_sz),
             uv_sz,
@@ -396,7 +405,7 @@ pub fn extr_8bit_crop(
         let mut pos = 0;
 
         for row in 0..cc.new_h as usize {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[0].add(cc.y_start + row * cc.y_stride),
                 output.as_mut_ptr().add(pos),
                 cc.y_len,
@@ -405,7 +414,7 @@ pub fn extr_8bit_crop(
         }
 
         for row in 0..cc.new_h as usize / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[1].add(cc.uv_off + row * cc.uv_stride),
                 output.as_mut_ptr().add(pos),
                 cc.uv_len,
@@ -414,7 +423,7 @@ pub fn extr_8bit_crop(
         }
 
         for row in 0..cc.new_h as usize / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[2].add(cc.uv_off + row * cc.uv_stride),
                 output.as_mut_ptr().add(pos),
                 cc.uv_len,
@@ -438,9 +447,9 @@ pub fn extr_8bit_fast(
         let y_size = width * height;
         let uv_size = y_size / 4;
 
-        ptr::copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
-        ptr::copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
-        ptr::copy_nonoverlapping(
+        copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
+        copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
+        copy_nonoverlapping(
             (*frame).Data[2],
             output.as_mut_ptr().add(y_size + uv_size),
             uv_size,
@@ -555,8 +564,8 @@ fn pack_stride(src: *const u8, stride: usize, w: usize, h: usize, out: *mut u8) 
         let mut pos = 0;
 
         for row in 0..h {
-            let src_row = slice::from_raw_parts(src.add(row * stride), w_bytes);
-            let dst_row = slice::from_raw_parts_mut(out.add(pos), pack_row);
+            let src_row = from_raw_parts(src.add(row * stride), w_bytes);
+            let dst_row = from_raw_parts_mut(out.add(pos), pack_row);
 
             src_row
                 .chunks_exact(8)
@@ -587,13 +596,13 @@ pub fn extr_10bit_crop_fast(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        let y_src = slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
+        let y_src = from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
         pack_10bit(y_src, &mut output[..y_pack]);
 
-        let u_src = slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
+        let u_src = from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
         pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
 
-        let v_src = slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
+        let v_src = from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
         pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
@@ -663,13 +672,11 @@ pub enum DecodeStrat {
 impl DecodeStrat {
     pub const fn to_raw(self) -> Self {
         match self {
-            Self::B10Fast | Self::B10FastRem => Self::B10Raw,
-            Self::B10Stride | Self::B10StrideRem => Self::B10RawStride,
-            Self::B10CropFast { cc } | Self::B10CropFastRem { cc } => Self::B10RawCropFast { cc },
-            Self::B10Crop { cc } | Self::B10CropRem { cc } => Self::B10RawCrop { cc },
-            Self::B10CropStride { cc } | Self::B10CropStrideRem { cc } => {
-                Self::B10RawCropStride { cc }
-            }
+            B10Fast | B10FastRem => B10Raw,
+            B10Stride | B10StrideRem => B10RawStride,
+            B10CropFast { cc } | B10CropFastRem { cc } => B10RawCropFast { cc },
+            B10Crop { cc } | B10CropRem { cc } => B10RawCrop { cc },
+            B10CropStride { cc } | B10CropStrideRem { cc } => B10RawCropStride { cc },
             other => other,
         }
     }
@@ -677,11 +684,11 @@ impl DecodeStrat {
     pub const fn is_raw(self) -> bool {
         matches!(
             self,
-            Self::B10Raw
-                | Self::B10RawStride
-                | Self::B10RawCropFast { .. }
-                | Self::B10RawCrop { .. }
-                | Self::B10RawCropStride { .. }
+            B10Raw
+                | B10RawStride
+                | B10RawCropFast { .. }
+                | B10RawCrop { .. }
+                | B10RawCropStride { .. }
         )
     }
 }
@@ -702,7 +709,7 @@ pub fn get_decode_strat(
                 idx.idx_handle,
                 1,
                 1,
-                ptr::addr_of_mut!(err)
+                addr_of_mut!(err)
             ),
             &errbuf
         );
@@ -725,37 +732,37 @@ pub fn get_decode_strat(
         let has_rem = inf.is_10bit && (final_w % 8) != 0;
 
         let strat = match (inf.is_10bit, has_crop, has_pad, h_crop, has_rem) {
-            (true, false, false, _, false) => DecodeStrat::B10Fast,
-            (true, false, false, _, true) => DecodeStrat::B10FastRem,
-            (true, false, true, _, false) => DecodeStrat::B10Stride,
-            (true, false, true, _, true) => DecodeStrat::B10StrideRem,
-            (true, true, false, false, false) => DecodeStrat::B10CropFast {
+            (true, false, false, _, false) => B10Fast,
+            (true, false, false, _, true) => B10FastRem,
+            (true, false, true, _, false) => B10Stride,
+            (true, false, true, _, true) => B10StrideRem,
+            (true, true, false, false, false) => B10CropFast {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (true, true, false, false, true) => DecodeStrat::B10CropFastRem {
+            (true, true, false, false, true) => B10CropFastRem {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (true, true, false, true, false) => DecodeStrat::B10Crop {
+            (true, true, false, true, false) => B10Crop {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (true, true, false, true, true) => DecodeStrat::B10CropRem {
+            (true, true, false, true, true) => B10CropRem {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (true, true, true, _, false) => DecodeStrat::B10CropStride {
+            (true, true, true, _, false) => B10CropStride {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (true, true, true, _, true) => DecodeStrat::B10CropStrideRem {
+            (true, true, true, _, true) => B10CropStrideRem {
                 cc: CropCalc::new(inf, crop, 2),
             },
-            (false, false, false, ..) => DecodeStrat::B8Fast,
-            (false, false, true, ..) => DecodeStrat::B8Stride,
-            (false, true, false, false, _) => DecodeStrat::B8CropFast {
+            (false, false, false, ..) => B8Fast,
+            (false, false, true, ..) => B8Stride,
+            (false, true, false, false, _) => B8CropFast {
                 cc: CropCalc::new(inf, crop, 1),
             },
-            (false, true, false, true, _) => DecodeStrat::B8Crop {
+            (false, true, false, true, _) => B8Crop {
                 cc: CropCalc::new(inf, crop, 1),
             },
-            (false, true, true, ..) => DecodeStrat::B8CropStride {
+            (false, true, true, ..) => B8CropStride {
                 cc: CropCalc::new(inf, crop, 1),
             },
         };
@@ -766,11 +773,11 @@ pub fn get_decode_strat(
 
 pub fn get_raw_frame(vid_src: *mut FFMS_VideoSource, frame_idx: usize) -> *const FFMS_Frame {
     unsafe {
-        let mut err = mem::zeroed::<FFMS_ErrorInfo>();
+        let mut err = zeroed::<FFMS_ErrorInfo>();
         FFMS_GetFrame(
             vid_src,
             i32::try_from(frame_idx).unwrap_or(0),
-            ptr::addr_of_mut!(err),
+            addr_of_mut!(err),
         )
     }
 }
@@ -789,13 +796,13 @@ pub fn extr_10bit_pack(
         let y_pack = (w * h * 5) / 4;
         let uv_pack = (w * h / 4 * 5) / 4;
 
-        let y_src = slice::from_raw_parts((*frame).Data[0], w * h * 2);
+        let y_src = from_raw_parts((*frame).Data[0], w * h * 2);
         pack_10bit(y_src, &mut output[..y_pack]);
 
-        let u_src = slice::from_raw_parts((*frame).Data[1], w * h / 2);
+        let u_src = from_raw_parts((*frame).Data[1], w * h / 2);
         pack_10bit(u_src, &mut output[y_pack..y_pack + uv_pack]);
 
-        let v_src = slice::from_raw_parts((*frame).Data[2], w * h / 2);
+        let v_src = from_raw_parts((*frame).Data[2], w * h / 2);
         pack_10bit(v_src, &mut output[y_pack + uv_pack..]);
     }
 }
@@ -858,7 +865,7 @@ pub fn extr_8bit_stride(
         let mut pos = 0;
 
         for row in 0..height {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[0].add(row * y_linesize),
                 output.as_mut_ptr().add(pos),
                 width,
@@ -867,7 +874,7 @@ pub fn extr_8bit_stride(
         }
 
         for row in 0..height / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[1].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 width / 2,
@@ -876,7 +883,7 @@ pub fn extr_8bit_stride(
         }
 
         for row in 0..height / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[2].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 width / 2,
@@ -908,8 +915,8 @@ pub fn extr_10bit_crop_pack_stride(
         for row in 0..h {
             let src_off = (crop_calc.crop_h as usize * pix_sz)
                 + (row + crop_calc.crop_v as usize) * y_linesize;
-            let src_row = slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
-            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
+            let src_row = from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
+            let dst_row = from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_y);
 
             src_row
                 .chunks_exact(8)
@@ -929,8 +936,8 @@ pub fn extr_10bit_crop_pack_stride(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row = slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
-            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
+            let src_row = from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
+            let dst_row = from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
             src_row
                 .chunks_exact(8)
@@ -948,8 +955,8 @@ pub fn extr_10bit_crop_pack_stride(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row = slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
-            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
+            let src_row = from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
+            let dst_row = from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), pack_row_uv);
 
             src_row
                 .chunks_exact(8)
@@ -972,8 +979,8 @@ fn pack_stride_rem(src: *const u8, stride: usize, w: usize, h: usize, out: *mut 
 
     unsafe {
         for row in 0..h {
-            let src_row = slice::from_raw_parts(src.add(row * stride), w_bytes);
-            let dst_row = slice::from_raw_parts_mut(out.add(row * y_row), y_row);
+            let src_row = from_raw_parts(src.add(row * stride), w_bytes);
+            let dst_row = from_raw_parts_mut(out.add(row * y_row), y_row);
 
             src_row
                 .chunks_exact(8)
@@ -1042,13 +1049,13 @@ pub fn extr_10bit_pack_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        let y_src = slice::from_raw_parts((*frame).Data[0], w * h * 2);
+        let y_src = from_raw_parts((*frame).Data[0], w * h * 2);
         pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
 
-        let u_src = slice::from_raw_parts((*frame).Data[1], w * h / 2);
+        let u_src = from_raw_parts((*frame).Data[1], w * h / 2);
         pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
 
-        let v_src = slice::from_raw_parts((*frame).Data[2], w * h / 2);
+        let v_src = from_raw_parts((*frame).Data[2], w * h / 2);
         pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
     }
 }
@@ -1111,13 +1118,13 @@ pub fn extr_10bit_crop_fast_rem(
         let y_pack = y_row * h;
         let uv_pack = uv_row * h / 2;
 
-        let y_src = slice::from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
+        let y_src = from_raw_parts((*frame).Data[0].add(cc.y_start), w * h * 2);
         pack_10bit_rem(y_src, &mut output[..y_pack], w, h);
 
-        let u_src = slice::from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
+        let u_src = from_raw_parts((*frame).Data[1].add(cc.uv_off), w * h / 2);
         pack_10bit_rem(u_src, &mut output[y_pack..y_pack + uv_pack], w / 2, h / 2);
 
-        let v_src = slice::from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
+        let v_src = from_raw_parts((*frame).Data[2].add(cc.uv_off), w * h / 2);
         pack_10bit_rem(v_src, &mut output[y_pack + uv_pack..], w / 2, h / 2);
     }
 }
@@ -1187,8 +1194,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         for row in 0..h {
             let src_off = (crop_calc.crop_h as usize * pix_sz)
                 + (row + crop_calc.crop_v as usize) * y_linesize;
-            let src_row = slice::from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
-            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
+            let src_row = from_raw_parts((*frame).Data[0].add(src_off), crop_calc.y_len);
+            let dst_row = from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), y_row);
 
             src_row
                 .chunks_exact(8)
@@ -1216,8 +1223,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row = slice::from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
-            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
+            let src_row = from_raw_parts((*frame).Data[1].add(src_off), crop_calc.uv_len);
+            let dst_row = from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
             src_row
                 .chunks_exact(8)
@@ -1245,8 +1252,8 @@ pub fn extr_10bit_crop_pack_stride_rem(
         for row in 0..h / 2 {
             let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
                 + (row + crop_calc.crop_v as usize / 2) * uv_linesize;
-            let src_row = slice::from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
-            let dst_row = slice::from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
+            let src_row = from_raw_parts((*frame).Data[2].add(src_off), crop_calc.uv_len);
+            let dst_row = from_raw_parts_mut(output.as_mut_ptr().add(dst_pos), uv_row);
 
             src_row
                 .chunks_exact(8)
@@ -1286,9 +1293,9 @@ pub fn extr_10bit_raw(
         let y_size = w * h * 2;
         let uv_size = y_size / 4;
 
-        ptr::copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
-        ptr::copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
-        ptr::copy_nonoverlapping(
+        copy_nonoverlapping((*frame).Data[0], output.as_mut_ptr(), y_size);
+        copy_nonoverlapping((*frame).Data[1], output.as_mut_ptr().add(y_size), uv_size);
+        copy_nonoverlapping(
             (*frame).Data[2],
             output.as_mut_ptr().add(y_size + uv_size),
             uv_size,
@@ -1313,7 +1320,7 @@ pub fn extr_10bit_raw_stride(
 
         let mut pos = 0;
         for row in 0..h {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[0].add(row * y_linesize),
                 output.as_mut_ptr().add(pos),
                 w_bytes,
@@ -1321,7 +1328,7 @@ pub fn extr_10bit_raw_stride(
             pos += w_bytes;
         }
         for row in 0..h / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[1].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 uv_w_bytes,
@@ -1329,7 +1336,7 @@ pub fn extr_10bit_raw_stride(
             pos += uv_w_bytes;
         }
         for row in 0..h / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[2].add(row * uv_linesize),
                 output.as_mut_ptr().add(pos),
                 uv_w_bytes,
@@ -1350,13 +1357,13 @@ pub fn extr_10bit_raw_crop_fast(
         let y_sz = cc.new_w as usize * cc.new_h as usize * 2;
         let uv_sz = y_sz / 4;
 
-        ptr::copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
-        ptr::copy_nonoverlapping(
+        copy_nonoverlapping((*frame).Data[0].add(cc.y_start), output.as_mut_ptr(), y_sz);
+        copy_nonoverlapping(
             (*frame).Data[1].add(cc.uv_off),
             output.as_mut_ptr().add(y_sz),
             uv_sz,
         );
-        ptr::copy_nonoverlapping(
+        copy_nonoverlapping(
             (*frame).Data[2].add(cc.uv_off),
             output.as_mut_ptr().add(y_sz + uv_sz),
             uv_sz,
@@ -1375,7 +1382,7 @@ pub fn extr_10bit_raw_crop(
         let mut pos = 0;
 
         for row in 0..cc.new_h as usize {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[0].add(cc.y_start + row * cc.y_stride),
                 output.as_mut_ptr().add(pos),
                 cc.y_len,
@@ -1383,7 +1390,7 @@ pub fn extr_10bit_raw_crop(
             pos += cc.y_len;
         }
         for row in 0..cc.new_h as usize / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[1].add(cc.uv_off + row * cc.uv_stride),
                 output.as_mut_ptr().add(pos),
                 cc.uv_len,
@@ -1391,7 +1398,7 @@ pub fn extr_10bit_raw_crop(
             pos += cc.uv_len;
         }
         for row in 0..cc.new_h as usize / 2 {
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[2].add(cc.uv_off + row * cc.uv_stride),
                 output.as_mut_ptr().add(pos),
                 cc.uv_len,
@@ -1420,7 +1427,7 @@ pub fn extr_10bit_raw_crop_stride(
         let mut pos = 0;
         for row in 0..h {
             let src_off = cc.crop_h as usize * pix_sz + (row + cc.crop_v as usize) * y_linesize;
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[0].add(src_off),
                 output.as_mut_ptr().add(pos),
                 w_bytes,
@@ -1430,7 +1437,7 @@ pub fn extr_10bit_raw_crop_stride(
         for row in 0..h / 2 {
             let src_off =
                 cc.crop_h as usize / 2 * pix_sz + (row + cc.crop_v as usize / 2) * uv_linesize;
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[1].add(src_off),
                 output.as_mut_ptr().add(pos),
                 uv_w_bytes,
@@ -1440,7 +1447,7 @@ pub fn extr_10bit_raw_crop_stride(
         for row in 0..h / 2 {
             let src_off =
                 cc.crop_h as usize / 2 * pix_sz + (row + cc.crop_v as usize / 2) * uv_linesize;
-            ptr::copy_nonoverlapping(
+            copy_nonoverlapping(
                 (*frame).Data[2].add(src_off),
                 output.as_mut_ptr().add(pos),
                 uv_w_bytes,

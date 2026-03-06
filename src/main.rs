@@ -12,8 +12,15 @@ use std::{
     panic::set_hook,
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering::Relaxed},
-    thread,
+    thread::spawn,
     time::{Duration, Instant},
+};
+
+use libc::{_exit, SIGINT, SIGSEGV, atexit, signal};
+
+use crate::{
+    encoder::Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
+    error::Xerr::{Help, Msg},
 };
 
 mod audio;
@@ -107,7 +114,7 @@ extern "C" fn restore() {
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
-    unsafe { libc::_exit(130) };
+    unsafe { _exit(130) };
 }
 
 #[rustfmt::skip]
@@ -165,7 +172,7 @@ fn parse_args() -> Result<Args, Xerr> {
     let args: Vec<String> = env_args().collect();
     match get_args(&args, true) {
         Ok(args) => Ok(args),
-        Err(Xerr::Help) => Err(Xerr::Help),
+        Err(Help) => Err(Help),
         Err(e) => {
             eprint(format_args!("\n{R}Error: {e}{N}\n"));
             fatal("argument parsing failed");
@@ -186,9 +193,9 @@ fn apply_defaults(args: &mut Args) {
     if args.output == PathBuf::new() {
         let stem = unsafe { args.input.file_stem().unwrap_unchecked() }.to_string_lossy();
         let ext = match args.encoder {
-            Encoder::SvtAv1 | Encoder::X265 | Encoder::X264 => "mkv",
-            Encoder::Avm => "ivf",
-            Encoder::Vvenc => "mp4",
+            SvtAv1 | X265 | X264 => "mkv",
+            Avm => "ivf",
+            Vvenc => "mp4",
         };
         args.output = args.input.with_file_name(format!("{stem}_xav.{ext}"));
     }
@@ -214,10 +221,10 @@ fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
 fn validate_output(output: &Path, encoder: Encoder) -> Result<(), Xerr> {
     let ext = output.extension().and_then(|e| e.to_str()).unwrap_or("");
     let containers = match encoder {
-        Encoder::SvtAv1 => "mkv, mp4, webm",
-        Encoder::Avm => "ivf",
-        Encoder::Vvenc => "mp4",
-        Encoder::X265 | Encoder::X264 => "mkv, mp4",
+        SvtAv1 => "mkv, mp4, webm",
+        Avm => "ivf",
+        Vvenc => "mp4",
+        X265 | X264 => "mkv, mp4",
     };
     if !containers.split(", ").any(|c| c == ext) {
         return Err(format!("Invalid extension .{ext} for {encoder:?}. Use: {containers}").into());
@@ -327,7 +334,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
-                return Err(Xerr::Help);
+                return Err(Help);
             }
             arg if !arg.starts_with('-') => {
                 if input == PathBuf::new() {
@@ -573,13 +580,13 @@ fn finalize_audio(
 type AudioResult = Vec<(AudioStream, PathBuf)>;
 
 fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<Option<AudioResult>, Xerr> {
-    if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Encoder::Avm {
+    if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Avm {
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
         let input = args.input.clone();
         let wd = work_dir.to_path_buf();
         let ranges = args.ranges.clone();
 
-        let audio_handle = thread::spawn(move || {
+        let audio_handle = spawn(move || {
             let sample_ranges = if let Some(ref r) = ranges {
                 let (fps_num, fps_den) = get_fps(&input)?;
                 Some(
@@ -602,7 +609,7 @@ fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<Option<AudioResult>, Xe
 
         let result = audio_handle
             .join()
-            .map_err(|_e| Xerr::Msg("Audio encoding thread panicked".into()))?;
+            .map_err(|_e| Msg("Audio encoding thread panicked".into()))?;
         Ok(Some(result?))
     } else {
         ensure_scene_file(args, 0)?;
@@ -693,13 +700,13 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     merge_out(
         &work_dir.join("encode"),
-        if args.audio.is_some() && args.encoder != Encoder::Avm {
+        if args.audio.is_some() && args.encoder != Avm {
             &video_mkv
         } else {
             &args.output
         },
         &inf,
-        if args.audio.is_some() || args.encoder == Encoder::Avm {
+        if args.audio.is_some() || args.encoder == Avm {
             None
         } else {
             Some(&args.input)
@@ -709,7 +716,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     )?;
 
     if let Some(ref audio_spec) = args.audio
-        && args.encoder != Encoder::Avm
+        && args.encoder != Avm
     {
         finalize_audio(audio_spec, audio_files, &args, &inf, &video_mkv, &work_dir)?;
     }
@@ -781,7 +788,7 @@ fn print_summary(
 fn main() -> Result<(), Xerr> {
     let args = match parse_args() {
         Ok(a) => a,
-        Err(Xerr::Help) => return Ok(()),
+        Err(Help) => return Ok(()),
         Err(e) => return Err(e),
     };
     let output = args.output.clone();
@@ -794,11 +801,11 @@ fn main() -> Result<(), Xerr> {
     }));
 
     unsafe {
-        libc::atexit(restore);
+        atexit(restore);
 
         let h: usize = transmute_copy(&(exit_restore as extern "C" fn(i32)));
-        libc::signal(libc::SIGINT, h);
-        libc::signal(libc::SIGSEGV, h);
+        signal(SIGINT, h);
+        signal(SIGSEGV, h);
     }
 
     if let Err(e) = main_with_args(&args) {

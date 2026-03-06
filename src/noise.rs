@@ -1,14 +1,18 @@
 use std::path::Path;
 
-use av1_grain::{NoiseGenArgs, TransferFunction, generate_photon_noise_params, write_grain_table};
+use av1_grain::{
+    NoiseGenArgs,
+    TransferFunction::{BT1886, SMPTE2084},
+    generate_photon_noise_params, write_grain_table,
+};
 
 use crate::{error::Xerr, ffms::VidInf};
 
 pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), Xerr> {
     let transfer = if inf.transfer_characteristics == Some(16) {
-        TransferFunction::SMPTE2084
+        SMPTE2084
     } else {
-        TransferFunction::BT1886
+        BT1886
     };
 
     let args = NoiseGenArgs {
@@ -18,7 +22,6 @@ pub fn gen_table(iso: u32, inf: &VidInf, output: &Path) -> Result<(), Xerr> {
         transfer_function: transfer,
         chroma_grain: true,
         random_seed: None,
-        // range 1 == full range, otherwise assume limited
         full_range: inf.color_range.is_some_and(|range| range == 1),
     };
 

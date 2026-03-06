@@ -1,16 +1,27 @@
 #[cfg(feature = "vship")]
 use std::path::Path;
-use std::{io::Write, process::ChildStdin};
+use std::{io::Write as _, process::ChildStdin};
 
 use crate::{
     encode::get_frame,
     ffms::{
-        DecodeStrat, VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, unpack_10bit,
-        unpack_10bit_rem,
+        DecodeStrat,
+        DecodeStrat::{
+            B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
+            B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
+            B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride,
+            B10StrideRem,
+        },
+        VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, unpack_10bit, unpack_10bit_rem,
     },
 };
 #[cfg(feature = "vship")]
-use crate::{progs::ProgsTrack, tq, vship::VshipProcessor, worker::WorkPkg};
+use crate::{
+    progs::ProgsTrack,
+    tq::{calc_metrics_8bit, calc_metrics_10bit},
+    vship::VshipProcessor,
+    worker::WorkPkg,
+};
 
 pub type UnpackFn = fn(&[u8], &mut [u8], &Pipeline);
 pub type WriteFn = fn(&mut ChildStdin, &[u8], usize, &mut [u8], &Pipeline);
@@ -61,7 +72,7 @@ pub fn write_frames_10bit(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         (pipe.unpack)(frame, buf, pipe);
-        _ = Write::write_all(stdin, buf);
+        _ = stdin.write_all(buf);
     }
 }
 
@@ -75,7 +86,7 @@ pub fn write_frames_8bit(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         conv_to_10bit(frame, buf);
-        _ = Write::write_all(stdin, buf);
+        _ = stdin.write_all(buf);
     }
 }
 
@@ -107,44 +118,40 @@ impl Pipeline {
         #[cfg(feature = "vship")] target_quality: Option<&str>,
     ) -> Self {
         let (final_w, final_h) = match strat {
-            DecodeStrat::B10CropFast { cc }
-            | DecodeStrat::B10CropFastRem { cc }
-            | DecodeStrat::B10Crop { cc }
-            | DecodeStrat::B10CropRem { cc }
-            | DecodeStrat::B10CropStride { cc }
-            | DecodeStrat::B10CropStrideRem { cc }
-            | DecodeStrat::B8CropFast { cc }
-            | DecodeStrat::B8Crop { cc }
-            | DecodeStrat::B8CropStride { cc }
-            | DecodeStrat::B10RawCropFast { cc }
-            | DecodeStrat::B10RawCrop { cc }
-            | DecodeStrat::B10RawCropStride { cc } => (cc.new_w as usize, cc.new_h as usize),
+            B10CropFast { cc }
+            | B10CropFastRem { cc }
+            | B10Crop { cc }
+            | B10CropRem { cc }
+            | B10CropStride { cc }
+            | B10CropStrideRem { cc }
+            | B8CropFast { cc }
+            | B8Crop { cc }
+            | B8CropStride { cc }
+            | B10RawCropFast { cc }
+            | B10RawCrop { cc }
+            | B10RawCropStride { cc } => (cc.new_w as usize, cc.new_h as usize),
             _ => (inf.width as usize, inf.height as usize),
         };
 
         let frame_size = match strat {
-            DecodeStrat::B10Raw
-            | DecodeStrat::B10RawStride
-            | DecodeStrat::B10RawCropFast { .. }
-            | DecodeStrat::B10RawCrop { .. }
-            | DecodeStrat::B10RawCropStride { .. } => final_w * final_h * 3,
-            DecodeStrat::B10Fast
-            | DecodeStrat::B10FastRem
-            | DecodeStrat::B10Stride
-            | DecodeStrat::B10StrideRem
-            | DecodeStrat::B10CropFast { .. }
-            | DecodeStrat::B10CropFastRem { .. }
-            | DecodeStrat::B10Crop { .. }
-            | DecodeStrat::B10CropRem { .. }
-            | DecodeStrat::B10CropStride { .. }
-            | DecodeStrat::B10CropStrideRem { .. } => {
-                calc_packed_size(final_w as u32, final_h as u32)
+            B10Raw
+            | B10RawStride
+            | B10RawCropFast { .. }
+            | B10RawCrop { .. }
+            | B10RawCropStride { .. } => final_w * final_h * 3,
+            B10Fast
+            | B10FastRem
+            | B10Stride
+            | B10StrideRem
+            | B10CropFast { .. }
+            | B10CropFastRem { .. }
+            | B10Crop { .. }
+            | B10CropRem { .. }
+            | B10CropStride { .. }
+            | B10CropStrideRem { .. } => calc_packed_size(final_w as u32, final_h as u32),
+            B8Fast | B8Stride | B8CropFast { .. } | B8Crop { .. } | B8CropStride { .. } => {
+                calc_8bit_size(final_w as u32, final_h as u32)
             }
-            DecodeStrat::B8Fast
-            | DecodeStrat::B8Stride
-            | DecodeStrat::B8CropFast { .. }
-            | DecodeStrat::B8Crop { .. }
-            | DecodeStrat::B8CropStride { .. } => calc_8bit_size(final_w as u32, final_h as u32),
         };
 
         let pixel_size = if inf.is_10bit { 2 } else { 1 };
@@ -201,9 +208,9 @@ fn resolve_metrics(
     target_quality: Option<&str>,
 ) -> (ComputeMetricFn, bool, bool, CalcMetricsFn) {
     let calc: CalcMetricsFn = if is_10bit {
-        tq::calc_metrics_10bit
+        calc_metrics_10bit
     } else {
-        tq::calc_metrics_8bit
+        calc_metrics_8bit
     };
 
     target_quality.map_or(

@@ -1,11 +1,16 @@
 use std::{
+    arch::is_x86_feature_detected,
     ffi::CString,
-    fs, mem,
+    fs::read_to_string,
+    mem::zeroed,
     path::Path,
     process::{Command, Stdio},
 };
 
+use av1_grain::parse_grain_table;
+
 use crate::{
+    Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
     ffms::VidInf,
     svt::{AomFilmGrain, EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter},
     util::assume_unreachable,
@@ -24,26 +29,26 @@ pub enum Encoder {
 impl Encoder {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "svt-av1" => Some(Self::SvtAv1),
-            "avm" => Some(Self::Avm),
-            "vvenc" => Some(Self::Vvenc),
-            "x265" => Some(Self::X265),
-            "x264" => Some(Self::X264),
+            "svt-av1" => Some(SvtAv1),
+            "avm" => Some(Avm),
+            "vvenc" => Some(Vvenc),
+            "x265" => Some(X265),
+            "x264" => Some(X264),
             _ => None,
         }
     }
 
     pub const fn extension(self) -> &'static str {
         match self {
-            Self::SvtAv1 | Self::Avm => "ivf",
-            Self::Vvenc => "266",
-            Self::X265 => "265",
-            Self::X264 => "264",
+            SvtAv1 | Avm => "ivf",
+            Vvenc => "266",
+            X265 => "265",
+            X264 => "264",
         }
     }
 
     pub const fn integer_qp(self) -> bool {
-        matches!(self, Self::Avm | Self::Vvenc)
+        matches!(self, Avm | Vvenc)
     }
 }
 
@@ -62,11 +67,11 @@ pub struct EncConfig<'a> {
 
 pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
     let mut cmd = match encoder {
-        Encoder::SvtAv1 => assume_unreachable(),
-        Encoder::Avm => make_avm_cmd(cfg),
-        Encoder::Vvenc => make_vvenc_cmd(cfg),
-        Encoder::X265 => make_x265_cmd(cfg),
-        Encoder::X264 => make_x264_cmd(cfg),
+        SvtAv1 => assume_unreachable(),
+        Avm => make_avm_cmd(cfg),
+        Vvenc => make_vvenc_cmd(cfg),
+        X265 => make_x265_cmd(cfg),
+        X264 => make_x264_cmd(cfg),
     };
     if let Some(z) = cfg.zone_params {
         cmd.args(z.split_whitespace());
@@ -263,7 +268,7 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
     }
 
     #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx512f") {
+    if is_x86_feature_detected!("avx512f") {
         cmd.args(["--asm", "avx512"]);
     }
 
@@ -326,7 +331,7 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
     colorize_h26x(&mut cmd, cfg.inf, true);
 
     #[cfg(target_arch = "x86_64")]
-    if std::arch::is_x86_feature_detected!("avx512f") {
+    if is_x86_feature_detected!("avx512f") {
         cmd.args(["--asm", "avx512"]);
     }
 
@@ -748,17 +753,17 @@ pub fn set_svt_config(config: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
 }
 
 fn load_fgs_table(config: *mut EbSvtAv1EncConfiguration, path: &Path) {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(text) = read_to_string(path) else {
         return;
     };
-    let Ok(segments) = av1_grain::parse_grain_table(&text) else {
+    let Ok(segments) = parse_grain_table(&text) else {
         return;
     };
     let Some(seg) = segments.into_iter().next() else {
         return;
     };
 
-    let mut fg = Box::new(unsafe { mem::zeroed::<AomFilmGrain>() });
+    let mut fg = Box::new(unsafe { zeroed::<AomFilmGrain>() });
     fg.apply_grain = 1;
     fg.ignore_ref = 1;
     fg.update_parameters = 1;

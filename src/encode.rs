@@ -17,7 +17,7 @@ use std::{
     slice::from_raw_parts,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
     },
     thread::{JoinHandle, spawn},
 };
@@ -36,7 +36,12 @@ use crate::{
     Args,
     chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
     decode::{decode_chunks, decode_pipe},
-    encoder::{EncConfig, Encoder, make_enc_cmd, set_svt_config},
+    encoder::{
+        EncConfig, Encoder,
+        Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
+        make_enc_cmd, set_svt_config,
+    },
+    error::fatal,
     ffms::{VidIdx, VidInf, conv_to_10bit},
     pipeline::Pipeline,
     progs::{LibEncTracker, ProgsTrack},
@@ -46,6 +51,7 @@ use crate::{
         svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
         svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
     },
+    util::assume_unreachable,
     worker::{Semaphore, WorkPkg},
     y4m::PipeReader,
 };
@@ -59,8 +65,6 @@ use crate::{
 
 #[cfg(feature = "vship")]
 pub static TQ_SCORES: OnceLock<Mutex<Vec<f64>>> = OnceLock::new();
-
-use crate::{error::fatal, util::assume_unreachable};
 
 fn join_one(handle: JoinHandle<()>) {
     if let Err(e) = handle.join() {
@@ -100,10 +104,8 @@ impl WorkerStats {
     }
 
     fn add_completion(&self, completion: ChunkComp, work_dir: &Path) {
-        self.completed_frames
-            .fetch_add(completion.frames, Ordering::Relaxed);
-        self.total_size
-            .fetch_add(completion.size, Ordering::Relaxed);
+        self.completed_frames.fetch_add(completion.frames, Relaxed);
+        self.total_size.fetch_add(completion.size, Relaxed);
         let mut data = unsafe { self.completions.lock().unwrap_unchecked() };
         data.chnks_done.push(completion);
         _ = save_resume(&data, work_dir);
@@ -194,7 +196,7 @@ pub fn encode_all(
 
     let strat = unsafe { args.decode_strat.unwrap_unchecked() };
     let (strat, svt_enc_fn): (_, SvtEncFn) =
-        if args.encoder == Encoder::SvtAv1 && inf.is_10bit && args.chunk_buffer == args.worker {
+        if args.encoder == SvtAv1 && inf.is_10bit && args.chunk_buffer == args.worker {
             (strat.to_raw(), enc_svt_direct)
         } else {
             (strat, enc_svt_drop)
@@ -363,9 +365,9 @@ fn complete_chunk(
     drop(resume);
 
     if let Some(s) = ctx.stats {
-        s.completed.fetch_add(1, Ordering::Relaxed);
-        s.completed_frames.fetch_add(comp.frames, Ordering::Relaxed);
-        s.total_size.fetch_add(comp.size, Ordering::Relaxed);
+        s.completed.fetch_add(1, Relaxed);
+        s.completed_frames.fetch_add(comp.frames, Relaxed);
+        s.total_size.fetch_add(comp.size, Relaxed);
     }
 
     let probes_with_size: Vec<(f64, f64, u64)> = tq_state
@@ -816,7 +818,7 @@ fn enc_tq_probe(
         default_out = probe_path(ctx.work_dir, pkg.chunk.idx, crf, ctx.encoder.extension());
         &default_out
     };
-    if ctx.encoder == Encoder::SvtAv1 {
+    if ctx.encoder == SvtAv1 {
         let last_score = pkg
             .tq_state
             .as_ref()
@@ -865,8 +867,8 @@ fn enc_tq_probe(
         .as_ref()
         .and_then(|tq| tq.probes.last().map(|probe| probe.score));
     match ctx.encoder {
-        Encoder::SvtAv1 => assume_unreachable(),
-        Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
+        SvtAv1 => assume_unreachable(),
+        X265 | X264 => ctx.prog.watch_enc(
             unsafe { child.stderr.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
@@ -874,7 +876,7 @@ fn enc_tq_probe(
             Some((crf as f32, last_score)),
             ctx.encoder,
         ),
-        Encoder::Avm | Encoder::Vvenc => ctx.prog.watch_enc(
+        Avm | Vvenc => ctx.prog.watch_enc(
             unsafe { child.stdout.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
@@ -913,7 +915,7 @@ fn run_enc_worker(
         enc_chunk(&mut pkg, -1.0, params, ctx, &mut conv_buf, worker_id);
 
         if let Some(s) = stats {
-            s.completed.fetch_add(1, Ordering::Relaxed);
+            s.completed.fetch_add(1, Relaxed);
             let out = ctx.work_dir.join("encode").join(format!(
                 "{:04}.{}",
                 pkg.chunk.idx,
@@ -945,7 +947,7 @@ fn enc_chunk(
         pkg.chunk.idx,
         ctx.encoder.extension()
     ));
-    if ctx.encoder == Encoder::SvtAv1 {
+    if ctx.encoder == SvtAv1 {
         let cfg = EncConfig {
             inf: ctx.inf,
             params,
@@ -978,8 +980,8 @@ fn enc_chunk(
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     match ctx.encoder {
-        Encoder::SvtAv1 => assume_unreachable(),
-        Encoder::X265 | Encoder::X264 => ctx.prog.watch_enc(
+        SvtAv1 => assume_unreachable(),
+        X265 | X264 => ctx.prog.watch_enc(
             unsafe { child.stderr.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,
@@ -987,7 +989,7 @@ fn enc_chunk(
             None,
             ctx.encoder,
         ),
-        Encoder::Avm | Encoder::Vvenc => ctx.prog.watch_enc(
+        Avm | Vvenc => ctx.prog.watch_enc(
             unsafe { child.stdout.take().unwrap_unchecked() },
             worker_id,
             pkg.chunk.idx,

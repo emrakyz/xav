@@ -1,4 +1,4 @@
-use std::{thread, time::Instant};
+use std::{path::Path, thread::available_parallelism, time::Instant};
 
 use crate::{
     error::fatal,
@@ -68,7 +68,7 @@ macro_rules! calc_metrics_impl {
     ($name:ident, $is_10bit:expr) => {
         pub fn $name(
             pkg: &WorkPkg,
-            probe_path: &std::path::Path,
+            probe_path: &Path,
             pipe: &Pipeline,
             vship: &VshipProcessor,
             metric_mode: &str,
@@ -81,8 +81,7 @@ macro_rules! calc_metrics_impl {
             }
 
             let idx = VidIdx::new(probe_path, false).unwrap_or_else(|e| fatal(e));
-            let threads =
-                thread::available_parallelism().map_or(8, |n| n.get().try_into().unwrap_or(8));
+            let threads = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
             let src = thr_vid_src(&idx, threads).unwrap_or_else(|e| fatal(e));
 
             let mut scores = Vec::with_capacity(pkg.frame_count);

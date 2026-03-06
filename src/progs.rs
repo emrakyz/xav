@@ -3,19 +3,27 @@ use std::{
     str::from_utf8,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
     },
     thread::{JoinHandle, spawn},
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
+use crossbeam_channel::{
+    Receiver,
+    RecvTimeoutError::{Disconnected, Timeout},
+    Sender, unbounded,
+};
 
 use crate::{
     chunk::{Chunk, PRIOR_SECS},
-    encoder::Encoder,
+    encoder::{
+        Encoder,
+        Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
+    },
     error::eprint,
     ffms::VidInf,
+    progs::WorkerMsg::{Clear, Update},
 };
 
 const BAR_WIDTH: usize = 20;
@@ -266,12 +274,12 @@ impl ProgsTrack {
         let tx = self.tx.clone();
 
         spawn(move || match encoder {
-            Encoder::SvtAv1 => assume_unreachable(),
-            Encoder::Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
-            Encoder::X265 | Encoder::X264 => {
+            SvtAv1 => assume_unreachable(),
+            Avm => watch_avm(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score),
+            X265 | X264 => {
                 watch_x265(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
-            Encoder::Vvenc => {
+            Vvenc => {
                 watch_vvenc(&tx, stderr, worker_id, chunk_idx, track_frames, crf_score);
             }
         });
@@ -302,7 +310,7 @@ impl ProgsTrack {
              {Y}{fps:6.2}{C}, {G}{current:3}{C}/{R}{total}"
         );
 
-        _ = self.tx.send(WorkerMsg::Update {
+        _ = self.tx.send(Update {
             worker_id,
             line,
             frames: None,
@@ -339,7 +347,7 @@ impl ProgsTrack {
             "{prefix} {P}[{bar}{P}] {W}{perc:2}%{C}, {Y}{fps:6.2}{C}, {G}{current:3}{C}/{R}{total}"
         );
 
-        _ = self.tx.send(WorkerMsg::Update {
+        _ = self.tx.send(Update {
             worker_id,
             line,
             frames: frames_delta,
@@ -347,7 +355,7 @@ impl ProgsTrack {
     }
 
     pub fn clear_lib_enc(&self, worker_id: usize) {
-        _ = self.tx.send(WorkerMsg::Clear(worker_id));
+        _ = self.tx.send(Clear(worker_id));
     }
 }
 
@@ -408,7 +416,7 @@ fn watch_avm(
     _track_frames: bool,
     _crf_score: Option<(f32, Option<f64>)>,
 ) {
-    _ = tx.send(WorkerMsg::Update {
+    _ = tx.send(Update {
         worker_id,
         line: format!("{C}[{chunk_idx:04}]{W} Encoding: Progress updates when chunk finishes"),
         frames: None,
@@ -417,7 +425,7 @@ fn watch_avm(
     let mut buf = [0u8; 4096];
     while stdout.read(&mut buf).unwrap_or(0) > 0 {}
 
-    _ = tx.send(WorkerMsg::Clear(worker_id));
+    _ = tx.send(Clear(worker_id));
 }
 
 fn watch_vvenc(
@@ -494,7 +502,7 @@ fn watch_vvenc(
                         d
                     });
 
-                    _ = tx.send(WorkerMsg::Update {
+                    _ = tx.send(Update {
                         worker_id,
                         line: display,
                         frames: delta,
@@ -504,7 +512,7 @@ fn watch_vvenc(
         }
     }
 
-    _ = tx.send(WorkerMsg::Clear(worker_id));
+    _ = tx.send(Clear(worker_id));
 }
 
 fn watch_x265(
@@ -570,14 +578,14 @@ fn watch_x265(
             d
         });
 
-        _ = tx.send(WorkerMsg::Update {
+        _ = tx.send(Update {
             worker_id,
             line,
             frames: delta,
         });
     }
 
-    _ = tx.send(WorkerMsg::Clear(worker_id));
+    _ = tx.send(Clear(worker_id));
 }
 
 fn parse_x265(s: &str) -> Option<(usize, usize, f32, f32)> {
@@ -608,7 +616,7 @@ fn display_loop(
 
     loop {
         match rx.recv_timeout(Duration::from_millis(INTERVAL_MS)) {
-            Ok(WorkerMsg::Update {
+            Ok(Update {
                 worker_id,
                 line,
                 frames,
@@ -616,17 +624,17 @@ fn display_loop(
                 if worker_id < worker_count {
                     lines[worker_id] = line;
                     if let Some(delta) = frames {
-                        processed.fetch_add(delta, Ordering::Relaxed);
+                        processed.fetch_add(delta, Relaxed);
                     }
                 }
             }
-            Ok(WorkerMsg::Clear(worker_id)) => {
+            Ok(Clear(worker_id)) => {
                 if worker_id < worker_count {
                     lines[worker_id].clear();
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(Timeout) => {}
+            Err(Disconnected) => break,
         }
 
         if last_draw.elapsed() >= Duration::from_millis(INTERVAL_MS) {
@@ -658,18 +666,17 @@ fn draw_screen(
 
     print!("\r\x1b[2K\n");
 
-    let completed_frames = state.completed_frames.load(Ordering::Relaxed);
-    let total_size = state.total_size.load(Ordering::Relaxed);
+    let completed_frames = state.completed_frames.load(Relaxed);
+    let total_size = state.total_size.load(Relaxed);
 
-    let processed_frames = processed.load(Ordering::Relaxed);
+    let processed_frames = processed.load(Relaxed);
     let frames_done = completed_frames.max(init_frames + processed_frames);
 
-    let elapsed_secs =
-        PRIOR_SECS.load(Ordering::Relaxed) as usize + start.elapsed().as_secs() as usize;
+    let elapsed_secs = PRIOR_SECS.load(Relaxed) as usize + start.elapsed().as_secs() as usize;
     let fps = frames_done as f32 / elapsed_secs.max(1) as f32;
     let remaining = state.total_frames.saturating_sub(frames_done);
     let eta_secs = remaining * elapsed_secs / frames_done.max(1);
-    let chunks_done = state.completed.load(Ordering::Relaxed);
+    let chunks_done = state.completed.load(Relaxed);
 
     let (bitrate_str, est_str) = if completed_frames > 0 {
         let dur = completed_frames as f32 * state.fps_den as f32 / state.fps_num as f32;

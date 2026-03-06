@@ -1,18 +1,22 @@
 use std::{
     ffi::NulError,
     fmt::{Arguments, Display},
-    io::{self, Write as _, stderr, stdout},
+    io::{Error, Write as _, stderr, stdout},
     num::{ParseFloatError, ParseIntError},
-    process,
+    process::exit,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
+use thiserror::Error;
+
+use crate::error::Xerr::Msg;
+
 pub static IN_ALT_SCREEN: AtomicBool = AtomicBool::new(false);
 
-#[derive(thiserror::Error, Debug)]
+#[derive(Error, Debug)]
 pub enum Xerr {
     #[error("{0}")]
-    Io(#[from] io::Error),
+    Io(#[from] Error),
 
     #[error("{0}")]
     Ffi(#[from] NulError),
@@ -35,13 +39,13 @@ pub enum Xerr {
 
 impl From<&str> for Xerr {
     fn from(s: &str) -> Self {
-        Self::Msg(s.into())
+        Msg(s.into())
     }
 }
 
 impl From<String> for Xerr {
     fn from(s: String) -> Self {
-        Self::Msg(s)
+        Msg(s)
     }
 }
 
@@ -53,7 +57,7 @@ pub fn fatal<E: Display>(e: E) -> ! {
         _ = stdout().flush();
     }
     _ = writeln!(stderr(), "{e}");
-    process::exit(1)
+    exit(1)
 }
 
 pub fn eprint(args: Arguments<'_>) {

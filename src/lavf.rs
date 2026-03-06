@@ -1,10 +1,10 @@
 use std::{
     ffi::{CString, c_int, c_void},
     path::Path,
-    ptr,
+    ptr::{null, null_mut},
 };
 
-use crate::error::Xerr;
+use crate::error::{Xerr, Xerr::Done};
 
 const AVMEDIA_TYPE_AUDIO: c_int = 1;
 const AV_SAMPLE_FMT_FLT: c_int = 3;
@@ -174,21 +174,15 @@ impl AudioDecoder {
     pub fn new(input: &Path, stream_index: i32) -> Result<Self, Xerr> {
         unsafe {
             let path = CString::new(input.to_str().ok_or("invalid path")?)?;
-            let mut fmt_ctx: *mut AVFormatContext = ptr::null_mut();
+            let mut fmt_ctx: *mut AVFormatContext = null_mut();
 
-            if avformat_open_input(
-                &raw mut fmt_ctx,
-                path.as_ptr(),
-                ptr::null(),
-                ptr::null_mut(),
-            ) < 0
-            {
+            if avformat_open_input(&raw mut fmt_ctx, path.as_ptr(), null(), null_mut()) < 0 {
                 return Err("lavf: open failed".into());
             }
 
-            avformat_find_stream_info(fmt_ctx, ptr::null_mut());
+            avformat_find_stream_info(fmt_ctx, null_mut());
 
-            let mut dec: *const c_void = ptr::null();
+            let mut dec: *const c_void = null();
             let idx = av_find_best_stream(
                 fmt_ctx,
                 AVMEDIA_TYPE_AUDIO,
@@ -223,13 +217,13 @@ impl AudioDecoder {
 
             avcodec_parameters_to_context(codec_ctx, par);
 
-            if avcodec_open2(codec_ctx, dec, ptr::null_mut()) < 0 {
+            if avcodec_open2(codec_ctx, dec, null_mut()) < 0 {
                 avcodec_free_context(&raw mut codec_ctx);
                 avformat_close_input(&raw mut fmt_ctx);
                 return Err("lavf: codec open failed".into());
             }
 
-            let mut swr: *mut c_void = ptr::null_mut();
+            let mut swr: *mut c_void = null_mut();
             if swr_alloc_set_opts2(
                 &raw mut swr,
                 &raw const par.ch_layout,
@@ -239,7 +233,7 @@ impl AudioDecoder {
                 par.format,
                 par.sample_rate,
                 0,
-                ptr::null_mut(),
+                null_mut(),
             ) < 0
                 || swr_init(swr) < 0
             {
@@ -299,13 +293,12 @@ impl AudioDecoder {
                     self.drain_frames(&mut out_buf, &mut cb)?;
                 }
 
-                avcodec_send_packet(self.codec_ctx, ptr::null());
+                avcodec_send_packet(self.codec_ctx, null());
                 self.drain_frames(&mut out_buf, &mut cb)?;
 
                 loop {
                     let mut out_ptr = out_buf.as_mut_ptr().cast::<u8>();
-                    let n =
-                        swr_convert(self.swr, &raw mut out_ptr, MAX_OUT as c_int, ptr::null(), 0);
+                    let n = swr_convert(self.swr, &raw mut out_ptr, MAX_OUT as c_int, null(), 0);
                     if n <= 0 {
                         break;
                     }
@@ -316,7 +309,7 @@ impl AudioDecoder {
             Ok(())
         })();
         match result {
-            Err(Xerr::Done) => Ok(()),
+            Err(Done) => Ok(()),
             r => r,
         }
     }

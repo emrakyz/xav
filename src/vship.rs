@@ -1,21 +1,37 @@
 use std::{
     ffi::{CStr, CString},
-    mem,
-    mem::MaybeUninit,
-    ptr,
+    mem::{MaybeUninit, zeroed},
+    ptr::{from_mut, null},
 };
 
-use crate::{error::Xerr, ffms::VidInf};
+use crate::{
+    error::{Xerr, Xerr::Msg},
+    ffms::VidInf,
+    vship::{
+        VshipChromaLocation::{Left, TopLeft},
+        VshipColorFamily::Yuv,
+        VshipPrimaries::{
+            Bt470Bg as PrimBt470Bg, Bt470M as PrimBt470M, Bt709 as PrimBt709, Bt2020, Internal,
+        },
+        VshipRange::{Full, Limited},
+        VshipSample::{Uint8, Uint10},
+        VshipTransferFunction::{
+            Bt470Bg as TrBt470Bg, Bt470M as TrBt470M, Bt601, Bt709 as TrBt709, Hlg, Linear, Pq,
+            Srgb, St428,
+        },
+        VshipYuvMatrix::{
+            Bt470Bg as YmBt470Bg, Bt709 as YmBt709, Bt2020Cl, Bt2020Ncl, Bt2100Ictcp, Rgb, St170M,
+        },
+    },
+};
 
 #[inline]
 #[cold]
 fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> Xerr {
     unsafe {
-        Xerr::Msg(
-            CStr::from_ptr(buf.as_ptr().cast())
-                .to_string_lossy()
-                .into_owned(),
-        )
+        Msg(CStr::from_ptr(buf.as_ptr().cast())
+            .to_string_lossy()
+            .into_owned())
     }
 }
 
@@ -279,9 +295,8 @@ impl VshipProcessor {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
 
             let handler = if !use_cvvdp && !use_butteraugli {
-                let mut handler = mem::zeroed::<VshipSSIMU2Handler>();
-                let ret =
-                    Vship_SSIMU2Init(ptr::from_mut(&mut handler), src_colorspace, dis_colorspace);
+                let mut handler = zeroed::<VshipSSIMU2Handler>();
+                let ret = Vship_SSIMU2Init(from_mut(&mut handler), src_colorspace, dis_colorspace);
                 if ret as i32 != 0 {
                     vship_get_err(&mut errbuf);
                     return Err(vship_err_str(&errbuf));
@@ -292,13 +307,13 @@ impl VshipProcessor {
             };
 
             let cvvdp_handler = if use_cvvdp {
-                let mut handler = mem::zeroed::<VshipCVVDPHandler>();
+                let mut handler = zeroed::<VshipCVVDPHandler>();
                 let model_key = CString::new(cvvdp_model.unwrap_or("xav"))?;
                 let config_cstr = CString::new(
                     cvvdp_config.ok_or("CVVDP requires -d/--display <json_file> argument")?,
                 )?;
                 let ret = Vship_CVVDPInit2(
-                    ptr::from_mut(&mut handler),
+                    from_mut(&mut handler),
                     src_colorspace,
                     dis_colorspace,
                     fps,
@@ -316,9 +331,9 @@ impl VshipProcessor {
             };
 
             let butteraugli_handler = if use_butteraugli {
-                let mut handler = mem::zeroed::<VshipButteraugliHandler>();
+                let mut handler = zeroed::<VshipButteraugliHandler>();
                 let ret = Vship_ButteraugliInit(
-                    ptr::from_mut(&mut handler),
+                    from_mut(&mut handler),
                     src_colorspace,
                     dis_colorspace,
                     5,
@@ -353,7 +368,7 @@ impl VshipProcessor {
             let mut score = 0.0;
             let ret = Vship_ComputeSSIMU2(
                 self.handler.ok_or("SSIMULACRA2 handler not initialized")?,
-                ptr::from_mut(&mut score),
+                from_mut(&mut score),
                 planes1.as_ptr(),
                 planes2.as_ptr(),
                 line_sizes1.as_ptr(),
@@ -393,8 +408,8 @@ impl VshipProcessor {
             let mut score = 0.0;
             let ret = Vship_ComputeCVVDP(
                 self.cvvdp_handler.ok_or("CVVDP handler not initialized")?,
-                ptr::from_mut(&mut score),
-                ptr::null(),
+                from_mut(&mut score),
+                null(),
                 0,
                 planes1.as_ptr(),
                 planes2.as_ptr(),
@@ -428,8 +443,8 @@ impl VshipProcessor {
             let ret = Vship_ComputeButteraugli(
                 self.butteraugli_handler
                     .ok_or("Butteraugli handler not initialized")?,
-                ptr::from_mut(&mut score),
-                ptr::null(),
+                from_mut(&mut score),
+                null(),
                 0,
                 planes1.as_ptr(),
                 planes2.as_ptr(),
@@ -465,50 +480,46 @@ impl Drop for VshipProcessor {
 
 fn create_yuv_colorspace(width: u32, height: u32, is_10bit: bool, inf: &VidInf) -> VshipColorspace {
     let chroma_loc = match inf.chroma_sample_position {
-        Some(2) => VshipChromaLocation::TopLeft,
-        _ => VshipChromaLocation::Left,
+        Some(2) => TopLeft,
+        _ => Left,
     };
 
     let matrix_val = match inf.matrix_coefficients {
-        Some(0) => VshipYuvMatrix::Rgb,
-        Some(5) => VshipYuvMatrix::Bt470Bg,
-        Some(6) => VshipYuvMatrix::St170M,
-        Some(9) => VshipYuvMatrix::Bt2020Ncl,
-        Some(10) => VshipYuvMatrix::Bt2020Cl,
-        Some(14) => VshipYuvMatrix::Bt2100Ictcp,
-        _ => VshipYuvMatrix::Bt709,
+        Some(0) => Rgb,
+        Some(5) => YmBt470Bg,
+        Some(6) => St170M,
+        Some(9) => Bt2020Ncl,
+        Some(10) => Bt2020Cl,
+        Some(14) => Bt2100Ictcp,
+        _ => YmBt709,
     };
 
     let transfer_val = match inf.transfer_characteristics {
-        Some(4) => VshipTransferFunction::Bt470M,
-        Some(5) => VshipTransferFunction::Bt470Bg,
-        Some(6) => VshipTransferFunction::Bt601,
-        Some(8) => VshipTransferFunction::Linear,
-        Some(13) => VshipTransferFunction::Srgb,
-        Some(16) => VshipTransferFunction::Pq,
-        Some(17) => VshipTransferFunction::St428,
-        Some(18) => VshipTransferFunction::Hlg,
-        _ => VshipTransferFunction::Bt709,
+        Some(4) => TrBt470M,
+        Some(5) => TrBt470Bg,
+        Some(6) => Bt601,
+        Some(8) => Linear,
+        Some(13) => Srgb,
+        Some(16) => Pq,
+        Some(17) => St428,
+        Some(18) => Hlg,
+        _ => TrBt709,
     };
 
     let primaries_val = match inf.color_primaries {
-        Some(-1) => VshipPrimaries::Internal,
-        Some(4) => VshipPrimaries::Bt470M,
-        Some(5) => VshipPrimaries::Bt470Bg,
-        Some(9) => VshipPrimaries::Bt2020,
-        _ => VshipPrimaries::Bt709,
+        Some(-1) => Internal,
+        Some(4) => PrimBt470M,
+        Some(5) => PrimBt470Bg,
+        Some(9) => Bt2020,
+        _ => PrimBt709,
     };
 
     let range_val = match inf.color_range {
-        Some(2) => VshipRange::Full,
-        _ => VshipRange::Limited,
+        Some(2) => Full,
+        _ => Limited,
     };
 
-    let sample_val = if is_10bit {
-        VshipSample::Uint10
-    } else {
-        VshipSample::Uint8
-    };
+    let sample_val = if is_10bit { Uint10 } else { Uint8 };
 
     VshipColorspace {
         width: i64::from(width),
@@ -519,7 +530,7 @@ fn create_yuv_colorspace(width: u32, height: u32, is_10bit: bool, inf: &VidInf) 
         range: range_val,
         subsampling: VshipChromaSubsample { subw: 1, subh: 1 },
         chroma_location: chroma_loc,
-        color_family: VshipColorFamily::Yuv,
+        color_family: Yuv,
         yuv_matrix: matrix_val,
         transfer_function: transfer_val,
         primaries: primaries_val,

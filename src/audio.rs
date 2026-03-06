@@ -3,12 +3,25 @@ use std::{
     fs::remove_file,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
-    thread,
+    thread::scope,
 };
 
 use ebur128::{EbuR128, Mode};
 
-use crate::{chunk::add_mp4_subs, error::Xerr, lavf::AudioDecoder, opus, progs::ProgsBar};
+use crate::{
+    audio::{
+        AudioBitrate::{Auto, Fixed, Norm},
+        AudioStreams::{All, Specific},
+    },
+    chunk::add_mp4_subs,
+    error::{
+        Xerr,
+        Xerr::{Done, Msg},
+    },
+    lavf::AudioDecoder,
+    opus::{Encoder, FAMILY_MONO_STEREO, FAMILY_SURROUND},
+    progs::ProgsBar,
+};
 
 #[derive(Clone, Copy)]
 pub struct NormParams {
@@ -101,16 +114,16 @@ pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Xerr> {
 
     Ok(AudioSpec {
         bitrate: if parts[0] == "auto" {
-            AudioBitrate::Auto
+            Auto
         } else if parts[0].starts_with("norm") {
-            AudioBitrate::Norm(parse_norm(parts[0])?)
+            Norm(parse_norm(parts[0])?)
         } else {
-            AudioBitrate::Fixed(parts[0].parse()?)
+            Fixed(parts[0].parse()?)
         },
         streams: if parts[1] == "all" {
-            AudioStreams::All
+            All
         } else {
-            AudioStreams::Specific(
+            Specific(
                 parts[1]
                     .split(',')
                     .map(str::parse)
@@ -304,11 +317,11 @@ fn encode_direct(
         |r| r.iter().map(|&(s, e)| e - s).sum(),
     );
     let family = if ch <= 2 {
-        opus::FAMILY_MONO_STEREO
+        FAMILY_MONO_STEREO
     } else {
-        opus::FAMILY_SURROUND
+        FAMILY_SURROUND
     };
-    let mut enc = opus::Encoder::new(output, ch as u8, bitrate, family)?;
+    let mut enc = Encoder::new(output, ch as u8, bitrate, family)?;
     let mut progs = ProgsBar::new();
     let mut encoded: i64 = 0;
     let tid = stream.index;
@@ -335,7 +348,7 @@ fn encode_direct(
                 if re <= chunk_end {
                     ri += 1;
                     if ri >= ranges.len() {
-                        return Err(Xerr::Done);
+                        return Err(Done);
                     }
                 } else {
                     break;
@@ -399,7 +412,7 @@ fn analyze_loudness(
                 if re <= chunk_end {
                     ri += 1;
                     if ri >= ranges.len() {
-                        return Err(Xerr::Done);
+                        return Err(Done);
                     }
                 } else {
                     break;
@@ -461,7 +474,7 @@ fn encode_norm(
     let tp_limit = 10f32.powf(np.tp / 20.0);
 
     let mut dec2 = AudioDecoder::new(input, stream.index as i32)?;
-    let mut enc = opus::Encoder::new(output, 2, np.bitrate, opus::FAMILY_MONO_STEREO)?;
+    let mut enc = Encoder::new(output, 2, np.bitrate, FAMILY_MONO_STEREO)?;
     let mut stereo = vec![0f32; 96000 * 2];
     let mut progs = ProgsBar::new();
     let mut encoded: i64 = 0;
@@ -589,7 +602,7 @@ pub fn encode_audio_streams(
         })
         .collect();
 
-    thread::scope(|scope| {
+    scope(|scope| {
         jobs.iter()
             .map(|j| {
                 scope.spawn(|| {
@@ -605,10 +618,7 @@ pub fn encode_audio_streams(
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|h| {
-                h.join()
-                    .map_err(|_e| Xerr::Msg("Audio thread panicked".into()))?
-            })
+            .map(|h| h.join().map_err(|_e| Msg("Audio thread panicked".into()))?)
             .collect()
     })
 }
