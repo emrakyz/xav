@@ -437,6 +437,8 @@ build_dav1d() {
 
         local logfile="/tmp/build_dav1d_$.log"
 
+        local CFLAGS="${CFLAGS//--rtlib=compiler-rt --unwindlib=none/}"
+        local CXXFLAGS="${CFLAGS//-rtlib=compiler-rt --unwindlib=none/}"
         git clone https://code.videolan.org/videolan/dav1d.git "${BUILD_DIR}/dav1d" > "${logfile}" 2>&1
         cd "${BUILD_DIR}/dav1d"
         meson setup build --default-library=static \
@@ -801,7 +803,7 @@ setup_toolchain() {
 -mllvm -polly-run-inliner \
 -mllvm -polly-run-dce"
 
-        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -static -fno-pic -fno-pie"
+        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fno-pic -fno-pie --rtlib=compiler-rt --unwindlib=none"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
