@@ -885,7 +885,7 @@ main() {
                         build_static=false
                         ;;
                 3)
-                        config_file=".cargo/config.toml.static_notq"
+                        config_file=".cargo/config.toml.static"
                         cargo_features="--no-default-features --features static"
                         build_static=true
                         ;;
