@@ -2,6 +2,7 @@ use std::{
     cmp::min,
     fmt::Write as _,
     fs::write as fs_write,
+    mem::size_of,
     num::{NonZeroU8, NonZeroUsize},
     path::Path,
     slice::from_raw_parts,
@@ -33,6 +34,8 @@ fn build_luma_frame<T: Pixel>(
     w: NonZeroUsize,
     h: NonZeroUsize,
     bit_depth: NonZeroU8,
+    crop_v: usize,
+    crop_h: usize,
 ) -> Option<Frame<T>> {
     let vf = dec.decode_next();
     if dec.is_eof() {
@@ -49,7 +52,11 @@ fn build_luma_frame<T: Pixel>(
     };
     unsafe {
         let stride = NonZeroUsize::new_unchecked((*vf).linesize[0] as usize);
-        let src = from_raw_parts((*vf).data[0], stride.get() * h.get());
+        let bpp = size_of::<T>();
+        let src = from_raw_parts(
+            (*vf).data[0].add(crop_v * stride.get() + crop_h * bpp),
+            stride.get() * h.get(),
+        );
         frame
             .y_plane
             .copy_from_u8_slice_with_stride(src, stride)
@@ -62,11 +69,15 @@ pub fn fd_scenes(
     vid_path: &Path,
     scene_file: &Path,
     inf: &VidInf,
+    crop: (u32, u32),
     line: usize,
     hwaccel: bool,
 ) -> Result<(), Xerr> {
     let max_dist = 300;
     let tot_frames = inf.frames;
+    let (cv, ch) = crop;
+    let cropped_w = inf.width - ch * 2;
+    let cropped_h = inf.height - cv * 2;
 
     let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
     let mut dec = if hwaccel {
@@ -77,8 +88,8 @@ pub fn fd_scenes(
     .map_err(|e| e.to_string())?;
 
     let details = VideoDetails {
-        width: inf.width as usize,
-        height: inf.height as usize,
+        width: cropped_w as usize,
+        height: cropped_h as usize,
         bit_depth: if inf.is_10bit { 10 } else { 8 },
         chroma_sampling: ChromaSubsampling::Yuv420,
         frame_rate: Rational32::new(inf.fps_num as i32, inf.fps_den as i32),
@@ -103,18 +114,20 @@ pub fn fd_scenes(
         }
     };
 
-    let w = unsafe { NonZeroUsize::new_unchecked(inf.width as usize) };
-    let h = unsafe { NonZeroUsize::new_unchecked(inf.height as usize) };
+    let w = unsafe { NonZeroUsize::new_unchecked(cropped_w as usize) };
+    let h = unsafe { NonZeroUsize::new_unchecked(cropped_h as usize) };
+    let crop_v = cv as usize;
+    let crop_h = ch as usize;
 
     let results = if inf.is_10bit {
         let bd = unsafe { NonZeroU8::new_unchecked(10) };
         detect_scene_changes::<u16>(&details, opts, None, Some(&progs_callback), || {
-            build_luma_frame::<u16>(&mut dec, w, h, bd)
+            build_luma_frame::<u16>(&mut dec, w, h, bd, crop_v, crop_h)
         })
     } else {
         let bd = unsafe { NonZeroU8::new_unchecked(8) };
         detect_scene_changes::<u8>(&details, opts, None, Some(&progs_callback), || {
-            build_luma_frame::<u8>(&mut dec, w, h, bd)
+            build_luma_frame::<u8>(&mut dec, w, h, bd, crop_v, crop_h)
         })
     };
 

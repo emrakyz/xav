@@ -61,16 +61,45 @@ pub fn detect_crop(
     let mut dec = VideoDecoder::new(path, threads)?;
     let frame_indices = calculate_sample_frames(inf.frames, config.sample_count);
 
-    let mut crop_samples = Vec::with_capacity(frame_indices.len());
+    let mut best = CropResult {
+        top: u32::MAX,
+        bottom: u32::MAX,
+        left: u32::MAX,
+        right: u32::MAX,
+    };
+
     for &frame_idx in &frame_indices {
         dec.seek_to(frame_idx);
         let frame = dec.frame_ref();
         if let Some(crop) = detect_frame_crop(frame, inf, config.min_black_pixels) {
-            crop_samples.push(crop);
+            if crop.top < best.top {
+                best.top = crop.top;
+            }
+            if crop.bottom < best.bottom {
+                best.bottom = crop.bottom;
+            }
+            if crop.left < best.left {
+                best.left = crop.left;
+            }
+            if crop.right < best.right {
+                best.right = crop.right;
+            }
+            if best.top <= 1 && best.bottom <= 1 && best.left <= 1 && best.right <= 1 {
+                return Ok(CropResult::no_crop());
+            }
         }
     }
 
-    Ok(min_crop(&crop_samples))
+    if best.top == u32::MAX {
+        return Ok(CropResult::no_crop());
+    }
+
+    Ok(CropResult {
+        top: prev_multiple_of_2(best.top),
+        bottom: prev_multiple_of_2(best.bottom),
+        left: prev_multiple_of_2(best.left),
+        right: prev_multiple_of_2(best.right),
+    })
 }
 
 fn calculate_sample_frames(total_frames: usize, sample_count: usize) -> Vec<usize> {
@@ -277,15 +306,3 @@ const fn prev_multiple_of_2(n: u32) -> u32 {
     n & !1
 }
 
-fn min_crop(samples: &[CropResult]) -> CropResult {
-    if samples.is_empty() {
-        return CropResult::no_crop();
-    }
-
-    CropResult {
-        top: prev_multiple_of_2(samples.iter().map(|c| c.top).min().unwrap_or(0)),
-        bottom: prev_multiple_of_2(samples.iter().map(|c| c.bottom).min().unwrap_or(0)),
-        left: prev_multiple_of_2(samples.iter().map(|c| c.left).min().unwrap_or(0)),
-        right: prev_multiple_of_2(samples.iter().map(|c| c.right).min().unwrap_or(0)),
-    }
-}

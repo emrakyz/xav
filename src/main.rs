@@ -481,9 +481,14 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
     args
 }
 
-fn ensure_scene_file(args: &Args, inf: &VidInf, line: usize) -> Result<(), Xerr> {
+fn ensure_scene_file(
+    args: &Args,
+    inf: &VidInf,
+    crop: (u32, u32),
+    line: usize,
+) -> Result<(), Xerr> {
     if !args.scene_file.exists() {
-        fd_scenes(&args.input, &args.scene_file, inf, line, args.hwaccel)?;
+        fd_scenes(&args.input, &args.scene_file, inf, crop, line, args.hwaccel)?;
     }
     Ok(())
 }
@@ -502,19 +507,10 @@ const fn scale_crop(
 }
 
 fn init_pipe_crop(
-    path: &Path,
     inf: VidInf,
-    threads: i32,
+    crop: (u32, u32),
 ) -> (VidInf, (u32, u32), Option<PipeReader>) {
     let pipe_init = init_pipe();
-    let config = CropDetectConfig {
-        sample_count: 13,
-        min_black_pixels: 2,
-    };
-    let crop = match detect_crop(path, &inf, &config, threads) {
-        Ok(detected) if detected.has_crop() => detected.to_tuple(),
-        _ => (0, 0),
-    };
 
     if let Some((y, reader)) = pipe_init {
         let (cv, ch) = crop;
@@ -590,7 +586,12 @@ fn finalize_audio(
 
 type AudioResult = Vec<(AudioStream, PathBuf)>;
 
-fn scd_and_audio(args: &Args, work_dir: &Path, inf: &VidInf) -> Result<Option<AudioResult>, Xerr> {
+fn scd_and_audio(
+    args: &Args,
+    work_dir: &Path,
+    inf: &VidInf,
+    crop: (u32, u32),
+) -> Result<Option<AudioResult>, Xerr> {
     if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Avm {
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
         let input = args.input.clone();
@@ -614,14 +615,14 @@ fn scd_and_audio(args: &Args, work_dir: &Path, inf: &VidInf) -> Result<Option<Au
             encode_audio_streams(&spec, &input, &wd, sample_ranges.as_deref(), 3)
         });
 
-        fd_scenes(&args.input, &args.scene_file, inf, 1, args.hwaccel)?;
+        fd_scenes(&args.input, &args.scene_file, inf, crop, 1, args.hwaccel)?;
 
         let result = audio_handle
             .join()
             .map_err(|_e| Msg("Audio encoding thread panicked".into()))?;
         Ok(Some(result?))
     } else {
-        ensure_scene_file(args, inf, 0)?;
+        ensure_scene_file(args, inf, crop, 0)?;
         Ok(None)
     }
 }
@@ -651,7 +652,17 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let inf = get_vidinf(&args.input)?;
 
-    let audio_files = scd_and_audio(args, &work_dir, &inf)?;
+    let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
+    let config = CropDetectConfig {
+        sample_count: 13,
+        min_black_pixels: 2,
+    };
+    let crop = match detect_crop(&args.input, &inf, &config, thr) {
+        Ok(detected) if detected.has_crop() => detected.to_tuple(),
+        _ => (0, 0),
+    };
+
+    let audio_files = scd_and_audio(args, &work_dir, &inf, crop)?;
 
     print!("\x1b[H\x1b[2J");
     _ = stdout().flush();
@@ -674,8 +685,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     create_dir_all(work_dir.join("split"))?;
     create_dir_all(work_dir.join("encode"))?;
 
-    let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-    let (mut inf, crop, pipe_reader) = init_pipe_crop(&args.input, inf, thr);
+    let (mut inf, crop, pipe_reader) = init_pipe_crop(inf, crop);
 
     adjust_dar(&mut inf, crop);
 
