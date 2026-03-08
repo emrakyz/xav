@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     fs::remove_file,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
@@ -18,6 +17,7 @@ use crate::{
         Xerr,
         Xerr::{Done, Msg},
     },
+    ffms::get_audio_streams,
     lavf::AudioDecoder,
     opus::{Encoder, FAMILY_MONO_STEREO, FAMILY_SURROUND},
     progs::ProgsBar,
@@ -201,64 +201,20 @@ fn lang_name(code: &str) -> &str {
 }
 
 fn get_streams(input: &Path) -> Result<Vec<AudioStream>, Xerr> {
-    let out = Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-select_streams",
-            "a",
-            "-show_entries",
-            "stream=index,channels:stream_tags=language",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(input)
-        .output()?;
-
-    let mut seen = HashSet::new();
-    let mut streams: Vec<_> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .rev()
-        .filter_map(|l| {
-            let p: Vec<_> = l.split(',').collect();
-            (p.len() >= 2).then(|| {
-                let idx = p[0].parse().ok()?;
-                seen.insert(idx).then(|| AudioStream {
-                    index: idx,
-                    channels: p[1].parse().unwrap_or(2),
-                    lang: p.get(2).filter(|s| !s.is_empty()).map(ToString::to_string),
-                })
-            })?
-        })
-        .collect();
-    streams.reverse();
-    streams.sort_by_key(|s| s.index);
-    Ok(streams)
+    get_audio_streams(input).map(|v| {
+        v.into_iter()
+            .map(|(index, channels, lang)| AudioStream {
+                index,
+                channels,
+                lang,
+            })
+            .collect()
+    })
 }
 
 pub fn frame_to_sample(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
     let f = frame as i64;
     (f * i64::from(fps_den) * i64::from(rate)) / i64::from(fps_num)
-}
-
-pub fn get_fps(input: &Path) -> Result<(u32, u32), Xerr> {
-    let out = Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=r_frame_rate",
-            "-of",
-            "csv=p=0",
-        ])
-        .arg(input)
-        .output()?;
-    let s = String::from_utf8_lossy(&out.stdout);
-    let s = s.trim();
-    let (num, den) = s.split_once('/').ok_or("Failed to parse fps")?;
-    Ok((num.parse()?, den.parse()?))
 }
 
 fn reorder_surround(buf: &mut [f32], channels: usize, num_samples: usize) {

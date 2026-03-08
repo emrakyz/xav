@@ -2,30 +2,87 @@ use std::{
     cmp::min,
     fmt::Write as _,
     fs::write as fs_write,
+    num::{NonZeroU8, NonZeroUsize},
     path::Path,
+    slice::from_raw_parts,
     sync::{Arc, Mutex},
+    thread::available_parallelism,
 };
 
 use av_scenechange::{
-    DetectionOptions, SceneDetectionSpeed::Standard, av_decoders::Decoder, detect_scene_changes,
+    DetectionOptions, Rational32,
+    SceneDetectionSpeed::Standard,
+    VideoDetails, detect_scene_changes,
+    v_frame::{
+        chroma::ChromaSubsampling,
+        frame::{Frame, FrameBuilder},
+        pixel::Pixel,
+    },
 };
 
 use crate::{
     error::Xerr,
-    ffms::{VidIdx, get_vidinf},
+    ffms::{VidInf, VideoDecoder},
     progs::ProgsBar,
 };
 
-pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), Xerr> {
-    let idx = VidIdx::new(vid_path, true)?;
-    let inf = get_vidinf(&idx)?;
+const LUMA_PADDING: usize = 80;
 
+fn build_luma_frame<T: Pixel>(
+    dec: &mut VideoDecoder,
+    w: NonZeroUsize,
+    h: NonZeroUsize,
+    bit_depth: NonZeroU8,
+) -> Option<Frame<T>> {
+    let vf = dec.decode_next();
+    if dec.is_eof() {
+        return None;
+    }
+    let mut frame = unsafe {
+        FrameBuilder::new(w, h, ChromaSubsampling::Monochrome, bit_depth)
+            .luma_padding_left(LUMA_PADDING)
+            .luma_padding_right(LUMA_PADDING)
+            .luma_padding_top(LUMA_PADDING)
+            .luma_padding_bottom(LUMA_PADDING)
+            .build::<T>()
+            .unwrap_unchecked()
+    };
+    unsafe {
+        let stride = NonZeroUsize::new_unchecked((*vf).linesize[0] as usize);
+        let src = from_raw_parts((*vf).data[0], stride.get() * h.get());
+        frame
+            .y_plane
+            .copy_from_u8_slice_with_stride(src, stride)
+            .unwrap_unchecked();
+    }
+    Some(frame)
+}
+
+pub fn fd_scenes(
+    vid_path: &Path,
+    scene_file: &Path,
+    inf: &VidInf,
+    line: usize,
+    hwaccel: bool,
+) -> Result<(), Xerr> {
     let max_dist = 300;
     let tot_frames = inf.frames;
-    drop(idx);
 
-    let mut decoder = Decoder::from_file(vid_path).map_err(|e| e.to_string())?;
-    decoder.set_luma_only(true);
+    let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
+    let mut dec = if hwaccel {
+        VideoDecoder::new_hw(vid_path, thr)
+    } else {
+        VideoDecoder::new(vid_path, thr)
+    }
+    .map_err(|e| e.to_string())?;
+
+    let details = VideoDetails {
+        width: inf.width as usize,
+        height: inf.height as usize,
+        bit_depth: if inf.is_10bit { 10 } else { 8 },
+        chroma_sampling: ChromaSubsampling::Yuv420,
+        frame_rate: Rational32::new(inf.fps_num as i32, inf.fps_den as i32),
+    };
 
     let opts = DetectionOptions {
         analysis_speed: Standard,
@@ -46,12 +103,19 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), 
         }
     };
 
+    let w = unsafe { NonZeroUsize::new_unchecked(inf.width as usize) };
+    let h = unsafe { NonZeroUsize::new_unchecked(inf.height as usize) };
+
     let results = if inf.is_10bit {
-        detect_scene_changes::<u16>(&mut decoder, opts, None, Some(&progs_callback))
-            .map_err(|e| e.to_string())?
+        let bd = unsafe { NonZeroU8::new_unchecked(10) };
+        detect_scene_changes::<u16>(&details, opts, None, Some(&progs_callback), || {
+            build_luma_frame::<u16>(&mut dec, w, h, bd)
+        })
     } else {
-        detect_scene_changes::<u8>(&mut decoder, opts, None, Some(&progs_callback))
-            .map_err(|e| e.to_string())?
+        let bd = unsafe { NonZeroU8::new_unchecked(8) };
+        detect_scene_changes::<u8>(&details, opts, None, Some(&progs_callback), || {
+            build_luma_frame::<u8>(&mut dec, w, h, bd)
+        })
     };
 
     if let Ok(mut pb) = progs.lock() {
@@ -66,14 +130,28 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), 
         }
     }
 
+    let new_scenes = refine_scenes(&results.scene_changes, tot_frames, max_dist, &scores);
+
+    let mut content = String::new();
+    for &scene_frame in &new_scenes {
+        _ = writeln!(content, "{scene_frame}");
+    }
+
+    fs_write(scene_file, content)?;
+
+    Ok(())
+}
+
+fn refine_scenes(
+    scene_changes: &[usize],
+    tot_frames: usize,
+    max_dist: usize,
+    scores: &[Option<(f64, f64)>],
+) -> Vec<usize> {
     let mut scenes = Vec::new();
-    for i in 0..results.scene_changes.len() {
-        let s = results.scene_changes[i];
-        let e = results
-            .scene_changes
-            .get(i + 1)
-            .copied()
-            .unwrap_or(tot_frames);
+    for i in 0..scene_changes.len() {
+        let s = scene_changes[i];
+        let e = scene_changes.get(i + 1).copied().unwrap_or(tot_frames);
         scenes.push((s, e));
     }
 
@@ -82,13 +160,12 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), 
     for &(s_frame, e_frame) in &scenes {
         let mut current_start = s_frame.max(*unsafe { new_scenes.last().unwrap_unchecked() });
         let mut distance = e_frame - current_start;
-        let split_size = max_dist as usize;
 
-        while distance > split_size {
-            let minimum_split_count = distance / split_size;
+        while distance > max_dist {
+            let minimum_split_count = distance / max_dist;
             let middle_point = distance / (minimum_split_count + 1);
             let min_size = middle_point / 2;
-            let max_size = min(split_size, middle_point + min_size);
+            let max_size = min(max_dist, middle_point + min_size);
             let range_size = max_size - min_size;
 
             let split_point = (min_size..=max_size)
@@ -117,12 +194,5 @@ pub fn fd_scenes(vid_path: &Path, scene_file: &Path, line: usize) -> Result<(), 
         new_scenes.pop();
     }
 
-    let mut content = String::new();
-    for &scene_frame in &new_scenes {
-        _ = writeln!(content, "{scene_frame}");
-    }
-
-    fs_write(scene_file, content)?;
-
-    Ok(())
+    new_scenes
 }

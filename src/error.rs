@@ -3,10 +3,10 @@ use std::{
     fmt::{Arguments, Display},
     io::{Error, Write as _, stderr, stdout},
     num::{ParseFloatError, ParseIntError},
-    process::exit,
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
+use libc::_exit;
 use thiserror::Error;
 
 use crate::error::Xerr::Msg;
@@ -50,14 +50,13 @@ impl From<String> for Xerr {
 }
 
 #[cold]
-#[allow(clippy::exit)]
 pub fn fatal<E: Display>(e: E) -> ! {
     if IN_ALT_SCREEN.load(Relaxed) {
         print!("\x1b[?25h\x1b[?1049l");
         _ = stdout().flush();
     }
     _ = writeln!(stderr(), "{e}");
-    exit(1)
+    unsafe { _exit(1) }
 }
 
 pub fn eprint(args: Arguments<'_>) {

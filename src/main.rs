@@ -11,8 +11,8 @@ use std::{
     mem::transmute_copy,
     panic::set_hook,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::Ordering::Relaxed},
-    thread::spawn,
+    sync::atomic::Ordering::Relaxed,
+    thread::{available_parallelism, spawn},
     time::{Duration, Instant},
 };
 
@@ -49,8 +49,7 @@ mod worker;
 mod y4m;
 
 use audio::{
-    AudioSpec, AudioStream, encode_audio_streams, frame_to_sample, get_fps, mux_audio,
-    parse_audio_arg,
+    AudioSpec, AudioStream, encode_audio_streams, frame_to_sample, mux_audio, parse_audio_arg,
 };
 use chunk::{
     Chunk, chunkify, get_resume, init_elapsed, load_scenes, merge_out, translate_scenes,
@@ -62,7 +61,7 @@ use encode::TQ_SCORES;
 use encode::encode_all;
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
-use ffms::{DecodeStrat, VidIdx, VidInf, gcd, get_decode_strat, get_vidinf};
+use ffms::{DecodeStrat, VidInf, gcd, get_decode_strat, get_vidinf};
 use noise::gen_table;
 use scd::fd_scenes;
 #[cfg(feature = "vship")]
@@ -104,6 +103,7 @@ pub struct Args {
     #[cfg(feature = "vship")]
     pub probe_params: Option<String>,
     pub sc_only: bool,
+    pub hwaccel: bool,
 }
 
 extern "C" fn restore() {
@@ -139,6 +139,7 @@ fn print_help() {
         println!("{C}-d {P}┃ {C}--display    {W}Display JSON file for CVVDP. Screen name must be {R}xav{W}");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probing ({R}NOT RECOMMENDED{W}; expert-only)");
     }
+    println!("   {P}┃ {C}--hwaccel    {W}Use Vulkan hw decoding (perf depends on the input video and hardware)");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
 
     println!();
@@ -178,6 +179,14 @@ fn parse_args() -> Result<Args, Xerr> {
             fatal("argument parsing failed");
         }
     }
+}
+
+fn parse_noise(v: &str) -> Result<u32, Xerr> {
+    let val: u32 = v.parse()?;
+    if !(1..=64).contains(&val) {
+        return Err("Noise ISO must be between 1-64".into());
+    }
+    Ok(val * 100)
 }
 
 fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
@@ -273,7 +282,7 @@ macro_rules! arg {
 }
 
 fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
-    let (mut worker, mut chunk_buffer, mut sc_only) = (1usize, None, false);
+    let (mut worker, mut chunk_buffer, mut sc_only, mut hwaccel) = (1usize, None, false, false);
     let (mut scene_file, mut input, mut output) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
     let (mut encoder, mut params) = (Encoder::default(), String::new());
     let (mut noise, mut audio, mut ranges) = (None, None, None);
@@ -312,11 +321,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             }
             "-n" | "--noise" => {
                 if let Some(v) = next_arg(args, &mut i) {
-                    let val: u32 = v.parse()?;
-                    if !(1..=64).contains(&val) {
-                        return Err("Noise ISO must be between 1-64".into());
-                    }
-                    noise = Some(val * 100);
+                    noise = Some(parse_noise(v)?);
                 }
             }
             #[cfg(feature = "vship")]
@@ -331,6 +336,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "-d" | "--display" => arg!(opt args, i, cvvdp_config),
             #[cfg(feature = "vship")]
             "-P" | "--probe-param" => arg!(opt args, i, probe_params),
+            "--hwaccel" => hwaccel = true,
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
@@ -361,6 +367,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         chunk_buffer: worker + chunk_buffer.unwrap_or(0),
         ranges,
         sc_only,
+        hwaccel,
         #[cfg(feature = "vship")]
         target_quality,
         #[cfg(feature = "vship")]
@@ -474,9 +481,9 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
     args
 }
 
-fn ensure_scene_file(args: &Args, line: usize) -> Result<(), Xerr> {
+fn ensure_scene_file(args: &Args, inf: &VidInf, line: usize) -> Result<(), Xerr> {
     if !args.scene_file.exists() {
-        fd_scenes(&args.input, &args.scene_file, line)?;
+        fd_scenes(&args.input, &args.scene_file, inf, line, args.hwaccel)?;
     }
     Ok(())
 }
@@ -494,13 +501,17 @@ const fn scale_crop(
     (scaled_v, scaled_h)
 }
 
-fn init_pipe_crop(idx: &Arc<VidIdx>, inf: VidInf) -> (VidInf, (u32, u32), Option<PipeReader>) {
+fn init_pipe_crop(
+    path: &Path,
+    inf: VidInf,
+    threads: i32,
+) -> (VidInf, (u32, u32), Option<PipeReader>) {
     let pipe_init = init_pipe();
     let config = CropDetectConfig {
         sample_count: 13,
         min_black_pixels: 2,
     };
-    let crop = match detect_crop(idx, &inf, &config) {
+    let crop = match detect_crop(path, &inf, &config, threads) {
         Ok(detected) if detected.has_crop() => detected.to_tuple(),
         _ => (0, 0),
     };
@@ -579,40 +590,38 @@ fn finalize_audio(
 
 type AudioResult = Vec<(AudioStream, PathBuf)>;
 
-fn scd_and_audio(args: &Args, work_dir: &Path) -> Result<Option<AudioResult>, Xerr> {
+fn scd_and_audio(args: &Args, work_dir: &Path, inf: &VidInf) -> Result<Option<AudioResult>, Xerr> {
     if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Avm {
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
         let input = args.input.clone();
         let wd = work_dir.to_path_buf();
         let ranges = args.ranges.clone();
 
+        let fps_num = inf.fps_num;
+        let fps_den = inf.fps_den;
+
         let audio_handle = spawn(move || {
-            let sample_ranges = if let Some(ref r) = ranges {
-                let (fps_num, fps_den) = get_fps(&input)?;
-                Some(
-                    r.iter()
-                        .map(|&(s, e)| {
-                            (
-                                frame_to_sample(s, fps_num, fps_den, 48000),
-                                frame_to_sample(e, fps_num, fps_den, 48000),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                )
-            } else {
-                None
-            };
+            let sample_ranges = ranges.as_ref().map(|r| {
+                r.iter()
+                    .map(|&(s, e)| {
+                        (
+                            frame_to_sample(s, fps_num, fps_den, 48000),
+                            frame_to_sample(e, fps_num, fps_den, 48000),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            });
             encode_audio_streams(&spec, &input, &wd, sample_ranges.as_deref(), 3)
         });
 
-        fd_scenes(&args.input, &args.scene_file, 1)?;
+        fd_scenes(&args.input, &args.scene_file, inf, 1, args.hwaccel)?;
 
         let result = audio_handle
             .join()
             .map_err(|_e| Msg("Audio encoding thread panicked".into()))?;
         Ok(Some(result?))
     } else {
-        ensure_scene_file(args, 0)?;
+        ensure_scene_file(args, inf, 0)?;
         Ok(None)
     }
 }
@@ -640,13 +649,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         return Err(format!("Scene file already exists: {}", args.scene_file.display()).into());
     }
 
-    let audio_files = scd_and_audio(args, &work_dir)?;
+    let inf = get_vidinf(&args.input)?;
+
+    let audio_files = scd_and_audio(args, &work_dir, &inf)?;
 
     print!("\x1b[H\x1b[2J");
     _ = stdout().flush();
-
-    let idx = VidIdx::new(&args.input, true)?;
-    let inf = get_vidinf(&idx)?;
 
     let mut args = args.clone();
 
@@ -666,11 +674,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     create_dir_all(work_dir.join("split"))?;
     create_dir_all(work_dir.join("encode"))?;
 
-    let (mut inf, crop, pipe_reader) = init_pipe_crop(&idx, inf);
+    let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
+    let (mut inf, crop, pipe_reader) = init_pipe_crop(&args.input, inf, thr);
 
     adjust_dar(&mut inf, crop);
 
-    args.decode_strat = Some(get_decode_strat(&idx, &inf, crop)?);
+    args.decode_strat = Some(get_decode_strat(&inf, crop, args.hwaccel));
 
     let grain_table = if let Some(iso) = args.noise {
         let table_path = work_dir.join("grain.tbl");
@@ -689,7 +698,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         &chunks,
         &inf,
         &args,
-        &idx,
+        &args.input,
         &work_dir,
         grain_table.as_ref(),
         pipe_reader,

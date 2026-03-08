@@ -9,7 +9,7 @@ install_deps() {
 
         case "${pm}" in
                 "pacman")
-                        pkgs=(base-devel rustup nasm clang compiler-rt cmake ffms2 llvm lld ninja)
+                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja)
                         ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
                         ;;
                 "dnf")
@@ -25,7 +25,7 @@ install_deps() {
                         echo "USEFLAGS needed for toolchain: atomic-builtins profile static-libs sanitize compiler-rt"
                         ;;
                 *)
-                        echo "ERROR: You need Rust Nightly, nasm, clang/llvm/lld/compiler-rt toolchain and FFMS2"
+                        echo "ERROR: You need Rust Nightly, nasm, clang/llvm/lld/compiler-rt toolchain"
                         ;;
         esac
 
@@ -166,14 +166,14 @@ detect_deps() {
         fi
         [[ -n "${COMPILERRT_PATH}" ]] && HAS_COMPILERRT=true || HAS_COMPILERRT=false
 
-        LIBUNWIND_PATH="$(find_lib libunwind.so "${SYS_LIB_DIRS[@]}" || true)"
-        if [[ -z "${LIBUNWIND_PATH}" ]]; then
-                LIBUNWIND_PATH="$(find_lib libunwind.a "${ALL_STATIC_DIRS[@]}" || true)"
-        fi
-        [[ -n "${LIBUNWIND_PATH}" ]] && HAS_LIBUNWIND=true || HAS_LIBUNWIND=false
+        # LIBUNWIND_PATH="$(find_lib libunwind.so "${SYS_LIB_DIRS[@]}" || true)"
+        # if [[ -z "${LIBUNWIND_PATH}" ]]; then
+        #         LIBUNWIND_PATH="$(find_lib libunwind.a "${ALL_STATIC_DIRS[@]}" || true)"
+        # fi
+        # [[ -n "${LIBUNWIND_PATH}" ]] && HAS_LIBUNWIND=true || HAS_LIBUNWIND=false
 
         HAS_HARD_REQS=true
-        for req in HAS_RUST_NIGHTLY HAS_NASM HAS_COMPILERRT HAS_LIBUNWIND HAS_LLD HAS_CLANG HAS_LLVM; do
+        for req in HAS_RUST_NIGHTLY HAS_NASM HAS_COMPILERRT HAS_LLD HAS_CLANG HAS_LLVM; do
                 [[ "${!req}" == false ]] && {
                         HAS_HARD_REQS=false
                         break
@@ -186,8 +186,8 @@ detect_deps() {
         LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
         [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
 
-        LIBUNWIND_STATIC_PATH="$(find_lib libunwind.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
-        [[ -n "${LIBUNWIND_STATIC_PATH}" ]] && HAS_LIBUNWIND_STATIC=true || HAS_LIBUNWIND_STATIC=false
+        # LIBUNWIND_STATIC_PATH="$(find_lib libunwind.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+        # [[ -n "${LIBUNWIND_STATIC_PATH}" ]] && HAS_LIBUNWIND_STATIC=true || HAS_LIBUNWIND_STATIC=false
 
         COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
         [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
@@ -200,7 +200,7 @@ detect_deps() {
         [[ -n "${RUST_STDLIB_PATH}" ]] && HAS_RUST_STDLIB=true || HAS_RUST_STDLIB=false
 
         HAS_STATIC_LIBS=true
-        for req in HAS_GLIBC_STATIC HAS_LIBSTDCXX_STATIC HAS_LIBUNWIND_STATIC HAS_COMPILERRT_STATIC; do
+        for req in HAS_GLIBC_STATIC HAS_LIBSTDCXX_STATIC HAS_COMPILERRT_STATIC; do
                 [[ "${!req}" == false ]] && {
                         HAS_STATIC_LIBS=false
                         break
@@ -226,9 +226,6 @@ detect_deps() {
         POLLY_PATH="$(find_lib libPolly.so "${SYS_LIB_DIRS[@]}" "${LLVM_LIB_DIRS[@]}" || true)"
         [[ -z "${POLLY_PATH}" ]] && POLLY_PATH="$(find_lib LLVMPolly.so "${SYS_LIB_DIRS[@]}" "${LLVM_LIB_DIRS[@]}" || true)"
         [[ -n "${POLLY_PATH}" ]] && HAS_POLLY=true || HAS_POLLY=false
-
-        FFMS2_PATH="$(find_lib libffms2.so "${SYS_LIB_DIRS[@]}" || true)"
-        [[ -n "${FFMS2_PATH}" ]] && HAS_FFMS2=true || HAS_FFMS2=false
 
         VSHIP_PATH="$(find_lib libvship.so "${SYS_LIB_DIRS[@]}" || true)"
         [[ -n "${VSHIP_PATH}" ]] && HAS_VSHIP=true || HAS_VSHIP=false
@@ -299,11 +296,10 @@ detect_deps() {
         ELIGIBLE=()
         if [[ "${HAS_HARD_REQS}" == true ]]; then
                 [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_FFMS2}" == true && "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_FFMS2}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
         else
-                ELIGIBLE=(false false false false)
+                ELIGIBLE=(false false false)
         fi
 }
 
@@ -346,7 +342,6 @@ show_build_menu() {
         printf "  ${Y}%-30b${N} %b\n" "Rust Nightly:" "$(dep_status "${HAS_RUST_NIGHTLY}" "${RUST_NIGHTLY_PATH}" "${RUSTC_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "NASM:" "$(dep_status "${HAS_NASM}" "${NASM_PATH}" "${NASM_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "compiler-rt:" "$(dep_status "${HAS_COMPILERRT}" "${COMPILERRT_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "libunwind:" "$(dep_status "${HAS_LIBUNWIND}" "${LIBUNWIND_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "lld:" "$(dep_status "${HAS_LLD}" "${LLD_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "clang:" "$(dep_status "${HAS_CLANG}" "${CLANG_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "llvm:" "$(dep_status "${HAS_LLVM}" "${LLVM_PATH}")"
@@ -357,7 +352,6 @@ show_build_menu() {
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
         printf "  ${Y}%-30b${N} %b\n" "Glibc static:" "$(dep_status "${HAS_GLIBC_STATIC}" "${GLIBC_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "libstdc++ static:" "$(dep_status "${HAS_LIBSTDCXX_STATIC}" "${LIBSTDCXX_STATIC_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "libunwind static:" "$(dep_status "${HAS_LIBUNWIND_STATIC}" "${LIBUNWIND_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "compiler-rt static:" "$(dep_status "${HAS_COMPILERRT_STATIC}" "${COMPILERRT_STATIC_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "Rust STDLIB static:" "$(dep_status "${HAS_RUST_STDLIB}" "${RUST_STDLIB_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${VSHIP_SEARCH_DIRS[@]}")"
@@ -366,7 +360,6 @@ show_build_menu() {
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
         echo -e "${C}║${W}  Dynamic Build Requirements                                           ${C}║${N}"
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
-        printf "  ${Y}%-30b${N} %b\n" "FFMS2:" "$(dep_status "${HAS_FFMS2}" "${FFMS2_PATH}")"
         printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP:" "$(dep_status "${HAS_VSHIP}" "${VSHIP_PATH}")"
         echo
 
@@ -407,7 +400,7 @@ show_build_menu() {
 }
 
 cleanup_existing() {
-        local dirs=("dav1d" "FFmpeg" "ffms2" "zlib" "opus" "libopusenc" "SVT-AV1")
+        local dirs=("dav1d" "FFmpeg" "opus" "libopusenc" "SVT-AV1" "vulkan")
         local found=()
 
         for dir in "${dirs[@]}"; do
@@ -435,28 +428,6 @@ cleanup_existing() {
         fi
 
         echo
-}
-
-build_zlib() {
-        [[ -d "${BUILD_DIR}/zlib" ]] && return
-
-        loginf b "Building zlib"
-
-        local logfile="/tmp/build_zlib_$.log"
-
-        git clone https://github.com/madler/zlib.git "${BUILD_DIR}/zlib" > "${logfile}" 2>&1
-        cd "${BUILD_DIR}/zlib"
-        ./configure --static --prefix="${BUILD_DIR}/zlib/install" >> "${logfile}" 2>&1
-        make -j"$(nproc)" >> "${logfile}" 2>&1
-        make install >> "${logfile}" 2>&1 && {
-                rm -f "${logfile}"
-                loginf g "zlib built successfully"
-        } || {
-                echo -e "\n${R}Build failed! Output:${N}\n"
-                cat "${logfile}"
-                rm -f "${logfile}"
-                exit 1
-        }
 }
 
 build_dav1d() {
@@ -493,12 +464,77 @@ build_dav1d() {
         }
 }
 
+build_vulkan() {
+        [[ -d "${BUILD_DIR}/vulkan" ]] && return
+
+        loginf b "Building Vulkan (headers + loader)"
+
+        local logfile="/tmp/build_vulkan_$.log"
+        local install_dir="${BUILD_DIR}/vulkan/install"
+
+        mkdir -p "${BUILD_DIR}/vulkan"
+
+        git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git \
+                "${BUILD_DIR}/vulkan/Vulkan-Headers" > "${logfile}" 2>&1
+        cmake -S "${BUILD_DIR}/vulkan/Vulkan-Headers" -B "${BUILD_DIR}/vulkan/Vulkan-Headers/build" \
+                -G Ninja \
+                -DCMAKE_INSTALL_PREFIX="${install_dir}" >> "${logfile}" 2>&1
+        ninja -C "${BUILD_DIR}/vulkan/Vulkan-Headers/build" install >> "${logfile}" 2>&1
+
+        git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Loader.git \
+                "${BUILD_DIR}/vulkan/Vulkan-Loader" >> "${logfile}" 2>&1
+        sed -i 's/add_library(vulkan SHARED)/add_library(vulkan STATIC)/' \
+                "${BUILD_DIR}/vulkan/Vulkan-Loader/loader/CMakeLists.txt"
+        sed -i '/install(TARGETS vulkan EXPORT/d; /install(EXPORT VulkanLoaderConfig/d' \
+                "${BUILD_DIR}/vulkan/Vulkan-Loader/loader/CMakeLists.txt"
+
+        cmake -S "${BUILD_DIR}/vulkan/Vulkan-Loader" -B "${BUILD_DIR}/vulkan/Vulkan-Loader/build" \
+                -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER="${CC}" \
+                -DCMAKE_C_FLAGS="${CFLAGS}" \
+                -DCMAKE_INSTALL_PREFIX="${install_dir}" \
+                -DCMAKE_INSTALL_LIBDIR=lib \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DBUILD_WSI_XCB_SUPPORT=OFF \
+                -DBUILD_WSI_XLIB_SUPPORT=OFF \
+                -DBUILD_WSI_WAYLAND_SUPPORT=OFF \
+                -DBUILD_WSI_DIRECTFB_SUPPORT=OFF \
+                -DVULKAN_HEADERS_INSTALL_DIR="${install_dir}" \
+                -DCMAKE_ASM_COMPILER="${CC}" \
+                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE >> "${logfile}" 2>&1
+        ninja -C "${BUILD_DIR}/vulkan/Vulkan-Loader/build" >> "${logfile}" 2>&1
+        mkdir -p "${install_dir}/lib/pkgconfig"
+        cp "${BUILD_DIR}/vulkan/Vulkan-Loader/build/loader/libvulkan.a" "${install_dir}/lib/"
+        cat > "${install_dir}/lib/pkgconfig/vulkan.pc" <<- VKPC
+	prefix=${install_dir}
+	includedir=\${prefix}/include
+	libdir=\${prefix}/lib
+
+	Name: Vulkan-Loader
+	Description: Vulkan Loader
+	Version: 1.4
+	Libs: -L\${libdir} -lvulkan
+	Libs.private: -ldl -lpthread -lm
+	Cflags: -I\${includedir}
+	VKPC
+        [[ -f "${install_dir}/lib/libvulkan.a" ]] && {
+                rm -f "${logfile}"
+                loginf g "Vulkan built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
 build_ffmpeg() {
         [[ -d "${BUILD_DIR}/FFmpeg" ]] && return
 
         loginf b "Building FFmpeg"
 
-        export PKG_CONFIG_PATH="${BUILD_DIR}/dav1d/lib/pkgconfig:${BUILD_DIR}/FFmpeg/install/lib/pkgconfig"
+        export PKG_CONFIG_PATH="${BUILD_DIR}/dav1d/lib/pkgconfig:${BUILD_DIR}/vulkan/install/lib/pkgconfig:${BUILD_DIR}/FFmpeg/install/lib/pkgconfig"
 
         local logfile="/tmp/build_ffmpeg_$.log"
 
@@ -613,7 +649,13 @@ build_ffmpeg() {
                 --enable-parser=mpegaudio \
                 --enable-parser=opus \
                 --enable-parser=vorbis \
-                --enable-parser=flac >> "${logfile}" 2>&1
+                --enable-parser=flac \
+                --enable-vulkan \
+                --enable-vulkan-static \
+                --enable-hwaccel=h264_vulkan \
+                --enable-hwaccel=hevc_vulkan \
+                --enable-hwaccel=av1_vulkan \
+                --enable-hwaccel=vp9_vulkan >> "${logfile}" 2>&1
 
         make -j"$(nproc)" >> "${logfile}" 2>&1
         make install DESTDIR="${BUILD_DIR}/FFmpeg/install" prefix="" >> "${logfile}" 2>&1 && {
@@ -684,44 +726,6 @@ build_opusenc() {
         make install >> "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
                 loginf g "libopusenc built successfully"
-        } || {
-                echo -e "\n${R}Build failed! Output:${N}\n"
-                cat "${logfile}"
-                rm -f "${logfile}"
-                exit 1
-        }
-}
-
-build_ffms2() {
-        [[ -d "${BUILD_DIR}/ffms2" ]] && return
-
-        loginf b "Building ffms2"
-
-        local logfile="/tmp/build_ffms2_$.log"
-
-        cd "${BUILD_DIR}"
-        git clone https://github.com/FFMS/ffms2.git > "${logfile}" 2>&1
-        cd ffms2
-        mkdir -p src/config
-        autoreconf -fiv >> "${logfile}" 2>&1
-
-        PKG_CONFIG_PATH="${BUILD_DIR}/FFmpeg/install/lib/pkgconfig:${BUILD_DIR}/zlib/install/lib/pkgconfig" \
-                CC="${CC}" \
-                CXX="${CXX}" \
-                AR="${AR}" \
-                RANLIB="${RANLIB}" \
-                CFLAGS="${CFLAGS} -I${BUILD_DIR}/FFmpeg/install/include -I${BUILD_DIR}/zlib/install/include" \
-                CXXFLAGS="${CXXFLAGS} -I${BUILD_DIR}/FFmpeg/install/include -I${BUILD_DIR}/zlib/install/include" \
-                LDFLAGS="-L${BUILD_DIR}/FFmpeg/install/lib -L${BUILD_DIR}/zlib/install/lib" \
-                LIBS="-lpthread -lm -lz" \
-                ./configure \
-                --enable-static \
-                --disable-shared \
-                --with-zlib="${BUILD_DIR}/zlib/install" >> "${logfile}" 2>&1
-
-        make -j"$(nproc)" >> "${logfile}" 2>&1 && {
-                rm -f "${logfile}"
-                loginf g "ffms2 built successfully"
         } || {
                 echo -e "\n${R}Build failed! Output:${N}\n"
                 cat "${logfile}"
@@ -803,7 +807,7 @@ setup_toolchain() {
         unset LDFLAGS
 }
 
-SVT_FORK_NAMES=("hdr" "essential" "5fish" "mainline")
+SVT_FORK_NAMES=("hdr" "essential" "5fish (requires some mainline updates, currently not usable)" "mainline")
 SVT_FORK_URLS=(
         "https://github.com/juliobbv-p/svt-av1-hdr"
         "https://github.com/nekotrix/SVT-AV1-Essential"
@@ -844,14 +848,12 @@ main() {
                 "Build statically with TQ"
                 "Build dynamically with TQ"
                 "Build statically without TQ"
-                "Build dynamically without TQ"
         )
 
         BUILD_DESCS=(
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
-                "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}ffms2${P} / ${G}vship${P} libraries from your system."
-                "Clone and compile ${G}decoder${P} libraries, ${G}zlib${P}, ${G}ffms2${P}, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically without TQ."
-                "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}ffms2${P} library from your system without TQ."
+                "Clone and compile ${G}decoder${P} libraries, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
+                "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}vship${P} libraries from your system."
+                "Clone and compile ${G}decoder${P} libraries, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically without TQ."
         )
 
         [[ "${preset}" ]] && detect_deps || {
@@ -938,15 +940,9 @@ main() {
         [[ "${build_static}" == true ]] && {
                 loginf b "Starting static build process"
 
-                build_zlib
                 build_dav1d
+                build_vulkan
                 build_ffmpeg
-                build_ffms2
-
-                export PKG_CONFIG_ALL_STATIC=1
-                export FFMPEG_DIR="${BUILD_DIR}/FFmpeg/install"
-                export FFMS_INCLUDE_DIR="${BUILD_DIR}/ffms2/include"
-                export FFMS_LIB_DIR="${BUILD_DIR}/ffms2/src/core/.libs"
         }
 
         cd "${XAV_DIR}"

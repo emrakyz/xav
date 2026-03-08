@@ -10,7 +10,7 @@ use crate::{
             B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
             B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
             B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride,
-            B10StrideRem,
+            B10StrideRem, HwNv12, HwNv12Crop, HwP010CropPack, HwP010Pack, HwP010Raw, HwP010RawCrop,
         },
         VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, unpack_10bit, unpack_10bit_rem,
     },
@@ -129,7 +129,10 @@ impl Pipeline {
             | B8CropStride { cc }
             | B10RawCropFast { cc }
             | B10RawCrop { cc }
-            | B10RawCropStride { cc } => (cc.new_w as usize, cc.new_h as usize),
+            | B10RawCropStride { cc }
+            | HwNv12Crop { cc }
+            | HwP010RawCrop { cc }
+            | HwP010CropPack { cc } => (cc.new_w as usize, cc.new_h as usize),
             _ => (inf.width as usize, inf.height as usize),
         };
 
@@ -138,7 +141,9 @@ impl Pipeline {
             | B10RawStride
             | B10RawCropFast { .. }
             | B10RawCrop { .. }
-            | B10RawCropStride { .. } => final_w * final_h * 3,
+            | B10RawCropStride { .. }
+            | HwP010Raw
+            | HwP010RawCrop { .. } => final_w * final_h * 3,
             B10Fast
             | B10FastRem
             | B10Stride
@@ -148,13 +153,20 @@ impl Pipeline {
             | B10Crop { .. }
             | B10CropRem { .. }
             | B10CropStride { .. }
-            | B10CropStrideRem { .. } => calc_packed_size(final_w as u32, final_h as u32),
-            B8Fast | B8Stride | B8CropFast { .. } | B8Crop { .. } | B8CropStride { .. } => {
-                calc_8bit_size(final_w as u32, final_h as u32)
-            }
+            | B10CropStrideRem { .. }
+            | HwP010Pack
+            | HwP010CropPack { .. } => calc_packed_size(final_w as u32, final_h as u32),
+            B8Fast
+            | B8Stride
+            | B8CropFast { .. }
+            | B8Crop { .. }
+            | B8CropStride { .. }
+            | HwNv12
+            | HwNv12Crop { .. } => calc_8bit_size(final_w as u32, final_h as u32),
         };
 
-        let pixel_size = if inf.is_10bit { 2 } else { 1 };
+        let is_10bit_output = inf.is_10bit;
+        let pixel_size = if is_10bit_output { 2 } else { 1 };
         let y_size = final_w * final_h * pixel_size;
         let uv_size = y_size / 4;
 
@@ -169,7 +181,7 @@ impl Pipeline {
 
         let (unpack, write_frames): (UnpackFn, WriteFn) = if is_raw {
             (unpack_noop, write_frames_10bit)
-        } else if !inf.is_10bit {
+        } else if !is_10bit_output {
             (unpack_noop, write_frames_8bit)
         } else if has_rem {
             (unpack_10bit_rem_wrap, write_frames_10bit)
@@ -179,7 +191,7 @@ impl Pipeline {
 
         #[cfg(feature = "vship")]
         let (compute_metric, reset_cvvdp, sort_descending, calc_metrics) =
-            resolve_metrics(inf.is_10bit, target_quality);
+            resolve_metrics(is_10bit_output, target_quality);
 
         Self {
             final_w,
