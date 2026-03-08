@@ -9,14 +9,14 @@ install_deps() {
 
         case "${pm}" in
                 "pacman")
-                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja)
+                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson)
                         ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
                         ;;
                 "dnf")
                         pkgs=(
                                 glibc-static libstdc++-static nasm rustup clang clang-libs
                                 llvm lld compiler-rt llvm-libunwind-static autoconf automake
-                                libtool cmake ninja-build pkgconf
+                                libtool cmake ninja-build pkgconf meson
                         )
                         ${priv:-} dnf install -y "${pkgs[@]}"
                         ;;
@@ -802,7 +802,7 @@ setup_toolchain() {
 -mllvm -polly-run-inliner \
 -mllvm -polly-run-dce"
 
-        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -fuse-ld=lld -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fno-pic -fno-pie"
+        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
