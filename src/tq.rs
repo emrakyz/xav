@@ -2,7 +2,7 @@ use std::{path::Path, thread::available_parallelism, time::Instant};
 
 use crate::{
     error::fatal,
-    ffms::{VidIdx, destroy_vid_src, get_raw_frame, thr_vid_src},
+    ffms::VideoDecoder,
     interp::{akima, fritsch_carlson, lerp, pchip},
     pipeline::{MetricsProgress, Pipeline},
     vship::VshipProcessor,
@@ -80,9 +80,8 @@ macro_rules! calc_metrics_impl {
                 vship.reset_cvvdp();
             }
 
-            let idx = VidIdx::new(probe_path, false).unwrap_or_else(|e| fatal(e));
             let threads = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-            let src = thr_vid_src(&idx, threads).unwrap_or_else(|e| fatal(e));
+            let mut dec = VideoDecoder::new(probe_path, threads).unwrap_or_else(|e| fatal(e));
 
             let mut scores = Vec::with_capacity(pkg.frame_count);
             let frame_size = pipe.frame_size;
@@ -108,7 +107,7 @@ macro_rules! calc_metrics_impl {
 
                     let input_frame =
                         &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
-                    let of = get_raw_frame(src, $frame_idx);
+                    let of = dec.decode_next();
 
                     let input_yuv: &[u8] = if $is_10bit {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);
@@ -124,11 +123,15 @@ macro_rules! calc_metrics_impl {
                     ];
 
                     let of = unsafe { &*of };
-                    let output_planes = [of.Data[0], of.Data[1], of.Data[2]];
+                    let output_planes = [
+                        of.data[0].cast_const(),
+                        of.data[1].cast_const(),
+                        of.data[2].cast_const(),
+                    ];
                     let output_strides = [
-                        i64::from(of.Linesize[0]),
-                        i64::from(of.Linesize[1]),
-                        i64::from(of.Linesize[2]),
+                        i64::from(of.linesize[0]),
+                        i64::from(of.linesize[1]),
+                        i64::from(of.linesize[2]),
                     ];
 
                     scores.push((pipe.compute_metric)(
@@ -151,8 +154,6 @@ macro_rules! calc_metrics_impl {
                     process_frame!(frame_idx);
                 }
             }
-
-            destroy_vid_src(src);
 
             let result = aggregate_scores(&mut scores, pipe, metric_mode, cvvdp_per_frame);
             (result, scores)

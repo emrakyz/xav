@@ -1,10 +1,8 @@
-use std::{sync::Arc, thread::available_parallelism};
-
-use ffms2_sys::FFMS_VideoSource;
+use std::path::Path;
 
 use crate::{
     error::Xerr,
-    ffms::{self, VidIdx, VidInf, destroy_vid_src, thr_vid_src},
+    ffms::{self, VidInf, VideoDecoder},
 };
 
 #[derive(Debug, Clone)]
@@ -55,23 +53,22 @@ impl CropResult {
 }
 
 pub fn detect_crop(
-    idx: &Arc<VidIdx>,
+    path: &Path,
     inf: &VidInf,
     config: &CropDetectConfig,
+    threads: i32,
 ) -> Result<CropResult, Xerr> {
-    let threads = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-
-    let src = thr_vid_src(idx, threads)?;
+    let mut dec = VideoDecoder::new(path, threads)?;
     let frame_indices = calculate_sample_frames(inf.frames, config.sample_count);
 
     let mut crop_samples = Vec::with_capacity(frame_indices.len());
     for &frame_idx in &frame_indices {
-        if let Some(crop) = detect_frame_crop(src, frame_idx, inf, config.min_black_pixels) {
+        dec.seek_to(frame_idx);
+        let frame = dec.frame_ref();
+        if let Some(crop) = detect_frame_crop(frame, inf, config.min_black_pixels) {
             crop_samples.push(crop);
         }
     }
-
-    destroy_vid_src(src);
 
     Ok(min_crop(&crop_samples))
 }
@@ -93,16 +90,14 @@ fn calculate_sample_frames(total_frames: usize, sample_count: usize) -> Vec<usiz
 }
 
 fn detect_frame_crop(
-    src: *mut FFMS_VideoSource,
-    frame_idx: usize,
+    frame: *const ffms::VidFrame,
     inf: &VidInf,
     min_pixels: usize,
 ) -> Option<CropResult> {
-    let frame = ffms::get_raw_frame(src, frame_idx);
-
     unsafe {
-        let y_data = (*frame).Data[0];
-        let y_stride = (*frame).Linesize[0] as usize;
+        let f = &*frame;
+        let y_data = f.data[0];
+        let y_stride = f.linesize[0] as usize;
         let width = inf.width as usize;
         let height = inf.height as usize;
 

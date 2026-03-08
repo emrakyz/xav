@@ -78,36 +78,6 @@ impl ProgsBar {
         }
     }
 
-    pub fn up_idx(&mut self, current: usize, total: usize) {
-        if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
-            return;
-        }
-        self.last_update = Instant::now();
-
-        self.total = total;
-        let elapsed = self.start.elapsed().as_secs() as usize;
-        let mb_current = current / (1024 * 1024);
-        let mb_total = total / (1024 * 1024);
-        let mbps = mb_current / elapsed.max(1);
-        let remaining = total.saturating_sub(current);
-        let eta_secs = remaining * elapsed / current.max(1);
-        let filled = (BAR_WIDTH * current / total.max(1)).min(BAR_WIDTH);
-        let bar = format!(
-            "{}{}",
-            G_HASH.repeat(filled),
-            R_DASH.repeat(BAR_WIDTH - filled)
-        );
-        let perc = (current * 100 / total.max(1)).min(100);
-        let el = fmt_el(elapsed / 3600, (elapsed % 3600) / 60);
-        let eta = fmt_eta(eta_secs / 3600, (eta_secs % 3600) / 60);
-
-        print!(
-            "\r\x1b[2K{el}{W}IDX: {C}[{bar}{C}] {W}{perc}%{C}, {Y}{mbps} MBs{eta}{C}, \
-             {G}{mb_current}{C}/{R}{mb_total}{N}"
-        );
-        _ = io_stdout().flush();
-    }
-
     pub fn up_scenes(&mut self, current: usize, total: usize, line: usize) {
         if self.last_update.elapsed() < Duration::from_millis(INTERVAL_MS) {
             return;
@@ -151,8 +121,6 @@ impl ProgsBar {
         };
         self.up_scenes(total, total, line);
     }
-
-    pub const fn finish() {}
 
     pub fn up_audio(
         &mut self,

@@ -42,7 +42,7 @@ use crate::{
         make_enc_cmd, set_svt_config,
     },
     error::fatal,
-    ffms::{VidIdx, VidInf, conv_to_10bit},
+    ffms::{VidInf, conv_to_10bit},
     pipeline::Pipeline,
     progs::{LibEncTracker, ProgsTrack},
     svt::{
@@ -165,7 +165,7 @@ pub fn encode_all(
     chunks: &[Chunk],
     inf: &VidInf,
     args: &Args,
-    idx: &Arc<VidIdx>,
+    path: &Path,
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
     pipe_reader: Option<PipeReader>,
@@ -176,7 +176,7 @@ pub fn encode_all(
     {
         let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
         if is_tq {
-            encode_tq(chunks, inf, args, idx, work_dir, grain_table, pipe_reader);
+            encode_tq(chunks, inf, args, path, work_dir, grain_table, pipe_reader);
             return;
         }
     }
@@ -214,14 +214,14 @@ pub fn encode_all(
 
     let decoder = {
         let chunks = chunks.to_vec();
-        let idx = Arc::clone(idx);
+        let path = path.to_path_buf();
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
         spawn(move || {
             if let Some(mut reader) = pipe_reader {
                 decode_pipe(&chunks, &mut reader, &inf, &tx, &skip_indices, strat, &sem);
             } else {
-                decode_chunks(&chunks, &idx, &inf, &tx, &skip_indices, strat, &sem);
+                decode_chunks(&chunks, &path, &inf, &tx, &skip_indices, strat, &sem);
             }
         })
     };
@@ -647,7 +647,7 @@ struct TQDecodeResult {
 #[cfg(feature = "vship")]
 fn spawn_tq_decode(
     chunks: &[Chunk],
-    idx: &Arc<VidIdx>,
+    path: &Path,
     inf: &VidInf,
     skip: HashSet<usize>,
     strat: DecodeStrat,
@@ -660,7 +660,7 @@ fn spawn_tq_decode(
     let (done_tx, done_rx) = bounded::<usize>(4);
 
     let chunks = chunks.to_vec();
-    let idx = Arc::clone(idx);
+    let path = path.to_path_buf();
     let inf = inf.clone();
     let enc_tx2 = enc_tx.clone();
     let permits_dec = Arc::clone(permits);
@@ -672,7 +672,7 @@ fn spawn_tq_decode(
             if let Some(mut r) = pipe_reader {
                 decode_pipe(&chunks, &mut r, &inf2, &dtx, &skip, strat, &permits_dec);
             } else {
-                decode_chunks(&chunks, &idx, &inf2, &dtx, &skip, strat, &permits_dec);
+                decode_chunks(&chunks, &path, &inf2, &dtx, &skip, strat, &permits_dec);
             }
         });
         tq_coordinate(&drx, &rework_rx, &done_rx, &enc_tx2, total, &permits_done);
@@ -692,7 +692,7 @@ fn encode_tq(
     chunks: &[Chunk],
     inf: &VidInf,
     args: &Args,
-    idx: &Arc<VidIdx>,
+    path: &Path,
     work_dir: &Path,
     grain_table: Option<&PathBuf>,
     pipe_reader: Option<PipeReader>,
@@ -704,7 +704,15 @@ fn encode_tq(
     let pipe = Pipeline::new(inf, strat, args.target_quality.as_deref());
     let permits = Arc::new(Semaphore::new(args.chunk_buffer));
 
-    let dec = spawn_tq_decode(chunks, idx, inf, skip_indices, strat, &permits, pipe_reader);
+    let dec = spawn_tq_decode(
+        chunks,
+        path,
+        inf,
+        skip_indices,
+        strat,
+        &permits,
+        pipe_reader,
+    );
     let (met_tx, met_rx) = bounded::<WorkPkg>(2);
     let (enc_rx, met_rx) = (Arc::new(dec.enc_rx), Arc::new(met_rx));
 
@@ -722,20 +730,81 @@ fn encode_tq(
     );
     let stats = Some(stats);
     let prog = Arc::new(prog);
-    let (encoder, use_probe_params, worker_count) =
-        (args.encoder, args.probe_params.is_some(), args.worker);
+    let sc = TQSpawnCtx {
+        inf,
+        pipe: &pipe,
+        work_dir,
+        args,
+        prog: &prog,
+        stats,
+        resume_state: &resume_state,
+        tq_logger: &tq_logger,
+        tq_ctx,
+        encoder: args.encoder,
+        use_probe_params: args.probe_params.is_some(),
+        worker_count: args.worker,
+    };
 
+    let metrics_workers = spawn_tq_metrics(
+        args.metric_worker,
+        &met_rx,
+        &dec.rework_tx,
+        &dec.done_tx,
+        &sc,
+    );
+
+    let workers = spawn_tq_encoders(&enc_rx, &met_tx, &sc, grain_table);
+
+    init_device().unwrap_or_else(|e| fatal(e));
+    join_one(dec.handle);
+    drop(dec.enc_tx);
+    join_all(workers);
+    drop(dec.rework_tx);
+    drop(met_tx);
+    join_all(metrics_workers);
+
+    write_tq_log(&args.input, work_dir, inf, sc.tq_ctx.metric_name());
+    drop(prog);
+    join_one(display_handle);
+}
+
+#[cfg(feature = "vship")]
+struct TQSpawnCtx<'a> {
+    inf: &'a VidInf,
+    pipe: &'a Pipeline,
+    work_dir: &'a Path,
+    args: &'a Args,
+    prog: &'a Arc<ProgsTrack>,
+    stats: Option<Arc<WorkerStats>>,
+    resume_state: &'a Arc<Mutex<ResumeInf>>,
+    tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
+    tq_ctx: TQCtx,
+    encoder: Encoder,
+    use_probe_params: bool,
+    worker_count: usize,
+}
+
+#[cfg(feature = "vship")]
+fn spawn_tq_metrics(
+    metric_worker: usize,
+    met_rx: &Arc<Receiver<WorkPkg>>,
+    rework_tx: &Sender<WorkPkg>,
+    done_tx: &Sender<usize>,
+    sc: &TQSpawnCtx,
+) -> Vec<JoinHandle<()>> {
     let mut metrics_workers = Vec::new();
-    for worker_id in 0..args.metric_worker {
-        let (rx, rework_tx) = (Arc::clone(&met_rx), dec.rework_tx.clone());
-        let done_tx = dec.done_tx.clone();
-        let (inf, pipe, wd) = (inf.clone(), pipe.clone(), work_dir.to_path_buf());
-        let (metric_mode, st) = (args.metric_mode.clone(), stats.clone());
+    for worker_id in 0..metric_worker {
+        let (rx, rework_tx) = (Arc::clone(met_rx), rework_tx.clone());
+        let done_tx = done_tx.clone();
+        let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
+        let (metric_mode, st) = (sc.args.metric_mode.clone(), sc.stats.clone());
         let (resume_state, tq_logger, prog_clone) = (
-            Arc::clone(&resume_state),
-            Arc::clone(&tq_logger),
-            Arc::clone(&prog),
+            Arc::clone(sc.resume_state),
+            Arc::clone(sc.tq_logger),
+            Arc::clone(sc.prog),
         );
+        let (tq_ctx, encoder, use_probe_params, worker_count) =
+            (sc.tq_ctx, sc.encoder, sc.use_probe_params, sc.worker_count);
         metrics_workers.push(spawn(move || {
             let ctx = TQWorkerCtx {
                 inf: &inf,
@@ -755,17 +824,27 @@ fn encode_tq(
             run_metrics_worker(&rx, &rework_tx, &ctx, worker_id);
         }));
     }
+    metrics_workers
+}
 
+#[cfg(feature = "vship")]
+fn spawn_tq_encoders(
+    enc_rx: &Arc<Receiver<WorkPkg>>,
+    met_tx: &Sender<WorkPkg>,
+    sc: &TQSpawnCtx,
+    grain_table: Option<&PathBuf>,
+) -> Vec<JoinHandle<()>> {
     let mut workers = Vec::new();
-    for worker_id in 0..worker_count {
-        let (rx, tx) = (Arc::clone(&enc_rx), met_tx.clone());
-        let (inf, pipe, wd) = (inf.clone(), pipe.clone(), work_dir.to_path_buf());
+    for worker_id in 0..sc.worker_count {
+        let (rx, tx) = (Arc::clone(enc_rx), met_tx.clone());
+        let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
         let (params, probe_params, grain) = (
-            args.params.clone(),
-            args.probe_params.clone(),
+            sc.args.params.clone(),
+            sc.args.probe_params.clone(),
             grain_table.cloned(),
         );
-        let prog_clone = Arc::clone(&prog);
+        let prog_clone = Arc::clone(sc.prog);
+        let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
                 inf: &inf,
@@ -787,18 +866,7 @@ fn encode_tq(
             );
         }));
     }
-
-    init_device().unwrap_or_else(|e| fatal(e));
-    join_one(dec.handle);
-    drop(dec.enc_tx);
-    join_all(workers);
-    drop(dec.rework_tx);
-    drop(met_tx);
-    join_all(metrics_workers);
-
-    write_tq_log(&args.input, work_dir, inf, tq_ctx.metric_name());
-    drop(prog);
-    join_one(display_handle);
+    workers
 }
 
 #[cfg(feature = "vship")]
@@ -1282,10 +1350,11 @@ fn send_svt_conv(
         cb_stride: (w / 2) as u32,
         cr_stride: (w / 2) as u32,
     };
+    let io_ptr = &raw mut io_fmt;
 
     let mut in_hdr = unsafe { zeroed::<EbBufferHeaderType>() };
     in_hdr.size = size_of::<EbBufferHeaderType>() as u32;
-    in_hdr.p_buffer = (&raw mut io_fmt).cast::<u8>();
+    in_hdr.p_buffer = io_ptr.cast::<u8>();
     in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
     in_hdr.n_alloc_len = in_hdr.n_filled_len;
 
@@ -1305,9 +1374,16 @@ fn send_svt_conv(
         crf_score,
     );
 
+    let is_raw = ctx.pipe.conv_buf_size == 0;
     for i in 0..cfg.frames {
         let frame = get_frame(yuv, i, ctx.pipe.frame_size);
-        if cfg.inf.is_10bit {
+        if is_raw {
+            unsafe {
+                (*io_ptr).luma = frame.as_ptr().cast_mut();
+                (*io_ptr).cb = frame[y_size..].as_ptr().cast_mut();
+                (*io_ptr).cr = frame[y_size + uv_size..].as_ptr().cast_mut();
+            }
+        } else if cfg.inf.is_10bit {
             (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
         } else {
             conv_to_10bit(frame, conv_buf);

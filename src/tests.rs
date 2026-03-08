@@ -1,29 +1,19 @@
 use std::{collections::HashSet, path::Path, ptr::copy_nonoverlapping, sync::Arc, thread};
 
 use crossbeam_channel::bounded;
-use ffms2_sys::FFMS_VideoSource;
 
 use crate::{
     chunk::Chunk,
     decode::decode_chunks,
     encode::get_frame,
-    ffms::{
-        self, VidIdx, VidInf, calc_8bit_size, destroy_vid_src, get_raw_frame, get_vidinf,
-        thr_vid_src,
-    },
+    ffms::{self, VidFrame, VidInf, VideoDecoder, calc_8bit_size, get_vidinf},
     pipeline::Pipeline,
     worker::{Semaphore, WorkPkg},
 };
 
-fn extr_raw_data(
-    vid_src: *mut FFMS_VideoSource,
-    frame_idx: usize,
-    output: &mut [u8],
-    inf: &VidInf,
-    crop: (u32, u32),
-) {
+fn extr_raw_data(frame: *const VidFrame, output: &mut [u8], inf: &VidInf, crop: (u32, u32)) {
     unsafe {
-        let frame = get_raw_frame(vid_src, frame_idx);
+        let f = &*frame;
 
         let pix_sz = if inf.is_10bit { 2 } else { 1 };
         let width = inf.width as usize;
@@ -33,42 +23,30 @@ fn extr_raw_data(
         let cropped_width = width - crop_h * 2;
         let cropped_height = height - crop_v * 2;
 
-        let y_linesize = (*frame).Linesize[0] as usize;
-        let u_linesize = (*frame).Linesize[1] as usize;
-        let v_linesize = (*frame).Linesize[2] as usize;
+        let y_linesize = f.linesize[0] as usize;
+        let u_linesize = f.linesize[1] as usize;
+        let v_linesize = f.linesize[2] as usize;
 
         let mut pos = 0;
 
         for row in 0..cropped_height {
             let src_off = (crop_h * pix_sz) + ((row + crop_v) * y_linesize);
             let len = cropped_width * pix_sz;
-            copy_nonoverlapping(
-                (*frame).Data[0].add(src_off),
-                output.as_mut_ptr().add(pos),
-                len,
-            );
+            copy_nonoverlapping(f.data[0].add(src_off), output.as_mut_ptr().add(pos), len);
             pos += len;
         }
 
         for row in 0..cropped_height / 2 {
             let src_off = (crop_h / 2 * pix_sz) + ((row + crop_v / 2) * u_linesize);
             let len = cropped_width / 2 * pix_sz;
-            copy_nonoverlapping(
-                (*frame).Data[1].add(src_off),
-                output.as_mut_ptr().add(pos),
-                len,
-            );
+            copy_nonoverlapping(f.data[1].add(src_off), output.as_mut_ptr().add(pos), len);
             pos += len;
         }
 
         for row in 0..cropped_height / 2 {
             let src_off = (crop_h / 2 * pix_sz) + ((row + crop_v / 2) * v_linesize);
             let len = cropped_width / 2 * pix_sz;
-            copy_nonoverlapping(
-                (*frame).Data[2].add(src_off),
-                output.as_mut_ptr().add(pos),
-                len,
-            );
+            copy_nonoverlapping(f.data[2].add(src_off), output.as_mut_ptr().add(pos), len);
             pos += len;
         }
     }
@@ -79,13 +57,12 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
         .join("test_files")
         .join(filename);
 
-    let idx = VidIdx::new(&input, false).unwrap();
-    let inf = get_vidinf(&idx).unwrap();
-    let decode_strat = ffms::get_decode_strat(&idx, &inf, crop).unwrap();
+    let inf = get_vidinf(&input).unwrap();
+    let decode_strat = ffms::get_decode_strat(&inf, crop, false);
     let (tx, rx) = bounded::<WorkPkg>(1);
     let sem = Arc::new(Semaphore::new(1));
 
-    let idx_c = Arc::clone(&idx);
+    let input_c = input.clone();
     let inf_c = inf.clone();
     let sem_c = Arc::clone(&sem);
     thread::spawn(move || {
@@ -96,7 +73,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
                 end: 10,
                 params: None,
             }],
-            &idx_c,
+            &input_c,
             &inf_c,
             &tx,
             &HashSet::new(),
@@ -107,9 +84,8 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
 
     let pkg = rx.recv().unwrap();
     let frame_size = pkg.yuv.len() / pkg.frame_count;
-    let Ok(source) = thr_vid_src(&idx, 1) else {
-        panic!("Failed to create video source");
-    };
+    let mut dec =
+        VideoDecoder::new(&input, 1).unwrap_or_else(|e| panic!("Failed to create decoder: {e}"));
 
     let final_w = (inf.width - crop.1 * 2) as usize;
     let final_h = (inf.height - crop.0 * 2) as usize;
@@ -137,7 +113,8 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
             frame_data
         };
 
-        extr_raw_data(source, i, &mut decoded_frame, &inf, crop);
+        let frame = dec.decode_next();
+        extr_raw_data(frame, &mut decoded_frame, &inf, crop);
 
         assert_eq!(
             roundtrip_frame.len(),
@@ -156,8 +133,6 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
             );
         }
     }
-
-    destroy_vid_src(source);
 }
 
 #[test]

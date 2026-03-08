@@ -31,21 +31,20 @@ fn main() {
     if cfg!(feature = "static") {
         println!("cargo:rustc-link-search=native={home}/.local/src/FFmpeg/install/lib");
         println!("cargo:rustc-link-search=native={home}/.local/src/dav1d/build/src");
-        println!("cargo:rustc-link-search=native={home}/.local/src/zlib/install/lib");
+        println!("cargo:rustc-link-search=native={home}/.local/src/vulkan/install/lib");
 
-        println!("cargo:rustc-link-lib=static=swscale");
         println!("cargo:rustc-link-lib=static=swresample");
         println!("cargo:rustc-link-lib=static=avformat");
         println!("cargo:rustc-link-lib=static=avcodec");
         println!("cargo:rustc-link-lib=static=avutil");
+        println!("cargo:rustc-link-lib=static=vulkan");
         println!("cargo:rustc-link-lib=static=dav1d");
-        println!("cargo:rustc-link-lib=static=z");
-        println!("cargo:rustc-link-lib=static=stdc++");
 
         #[cfg(feature = "vship")]
         {
             find_static_lib(&[format!("{home}/.local/src/Vship")], "libvship.a");
             println!("cargo:rustc-link-lib=static=vship");
+            println!("cargo:rustc-link-lib=static=stdc++");
             println!("cargo:rustc-link-lib=static=cudart_static");
             println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
             println!("cargo:rustc-link-lib=dylib=cuda");

@@ -1,10 +1,18 @@
 use std::{
     ffi::{CString, c_int, c_void},
     path::Path,
-    ptr::{null, null_mut},
+    ptr::{from_ref, null, null_mut},
 };
 
-use crate::error::{Xerr, Xerr::Done};
+use crate::{
+    error::{Xerr, Xerr::Done},
+    ffms::{
+        AVFormatContext, AVPacket, VidFrame, av_find_best_stream, av_frame_alloc, av_frame_free,
+        av_packet_alloc, av_packet_free, av_packet_unref, av_read_frame, avcodec_alloc_context3,
+        avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
+        avcodec_send_packet, avformat_close_input, avformat_find_stream_info, avformat_open_input,
+    },
+};
 
 const AVMEDIA_TYPE_AUDIO: c_int = 1;
 const AV_SAMPLE_FMT_FLT: c_int = 3;
@@ -12,135 +20,13 @@ const AV_TIME_BASE: i64 = 1_000_000;
 const AVERROR_EOF: c_int = -541_478_725;
 const AVERROR_EAGAIN: c_int = -11;
 
-#[repr(C)]
-struct AVRational {
-    num: c_int,
-    den: c_int,
-}
-
-#[repr(C)]
-struct AVChannelLayout {
-    order: c_int,
-    nb_channels: c_int,
-    mask: u64,
-    opaque: *mut c_void,
-}
-
-#[repr(C)]
-struct AVCodecParameters {
-    codec_type: c_int,
-    codec_id: c_int,
-    codec_tag: u32,
-    extradata: *mut u8,
-    extradata_size: c_int,
-    coded_side_data: *mut c_void,
-    nb_coded_side_data: c_int,
-    format: c_int,
-    bit_rate: i64,
-    bits_per_coded_sample: c_int,
-    bits_per_raw_sample: c_int,
-    profile: c_int,
-    level: c_int,
-    width: c_int,
-    height: c_int,
-    sample_aspect_ratio: AVRational,
-    framerate: AVRational,
-    field_order: c_int,
-    color_range: c_int,
-    color_primaries: c_int,
-    color_trc: c_int,
-    color_space: c_int,
-    chroma_location: c_int,
-    video_delay: c_int,
-    ch_layout: AVChannelLayout,
-    sample_rate: c_int,
-}
-
-#[repr(C)]
-struct AVStream {
-    _av_class: *const c_void,
-    _index: c_int,
-    _id: c_int,
-    codecpar: *mut AVCodecParameters,
-    _priv_data: *mut c_void,
-    time_base: AVRational,
-    duration: i64,
-}
-
-#[repr(C)]
-struct AVFormatContext {
-    _av_class: *const c_void,
-    _iformat: *const c_void,
-    _oformat: *const c_void,
-    _priv_data: *mut c_void,
-    _pb: *mut c_void,
-    _ctx_flags: c_int,
-    _nb_streams: u32,
-    streams: *mut *mut AVStream,
-    _nb_stream_groups: u32,
-    _stream_groups: *mut c_void,
-    _nb_chapters: u32,
-    _chapters: *mut c_void,
-    _url: *mut i8,
-    _start_time: i64,
-    duration: i64,
-}
-
-#[repr(C)]
-struct AVFrame {
-    data: [*mut u8; 8],
-    _linesize: [c_int; 8],
-    extended_data: *mut *mut u8,
-    _width: c_int,
-    _height: c_int,
-    nb_samples: c_int,
-}
-
-#[repr(C)]
-struct AVPacket {
-    _buf: *mut c_void,
-    _pts: i64,
-    _dts: i64,
-    _data: *mut u8,
-    _size: c_int,
-    stream_index: c_int,
-}
-
 unsafe extern "C" {
-    fn avformat_open_input(
-        ps: *mut *mut AVFormatContext,
-        url: *const i8,
-        fmt: *const c_void,
-        options: *mut *mut c_void,
-    ) -> c_int;
-    fn avformat_find_stream_info(ic: *mut AVFormatContext, options: *mut *mut c_void) -> c_int;
-    fn avformat_close_input(ps: *mut *mut AVFormatContext);
-    fn av_find_best_stream(
-        ic: *mut AVFormatContext,
-        type_: c_int,
-        wanted: c_int,
-        related: c_int,
-        decoder: *mut *const c_void,
-        flags: c_int,
-    ) -> c_int;
-    fn avcodec_alloc_context3(codec: *const c_void) -> *mut c_void;
-    fn avcodec_parameters_to_context(codec: *mut c_void, par: *const AVCodecParameters) -> c_int;
-    fn avcodec_open2(avctx: *mut c_void, codec: *const c_void, options: *mut *mut c_void) -> c_int;
-    fn avcodec_send_packet(avctx: *mut c_void, avpkt: *const AVPacket) -> c_int;
-    fn avcodec_receive_frame(avctx: *mut c_void, frame: *mut AVFrame) -> c_int;
-    fn avcodec_free_context(avctx: *mut *mut c_void);
-    fn av_packet_alloc() -> *mut AVPacket;
-    fn av_packet_free(pkt: *mut *mut AVPacket);
-    fn av_packet_unref(pkt: *mut AVPacket);
-    fn av_read_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
-    fn av_frame_alloc() -> *mut AVFrame;
-    fn av_frame_free(frame: *mut *mut AVFrame);
     fn swr_alloc_set_opts2(
         ps: *mut *mut c_void,
-        out_ch_layout: *const AVChannelLayout,
+        out_ch_layout: *const c_void,
         out_sample_fmt: c_int,
         out_sample_rate: c_int,
-        in_ch_layout: *const AVChannelLayout,
+        in_ch_layout: *const c_void,
         in_sample_fmt: c_int,
         in_sample_rate: c_int,
         log_offset: c_int,
@@ -162,7 +48,7 @@ pub struct AudioDecoder {
     codec_ctx: *mut c_void,
     swr: *mut c_void,
     pkt: *mut AVPacket,
-    frame: *mut AVFrame,
+    frame: *mut VidFrame,
     stream_idx: c_int,
     channels: u32,
     total_samples: i64,
@@ -223,13 +109,14 @@ impl AudioDecoder {
                 return Err("lavf: codec open failed".into());
             }
 
+            let ch_layout_ptr = from_ref(&par.ch_layout).cast::<c_void>();
             let mut swr: *mut c_void = null_mut();
             if swr_alloc_set_opts2(
                 &raw mut swr,
-                &raw const par.ch_layout,
+                ch_layout_ptr,
                 AV_SAMPLE_FMT_FLT,
                 48000,
-                &raw const par.ch_layout,
+                ch_layout_ptr,
                 par.format,
                 par.sample_rate,
                 0,
