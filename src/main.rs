@@ -686,7 +686,11 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     adjust_dar(&mut inf, crop);
 
-    args.decode_strat = Some(get_decode_strat(&inf, crop, args.hwaccel));
+    #[cfg(feature = "vship")]
+    let tq = args.target_quality.is_some();
+    #[cfg(not(feature = "vship"))]
+    let tq = false;
+    args.decode_strat = Some(get_decode_strat(&inf, crop, args.hwaccel, tq));
 
     let grain_table = if let Some(iso) = args.noise {
         let table_path = work_dir.join("grain.tbl");

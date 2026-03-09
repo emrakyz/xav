@@ -58,7 +58,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
         .join(filename);
 
     let inf = get_vidinf(&input).unwrap();
-    let decode_strat = ffms::get_decode_strat(&inf, crop, false);
+    let decode_strat = ffms::get_decode_strat(&inf, crop, false, false);
     let (tx, rx) = bounded::<WorkPkg>(1);
     let sem = Arc::new(Semaphore::new(1));
 

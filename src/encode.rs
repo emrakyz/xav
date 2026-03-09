@@ -30,8 +30,6 @@ use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
 use sonic_rs::from_str;
 
-#[cfg(feature = "vship")]
-use crate::ffms::DecodeStrat;
 use crate::{
     Args,
     chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
@@ -42,7 +40,7 @@ use crate::{
         make_enc_cmd, set_svt_config,
     },
     error::fatal,
-    ffms::{VidInf, conv_to_10bit},
+    ffms::{DecodeStrat, VidInf, conv_to_10bit, nv12_to_10bit},
     pipeline::Pipeline,
     progs::{LibEncTracker, ProgsTrack},
     svt::{
@@ -198,6 +196,11 @@ pub fn encode_all(
     let (strat, svt_enc_fn): (_, SvtEncFn) =
         if args.encoder == SvtAv1 && inf.is_10bit && args.chunk_buffer == args.worker {
             (strat.to_raw(), enc_svt_direct)
+        } else if matches!(
+            strat,
+            DecodeStrat::HwNv12To10 | DecodeStrat::HwNv12CropTo10 { .. }
+        ) {
+            (strat, enc_svt_nv12_drop)
         } else {
             (strat, enc_svt_drop)
         };
@@ -1324,87 +1327,106 @@ fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
     handle
 }
 
-fn send_svt_conv(
-    yuv: &[u8],
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    worker_id: usize,
-    track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
-) -> (*mut EbComponentType, BufWriter<File>, LibEncTracker) {
-    let handle = init_svt(cfg);
-    let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
-    write_ivf_header(&mut out, cfg);
+macro_rules! make_send_svt {
+    ($name:ident, $conv_8bit:expr) => {
+        fn $name(
+            yuv: &[u8],
+            cfg: &EncConfig,
+            ctx: &EncWorkerCtx,
+            conv_buf: &mut [u8],
+            worker_id: usize,
+            track_frames: bool,
+            crf_score: Option<(f32, Option<f64>)>,
+        ) -> (*mut EbComponentType, BufWriter<File>, LibEncTracker) {
+            let handle = init_svt(cfg);
+            let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
+            write_ivf_header(&mut out, cfg);
 
-    let w = cfg.width as usize;
-    let h = cfg.height as usize;
-    let y_size = w * h * 2;
-    let uv_size = (w / 2) * (h / 2) * 2;
+            let w = cfg.width as usize;
+            let h = cfg.height as usize;
+            let y_size = w * h * 2;
+            let uv_size = (w / 2) * (h / 2) * 2;
 
-    let mut io_fmt = EbSvtIOFormat {
-        luma: conv_buf.as_mut_ptr(),
-        cb: unsafe { conv_buf.as_mut_ptr().add(y_size) },
-        cr: unsafe { conv_buf.as_mut_ptr().add(y_size + uv_size) },
-        y_stride: w as u32,
-        cb_stride: (w / 2) as u32,
-        cr_stride: (w / 2) as u32,
-    };
-    let io_ptr = &raw mut io_fmt;
+            let mut io_fmt = EbSvtIOFormat {
+                luma: conv_buf.as_mut_ptr(),
+                cb: unsafe { conv_buf.as_mut_ptr().add(y_size) },
+                cr: unsafe { conv_buf.as_mut_ptr().add(y_size + uv_size) },
+                y_stride: w as u32,
+                cb_stride: (w / 2) as u32,
+                cr_stride: (w / 2) as u32,
+            };
+            let io_ptr = &raw mut io_fmt;
 
-    let mut in_hdr = unsafe { zeroed::<EbBufferHeaderType>() };
-    in_hdr.size = size_of::<EbBufferHeaderType>() as u32;
-    in_hdr.p_buffer = io_ptr.cast::<u8>();
-    in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
-    in_hdr.n_alloc_len = in_hdr.n_filled_len;
+            let mut in_hdr = unsafe { zeroed::<EbBufferHeaderType>() };
+            in_hdr.size = size_of::<EbBufferHeaderType>() as u32;
+            in_hdr.p_buffer = io_ptr.cast::<u8>();
+            in_hdr.n_filled_len = (y_size + uv_size * 2) as u32;
+            in_hdr.n_alloc_len = in_hdr.n_filled_len;
 
-    let mut tracker = LibEncTracker::new(
-        worker_id,
-        cfg.chunk_idx,
-        cfg.frames,
-        track_frames,
-        crf_score,
-    );
-    ctx.prog.update_lib_enc(
-        worker_id,
-        cfg.chunk_idx,
-        (0, cfg.frames),
-        0.0,
-        None,
-        crf_score,
-    );
+            let mut tracker = LibEncTracker::new(
+                worker_id,
+                cfg.chunk_idx,
+                cfg.frames,
+                track_frames,
+                crf_score,
+            );
+            ctx.prog.update_lib_enc(
+                worker_id,
+                cfg.chunk_idx,
+                (0, cfg.frames),
+                0.0,
+                None,
+                crf_score,
+            );
 
-    let is_raw = ctx.pipe.conv_buf_size == 0;
-    for i in 0..cfg.frames {
-        let frame = get_frame(yuv, i, ctx.pipe.frame_size);
-        if is_raw {
-            unsafe {
-                (*io_ptr).luma = frame.as_ptr().cast_mut();
-                (*io_ptr).cb = frame[y_size..].as_ptr().cast_mut();
-                (*io_ptr).cr = frame[y_size + uv_size..].as_ptr().cast_mut();
+            let is_raw = ctx.pipe.conv_buf_size == 0;
+            for i in 0..cfg.frames {
+                let frame = get_frame(yuv, i, ctx.pipe.frame_size);
+                if is_raw {
+                    unsafe {
+                        (*io_ptr).luma = frame.as_ptr().cast_mut();
+                        (*io_ptr).cb = frame[y_size..].as_ptr().cast_mut();
+                        (*io_ptr).cr = frame[y_size + uv_size..].as_ptr().cast_mut();
+                    }
+                } else if cfg.inf.is_10bit {
+                    (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
+                } else {
+                    #[allow(clippy::redundant_closure_call)]
+                    ($conv_8bit)(frame, conv_buf, ctx.pipe);
+                }
+
+                in_hdr.pts = i as i64;
+                in_hdr.flags = 0;
+
+                let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
+                if ret != EB_ERROR_NONE {
+                    fatal(format_args!(
+                        "svt_av1_enc_send_picture failed at frame {i}: {ret}"
+                    ));
+                }
+
+                tracker.encoded += drain_svt_packets(handle, &mut out, false);
+                tracker.report(ctx.prog);
             }
-        } else if cfg.inf.is_10bit {
-            (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
-        } else {
-            conv_to_10bit(frame, conv_buf);
+
+            (handle, out, tracker)
         }
-
-        in_hdr.pts = i as i64;
-        in_hdr.flags = 0;
-
-        let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
-        if ret != EB_ERROR_NONE {
-            fatal(format_args!(
-                "svt_av1_enc_send_picture failed at frame {i}: {ret}"
-            ));
-        }
-
-        tracker.encoded += drain_svt_packets(handle, &mut out, false);
-        tracker.report(ctx.prog);
-    }
-
-    (handle, out, tracker)
+    };
 }
+
+make_send_svt!(
+    send_svt_conv,
+    |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_to_10bit(frame, buf)
+);
+make_send_svt!(
+    send_svt_nv12,
+    |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_to_10bit(
+        frame,
+        buf,
+        pipe.final_w,
+        pipe.final_h
+    )
+);
 
 #[cfg(feature = "vship")]
 fn enc_svt_lib(
@@ -1439,6 +1461,21 @@ fn enc_svt_drop(
 ) {
     let (handle, mut out, mut tracker) =
         send_svt_conv(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
+    *yuv = Vec::new();
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
+fn enc_svt_nv12_drop(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let (handle, mut out, mut tracker) =
+        send_svt_nv12(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
     *yuv = Vec::new();
     finish_svt(handle, &mut out, &mut tracker, ctx.prog);
 }

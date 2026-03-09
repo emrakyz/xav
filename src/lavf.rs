@@ -77,7 +77,7 @@ impl AudioDecoder {
 
             let probesize = c"probesize";
             let analyzeduration = c"analyzeduration";
-            av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 32_768, 1);
+            av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 0x8000, 1);
             av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
             avformat_find_stream_info(fmt_ctx, null_mut());
 
