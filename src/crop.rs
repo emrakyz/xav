@@ -305,4 +305,3 @@ unsafe fn detect_right_crop(
 const fn prev_multiple_of_2(n: u32) -> u32 {
     n & !1
 }
-

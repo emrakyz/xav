@@ -8,9 +8,10 @@ use crate::{
     error::{Xerr, Xerr::Done},
     ffms::{
         AVFormatContext, AVPacket, VidFrame, av_find_best_stream, av_frame_alloc, av_frame_free,
-        av_packet_alloc, av_packet_free, av_packet_unref, av_read_frame, avcodec_alloc_context3,
-        avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
-        avcodec_send_packet, avformat_close_input, avformat_find_stream_info, avformat_open_input,
+        av_opt_set_int, av_packet_alloc, av_packet_free, av_packet_unref, av_read_frame,
+        avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context,
+        avcodec_receive_frame, avcodec_send_packet, avformat_close_input,
+        avformat_find_stream_info, avformat_open_input,
     },
 };
 
@@ -66,6 +67,18 @@ impl AudioDecoder {
                 return Err("lavf: open failed".into());
             }
 
+            let n = (*fmt_ctx).nb_streams as usize;
+            for i in 0..n {
+                let stream = &mut *(*(*fmt_ctx).streams.add(i));
+                if (*stream.codecpar).codec_type != AVMEDIA_TYPE_AUDIO {
+                    stream.discard = 48;
+                }
+            }
+
+            let probesize = c"probesize";
+            let analyzeduration = c"analyzeduration";
+            av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 32_768, 1);
+            av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
             avformat_find_stream_info(fmt_ctx, null_mut());
 
             let mut dec: *const c_void = null();
