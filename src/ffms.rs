@@ -86,7 +86,7 @@ pub struct AVStream {
     pub duration: i64,
     nb_frames: i64,
     _disposition: c_int,
-    _discard: c_int,
+    pub discard: c_int,
     sample_aspect_ratio: AVRational,
     metadata: *mut c_void,
     avg_frame_rate: AVRational,
@@ -100,7 +100,7 @@ pub struct AVFormatContext {
     _priv_data: *mut c_void,
     _pb: *mut c_void,
     _ctx_flags: c_int,
-    nb_streams: u32,
+    pub nb_streams: u32,
     pub streams: *mut *mut AVStream,
     _nb_stream_groups: u32,
     _stream_groups: *mut c_void,
@@ -190,6 +190,12 @@ unsafe extern "C" {
     ) -> c_int;
     pub fn avformat_find_stream_info(ic: *mut AVFormatContext, options: *mut *mut c_void) -> c_int;
     pub fn avformat_close_input(ps: *mut *mut AVFormatContext);
+    pub fn av_opt_set_int(
+        obj: *mut c_void,
+        name: *const i8,
+        val: i64,
+        search_flags: c_int,
+    ) -> c_int;
     pub fn av_find_best_stream(
         ic: *mut AVFormatContext,
         type_: c_int,
@@ -722,6 +728,18 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
             return Err(ff_err("decoder: open failed"));
         }
 
+        let n = (*fmt_ctx).nb_streams as usize;
+        for i in 0..n {
+            let stream = &mut *(*(*fmt_ctx).streams.add(i));
+            if (*stream.codecpar).codec_type != AVMEDIA_TYPE_VIDEO {
+                stream.discard = 48;
+            }
+        }
+
+        let probesize = c"probesize";
+        let analyzeduration = c"analyzeduration";
+        av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 32_768, 1);
+        av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
         avformat_find_stream_info(fmt_ctx, null_mut());
 
         let mut dec: *const c_void = null();
@@ -799,9 +817,20 @@ pub fn get_audio_streams(path: &Path) -> Result<Vec<(usize, u32, Option<String>)
             return Err(ff_err("decoder: open failed"));
         }
 
+        let n = (*fmt_ctx).nb_streams as usize;
+        for i in 0..n {
+            let stream = &mut *(*(*fmt_ctx).streams.add(i));
+            if (*stream.codecpar).codec_type != AVMEDIA_TYPE_AUDIO {
+                stream.discard = 48;
+            }
+        }
+
+        let probesize = c"probesize";
+        let analyzeduration = c"analyzeduration";
+        av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 32_768, 1);
+        av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
         avformat_find_stream_info(fmt_ctx, null_mut());
 
-        let n = (*fmt_ctx).nb_streams as usize;
         let mut result = Vec::new();
         let lang_key = CString::new("language").unwrap_unchecked();
 

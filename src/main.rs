@@ -12,7 +12,7 @@ use std::{
     panic::set_hook,
     path::{Path, PathBuf},
     sync::atomic::Ordering::Relaxed,
-    thread::{available_parallelism, spawn},
+    thread::{JoinHandle, available_parallelism, spawn},
     time::{Duration, Instant},
 };
 
@@ -481,12 +481,7 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
     args
 }
 
-fn ensure_scene_file(
-    args: &Args,
-    inf: &VidInf,
-    crop: (u32, u32),
-    line: usize,
-) -> Result<(), Xerr> {
+fn ensure_scene_file(args: &Args, inf: &VidInf, crop: (u32, u32), line: usize) -> Result<(), Xerr> {
     if !args.scene_file.exists() {
         fd_scenes(&args.input, &args.scene_file, inf, crop, line, args.hwaccel)?;
     }
@@ -506,10 +501,7 @@ const fn scale_crop(
     (scaled_v, scaled_h)
 }
 
-fn init_pipe_crop(
-    inf: VidInf,
-    crop: (u32, u32),
-) -> (VidInf, (u32, u32), Option<PipeReader>) {
+fn init_pipe_crop(inf: VidInf, crop: (u32, u32)) -> (VidInf, (u32, u32), Option<PipeReader>) {
     let pipe_init = init_pipe();
 
     if let Some((y, reader)) = pipe_init {
@@ -585,23 +577,18 @@ fn finalize_audio(
 }
 
 type AudioResult = Vec<(AudioStream, PathBuf)>;
+type AudioHandle = JoinHandle<Result<AudioResult, Xerr>>;
 
-fn scd_and_audio(
-    args: &Args,
-    work_dir: &Path,
-    inf: &VidInf,
-    crop: (u32, u32),
-) -> Result<Option<AudioResult>, Xerr> {
-    if !args.scene_file.exists() && args.audio.is_some() && args.encoder != Avm {
+fn spawn_audio(args: &Args, work_dir: &Path, inf: &VidInf) -> Option<AudioHandle> {
+    (!args.scene_file.exists() && args.audio.is_some() && args.encoder != Avm).then(|| {
         let spec = unsafe { args.audio.as_ref().unwrap_unchecked() }.clone();
         let input = args.input.clone();
         let wd = work_dir.to_path_buf();
         let ranges = args.ranges.clone();
-
         let fps_num = inf.fps_num;
         let fps_den = inf.fps_den;
 
-        let audio_handle = spawn(move || {
+        spawn(move || {
             let sample_ranges = ranges.as_ref().map(|r| {
                 r.iter()
                     .map(|&(s, e)| {
@@ -613,11 +600,19 @@ fn scd_and_audio(
                     .collect::<Vec<_>>()
             });
             encode_audio_streams(&spec, &input, &wd, sample_ranges.as_deref(), 3)
-        });
+        })
+    })
+}
 
+fn scd_and_audio(
+    args: &Args,
+    inf: &VidInf,
+    crop: (u32, u32),
+    audio_handle: Option<AudioHandle>,
+) -> Result<Option<AudioResult>, Xerr> {
+    if let Some(handle) = audio_handle {
         fd_scenes(&args.input, &args.scene_file, inf, crop, 1, args.hwaccel)?;
-
-        let result = audio_handle
+        let result = handle
             .join()
             .map_err(|_e| Msg("Audio encoding thread panicked".into()))?;
         Ok(Some(result?))
@@ -652,6 +647,8 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let inf = get_vidinf(&args.input)?;
 
+    let audio_handle = spawn_audio(args, &work_dir, &inf);
+
     let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
     let config = CropDetectConfig {
         sample_count: 13,
@@ -662,7 +659,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         _ => (0, 0),
     };
 
-    let audio_files = scd_and_audio(args, &work_dir, &inf, crop)?;
+    let audio_files = scd_and_audio(args, &inf, crop, audio_handle)?;
 
     print!("\x1b[H\x1b[2J");
     _ = stdout().flush();
