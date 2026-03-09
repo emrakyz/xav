@@ -542,15 +542,19 @@ build_ffmpeg() {
         git clone "https://github.com/FFmpeg/FFmpeg" > "${logfile}" 2>&1
         cd "FFmpeg"
 
+        local vk_inc="${BUILD_DIR}/vulkan/install/include"
+        local vk_lib="${BUILD_DIR}/vulkan/install/lib"
+
         ./configure \
                 --cc="${CC}" \
                 --cxx="${CXX}" \
                 --ar="${AR}" \
+                --nm="${NM}" \
                 --ranlib="${RANLIB}" \
                 --strip="${STRIP}" \
-                --extra-cflags="${CFLAGS}" \
-                --extra-cxxflags="${CXXFLAGS}" \
-                --extra-ldflags="-fuse-ld=lld -flto=thin" \
+                --extra-cflags="${CFLAGS} -I${vk_inc}" \
+                --extra-cxxflags="${CXXFLAGS} -I${vk_inc}" \
+                --extra-ldflags="-fuse-ld=lld -flto=thin -L${vk_lib}" \
                 --disable-shared \
                 --enable-static \
                 --pkg-config-flags="--static" \

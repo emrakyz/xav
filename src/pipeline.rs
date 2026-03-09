@@ -10,9 +10,11 @@ use crate::{
             B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
             B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
             B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride,
-            B10StrideRem, HwNv12, HwNv12Crop, HwP010CropPack, HwP010Pack, HwP010Raw, HwP010RawCrop,
+            B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack,
+            HwP010Pack, HwP010Raw, HwP010RawCrop,
         },
-        VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, unpack_10bit, unpack_10bit_rem,
+        VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, nv12_to_10bit, unpack_10bit,
+        unpack_10bit_rem,
     },
 };
 #[cfg(feature = "vship")]
@@ -60,6 +62,10 @@ fn unpack_10bit_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
 
 fn unpack_10bit_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
     unpack_10bit_rem(input, output, pipe.final_w, pipe.final_h);
+}
+
+fn nv12_to_10bit_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
+    nv12_to_10bit(input, output, pipe.final_w, pipe.final_h);
 }
 
 pub fn write_frames_10bit(
@@ -131,6 +137,7 @@ impl Pipeline {
             | B10RawCrop { cc }
             | B10RawCropStride { cc }
             | HwNv12Crop { cc }
+            | HwNv12CropTo10 { cc }
             | HwP010RawCrop { cc }
             | HwP010CropPack { cc } => (cc.new_w as usize, cc.new_h as usize),
             _ => (inf.width as usize, inf.height as usize),
@@ -162,7 +169,9 @@ impl Pipeline {
             | B8Crop { .. }
             | B8CropStride { .. }
             | HwNv12
-            | HwNv12Crop { .. } => calc_8bit_size(final_w as u32, final_h as u32),
+            | HwNv12Crop { .. }
+            | HwNv12To10
+            | HwNv12CropTo10 { .. } => calc_8bit_size(final_w as u32, final_h as u32),
         };
 
         let is_10bit_output = inf.is_10bit;
@@ -179,7 +188,11 @@ impl Pipeline {
 
         let has_rem = inf.is_10bit && (final_w % 8) != 0;
 
-        let (unpack, write_frames): (UnpackFn, WriteFn) = if is_raw {
+        let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12CropTo10 { .. });
+
+        let (unpack, write_frames): (UnpackFn, WriteFn) = if is_nv12_to_10 {
+            (nv12_to_10bit_wrap, write_frames_10bit)
+        } else if is_raw {
             (unpack_noop, write_frames_10bit)
         } else if !is_10bit_output {
             (unpack_noop, write_frames_8bit)
