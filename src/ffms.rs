@@ -1090,6 +1090,20 @@ pub const fn extr_8bit_fast(frame: *const VidFrame, output: &mut [u8], inf: &Vid
 }
 
 pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
+    #[cfg(target_feature = "avx512bw")]
+    unsafe {
+        conv_to_10bit_avx512(input, output);
+    }
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+    unsafe {
+        conv_to_10bit_avx2(input, output)
+    }
+    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+    conv_to_10bit_scalar(input, output);
+}
+
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+fn conv_to_10bit_scalar(input: &[u8], output: &mut [u8]) {
     input
         .iter()
         .zip(output.chunks_exact_mut(2))
@@ -1097,6 +1111,70 @@ pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
             let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
             out_chunk.copy_from_slice(&pixel_10bit);
         });
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+#[target_feature(enable = "avx2")]
+unsafe fn conv_to_10bit_avx2(input: &[u8], output: &mut [u8]) {
+    use std::arch::x86_64::{
+        __m128i, __m256i, _mm_loadu_si128, _mm256_cvtepu8_epi16, _mm256_slli_epi16,
+        _mm256_storeu_si256,
+    };
+    let len = input.len();
+    let mut i = 0;
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr().cast::<u16>();
+    unsafe {
+        while i + 32 <= len {
+            let lo = _mm_loadu_si128(in_ptr.add(i).cast::<__m128i>());
+            let hi = _mm_loadu_si128(in_ptr.add(i + 16).cast::<__m128i>());
+            _mm256_storeu_si256(
+                out_ptr.add(i).cast::<__m256i>(),
+                _mm256_slli_epi16(_mm256_cvtepu8_epi16(lo), 2),
+            );
+            _mm256_storeu_si256(
+                out_ptr.add(i + 16).cast::<__m256i>(),
+                _mm256_slli_epi16(_mm256_cvtepu8_epi16(hi), 2),
+            );
+            i += 32;
+        }
+        while i < len {
+            *out_ptr.add(i) = (u16::from(*in_ptr.add(i))) << 2;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(target_feature = "avx512bw")]
+#[target_feature(enable = "avx512bw")]
+unsafe fn conv_to_10bit_avx512(input: &[u8], output: &mut [u8]) {
+    use std::arch::x86_64::{
+        __m256i, __m512i, _mm256_loadu_si256, _mm512_cvtepu8_epi16, _mm512_slli_epi16,
+        _mm512_storeu_si512,
+    };
+    let len = input.len();
+    let mut i = 0;
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr().cast::<u16>();
+    unsafe {
+        while i + 64 <= len {
+            let lo = _mm256_loadu_si256(in_ptr.add(i).cast::<__m256i>());
+            let hi = _mm256_loadu_si256(in_ptr.add(i + 32).cast::<__m256i>());
+            _mm512_storeu_si512(
+                out_ptr.add(i).cast::<__m512i>(),
+                _mm512_slli_epi16(_mm512_cvtepu8_epi16(lo), 2),
+            );
+            _mm512_storeu_si512(
+                out_ptr.add(i + 32).cast::<__m512i>(),
+                _mm512_slli_epi16(_mm512_cvtepu8_epi16(hi), 2),
+            );
+            i += 64;
+        }
+        while i < len {
+            *out_ptr.add(i) = (u16::from(*in_ptr.add(i))) << 2;
+            i += 1;
+        }
+    }
 }
 
 #[inline]
@@ -2054,7 +2132,6 @@ pub fn nv12_to_10bit(input: &[u8], output: &mut [u8], w: usize, h: usize) {
             input.get_unchecked(..y_in),
             from_raw_parts_mut(output.as_mut_ptr(), y_out),
         );
-        #[expect(clippy::cast_ptr_alignment)]
         let chroma = from_raw_parts_mut(output.as_mut_ptr().add(y_out).cast::<u16>(), uv_plane * 2);
         let (u_dst, v_dst) = chroma.split_at_mut(uv_plane);
         deinterleave_nv12_row_to_10bit(input.get_unchecked(y_in..), u_dst, v_dst);
@@ -2165,7 +2242,6 @@ pub fn extr_hw_nv12_crop_to10(frame: *const VidFrame, output: &mut [u8], cc: &Cr
 }
 
 #[inline]
-#[expect(clippy::cast_ptr_alignment)]
 pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, output: &mut [u8], w: usize, h: usize) {
     unsafe {
         let f = &*frame;
@@ -2227,7 +2303,6 @@ pub fn extr_hw_p010_raw(frame: *const VidFrame, output: &mut [u8], inf: &VidInf)
     extr_hw_p010_raw_wh(frame, output, inf.width as usize, inf.height as usize);
 }
 
-#[expect(clippy::cast_ptr_alignment)]
 pub fn extr_hw_p010_raw_crop(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
