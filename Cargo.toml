@@ -12,7 +12,7 @@ keywords = ["av1", "video", "multimedia", "encoding", "quality", "chunking"]
 categories = ["multimedia::video", "command-line-utilities"]
 
 [features]
-default = [ "static", "vship" ]
+default = [ "vship" ]
 static = []
 vship = []
 
