@@ -30,6 +30,7 @@ install_deps() {
         esac
 
         command -v rustup > /dev/null 2>&1 && {
+                rustup-init || true
                 rustup toolchain install nightly
                 rustup default nightly
                 rustup update
@@ -834,9 +835,6 @@ main() {
                 static_notq)
                         mode_choice=3
                         ;;
-                dynamic_notq)
-                        mode_choice=4
-                        ;;
                 "") ;;
                 *)
                         echo -e "Unknown preset: $preset"
@@ -844,7 +842,6 @@ main() {
                         echo "  static_tq"
                         echo "  dynamic_tq"
                         echo "  static_notq"
-                        echo "  dynamic_notq"
                         exit 1
                         ;;
         esac
@@ -857,7 +854,7 @@ main() {
 
         BUILD_DESCS=(
                 "Clone and compile ${G}decoder${P} libraries, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically (you need to have the static library for ${G}vship${P} yourself)."
-                "Build ${G}opus${P}, ${G}SVT-AV1${P} and compile ${G}xav${P} by using ${G}vship${P} libraries from your system."
+                "Clone and compile ${G}decoder${P} libraries, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; by using dynamic ${G}vship${P} library from your system."
                 "Clone and compile ${G}decoder${P} libraries, ${G}opus${P}, ${G}SVT-AV1${P} and ${G}xav${P}; all statically without TQ."
         )
 
@@ -881,23 +878,18 @@ main() {
         case "${mode_choice}" in
                 1)
                         config_file=".cargo/config.toml.static"
-                        cargo_features="--no-default-features --features static,vship"
+                        cargo_features="--no-default-features --features vship"
                         build_static=true
                         ;;
                 2)
-                        config_file=".cargo/config.toml.dynamic"
+                        config_file=".cargo/config.toml.static"
                         cargo_features="--no-default-features --features vship"
                         build_static=false
                         ;;
                 3)
                         config_file=".cargo/config.toml.static"
-                        cargo_features="--no-default-features --features static"
-                        build_static=true
-                        ;;
-                4)
-                        config_file=".cargo/config.toml.dynamic_notq"
                         cargo_features="--no-default-features"
-                        build_static=false
+                        build_static=true
                         ;;
         esac
 
@@ -942,13 +934,9 @@ main() {
 
         build_svtav1
 
-        [[ "${build_static}" == true ]] && {
-                loginf b "Starting static build process"
-
-                build_dav1d
-                build_vulkan
-                build_ffmpeg
-        }
+        build_dav1d
+        build_vulkan
+        build_ffmpeg
 
         cd "${XAV_DIR}"
 

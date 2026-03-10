@@ -28,6 +28,7 @@ const AV_FRAME_DATA_MASTERING_DISPLAY_METADATA: c_int = 11;
 const AV_FRAME_DATA_CONTENT_LIGHT_LEVEL: c_int = 14;
 const AV_PIX_FMT_YUV420P10LE: c_int = 62;
 const AV_HWDEVICE_TYPE_VULKAN: c_int = 11;
+const AV_CODEC_ID_AV1: c_int = 225;
 const HW_DEVICE_CTX_OFFSET: usize = 560;
 
 #[repr(C)]
@@ -48,7 +49,7 @@ pub struct AVChannelLayout {
 #[repr(C)]
 pub struct AVCodecParameters {
     pub codec_type: c_int,
-    _codec_id: c_int,
+    codec_id: c_int,
     _codec_tag: u32,
     _extradata: *mut u8,
     _extradata_size: c_int,
@@ -261,6 +262,7 @@ unsafe extern "C" {
     fn av_hwframe_transfer_data(dst: *mut VidFrame, src: *const VidFrame, flags: c_int) -> c_int;
     fn av_buffer_ref(buf: *mut c_void) -> *mut c_void;
     fn av_buffer_unref(buf: *mut *mut c_void);
+    fn avcodec_find_decoder_by_name(name: *const c_char) -> *const c_void;
 }
 
 const AV_LOG_ERROR: c_int = 16;
@@ -477,6 +479,14 @@ impl VideoDecoder {
 
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
+
+            if par.codec_id == AV_CODEC_ID_AV1 {
+                let native = avcodec_find_decoder_by_name(c"av1".as_ptr());
+                if !native.is_null() {
+                    dec = native;
+                }
+            }
+
             let stream_tb = (*stream).time_base;
             let fps = (*stream).avg_frame_rate;
 
@@ -2044,6 +2054,7 @@ pub fn nv12_to_10bit(input: &[u8], output: &mut [u8], w: usize, h: usize) {
             input.get_unchecked(..y_in),
             from_raw_parts_mut(output.as_mut_ptr(), y_out),
         );
+        #[expect(clippy::cast_ptr_alignment)]
         let chroma = from_raw_parts_mut(output.as_mut_ptr().add(y_out).cast::<u16>(), uv_plane * 2);
         let (u_dst, v_dst) = chroma.split_at_mut(uv_plane);
         deinterleave_nv12_row_to_10bit(input.get_unchecked(y_in..), u_dst, v_dst);
