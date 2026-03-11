@@ -1,4 +1,6 @@
+#[cfg(target_feature = "avx512bw")]
 const Z: i8 = 0x80u8 as i8;
+#[cfg(target_feature = "avx512bw")]
 const PACK_MASK: u64 = 0xFF_FFFF_FFFF;
 
 #[cfg(target_feature = "avx512bw")]
