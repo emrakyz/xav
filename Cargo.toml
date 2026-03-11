@@ -17,7 +17,7 @@ static = []
 vship = []
 
 [dependencies]
-libc = "0.2.182"
+libc = "0.2.183"
 crossbeam-channel = "0.5.15"
 av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", default-features = false, features = ["asm", "static_simd"] }
 av1-grain = { version = "0.4.1", default-features = false, features = ["create", "parse"] }
@@ -51,6 +51,7 @@ cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
 cast_sign_loss = "allow"
 cast_precision_loss = "allow"
+cast_ptr_alignment = "allow"
 
 # RESTRICTION LINTS can not be enabled as a group
 unwrap_used = "deny"

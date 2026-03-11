@@ -39,6 +39,7 @@ mod opus;
 pub mod pipeline;
 mod progs;
 mod scd;
+mod simd;
 mod svt;
 #[cfg(feature = "vship")]
 mod tq;
