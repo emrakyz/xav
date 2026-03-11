@@ -69,21 +69,10 @@ pub fn detect_crop(
     };
 
     for &frame_idx in &frame_indices {
-        dec.seek_to(frame_idx);
+        dec.seek_near(frame_idx);
         let frame = dec.frame_ref();
         if let Some(crop) = detect_frame_crop(frame, inf, config.min_black_pixels) {
-            if crop.top < best.top {
-                best.top = crop.top;
-            }
-            if crop.bottom < best.bottom {
-                best.bottom = crop.bottom;
-            }
-            if crop.left < best.left {
-                best.left = crop.left;
-            }
-            if crop.right < best.right {
-                best.right = crop.right;
-            }
+            update_best(&mut best, crop);
             if best.top <= 1 && best.bottom <= 1 && best.left <= 1 && best.right <= 1 {
                 return Ok(CropResult::no_crop());
             }
@@ -100,6 +89,22 @@ pub fn detect_crop(
         left: prev_multiple_of_2(best.left),
         right: prev_multiple_of_2(best.right),
     })
+}
+
+#[inline]
+const fn update_best(best: &mut CropResult, crop: CropResult) {
+    if crop.top < best.top {
+        best.top = crop.top;
+    }
+    if crop.bottom < best.bottom {
+        best.bottom = crop.bottom;
+    }
+    if crop.left < best.left {
+        best.left = crop.left;
+    }
+    if crop.right < best.right {
+        best.right = crop.right;
+    }
 }
 
 fn calculate_sample_frames(total_frames: usize, sample_count: usize) -> Vec<usize> {
