@@ -7,6 +7,10 @@ use std::{
     thread::available_parallelism,
 };
 
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+use crate::simd::{conv_to_10bit_avx2, pack_10bit_avx2, unpack_10bit_avx2};
+#[cfg(target_feature = "avx512bw")]
+use crate::simd::{conv_to_10bit_avx512, pack_10bit_avx512, unpack_10bit_avx512};
 use crate::{
     Xerr,
     decode::CropCalc,
@@ -1096,14 +1100,9 @@ pub fn conv_to_10bit(input: &[u8], output: &mut [u8]) {
     }
     #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
     unsafe {
-        conv_to_10bit_avx2(input, output)
+        conv_to_10bit_avx2(input, output);
     }
     #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
-    conv_to_10bit_scalar(input, output);
-}
-
-#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
-fn conv_to_10bit_scalar(input: &[u8], output: &mut [u8]) {
     input
         .iter()
         .zip(output.chunks_exact_mut(2))
@@ -1111,70 +1110,6 @@ fn conv_to_10bit_scalar(input: &[u8], output: &mut [u8]) {
             let pixel_10bit = (u16::from(pixel) << 2).to_le_bytes();
             out_chunk.copy_from_slice(&pixel_10bit);
         });
-}
-
-#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
-#[target_feature(enable = "avx2")]
-unsafe fn conv_to_10bit_avx2(input: &[u8], output: &mut [u8]) {
-    use std::arch::x86_64::{
-        __m128i, __m256i, _mm_loadu_si128, _mm256_cvtepu8_epi16, _mm256_slli_epi16,
-        _mm256_storeu_si256,
-    };
-    let len = input.len();
-    let mut i = 0;
-    let in_ptr = input.as_ptr();
-    let out_ptr = output.as_mut_ptr().cast::<u16>();
-    unsafe {
-        while i + 32 <= len {
-            let lo = _mm_loadu_si128(in_ptr.add(i).cast::<__m128i>());
-            let hi = _mm_loadu_si128(in_ptr.add(i + 16).cast::<__m128i>());
-            _mm256_storeu_si256(
-                out_ptr.add(i).cast::<__m256i>(),
-                _mm256_slli_epi16(_mm256_cvtepu8_epi16(lo), 2),
-            );
-            _mm256_storeu_si256(
-                out_ptr.add(i + 16).cast::<__m256i>(),
-                _mm256_slli_epi16(_mm256_cvtepu8_epi16(hi), 2),
-            );
-            i += 32;
-        }
-        while i < len {
-            *out_ptr.add(i) = (u16::from(*in_ptr.add(i))) << 2;
-            i += 1;
-        }
-    }
-}
-
-#[cfg(target_feature = "avx512bw")]
-#[target_feature(enable = "avx512bw")]
-unsafe fn conv_to_10bit_avx512(input: &[u8], output: &mut [u8]) {
-    use std::arch::x86_64::{
-        __m256i, __m512i, _mm256_loadu_si256, _mm512_cvtepu8_epi16, _mm512_slli_epi16,
-        _mm512_storeu_si512,
-    };
-    let len = input.len();
-    let mut i = 0;
-    let in_ptr = input.as_ptr();
-    let out_ptr = output.as_mut_ptr().cast::<u16>();
-    unsafe {
-        while i + 64 <= len {
-            let lo = _mm256_loadu_si256(in_ptr.add(i).cast::<__m256i>());
-            let hi = _mm256_loadu_si256(in_ptr.add(i + 32).cast::<__m256i>());
-            _mm512_storeu_si512(
-                out_ptr.add(i).cast::<__m512i>(),
-                _mm512_slli_epi16(_mm512_cvtepu8_epi16(lo), 2),
-            );
-            _mm512_storeu_si512(
-                out_ptr.add(i + 32).cast::<__m512i>(),
-                _mm512_slli_epi16(_mm512_cvtepu8_epi16(hi), 2),
-            );
-            i += 64;
-        }
-        while i < len {
-            *out_ptr.add(i) = (u16::from(*in_ptr.add(i))) << 2;
-            i += 1;
-        }
-    }
 }
 
 #[inline]
@@ -1199,6 +1134,15 @@ pub const fn unpack_4_pix_10bit(input: [u8; 5], output: &mut [u8; 8]) {
 }
 
 pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
+    #[cfg(target_feature = "avx512bw")]
+    unsafe {
+        pack_10bit_avx512(input.as_ptr(), output.as_mut_ptr(), input.len());
+    }
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+    unsafe {
+        pack_10bit_avx2(input.as_ptr(), output.as_mut_ptr(), input.len());
+    }
+    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
     input
         .chunks_exact(8)
         .zip(output.chunks_exact_mut(5))
@@ -1210,6 +1154,15 @@ pub fn pack_10bit(input: &[u8], output: &mut [u8]) {
 }
 
 pub fn unpack_10bit(input: &[u8], output: &mut [u8], _w: usize, _h: usize) {
+    #[cfg(target_feature = "avx512bw")]
+    unsafe {
+        unpack_10bit_avx512(input.as_ptr(), output.as_mut_ptr(), input.len());
+    }
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+    unsafe {
+        unpack_10bit_avx2(input.as_ptr(), output.as_mut_ptr(), input.len());
+    }
+    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
     input
         .chunks_exact(5)
         .zip(output.chunks_exact_mut(8))
