@@ -432,8 +432,13 @@ fn dec_hw_p010_pack(
     dec.skip_to(ch.start);
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
+    let mut actual = len;
     for i in 0..len {
         let frame = dec.decode_next();
+        if dec.is_eof() {
+            actual = eof_truncate(&mut dat, i, fsz);
+            break;
+        }
         extr_hw_p010_raw(frame, raw_buf, inf);
         if w.is_multiple_of(8) {
             let y_raw = (w as usize * h as usize) * 2;
@@ -459,7 +464,7 @@ fn dec_hw_p010_pack(
             );
         }
     }
-    WorkPkg::new(ch.clone(), dat, len, w, h)
+    WorkPkg::new(ch.clone(), dat, actual, w, h)
 }
 
 #[inline]
@@ -475,8 +480,13 @@ fn dec_hw_p010_crop_pack(
     dec.skip_to(ch.start);
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
+    let mut actual = len;
     for i in 0..len {
         let frame = dec.decode_next();
+        if dec.is_eof() {
+            actual = eof_truncate(&mut dat, i, fsz);
+            break;
+        }
         extr_hw_p010_raw_crop(frame, raw_buf, cc);
         if w.is_multiple_of(8) {
             let y_raw = (w as usize * h as usize) * 2;
@@ -502,7 +512,13 @@ fn dec_hw_p010_crop_pack(
             );
         }
     }
-    WorkPkg::new(ch.clone(), dat, len, w, h)
+    WorkPkg::new(ch.clone(), dat, actual, w, h)
+}
+
+#[cold]
+fn eof_truncate(dat: &mut Vec<u8>, i: usize, fsz: usize) -> usize {
+    dat.truncate(i * fsz);
+    i
 }
 
 macro_rules! dec_linear {
@@ -519,11 +535,16 @@ macro_rules! dec_linear {
             dec.skip_to(ch.start);
             let len = ch.end - ch.start;
             let mut dat = vec![0u8; len * fsz];
+            let mut actual = len;
             for i in 0..len {
                 let frame = dec.decode_next();
+                if dec.is_eof() {
+                    actual = eof_truncate(&mut dat, i, fsz);
+                    break;
+                }
                 $extr_fn(frame, &mut dat[i * fsz..(i + 1) * fsz], $ctx_arg);
             }
-            WorkPkg::new(ch.clone(), dat, len, w, h)
+            WorkPkg::new(ch.clone(), dat, actual, w, h)
         }
     };
 }
@@ -591,12 +612,17 @@ fn dec_8_crop_stride(
     dec.skip_to(ch.start);
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
+    let mut actual = len;
     for i in 0..len {
         let frame = dec.decode_next();
+        if dec.is_eof() {
+            actual = eof_truncate(&mut dat, i, fsz);
+            break;
+        }
         extr_8bit(frame, buf, inf);
         cc.crop(buf, &mut dat[i * fsz..(i + 1) * fsz]);
     }
-    WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
+    WorkPkg::new(ch.clone(), dat, actual, cc.new_w, cc.new_h)
 }
 
 pub fn decode_pipe(

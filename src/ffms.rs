@@ -88,7 +88,7 @@ pub struct AVStream {
     pub codecpar: *mut AVCodecParameters,
     _priv_data: *mut c_void,
     pub time_base: AVRational,
-    _start_time: i64,
+    pub start_time: i64,
     pub duration: i64,
     nb_frames: i64,
     _disposition: c_int,
@@ -180,7 +180,7 @@ struct AVContentLightMetadata {
 #[repr(C)]
 pub struct AVPacket {
     _buf: *mut c_void,
-    _pts: i64,
+    pub pts: i64,
     _dts: i64,
     _data: *mut u8,
     _size: c_int,
@@ -553,7 +553,7 @@ impl VideoDecoder {
                 }
                 if ret == AVERROR_EOF {
                     self.eof = true;
-                    return self.frame;
+                    return self.frame.cast();
                 }
 
                 loop {
@@ -684,6 +684,41 @@ fn count_video_packets(fmt_ctx: *mut AVFormatContext, stream_idx: c_int) -> usiz
     }
 }
 
+fn frames_from_last_pts(
+    fmt_ctx: *mut AVFormatContext,
+    idx: c_int,
+    dur: i64,
+    start: i64,
+    tb: AVRational,
+    fps: AVRational,
+) -> usize {
+    unsafe {
+        av_seek_frame(
+            fmt_ctx,
+            idx,
+            if dur > 0 { dur } else { i64::MAX / 2 },
+            AVSEEK_FLAG_BACKWARD,
+        );
+        let mut pkt = av_packet_alloc();
+        let mut max_pts: i64 = -1;
+        while av_read_frame(fmt_ctx, pkt) >= 0 {
+            if (*pkt).stream_index == idx {
+                max_pts = max_pts.max((*pkt).pts);
+            }
+            av_packet_unref(pkt);
+        }
+        av_packet_free(addr_of_mut!(pkt));
+        av_seek_frame(fmt_ctx, idx, 0, AVSEEK_FLAG_BACKWARD);
+        if max_pts < 0 {
+            return count_video_packets(fmt_ctx, idx);
+        }
+        let origin = if start >= 0 { start } else { 0 };
+        let num = (max_pts - origin) * i64::from(tb.num) * i64::from(fps.num);
+        let den = i64::from(tb.den) * i64::from(fps.den);
+        ((num + den / 2) / den + 1) as usize
+    }
+}
+
 fn decode_first_frame(
     fmt_ctx: *mut AVFormatContext,
     dec: *const c_void,
@@ -774,12 +809,20 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
         let fps_num = fps.num.cast_unsigned();
         let fps_den = fps.den.cast_unsigned();
 
-        let frames = if stream.nb_frames > 0 {
-            stream.nb_frames as usize
-        } else if stream.duration > 0 && fps.den > 0 {
-            (stream.duration as f64 * f64::from(stream.time_base.num) * f64::from(fps.num)
-                / (f64::from(stream.time_base.den) * f64::from(fps.den)))
-            .round() as usize
+        let frames = if fps.den > 0 {
+            let from_pts = frames_from_last_pts(
+                fmt_ctx,
+                idx,
+                stream.duration,
+                stream.start_time,
+                stream.time_base,
+                fps,
+            );
+            if stream.nb_frames > 0 {
+                from_pts.min(stream.nb_frames as usize)
+            } else {
+                from_pts
+            }
         } else {
             count_video_packets(fmt_ctx, idx)
         };
