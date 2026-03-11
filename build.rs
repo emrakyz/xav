@@ -39,22 +39,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=vulkan");
     println!("cargo:rustc-link-lib=static=dav1d");
 
-    #[cfg(feature = "vship")]
-    {
-        let vship_dir = format!("{home}/.local/src/Vship");
-        if Path::new(&format!("{vship_dir}/libvship.a")).exists() {
-            println!("cargo:rustc-link-search=native={vship_dir}");
-            println!("cargo:rustc-link-lib=static=vship");
-        } else {
-            println!("cargo:rustc-link-lib=dylib=vship");
-            return;
-        }
-        println!("cargo:rustc-link-lib=static=stdc++");
-        println!("cargo:rustc-link-lib=static=cudart_static");
-        println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
-        println!("cargo:rustc-link-lib=dylib=cuda");
-    }
-
     find_static_lib(
         &[format!("{home}/.local/src/opus/install/lib")],
         "libopus.a",
@@ -71,4 +55,20 @@ fn main() {
         "libSvtAv1Enc.a",
     );
     println!("cargo:rustc-link-lib=static=SvtAv1Enc");
+
+    #[cfg(feature = "vship")]
+    {
+        let vship_dir = format!("{home}/.local/src/Vship");
+        if Path::new(&format!("{vship_dir}/libvship.a")).exists() {
+            println!("cargo:rustc-link-search=native={vship_dir}");
+            println!("cargo:rustc-link-lib=static=vship");
+        } else {
+            println!("cargo:rustc-link-lib=dylib=vship");
+            return;
+        }
+        println!("cargo:rustc-link-lib=static=stdc++");
+        println!("cargo:rustc-link-lib=static=cudart_static");
+        println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
+        println!("cargo:rustc-link-lib=dylib=cuda");
+    }
 }
