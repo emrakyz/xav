@@ -129,7 +129,7 @@ pub struct VidFrame {
     _pict_type: c_int,
     _sample_aspect_ratio: AVRational,
     _pad0: [u8; 4],
-    pts: i64,
+    _pts: i64,
     _pkt_dts: i64,
     _time_base: AVRational,
     _quality: c_int,
@@ -149,6 +149,7 @@ pub struct VidFrame {
     color_trc: c_int,
     colorspace: c_int,
     chroma_location: c_int,
+    best_effort_timestamp: i64,
 }
 
 #[repr(C)]
@@ -385,8 +386,8 @@ pub struct VideoDecoder {
     next_frame: usize,
     eof: bool,
     hw: bool,
-    stream_tb: AVRational,
-    fps: AVRational,
+    ts_mul: i64,
+    ts_div: i64,
 }
 
 unsafe impl Send for VideoDecoder {}
@@ -413,8 +414,7 @@ impl VideoDecoder {
 
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
-            let stream_tb = (*stream).time_base;
-            let fps = (*stream).avg_frame_rate;
+            let (ts_mul, ts_div) = ts_factors((*stream).time_base, (*stream).avg_frame_rate);
 
             let mut codec_ctx = avcodec_alloc_context3(dec);
             if codec_ctx.is_null() {
@@ -442,8 +442,8 @@ impl VideoDecoder {
                 next_frame: 0,
                 eof: false,
                 hw: false,
-                stream_tb,
-                fps,
+                ts_mul,
+                ts_div,
             })
         }
     }
@@ -491,8 +491,7 @@ impl VideoDecoder {
                 }
             }
 
-            let stream_tb = (*stream).time_base;
-            let fps = (*stream).avg_frame_rate;
+            let (ts_mul, ts_div) = ts_factors((*stream).time_base, (*stream).avg_frame_rate);
 
             let mut codec_ctx = avcodec_alloc_context3(dec);
             if codec_ctx.is_null() {
@@ -523,8 +522,8 @@ impl VideoDecoder {
                 next_frame: 0,
                 eof: false,
                 hw: true,
-                stream_tb,
-                fps,
+                ts_mul,
+                ts_div,
             })
         }
     }
@@ -580,38 +579,19 @@ impl VideoDecoder {
         }
     }
 
+    #[inline]
     fn pts_to_frame(&self, pts: i64) -> usize {
-        if self.fps.num > 0 && self.fps.den > 0 {
-            let num = pts * i64::from(self.stream_tb.num) * i64::from(self.fps.num);
-            let den = i64::from(self.stream_tb.den) * i64::from(self.fps.den);
-            ((num + den / 2) / den) as usize
-        } else {
-            pts as usize
-        }
+        ((pts * self.ts_div + self.ts_mul / 2) / self.ts_mul) as usize
     }
 
-    pub fn seek_to(&mut self, frame_idx: usize) {
-        if self.next_frame == frame_idx + 1 {
-            return;
-        }
-        if frame_idx < self.next_frame || self.next_frame == 0 || frame_idx - self.next_frame > 150
-        {
-            unsafe {
-                let ts = if self.fps.num > 0 && self.fps.den > 0 {
-                    frame_idx as i64 * i64::from(self.stream_tb.den) * i64::from(self.fps.den)
-                        / (i64::from(self.stream_tb.num) * i64::from(self.fps.num))
-                } else {
-                    frame_idx as i64
-                };
-                av_seek_frame(self.fmt_ctx, self.stream_idx, ts, AVSEEK_FLAG_BACKWARD);
-                avcodec_flush_buffers(self.codec_ctx);
-                self.eof = false;
-                self.decode_next();
-                self.next_frame = self.pts_to_frame((*self.frame).pts) + 1;
-            }
-        }
-        while self.next_frame <= frame_idx && !self.eof {
+    pub fn seek_near(&mut self, frame_idx: usize) {
+        unsafe {
+            let ts = frame_idx as i64 * self.ts_mul / self.ts_div;
+            av_seek_frame(self.fmt_ctx, self.stream_idx, ts, AVSEEK_FLAG_BACKWARD);
+            avcodec_flush_buffers(self.codec_ctx);
+            self.eof = false;
             self.decode_next();
+            self.next_frame = self.pts_to_frame((*self.frame).best_effort_timestamp) + 1;
         }
     }
 
@@ -620,19 +600,7 @@ impl VideoDecoder {
             return;
         }
         if frame_idx < self.next_frame || frame_idx - self.next_frame > 150 {
-            unsafe {
-                let ts = if self.fps.num > 0 && self.fps.den > 0 {
-                    frame_idx as i64 * i64::from(self.stream_tb.den) * i64::from(self.fps.den)
-                        / (i64::from(self.stream_tb.num) * i64::from(self.fps.num))
-                } else {
-                    frame_idx as i64
-                };
-                av_seek_frame(self.fmt_ctx, self.stream_idx, ts, AVSEEK_FLAG_BACKWARD);
-                avcodec_flush_buffers(self.codec_ctx);
-                self.eof = false;
-                self.decode_next();
-                self.next_frame = self.pts_to_frame((*self.frame).pts) + 1;
-            }
+            self.seek_near(frame_idx);
         }
         while self.next_frame < frame_idx && !self.eof {
             self.decode_next();
@@ -684,6 +652,14 @@ fn count_video_packets(fmt_ctx: *mut AVFormatContext, stream_idx: c_int) -> usiz
     }
 }
 
+const fn ts_factors(tb: AVRational, fps: AVRational) -> (i64, i64) {
+    if fps.num > 0 && fps.den > 0 {
+        (tb.den as i64 * fps.den as i64, tb.num as i64 * fps.num as i64)
+    } else {
+        (1, 1)
+    }
+}
+
 fn frames_from_last_pts(
     fmt_ctx: *mut AVFormatContext,
     idx: c_int,
@@ -693,16 +669,25 @@ fn frames_from_last_pts(
     fps: AVRational,
 ) -> usize {
     unsafe {
-        av_seek_frame(
-            fmt_ctx,
-            idx,
-            if dur > 0 { dur } else { i64::MAX / 2 },
-            AVSEEK_FLAG_BACKWARD,
-        );
+        let target = if dur > 0 { dur } else { i64::MAX / 2 };
+        if av_seek_frame(fmt_ctx, idx, target, AVSEEK_FLAG_BACKWARD) < 0 {
+            av_seek_frame(fmt_ctx, idx, 0, AVSEEK_FLAG_BACKWARD);
+            return 0;
+        }
         let mut pkt = av_packet_alloc();
         let mut max_pts: i64 = -1;
+        let mut seek_verified = dur <= 0;
         while av_read_frame(fmt_ctx, pkt) >= 0 {
             if (*pkt).stream_index == idx {
+                if !seek_verified {
+                    seek_verified = true;
+                    if (*pkt).pts < dur / 2 {
+                        av_packet_unref(pkt);
+                        av_packet_free(addr_of_mut!(pkt));
+                        av_seek_frame(fmt_ctx, idx, 0, AVSEEK_FLAG_BACKWARD);
+                        return 0;
+                    }
+                }
                 max_pts = max_pts.max((*pkt).pts);
             }
             av_packet_unref(pkt);
@@ -710,7 +695,7 @@ fn frames_from_last_pts(
         av_packet_free(addr_of_mut!(pkt));
         av_seek_frame(fmt_ctx, idx, 0, AVSEEK_FLAG_BACKWARD);
         if max_pts < 0 {
-            return count_video_packets(fmt_ctx, idx);
+            return 0;
         }
         let origin = if start >= 0 { start } else { 0 };
         let num = (max_pts - origin) * i64::from(tb.num) * i64::from(fps.num);
@@ -809,7 +794,9 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
         let fps_num = fps.num.cast_unsigned();
         let fps_den = fps.den.cast_unsigned();
 
-        let frames = if fps.den > 0 {
+        let frames = if stream.nb_frames > 0 {
+            stream.nb_frames as usize
+        } else if fps.den > 0 {
             let from_pts = frames_from_last_pts(
                 fmt_ctx,
                 idx,
@@ -818,10 +805,10 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
                 stream.time_base,
                 fps,
             );
-            if stream.nb_frames > 0 {
-                from_pts.min(stream.nb_frames as usize)
-            } else {
+            if from_pts > 0 {
                 from_pts
+            } else {
+                count_video_packets(fmt_ctx, idx)
             }
         } else {
             count_video_packets(fmt_ctx, idx)
