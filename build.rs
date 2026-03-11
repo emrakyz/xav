@@ -47,6 +47,7 @@ fn main() {
             println!("cargo:rustc-link-lib=static=vship");
         } else {
             println!("cargo:rustc-link-lib=dylib=vship");
+            return;
         }
         println!("cargo:rustc-link-lib=static=stdc++");
         println!("cargo:rustc-link-lib=static=cudart_static");
