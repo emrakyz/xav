@@ -8,9 +8,11 @@ use std::{
 };
 
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
-use crate::simd::{conv_to_10bit_avx2, pack_10bit_avx2, unpack_10bit_avx2};
+use crate::simd::{conv_to_10bit_avx2, deinterleave_p010_avx2, pack_10bit_avx2, unpack_10bit_avx2};
 #[cfg(target_feature = "avx512bw")]
-use crate::simd::{conv_to_10bit_avx512, pack_10bit_avx512, unpack_10bit_avx512};
+use crate::simd::{
+    conv_to_10bit_avx512, deinterleave_p010_avx512, pack_10bit_avx512, unpack_10bit_avx512,
+};
 use crate::{
     Xerr,
     decode::CropCalc,
@@ -2077,6 +2079,25 @@ fn deinterleave_nv12_row(src: &[u8], u_dst: &mut [u8], v_dst: &mut [u8]) {
 }
 
 fn deinterleave_p010_row(src: &[u16], u_dst: &mut [u16], v_dst: &mut [u16]) {
+    #[cfg(target_feature = "avx512bw")]
+    unsafe {
+        deinterleave_p010_avx512(
+            src.as_ptr(),
+            u_dst.as_mut_ptr(),
+            v_dst.as_mut_ptr(),
+            u_dst.len(),
+        );
+    }
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+    unsafe {
+        deinterleave_p010_avx2(
+            src.as_ptr(),
+            u_dst.as_mut_ptr(),
+            v_dst.as_mut_ptr(),
+            u_dst.len(),
+        );
+    }
+    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
     src.chunks_exact(2)
         .zip(u_dst.iter_mut().zip(v_dst.iter_mut()))
         .for_each(|(uv, (u, v))| unsafe {
