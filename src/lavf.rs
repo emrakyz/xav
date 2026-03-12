@@ -97,6 +97,12 @@ impl AudioDecoder {
 
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
+
+            if par.format < 0 {
+                av_opt_set_int(fmt_ctx.cast(), c"probesize".as_ptr(), 0x40000, 1);
+                avformat_find_stream_info(fmt_ctx, null_mut());
+            }
+
             let channels = par.ch_layout.nb_channels as u32;
 
             let total_samples = if (*stream).duration > 0 && (*stream).time_base.den > 0 {
