@@ -168,6 +168,82 @@ pub unsafe fn conv_to_10bit_avx512(input: &[u8], output: &mut [u8]) {
     }
 }
 
+#[cfg(target_feature = "avx512bw")]
+#[target_feature(enable = "avx512f,avx512bw")]
+pub unsafe fn deinterleave_p010_avx512(
+    src: *const u16,
+    u_dst: *mut u16,
+    v_dst: *mut u16,
+    pairs: usize,
+) {
+    use std::arch::x86_64::{
+        _mm512_loadu_si512, _mm512_permutex2var_epi16, _mm512_set_epi16, _mm512_srli_epi16,
+        _mm512_storeu_si512,
+    };
+    unsafe {
+        let ui = _mm512_set_epi16(
+            62, 60, 58, 56, 54, 52, 50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20,
+            18, 16, 14, 12, 10, 8, 6, 4, 2, 0,
+        );
+        let vi = _mm512_set_epi16(
+            63, 61, 59, 57, 55, 53, 51, 49, 47, 45, 43, 41, 39, 37, 35, 33, 31, 29, 27, 25, 23, 21,
+            19, 17, 15, 13, 11, 9, 7, 5, 3, 1,
+        );
+        let mut i = 0;
+        while i + 32 <= pairs {
+            let a = _mm512_srli_epi16(_mm512_loadu_si512(src.add(i * 2).cast()), 6);
+            let b = _mm512_srli_epi16(_mm512_loadu_si512(src.add(i * 2 + 32).cast()), 6);
+            _mm512_storeu_si512(u_dst.add(i).cast(), _mm512_permutex2var_epi16(a, ui, b));
+            _mm512_storeu_si512(v_dst.add(i).cast(), _mm512_permutex2var_epi16(a, vi, b));
+            i += 32;
+        }
+        while i < pairs {
+            *u_dst.add(i) = *src.add(i * 2) >> 6;
+            *v_dst.add(i) = *src.add(i * 2 + 1) >> 6;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+#[target_feature(enable = "avx2")]
+pub unsafe fn deinterleave_p010_avx2(
+    src: *const u16,
+    u_dst: *mut u16,
+    v_dst: *mut u16,
+    pairs: usize,
+) {
+    use std::arch::x86_64::{
+        _mm_storeu_si128, _mm256_castsi256_si128, _mm256_loadu_si256, _mm256_permute4x64_epi64,
+        _mm256_set_epi8, _mm256_shuffle_epi8, _mm256_srli_epi16,
+    };
+    unsafe {
+        let shuf = _mm256_set_epi8(
+            15, 14, 11, 10, 7, 6, 3, 2, 13, 12, 9, 8, 5, 4, 1, 0, 15, 14, 11, 10, 7, 6, 3, 2, 13,
+            12, 9, 8, 5, 4, 1, 0,
+        );
+        let mut i = 0;
+        while i + 8 <= pairs {
+            let v = _mm256_srli_epi16(_mm256_loadu_si256(src.add(i * 2).cast()), 6);
+            let d = _mm256_shuffle_epi8(v, shuf);
+            _mm_storeu_si128(
+                u_dst.add(i).cast(),
+                _mm256_castsi256_si128(_mm256_permute4x64_epi64(d, 0x08)),
+            );
+            _mm_storeu_si128(
+                v_dst.add(i).cast(),
+                _mm256_castsi256_si128(_mm256_permute4x64_epi64(d, 0x0D)),
+            );
+            i += 8;
+        }
+        while i < pairs {
+            *u_dst.add(i) = *src.add(i * 2) >> 6;
+            *v_dst.add(i) = *src.add(i * 2 + 1) >> 6;
+            i += 1;
+        }
+    }
+}
+
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "avx2")]
 pub unsafe fn conv_to_10bit_avx2(input: &[u8], output: &mut [u8]) {

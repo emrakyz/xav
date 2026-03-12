@@ -826,15 +826,9 @@ main() {
         svt_fork="${2:-}"
 
         case "$preset" in
-                static_tq)
-                        mode_choice=1
-                        ;;
-                dynamic_tq)
-                        mode_choice=2
-                        ;;
-                static_notq)
-                        mode_choice=3
-                        ;;
+                static_tq) mode_choice=1 ;;
+                dynamic_tq) mode_choice=2 ;;
+                static_notq) mode_choice=3 ;;
                 "") ;;
                 *)
                         echo -e "Unknown preset: $preset"
