@@ -392,6 +392,21 @@ pub struct VideoDecoder {
 
 unsafe impl Send for VideoDecoder {}
 
+pub unsafe fn probe_streams(fmt_ctx: *mut AVFormatContext, keep_type: c_int, probesize: i64) {
+    unsafe {
+        let n = (*fmt_ctx).nb_streams as usize;
+        for i in 0..n {
+            let stream = &mut *(*(*fmt_ctx).streams.add(i));
+            if (*stream.codecpar).codec_type != keep_type {
+                stream.discard = 48;
+            }
+        }
+        av_opt_set_int(fmt_ctx.cast(), c"probesize".as_ptr(), probesize, 1);
+        av_opt_set_int(fmt_ctx.cast(), c"analyzeduration".as_ptr(), 0, 1);
+        avformat_find_stream_info(fmt_ctx, null_mut());
+    }
+}
+
 impl VideoDecoder {
     pub fn new(path: &Path, threads: i32) -> Result<Self, Xerr> {
         unsafe {
@@ -402,7 +417,7 @@ impl VideoDecoder {
                 return Err(ff_err("decoder: open failed"));
             }
 
-            avformat_find_stream_info(fmt_ctx, null_mut());
+            probe_streams(fmt_ctx, AVMEDIA_TYPE_VIDEO, 0x8000);
 
             let mut dec: *const c_void = null();
             let idx =
@@ -470,7 +485,7 @@ impl VideoDecoder {
                 return Err(ff_err("decoder: open failed"));
             }
 
-            avformat_find_stream_info(fmt_ctx, null_mut());
+            probe_streams(fmt_ctx, AVMEDIA_TYPE_VIDEO, 0x8000);
 
             let mut dec: *const c_void = null();
             let idx =
@@ -766,19 +781,7 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
             return Err(ff_err("decoder: open failed"));
         }
 
-        let n = (*fmt_ctx).nb_streams as usize;
-        for i in 0..n {
-            let stream = &mut *(*(*fmt_ctx).streams.add(i));
-            if (*stream.codecpar).codec_type != AVMEDIA_TYPE_VIDEO {
-                stream.discard = 48;
-            }
-        }
-
-        let probesize = c"probesize";
-        let analyzeduration = c"analyzeduration";
-        av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 0x8000, 1);
-        av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
-        avformat_find_stream_info(fmt_ctx, null_mut());
+        probe_streams(fmt_ctx, AVMEDIA_TYPE_VIDEO, 0x8000);
 
         let mut dec: *const c_void = null();
         let idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, addr_of_mut!(dec), 0);
@@ -865,20 +868,9 @@ pub fn get_audio_streams(path: &Path) -> Result<Vec<(usize, u32, Option<String>)
             return Err(ff_err("decoder: open failed"));
         }
 
+        probe_streams(fmt_ctx, AVMEDIA_TYPE_AUDIO, 0x8000);
+
         let n = (*fmt_ctx).nb_streams as usize;
-        for i in 0..n {
-            let stream = &mut *(*(*fmt_ctx).streams.add(i));
-            if (*stream.codecpar).codec_type != AVMEDIA_TYPE_AUDIO {
-                stream.discard = 48;
-            }
-        }
-
-        let probesize = c"probesize";
-        let analyzeduration = c"analyzeduration";
-        av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 0x8000, 1);
-        av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
-        avformat_find_stream_info(fmt_ctx, null_mut());
-
         let mut result = Vec::new();
         let lang_key = CString::new("language").unwrap_unchecked();
 

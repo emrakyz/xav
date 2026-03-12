@@ -7,11 +7,10 @@ use std::{
 use crate::{
     error::{Xerr, Xerr::Done},
     ffms::{
-        AVFormatContext, AVPacket, VidFrame, av_find_best_stream, av_frame_alloc, av_frame_free,
-        av_opt_set_int, av_packet_alloc, av_packet_free, av_packet_unref, av_read_frame,
+        self, AVFormatContext, AVPacket, VidFrame, av_find_best_stream, av_frame_alloc,
+        av_frame_free, av_packet_alloc, av_packet_free, av_packet_unref, av_read_frame,
         avcodec_alloc_context3, avcodec_free_context, avcodec_open2, avcodec_parameters_to_context,
-        avcodec_receive_frame, avcodec_send_packet, avformat_close_input,
-        avformat_find_stream_info, avformat_open_input,
+        avcodec_receive_frame, avcodec_send_packet, avformat_close_input, avformat_open_input,
     },
 };
 
@@ -67,19 +66,7 @@ impl AudioDecoder {
                 return Err("lavf: open failed".into());
             }
 
-            let n = (*fmt_ctx).nb_streams as usize;
-            for i in 0..n {
-                let stream = &mut *(*(*fmt_ctx).streams.add(i));
-                if (*stream.codecpar).codec_type != AVMEDIA_TYPE_AUDIO {
-                    stream.discard = 48;
-                }
-            }
-
-            let probesize = c"probesize";
-            let analyzeduration = c"analyzeduration";
-            av_opt_set_int(fmt_ctx.cast(), probesize.as_ptr(), 0x8000, 1);
-            av_opt_set_int(fmt_ctx.cast(), analyzeduration.as_ptr(), 0, 1);
-            avformat_find_stream_info(fmt_ctx, null_mut());
+            ffms::probe_streams(fmt_ctx, AVMEDIA_TYPE_AUDIO, 0x40000);
 
             let mut dec: *const c_void = null();
             let idx = av_find_best_stream(
@@ -97,12 +84,6 @@ impl AudioDecoder {
 
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
-
-            if par.format < 0 {
-                av_opt_set_int(fmt_ctx.cast(), c"probesize".as_ptr(), 0x40000, 1);
-                avformat_find_stream_info(fmt_ctx, null_mut());
-            }
-
             let channels = par.ch_layout.nb_channels as u32;
 
             let total_samples = if (*stream).duration > 0 && (*stream).time_base.den > 0 {
