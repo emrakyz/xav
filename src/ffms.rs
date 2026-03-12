@@ -580,7 +580,7 @@ impl VideoDecoder {
     }
 
     #[inline]
-    fn pts_to_frame(&self, pts: i64) -> usize {
+    const fn pts_to_frame(&self, pts: i64) -> usize {
         ((pts * self.ts_div + self.ts_mul / 2) / self.ts_mul) as usize
     }
 
@@ -654,7 +654,10 @@ fn count_video_packets(fmt_ctx: *mut AVFormatContext, stream_idx: c_int) -> usiz
 
 const fn ts_factors(tb: AVRational, fps: AVRational) -> (i64, i64) {
     if fps.num > 0 && fps.den > 0 {
-        (tb.den as i64 * fps.den as i64, tb.num as i64 * fps.num as i64)
+        (
+            tb.den as i64 * fps.den as i64,
+            tb.num as i64 * fps.num as i64,
+        )
     } else {
         (1, 1)
     }
