@@ -1007,7 +1007,7 @@ const fn packed_row_size(w: usize) -> usize {
     (w * 2 * 5).div_ceil(8).next_multiple_of(5)
 }
 
-pub const fn calc_8bit_size(w: u32, h: u32) -> usize {
+pub const fn calc_8b_size(w: u32, h: u32) -> usize {
     (w * h * 3 / 2) as usize
 }
 
@@ -1025,7 +1025,7 @@ fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usize, 
     }
 }
 
-pub fn extr_8bit(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+pub fn extr_8b(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
     unsafe {
         let f = &*frame;
         let width = inf.width as usize;
@@ -1052,7 +1052,7 @@ pub fn extr_8bit(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
     }
 }
 
-pub const fn extr_8bit_crop_fast(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
+pub const fn extr_8b_crop_fast(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
         let y_sz = cc.new_w as usize * cc.new_h as usize;
@@ -1072,7 +1072,7 @@ pub const fn extr_8bit_crop_fast(frame: *const VidFrame, output: &mut [u8], cc: 
     }
 }
 
-pub fn extr_8bit_crop(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
+pub fn extr_8b_crop(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
         let mut pos = 0;
@@ -1106,7 +1106,7 @@ pub fn extr_8bit_crop(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) 
     }
 }
 
-pub const fn extr_8bit_fast(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+pub const fn extr_8b_fast(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
     unsafe {
         let f = &*frame;
         let width = inf.width as usize;
@@ -1515,7 +1515,7 @@ pub fn extr_10b_pack_stride(frame: *const VidFrame, output: &mut [u8], inf: &Vid
     }
 }
 
-pub fn extr_8bit_stride(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+pub fn extr_8b_stride(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
     unsafe {
         let f = &*frame;
         let width = inf.width as usize;

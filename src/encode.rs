@@ -1328,7 +1328,7 @@ fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
 }
 
 macro_rules! make_send_svt {
-    ($name:ident, $conv_8bit:expr) => {
+    ($name:ident, $conv_8b:expr) => {
         fn $name(
             yuv: &[u8],
             cfg: &EncConfig,
@@ -1392,7 +1392,7 @@ macro_rules! make_send_svt {
                     (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
                 } else {
                     #[allow(clippy::redundant_closure_call)]
-                    ($conv_8bit)(frame, conv_buf, ctx.pipe);
+                    ($conv_8b)(frame, conv_buf, ctx.pipe);
                 }
 
                 in_hdr.pts = i as i64;

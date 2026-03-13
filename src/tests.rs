@@ -6,7 +6,7 @@ use crate::{
     chunk::Chunk,
     decode::decode_chunks,
     encode::get_frame,
-    ffms::{self, VidFrame, VidInf, VideoDecoder, calc_8bit_size, get_vidinf},
+    ffms::{self, VidFrame, VidInf, VideoDecoder, calc_8b_size, get_vidinf},
     pipeline::Pipeline,
     worker::{Semaphore, WorkPkg},
 };
@@ -100,7 +100,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
     let mut decoded_frame = if inf.is_10b {
         vec![0u8; final_w * final_h * 3 / 2 * 2]
     } else {
-        vec![0u8; calc_8bit_size(final_w as u32, final_h as u32)]
+        vec![0u8; calc_8b_size(final_w as u32, final_h as u32)]
     };
 
     for i in 0..10 {
@@ -136,23 +136,23 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
 }
 
 #[test]
-fn roundtrip_8bit_mod8() {
-    test_roundtrip("akiyo_8bit_mod8.mkv", (0, 0));
+fn roundtrip_8b_mod8() {
+    test_roundtrip("akiyo_8b_mod8.mkv", (0, 0));
 }
 
 #[test]
-fn roundtrip_8bit_mod4w_mod8h() {
-    test_roundtrip("akiyo_8bit_mod4w_mod8h.mkv", (0, 0));
+fn roundtrip_8b_mod4w_mod8h() {
+    test_roundtrip("akiyo_8b_mod4w_mod8h.mkv", (0, 0));
 }
 
 #[test]
-fn roundtrip_8bit_mod2w_mod8h() {
-    test_roundtrip("akiyo_8bit_mod2w_mod8h.mkv", (0, 0));
+fn roundtrip_8b_mod2w_mod8h() {
+    test_roundtrip("akiyo_8b_mod2w_mod8h.mkv", (0, 0));
 }
 
 #[test]
-fn roundtrip_8bit_mod2w_mod2h() {
-    test_roundtrip("akiyo_8bit_mod2w_mod2h.mkv", (0, 0));
+fn roundtrip_8b_mod2w_mod2h() {
+    test_roundtrip("akiyo_8b_mod2w_mod2h.mkv", (0, 0));
 }
 
 #[test]
@@ -176,23 +176,23 @@ fn roundtrip_10b_mod2w_mod2h() {
 }
 
 #[test]
-fn roundtrip_8bit_mod8_crop() {
-    test_roundtrip("akiyo_8bit_mod8.mkv", (8, 8));
+fn roundtrip_8b_mod8_crop() {
+    test_roundtrip("akiyo_8b_mod8.mkv", (8, 8));
 }
 
 #[test]
-fn roundtrip_8bit_mod4w_mod8h_crop() {
-    test_roundtrip("akiyo_8bit_mod4w_mod8h.mkv", (8, 8));
+fn roundtrip_8b_mod4w_mod8h_crop() {
+    test_roundtrip("akiyo_8b_mod4w_mod8h.mkv", (8, 8));
 }
 
 #[test]
-fn roundtrip_8bit_mod2w_mod8h_crop() {
-    test_roundtrip("akiyo_8bit_mod2w_mod8h.mkv", (8, 8));
+fn roundtrip_8b_mod2w_mod8h_crop() {
+    test_roundtrip("akiyo_8b_mod2w_mod8h.mkv", (8, 8));
 }
 
 #[test]
-fn roundtrip_8bit_mod2w_mod2h_crop() {
-    test_roundtrip("akiyo_8bit_mod2w_mod2h.mkv", (8, 8));
+fn roundtrip_8b_mod2w_mod2h_crop() {
+    test_roundtrip("akiyo_8b_mod2w_mod2h.mkv", (8, 8));
 }
 
 #[test]
