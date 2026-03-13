@@ -22,7 +22,7 @@ pub unsafe fn pack_10b_avx512(src: *const u8, dst: *mut u8, len: usize) {
         let wmask = PACK_MASK as __mmask64;
         let mut si = 0usize;
         let mut di = 0usize;
-        while si + 64 <= len {
+        for _ in 0..(len / 64) {
             let v = _mm512_loadu_si512(src.add(si).cast());
             let pairs = _mm512_madd_epi16(v, mult);
             let hi = _mm512_srli_epi64(pairs, 12);
@@ -56,7 +56,7 @@ pub unsafe fn unpack_10b_avx512(src: *const u8, dst: *mut u8, len: usize) {
         let m = _mm512_set1_epi16(0x03FF);
         let mut si = 0usize;
         let mut di = 0usize;
-        while si + 40 <= len {
+        for _ in 0..(len / 40) {
             let s = _mm512_permutexvar_epi8(expand, _mm512_loadu_si512(src.add(si).cast()));
             let extracted = _mm512_multishift_epi64_epi8(ctrl, s);
             _mm512_storeu_si512(dst.add(di).cast(), _mm512_and_si512(extracted, m));
@@ -87,7 +87,7 @@ pub unsafe fn pack_10b_avx2(src: *const u8, dst: *mut u8, len: usize) {
         );
         let mut si = 0usize;
         let mut di = 0usize;
-        while si + 32 <= len {
+        for _ in 0..(len / 32) {
             let v = _mm256_loadu_si256(src.add(si).cast());
             let pairs = _mm256_madd_epi16(v, mult);
             let hi = _mm256_srli_epi64(pairs, 12);
@@ -118,7 +118,7 @@ pub unsafe fn unpack_10b_avx2(src: *const u8, dst: *mut u8, len: usize) {
         let m = _mm256_set1_epi64x(0x3FF);
         let mut si = 0usize;
         let mut di = 0usize;
-        while si + 20 <= len {
+        for _ in 0..(len / 20) {
             let lo = _mm_shuffle_epi8(_mm_loadu_si128(src.add(si).cast()), shuf);
             let hi = _mm_shuffle_epi8(_mm_loadu_si128(src.add(si + 10).cast()), shuf);
             let s = _mm256_set_m128i(hi, lo);
@@ -159,21 +159,15 @@ macro_rules! conv_10b_asm {
 pub unsafe fn conv_to_10b_avx512(input: &[u8], output: &mut [u8]) {
     let src = input.as_ptr();
     let dst = output.as_mut_ptr();
-    let len = input.len();
-    let out_ptr = dst.cast::<u16>();
     unsafe {
         let mut off: usize = 0;
-        while off + 320 <= len {
+        for _ in 0..(input.len() / 320) {
             conv_10b_asm!(
                 0, 0; 32, 64; 64, 128; 96, 192; 128, 256;
                 160, 320; 192, 384; 224, 448; 256, 512; 288, 576
                 @ src, dst, off
             );
             off += 320;
-        }
-        while off < len {
-            *out_ptr.add(off) = (u16::from(*src.add(off))) << 2;
-            off += 1;
         }
     }
 }
@@ -195,17 +189,12 @@ pub unsafe fn deint_p010_avx512(src: *const u16, u_dst: *mut u16, v_dst: *mut u1
             19, 17, 15, 13, 11, 9, 7, 5, 3, 1,
         );
         let mut i = 0;
-        while i + 32 <= pairs {
+        for _ in 0..(pairs / 32) {
             let a = _mm512_srli_epi16(_mm512_loadu_si512(src.add(i * 2).cast()), 6);
             let b = _mm512_srli_epi16(_mm512_loadu_si512(src.add(i * 2 + 32).cast()), 6);
             _mm512_storeu_si512(u_dst.add(i).cast(), _mm512_permutex2var_epi16(a, ui, b));
             _mm512_storeu_si512(v_dst.add(i).cast(), _mm512_permutex2var_epi16(a, vi, b));
             i += 32;
-        }
-        while i < pairs {
-            *u_dst.add(i) = *src.add(i * 2) >> 6;
-            *v_dst.add(i) = *src.add(i * 2 + 1) >> 6;
-            i += 1;
         }
     }
 }
@@ -223,7 +212,7 @@ pub unsafe fn deint_p010_avx2(src: *const u16, u_dst: *mut u16, v_dst: *mut u16,
             12, 9, 8, 5, 4, 1, 0,
         );
         let mut i = 0;
-        while i + 8 <= pairs {
+        for _ in 0..(pairs / 8) {
             let v = _mm256_srli_epi16(_mm256_loadu_si256(src.add(i * 2).cast()), 6);
             let d = _mm256_shuffle_epi8(v, shuf);
             _mm_storeu_si128(
@@ -235,11 +224,6 @@ pub unsafe fn deint_p010_avx2(src: *const u16, u_dst: *mut u16, v_dst: *mut u16,
                 _mm256_castsi256_si128(_mm256_permute4x64_epi64(d, 0x0D)),
             );
             i += 8;
-        }
-        while i < pairs {
-            *u_dst.add(i) = *src.add(i * 2) >> 6;
-            *v_dst.add(i) = *src.add(i * 2 + 1) >> 6;
-            i += 1;
         }
     }
 }
@@ -286,20 +270,14 @@ pub unsafe fn deint_nv12_avx512(src: *const u8, u_dst: *mut u8, v_dst: *mut u8, 
             47, 45, 43, 41, 39, 37, 35, 33, 31, 29, 27, 25, 23, 21, 19, 17, 15, 13, 11, 9, 7, 5, 3,
             1,
         );
-        let end = pairs;
         let mut off: usize = 0;
-        while off + 640 <= end {
+        for _ in 0..(pairs / 640) {
             nv12_deint_asm!(
                 0, 0; 128, 64; 256, 128; 384, 192; 512, 256;
                 640, 320; 768, 384; 896, 448; 1024, 512; 1152, 576
                 @ src, u_dst, v_dst, off, ui, vi
             );
             off += 640;
-        }
-        while off < end {
-            *u_dst.add(off) = *src.add(off * 2);
-            *v_dst.add(off) = *src.add(off * 2 + 1);
-            off += 1;
         }
     }
 }
@@ -341,21 +319,14 @@ pub unsafe fn deint_nv12_to_10b_avx512(
         let mask = _mm512_set1_epi16(0x03FC);
         let ub = u_dst.cast::<u8>();
         let vb = v_dst.cast::<u8>();
-        let end = pairs * 2;
         let mut off: usize = 0;
-        while off + 1280 <= end {
+        for _ in 0..(pairs / 640) {
             nv12_10b_asm!(
                 0, 64, 128, 192, 256, 320, 384, 448, 512, 576,
                 640, 704, 768, 832, 896, 960, 1024, 1088, 1152, 1216;
                 src, ub, vb, off, mask
             );
             off += 1280;
-        }
-        let mut i = off / 2;
-        while i < pairs {
-            *u_dst.add(i) = u16::from(*src.add(i * 2)) << 2;
-            *v_dst.add(i) = u16::from(*src.add(i * 2 + 1)) << 2;
-            i += 1;
         }
     }
 }
@@ -399,18 +370,13 @@ pub unsafe fn deint_nv12_avx2(src: *const u8, u_dst: *mut u8, v_dst: *mut u8, pa
     unsafe {
         let mask = _mm256_set1_epi16(0x00FF);
         let mut off: usize = 0;
-        while off + 320 <= pairs {
+        for _ in 0..(pairs / 320) {
             nv12_deint_avx2_asm!(
                 0, 0; 64, 32; 128, 64; 192, 96; 256, 128;
                 320, 160; 384, 192; 448, 224; 512, 256; 576, 288
                 @ src, u_dst, v_dst, off, mask
             );
             off += 320;
-        }
-        while off < pairs {
-            *u_dst.add(off) = *src.add(off * 2);
-            *v_dst.add(off) = *src.add(off * 2 + 1);
-            off += 1;
         }
     }
 }
@@ -462,21 +428,14 @@ pub unsafe fn deint_nv12_to_10b_avx2(
         let mask = _mm256_set1_epi16(0x00FF);
         let ub = u_dst.cast::<u8>();
         let vb = v_dst.cast::<u8>();
-        let end = pairs * 2;
         let mut off: usize = 0;
-        while off + 640 <= end {
+        for _ in 0..(pairs / 320) {
             nv12_10b_avx2_asm!(
                 0, 0; 64, 64; 128, 128; 192, 192; 256, 256;
                 320, 320; 384, 384; 448, 448; 512, 512; 576, 576
                 @ src, ub, vb, off, mask
             );
             off += 640;
-        }
-        let mut i = off / 2;
-        while i < pairs {
-            *u_dst.add(i) = u16::from(*src.add(i * 2)) << 2;
-            *v_dst.add(i) = u16::from(*src.add(i * 2 + 1)) << 2;
-            i += 1;
         }
     }
 }
@@ -488,12 +447,11 @@ pub unsafe fn conv_to_10b_avx2(input: &[u8], output: &mut [u8]) {
         __m128i, __m256i, _mm_loadu_si128, _mm256_cvtepu8_epi16, _mm256_slli_epi16,
         _mm256_storeu_si256,
     };
-    let len = input.len();
     let mut i = 0;
     let in_ptr = input.as_ptr();
     let out_ptr = output.as_mut_ptr().cast::<u16>();
     unsafe {
-        while i + 32 <= len {
+        for _ in 0..(input.len() / 32) {
             let lo = _mm_loadu_si128(in_ptr.add(i).cast::<__m128i>());
             let hi = _mm_loadu_si128(in_ptr.add(i + 16).cast::<__m128i>());
             _mm256_storeu_si256(
@@ -505,10 +463,6 @@ pub unsafe fn conv_to_10b_avx2(input: &[u8], output: &mut [u8]) {
                 _mm256_slli_epi16(_mm256_cvtepu8_epi16(hi), 2),
             );
             i += 32;
-        }
-        while i < len {
-            *out_ptr.add(i) = (u16::from(*in_ptr.add(i))) << 2;
-            i += 1;
         }
     }
 }
