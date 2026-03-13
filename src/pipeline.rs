@@ -13,14 +13,14 @@ use crate::{
             B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack,
             HwP010Pack, HwP010Raw, HwP010RawCrop,
         },
-        VidInf, calc_8bit_size, calc_packed_size, conv_to_10b, nv12_to_10b, unpack_10b,
+        VidInf, calc_8b_size, calc_packed_size, conv_to_10b, nv12_to_10b, unpack_10b,
         unpack_10b_rem,
     },
 };
 #[cfg(feature = "vship")]
 use crate::{
     progs::ProgsTrack,
-    tq::{calc_metrics_8bit, calc_metrics_10b},
+    tq::{calc_metrics_8b, calc_metrics_10b},
     vship::VshipProcessor,
     worker::WorkPkg,
 };
@@ -82,7 +82,7 @@ pub fn write_frames_10b(
     }
 }
 
-pub fn write_frames_8bit(
+pub fn write_frames_8b(
     stdin: &mut ChildStdin,
     frames: &[u8],
     frame_count: usize,
@@ -171,7 +171,7 @@ impl Pipeline {
             | HwNv12
             | HwNv12Crop { .. }
             | HwNv12To10
-            | HwNv12CropTo10 { .. } => calc_8bit_size(final_w as u32, final_h as u32),
+            | HwNv12CropTo10 { .. } => calc_8b_size(final_w as u32, final_h as u32),
         };
 
         let is_10b_output = inf.is_10b;
@@ -195,7 +195,7 @@ impl Pipeline {
         } else if is_raw {
             (unpack_noop, write_frames_10b)
         } else if !is_10b_output {
-            (unpack_noop, write_frames_8bit)
+            (unpack_noop, write_frames_8b)
         } else if has_rem {
             (unpack_10b_rem_wrap, write_frames_10b)
         } else {
@@ -235,7 +235,7 @@ fn resolve_metrics(
     let calc: CalcMetricsFn = if is_10b {
         calc_metrics_10b
     } else {
-        calc_metrics_8bit
+        calc_metrics_8b
     };
 
     target_quality.map_or(

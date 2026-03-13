@@ -194,5 +194,5 @@ fn aggregate_scores(
     }
 }
 
-calc_metrics_impl!(calc_metrics_8bit, false);
+calc_metrics_impl!(calc_metrics_8b, false);
 calc_metrics_impl!(calc_metrics_10b, true);

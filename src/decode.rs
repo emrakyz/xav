@@ -14,8 +14,8 @@ use crate::{
             B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack,
             HwP010Pack, HwP010Raw, HwP010RawCrop,
         },
-        VidInf, VideoDecoder, calc_8bit_size, calc_packed_size, extr_8bit, extr_8bit_crop,
-        extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10b_crop, extr_10b_crop_fast,
+        VidInf, VideoDecoder, calc_8b_size, calc_packed_size, extr_8b, extr_8b_crop,
+        extr_8b_crop_fast, extr_8b_fast, extr_8b_stride, extr_10b_crop, extr_10b_crop_fast,
         extr_10b_crop_fast_rem, extr_10b_crop_pack_stride, extr_10b_crop_pack_stride_rem,
         extr_10b_crop_rem, extr_10b_pack, extr_10b_pack_rem, extr_10b_pack_stride,
         extr_10b_pack_stride_rem, extr_10b_raw, extr_10b_raw_crop, extr_10b_raw_crop_fast,
@@ -135,7 +135,7 @@ pub fn decode_chunks(
         | HwNv12Crop { .. }
         | HwNv12To10
         | HwNv12CropTo10 { .. } => {
-            dispatch_8bit(&filtered, &mut dec, inf, tx, strat, sem);
+            dispatch_8b(&filtered, &mut dec, inf, tx, strat, sem);
         }
         HwP010Raw | HwP010RawCrop { .. } => {
             dispatch_hw_10b_raw(&filtered, &mut dec, inf, tx, strat, sem);
@@ -282,7 +282,7 @@ fn dispatch_10b_raw(
     }
 }
 
-fn dispatch_8bit(
+fn dispatch_8b(
     filtered: &[Chunk],
     dec: &mut VideoDecoder,
     inf: &VidInf,
@@ -292,64 +292,64 @@ fn dispatch_8bit(
 ) {
     match strat {
         B8Fast => {
-            let f = calc_8bit_size(inf.width, inf.height);
+            let f = calc_8b_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_8_fast(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B8Stride => {
-            let f = calc_8bit_size(inf.width, inf.height);
+            let f = calc_8b_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_8_stride(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B8CropFast { cc } => {
-            let f = calc_8bit_size(cc.new_w, cc.new_h);
+            let f = calc_8b_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_8_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B8Crop { cc } => {
-            let f = calc_8bit_size(cc.new_w, cc.new_h);
+            let f = calc_8b_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_8_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B8CropStride { cc } => {
-            let f = calc_8bit_size(cc.new_w, cc.new_h);
-            let mut buf = vec![0u8; calc_8bit_size(inf.width, inf.height)];
+            let f = calc_8b_size(cc.new_w, cc.new_h);
+            let mut buf = vec![0u8; calc_8b_size(inf.width, inf.height)];
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_8_crop_stride(ch, dec, inf, &cc, f, &mut buf));
             }
         }
         HwNv12 => {
-            let f = calc_8bit_size(inf.width, inf.height);
+            let f = calc_8b_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_hw_nv12(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwNv12Crop { cc } => {
-            let f = calc_8bit_size(cc.new_w, cc.new_h);
+            let f = calc_8b_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_hw_nv12_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         HwNv12To10 => {
-            let f = calc_8bit_size(inf.width, inf.height);
+            let f = calc_8b_size(inf.width, inf.height);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_hw_nv12_to10(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwNv12CropTo10 { cc } => {
-            let f = calc_8bit_size(cc.new_w, cc.new_h);
+            let f = calc_8b_size(cc.new_w, cc.new_h);
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_hw_nv12_crop_to10(ch, dec, &cc, cc.new_w, cc.new_h, f));
@@ -574,10 +574,10 @@ dec_linear!(
     &CropCalc,
     cc
 );
-dec_linear!(dec_8_fast, extr_8bit_fast, &VidInf, inf);
-dec_linear!(dec_8_stride, extr_8bit_stride, &VidInf, inf);
-dec_linear!(dec_8_crop_fast, extr_8bit_crop_fast, &CropCalc, cc);
-dec_linear!(dec_8_crop, extr_8bit_crop, &CropCalc, cc);
+dec_linear!(dec_8_fast, extr_8b_fast, &VidInf, inf);
+dec_linear!(dec_8_stride, extr_8b_stride, &VidInf, inf);
+dec_linear!(dec_8_crop_fast, extr_8b_crop_fast, &CropCalc, cc);
+dec_linear!(dec_8_crop, extr_8b_crop, &CropCalc, cc);
 dec_linear!(dec_hw_nv12, extr_hw_nv12, &VidInf, inf);
 dec_linear!(dec_hw_nv12_crop, extr_hw_nv12_crop, &CropCalc, cc);
 dec_linear!(dec_hw_nv12_to10, extr_hw_nv12_to10, &VidInf, inf);
@@ -604,7 +604,7 @@ fn dec_8_crop_stride(
             actual = eof_truncate(&mut dat, i, fsz);
             break;
         }
-        extr_8bit(frame, buf, inf);
+        extr_8b(frame, buf, inf);
         cc.crop(buf, &mut dat[i * fsz..(i + 1) * fsz]);
     }
     WorkPkg::new(ch.clone(), dat, actual, cc.new_w, cc.new_h)
@@ -659,7 +659,7 @@ pub fn decode_pipe(
     let fsz = if inf.is_10b {
         calc_packed_size(w, h)
     } else {
-        calc_8bit_size(w, h)
+        calc_8b_size(w, h)
     };
     let has_rem = inf.is_10b && !w.is_multiple_of(8);
 

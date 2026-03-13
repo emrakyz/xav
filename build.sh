@@ -167,12 +167,6 @@ detect_deps() {
         fi
         [[ -n "${COMPILERRT_PATH}" ]] && HAS_COMPILERRT=true || HAS_COMPILERRT=false
 
-        # LIBUNWIND_PATH="$(find_lib libunwind.so "${SYS_LIB_DIRS[@]}" || true)"
-        # if [[ -z "${LIBUNWIND_PATH}" ]]; then
-        #         LIBUNWIND_PATH="$(find_lib libunwind.a "${ALL_STATIC_DIRS[@]}" || true)"
-        # fi
-        # [[ -n "${LIBUNWIND_PATH}" ]] && HAS_LIBUNWIND=true || HAS_LIBUNWIND=false
-
         HAS_HARD_REQS=true
         for req in HAS_RUST_NIGHTLY HAS_NASM HAS_COMPILERRT HAS_LLD HAS_CLANG HAS_LLVM; do
                 [[ "${!req}" == false ]] && {
@@ -186,9 +180,6 @@ detect_deps() {
 
         LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
         [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
-
-        # LIBUNWIND_STATIC_PATH="$(find_lib libunwind.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
-        # [[ -n "${LIBUNWIND_STATIC_PATH}" ]] && HAS_LIBUNWIND_STATIC=true || HAS_LIBUNWIND_STATIC=false
 
         COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
         [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
