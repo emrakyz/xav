@@ -137,33 +137,43 @@ pub unsafe fn unpack_10b_avx2(src: *const u8, dst: *mut u8, len: usize) {
 }
 
 #[cfg(target_feature = "avx512bw")]
+macro_rules! conv_10b_asm {
+    ($($s:literal, $d:literal);+ @ $src:expr, $dst:expr, $off:expr) => {
+        core::arch::asm!(
+            $(
+                concat!("vpmovzxbw {a}, [{s} + {o} + ", $s, "]"),
+                "vpsllw {a}, {a}, 2",
+                concat!("vmovdqu64 [{d} + {o}*2 + ", $d, "], {a}"),
+            )+
+            s = in(reg) $src,
+            d = in(reg) $dst,
+            o = in(reg) $off,
+            a = out(zmm_reg) _,
+            options(nostack, preserves_flags),
+        )
+    };
+}
+
+#[cfg(target_feature = "avx512bw")]
 #[target_feature(enable = "avx512bw")]
 pub unsafe fn conv_to_10b_avx512(input: &[u8], output: &mut [u8]) {
-    use std::arch::x86_64::{
-        __m256i, __m512i, _mm256_loadu_si256, _mm512_cvtepu8_epi16, _mm512_slli_epi16,
-        _mm512_storeu_si512,
-    };
+    let src = input.as_ptr();
+    let dst = output.as_mut_ptr();
     let len = input.len();
-    let mut i = 0;
-    let in_ptr = input.as_ptr();
-    let out_ptr = output.as_mut_ptr().cast::<u16>();
+    let out_ptr = dst.cast::<u16>();
     unsafe {
-        while i + 64 <= len {
-            let lo = _mm256_loadu_si256(in_ptr.add(i).cast::<__m256i>());
-            let hi = _mm256_loadu_si256(in_ptr.add(i + 32).cast::<__m256i>());
-            _mm512_storeu_si512(
-                out_ptr.add(i).cast::<__m512i>(),
-                _mm512_slli_epi16(_mm512_cvtepu8_epi16(lo), 2),
+        let mut off: usize = 0;
+        while off + 320 <= len {
+            conv_10b_asm!(
+                0, 0; 32, 64; 64, 128; 96, 192; 128, 256;
+                160, 320; 192, 384; 224, 448; 256, 512; 288, 576
+                @ src, dst, off
             );
-            _mm512_storeu_si512(
-                out_ptr.add(i + 32).cast::<__m512i>(),
-                _mm512_slli_epi16(_mm512_cvtepu8_epi16(hi), 2),
-            );
-            i += 64;
+            off += 320;
         }
-        while i < len {
-            *out_ptr.add(i) = (u16::from(*in_ptr.add(i))) << 2;
-            i += 1;
+        while off < len {
+            *out_ptr.add(off) = (u16::from(*src.add(off))) << 2;
+            off += 1;
         }
     }
 }
