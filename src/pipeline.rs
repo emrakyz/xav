@@ -13,14 +13,14 @@ use crate::{
             B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack,
             HwP010Pack, HwP010Raw, HwP010RawCrop,
         },
-        VidInf, calc_8bit_size, calc_packed_size, conv_to_10bit, nv12_to_10bit, unpack_10bit,
-        unpack_10bit_rem,
+        VidInf, calc_8bit_size, calc_packed_size, conv_to_10b, nv12_to_10b, unpack_10b,
+        unpack_10b_rem,
     },
 };
 #[cfg(feature = "vship")]
 use crate::{
     progs::ProgsTrack,
-    tq::{calc_metrics_8bit, calc_metrics_10bit},
+    tq::{calc_metrics_8bit, calc_metrics_10b},
     vship::VshipProcessor,
     worker::WorkPkg,
 };
@@ -56,19 +56,19 @@ pub type ComputeMetricFn =
 #[cfg(feature = "vship")]
 pub type AggregateScoresFn = fn(&mut Vec<f64>) -> f64;
 
-fn unpack_10bit_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    unpack_10bit(input, output, pipe.final_w, pipe.final_h);
+fn unpack_10b_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
+    unpack_10b(input, output, pipe.final_w, pipe.final_h);
 }
 
-fn unpack_10bit_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    unpack_10bit_rem(input, output, pipe.final_w, pipe.final_h);
+fn unpack_10b_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
+    unpack_10b_rem(input, output, pipe.final_w, pipe.final_h);
 }
 
-fn nv12_to_10bit_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    nv12_to_10bit(input, output, pipe.final_w, pipe.final_h);
+fn nv12_to_10b_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
+    nv12_to_10b(input, output, pipe.final_w, pipe.final_h);
 }
 
-pub fn write_frames_10bit(
+pub fn write_frames_10b(
     stdin: &mut ChildStdin,
     frames: &[u8],
     frame_count: usize,
@@ -91,7 +91,7 @@ pub fn write_frames_8bit(
 ) {
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
-        conv_to_10bit(frame, buf);
+        conv_to_10b(frame, buf);
         _ = stdin.write_all(buf);
     }
 }
@@ -174,8 +174,8 @@ impl Pipeline {
             | HwNv12CropTo10 { .. } => calc_8bit_size(final_w as u32, final_h as u32),
         };
 
-        let is_10bit_output = inf.is_10bit;
-        let pixel_size = if is_10bit_output { 2 } else { 1 };
+        let is_10b_output = inf.is_10b;
+        let pixel_size = if is_10b_output { 2 } else { 1 };
         let y_size = final_w * final_h * pixel_size;
         let uv_size = y_size / 4;
 
@@ -186,25 +186,25 @@ impl Pipeline {
             final_w * final_h * 3 / 2 * 2
         };
 
-        let has_rem = inf.is_10bit && (final_w % 8) != 0;
+        let has_rem = inf.is_10b && (final_w % 8) != 0;
 
         let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12CropTo10 { .. });
 
         let (unpack, write_frames): (UnpackFn, WriteFn) = if is_nv12_to_10 {
-            (nv12_to_10bit_wrap, write_frames_10bit)
+            (nv12_to_10b_wrap, write_frames_10b)
         } else if is_raw {
-            (unpack_noop, write_frames_10bit)
-        } else if !is_10bit_output {
+            (unpack_noop, write_frames_10b)
+        } else if !is_10b_output {
             (unpack_noop, write_frames_8bit)
         } else if has_rem {
-            (unpack_10bit_rem_wrap, write_frames_10bit)
+            (unpack_10b_rem_wrap, write_frames_10b)
         } else {
-            (unpack_10bit_wrap, write_frames_10bit)
+            (unpack_10b_wrap, write_frames_10b)
         };
 
         #[cfg(feature = "vship")]
         let (compute_metric, reset_cvvdp, sort_descending, calc_metrics) =
-            resolve_metrics(is_10bit_output, target_quality);
+            resolve_metrics(is_10b_output, target_quality);
 
         Self {
             final_w,
@@ -229,11 +229,11 @@ impl Pipeline {
 
 #[cfg(feature = "vship")]
 fn resolve_metrics(
-    is_10bit: bool,
+    is_10b: bool,
     target_quality: Option<&str>,
 ) -> (ComputeMetricFn, bool, bool, CalcMetricsFn) {
-    let calc: CalcMetricsFn = if is_10bit {
-        calc_metrics_10bit
+    let calc: CalcMetricsFn = if is_10b {
+        calc_metrics_10b
     } else {
         calc_metrics_8bit
     };

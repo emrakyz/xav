@@ -15,7 +15,7 @@ fn extr_raw_data(frame: *const VidFrame, output: &mut [u8], inf: &VidInf, crop: 
     unsafe {
         let f = &*frame;
 
-        let pix_sz = if inf.is_10bit { 2 } else { 1 };
+        let pix_sz = if inf.is_10b { 2 } else { 1 };
         let width = inf.width as usize;
         let height = inf.height as usize;
         let crop_v = crop.0 as usize;
@@ -97,7 +97,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
         None,
     );
     let mut unpacked_buf = vec![0u8; pipe.conv_buf_size];
-    let mut decoded_frame = if inf.is_10bit {
+    let mut decoded_frame = if inf.is_10b {
         vec![0u8; final_w * final_h * 3 / 2 * 2]
     } else {
         vec![0u8; calc_8bit_size(final_w as u32, final_h as u32)]
@@ -106,7 +106,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
     for i in 0..10 {
         let frame_data = get_frame(&pkg.yuv, i, frame_size);
 
-        let roundtrip_frame = if inf.is_10bit {
+        let roundtrip_frame = if inf.is_10b {
             (pipe.unpack)(frame_data, &mut unpacked_buf, &pipe);
             &unpacked_buf[..decoded_frame.len()]
         } else {
@@ -122,7 +122,7 @@ fn test_roundtrip(filename: &str, crop: (u32, u32)) {
             "Frame {i} length mismatch"
         );
 
-        let row_size = final_w * if inf.is_10bit { 2 } else { 1 };
+        let row_size = final_w * if inf.is_10b { 2 } else { 1 };
         for row in 0..final_h {
             let start = row * row_size;
             let end = start + row_size;
@@ -156,23 +156,23 @@ fn roundtrip_8bit_mod2w_mod2h() {
 }
 
 #[test]
-fn roundtrip_10bit_mod8() {
-    test_roundtrip("akiyo_10bit_mod8.mkv", (0, 0));
+fn roundtrip_10b_mod8() {
+    test_roundtrip("akiyo_10b_mod8.mkv", (0, 0));
 }
 
 #[test]
-fn roundtrip_10bit_mod4w_mod8h() {
-    test_roundtrip("akiyo_10bit_mod4w_mod8h.mkv", (0, 0));
+fn roundtrip_10b_mod4w_mod8h() {
+    test_roundtrip("akiyo_10b_mod4w_mod8h.mkv", (0, 0));
 }
 
 #[test]
-fn roundtrip_10bit_mod2w_mod8h() {
-    test_roundtrip("akiyo_10bit_mod2w_mod8h.mkv", (0, 0));
+fn roundtrip_10b_mod2w_mod8h() {
+    test_roundtrip("akiyo_10b_mod2w_mod8h.mkv", (0, 0));
 }
 
 #[test]
-fn roundtrip_10bit_mod2w_mod2h() {
-    test_roundtrip("akiyo_10bit_mod2w_mod2h.mkv", (0, 0));
+fn roundtrip_10b_mod2w_mod2h() {
+    test_roundtrip("akiyo_10b_mod2w_mod2h.mkv", (0, 0));
 }
 
 #[test]
@@ -196,21 +196,21 @@ fn roundtrip_8bit_mod2w_mod2h_crop() {
 }
 
 #[test]
-fn roundtrip_10bit_mod8_crop() {
-    test_roundtrip("akiyo_10bit_mod8.mkv", (8, 8));
+fn roundtrip_10b_mod8_crop() {
+    test_roundtrip("akiyo_10b_mod8.mkv", (8, 8));
 }
 
 #[test]
-fn roundtrip_10bit_mod4w_mod8h_crop() {
-    test_roundtrip("akiyo_10bit_mod4w_mod8h.mkv", (8, 8));
+fn roundtrip_10b_mod4w_mod8h_crop() {
+    test_roundtrip("akiyo_10b_mod4w_mod8h.mkv", (8, 8));
 }
 
 #[test]
-fn roundtrip_10bit_mod2w_mod8h_crop() {
-    test_roundtrip("akiyo_10bit_mod2w_mod8h.mkv", (8, 8));
+fn roundtrip_10b_mod2w_mod8h_crop() {
+    test_roundtrip("akiyo_10b_mod2w_mod8h.mkv", (8, 8));
 }
 
 #[test]
-fn roundtrip_10bit_mod2w_mod2h_crop() {
-    test_roundtrip("akiyo_10bit_mod2w_mod2h.mkv", (8, 8));
+fn roundtrip_10b_mod2w_mod2h_crop() {
+    test_roundtrip("akiyo_10b_mod2w_mod2h.mkv", (8, 8));
 }

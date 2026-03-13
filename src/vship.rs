@@ -289,7 +289,7 @@ impl VshipProcessor {
     ) -> Result<Self, Xerr> {
         let fps = inf.fps_num as f32 / inf.fps_den as f32;
         unsafe {
-            let src_colorspace = create_yuv_colorspace(width, height, inf.is_10bit, inf);
+            let src_colorspace = create_yuv_colorspace(width, height, inf.is_10b, inf);
             let dis_colorspace = create_yuv_colorspace(width, height, true, inf);
 
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
@@ -478,7 +478,7 @@ impl Drop for VshipProcessor {
     }
 }
 
-fn create_yuv_colorspace(width: u32, height: u32, is_10bit: bool, inf: &VidInf) -> VshipColorspace {
+fn create_yuv_colorspace(width: u32, height: u32, is_10b: bool, inf: &VidInf) -> VshipColorspace {
     let chroma_loc = match inf.chroma_sample_position {
         Some(2) => TopLeft,
         _ => Left,
@@ -519,7 +519,7 @@ fn create_yuv_colorspace(width: u32, height: u32, is_10bit: bool, inf: &VidInf) 
         _ => Limited,
     };
 
-    let sample_val = if is_10bit { Uint10 } else { Uint8 };
+    let sample_val = if is_10b { Uint10 } else { Uint8 };
 
     VshipColorspace {
         width: i64::from(width),

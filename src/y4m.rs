@@ -7,7 +7,7 @@ pub fn is_pipe() -> bool {
 pub struct Y4mInfo {
     pub width: u32,
     pub height: u32,
-    pub is_10bit: bool,
+    pub is_10b: bool,
 }
 
 pub struct PipeReader {
@@ -45,7 +45,7 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
 
     let mut width = 0;
     let mut height = 0;
-    let mut is_10bit = false;
+    let mut is_10b = false;
 
     for part in header.split_whitespace() {
         if let Some(w) = part.strip_prefix('W') {
@@ -53,15 +53,15 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
         } else if let Some(h) = part.strip_prefix('H') {
             height = h.parse().unwrap_or(0);
         } else if let Some(c) = part.strip_prefix('C') {
-            is_10bit = c.contains("p10");
+            is_10b = c.contains("p10");
         }
     }
 
-    let frame_size = width as usize * height as usize * 3 / 2 * if is_10bit { 2 } else { 1 };
+    let frame_size = width as usize * height as usize * 3 / 2 * if is_10b { 2 } else { 1 };
     let info = Y4mInfo {
         width,
         height,
-        is_10bit,
+        is_10b,
     };
     let pipe_reader = PipeReader {
         reader,

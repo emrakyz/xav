@@ -5,7 +5,7 @@ const PACK_MASK: u64 = 0xFF_FFFF_FFFF;
 
 #[cfg(target_feature = "avx512bw")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
-pub unsafe fn pack_10bit_avx512(src: *const u8, dst: *mut u8, len: usize) {
+pub unsafe fn pack_10b_avx512(src: *const u8, dst: *mut u8, len: usize) {
     use std::arch::x86_64::{
         __mmask64, _mm512_loadu_si512, _mm512_madd_epi16, _mm512_mask_storeu_epi8,
         _mm512_permutexvar_epi8, _mm512_set_epi8, _mm512_set1_epi32, _mm512_set1_epi64,
@@ -40,7 +40,7 @@ pub unsafe fn pack_10bit_avx512(src: *const u8, dst: *mut u8, len: usize) {
 
 #[cfg(target_feature = "avx512bw")]
 #[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
-pub unsafe fn unpack_10bit_avx512(src: *const u8, dst: *mut u8, len: usize) {
+pub unsafe fn unpack_10b_avx512(src: *const u8, dst: *mut u8, len: usize) {
     use std::arch::x86_64::{
         _mm512_and_si512, _mm512_loadu_si512, _mm512_multishift_epi64_epi8,
         _mm512_permutexvar_epi8, _mm512_set_epi8, _mm512_set1_epi16, _mm512_set1_epi64,
@@ -68,7 +68,7 @@ pub unsafe fn unpack_10bit_avx512(src: *const u8, dst: *mut u8, len: usize) {
 
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "avx2")]
-pub unsafe fn pack_10bit_avx2(src: *const u8, dst: *mut u8, len: usize) {
+pub unsafe fn pack_10b_avx2(src: *const u8, dst: *mut u8, len: usize) {
     use std::{
         arch::x86_64::{
             _mm256_and_si256, _mm256_andnot_si256, _mm256_castsi256_si128,
@@ -97,8 +97,8 @@ pub unsafe fn pack_10bit_avx2(src: *const u8, dst: *mut u8, len: usize) {
             let compacted = _mm256_shuffle_epi8(packed, shuf);
             let lower = _mm256_castsi256_si128(compacted);
             let upper = _mm256_extracti128_si256(compacted, 1);
-            copy_nonoverlapping(&lower as *const _ as *const u8, dst.add(di), 10);
-            copy_nonoverlapping(&upper as *const _ as *const u8, dst.add(di + 10), 10);
+            copy_nonoverlapping((&raw const lower).cast::<u8>(), dst.add(di), 10);
+            copy_nonoverlapping((&raw const upper).cast::<u8>(), dst.add(di + 10), 10);
             si += 32;
             di += 20;
         }
@@ -107,7 +107,7 @@ pub unsafe fn pack_10bit_avx2(src: *const u8, dst: *mut u8, len: usize) {
 
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "avx2")]
-pub unsafe fn unpack_10bit_avx2(src: *const u8, dst: *mut u8, len: usize) {
+pub unsafe fn unpack_10b_avx2(src: *const u8, dst: *mut u8, len: usize) {
     use std::arch::x86_64::{
         _mm_loadu_si128, _mm_set_epi8, _mm_shuffle_epi8, _mm256_and_si256, _mm256_or_si256,
         _mm256_set_m128i, _mm256_set1_epi64x, _mm256_slli_epi64, _mm256_srli_epi64,
@@ -138,7 +138,7 @@ pub unsafe fn unpack_10bit_avx2(src: *const u8, dst: *mut u8, len: usize) {
 
 #[cfg(target_feature = "avx512bw")]
 #[target_feature(enable = "avx512bw")]
-pub unsafe fn conv_to_10bit_avx512(input: &[u8], output: &mut [u8]) {
+pub unsafe fn conv_to_10b_avx512(input: &[u8], output: &mut [u8]) {
     use std::arch::x86_64::{
         __m256i, __m512i, _mm256_loadu_si256, _mm512_cvtepu8_epi16, _mm512_slli_epi16,
         _mm512_storeu_si512,
@@ -170,12 +170,7 @@ pub unsafe fn conv_to_10bit_avx512(input: &[u8], output: &mut [u8]) {
 
 #[cfg(target_feature = "avx512bw")]
 #[target_feature(enable = "avx512f,avx512bw")]
-pub unsafe fn deinterleave_p010_avx512(
-    src: *const u16,
-    u_dst: *mut u16,
-    v_dst: *mut u16,
-    pairs: usize,
-) {
+pub unsafe fn deint_p010_avx512(src: *const u16, u_dst: *mut u16, v_dst: *mut u16, pairs: usize) {
     use std::arch::x86_64::{
         _mm512_loadu_si512, _mm512_permutex2var_epi16, _mm512_set_epi16, _mm512_srli_epi16,
         _mm512_storeu_si512,
@@ -207,12 +202,7 @@ pub unsafe fn deinterleave_p010_avx512(
 
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "avx2")]
-pub unsafe fn deinterleave_p010_avx2(
-    src: *const u16,
-    u_dst: *mut u16,
-    v_dst: *mut u16,
-    pairs: usize,
-) {
+pub unsafe fn deint_p010_avx2(src: *const u16, u_dst: *mut u16, v_dst: *mut u16, pairs: usize) {
     use std::arch::x86_64::{
         _mm_storeu_si128, _mm256_castsi256_si128, _mm256_loadu_si256, _mm256_permute4x64_epi64,
         _mm256_set_epi8, _mm256_shuffle_epi8, _mm256_srli_epi16,
@@ -244,9 +234,246 @@ pub unsafe fn deinterleave_p010_avx2(
     }
 }
 
+#[cfg(target_feature = "avx512bw")]
+macro_rules! nv12_deint_asm {
+    ($($s:literal, $d:literal);+ @ $src:expr, $ud:expr, $vd:expr, $off:expr, $ui:expr, $vi:expr) => {
+        core::arch::asm!(
+            $(
+                concat!("vmovdqu64 {a}, [{s} + {o}*2 + ", $s, "]"),
+                "vmovdqa64 {t}, {a}",
+                concat!("vpermt2b {t}, {ui}, [{s} + {o}*2 + ", $s, " + 64]"),
+                concat!("vpermt2b {a}, {vi}, [{s} + {o}*2 + ", $s, " + 64]"),
+                concat!("vmovdqu64 [{ud} + {o} + ", $d, "], {t}"),
+                concat!("vmovdqu64 [{vd} + {o} + ", $d, "], {a}"),
+            )+
+            s = in(reg) $src,
+            ud = in(reg) $ud,
+            vd = in(reg) $vd,
+            o = in(reg) $off,
+            ui = in(zmm_reg) $ui,
+            vi = in(zmm_reg) $vi,
+            a = out(zmm_reg) _,
+            t = out(zmm_reg) _,
+            options(nostack, preserves_flags),
+        )
+    };
+}
+
+#[cfg(target_feature = "avx512bw")]
+#[target_feature(enable = "avx512f,avx512bw,avx512vbmi")]
+pub unsafe fn deint_nv12_avx512(src: *const u8, u_dst: *mut u8, v_dst: *mut u8, pairs: usize) {
+    use std::arch::x86_64::_mm512_set_epi8;
+    unsafe {
+        let ui = _mm512_set_epi8(
+            126, 124, 122, 120, 118, 116, 114, 112, 110, 108, 106, 104, 102, 100, 98, 96, 94, 92,
+            90, 88, 86, 84, 82, 80, 78, 76, 74, 72, 70, 68, 66, 64, 62, 60, 58, 56, 54, 52, 50, 48,
+            46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 18, 16, 14, 12, 10, 8, 6, 4, 2,
+            0,
+        );
+        let vi = _mm512_set_epi8(
+            127, 125, 123, 121, 119, 117, 115, 113, 111, 109, 107, 105, 103, 101, 99, 97, 95, 93,
+            91, 89, 87, 85, 83, 81, 79, 77, 75, 73, 71, 69, 67, 65, 63, 61, 59, 57, 55, 53, 51, 49,
+            47, 45, 43, 41, 39, 37, 35, 33, 31, 29, 27, 25, 23, 21, 19, 17, 15, 13, 11, 9, 7, 5, 3,
+            1,
+        );
+        let end = pairs;
+        let mut off: usize = 0;
+        while off + 640 <= end {
+            nv12_deint_asm!(
+                0, 0; 128, 64; 256, 128; 384, 192; 512, 256;
+                640, 320; 768, 384; 896, 448; 1024, 512; 1152, 576
+                @ src, u_dst, v_dst, off, ui, vi
+            );
+            off += 640;
+        }
+        while off < end {
+            *u_dst.add(off) = *src.add(off * 2);
+            *v_dst.add(off) = *src.add(off * 2 + 1);
+            off += 1;
+        }
+    }
+}
+
+#[cfg(target_feature = "avx512bw")]
+macro_rules! nv12_10b_asm {
+    ($($off:literal),+; $src:expr, $ud:expr, $vd:expr, $off_var:expr, $mask:expr) => {
+        core::arch::asm!(
+            $(
+                concat!("vpsllw {u}, [{s} + {o} + ", $off, "], 2"),
+                "vpandq {u}, {u}, {m}",
+                concat!("vpsrlw {v}, [{s} + {o} + ", $off, "], 6"),
+                "vpandq {v}, {v}, {m}",
+                concat!("vmovdqu64 [{ud} + {o} + ", $off, "], {u}"),
+                concat!("vmovdqu64 [{vd} + {o} + ", $off, "], {v}"),
+            )+
+            s = in(reg) $src,
+            ud = in(reg) $ud,
+            vd = in(reg) $vd,
+            o = in(reg) $off_var,
+            m = in(zmm_reg) $mask,
+            u = out(zmm_reg) _,
+            v = out(zmm_reg) _,
+            options(nostack, preserves_flags),
+        )
+    };
+}
+
+#[cfg(target_feature = "avx512bw")]
+#[target_feature(enable = "avx512f,avx512bw")]
+pub unsafe fn deint_nv12_to_10b_avx512(
+    src: *const u8,
+    u_dst: *mut u16,
+    v_dst: *mut u16,
+    pairs: usize,
+) {
+    use std::arch::x86_64::_mm512_set1_epi16;
+    unsafe {
+        let mask = _mm512_set1_epi16(0x03FC);
+        let ub = u_dst.cast::<u8>();
+        let vb = v_dst.cast::<u8>();
+        let end = pairs * 2;
+        let mut off: usize = 0;
+        while off + 1280 <= end {
+            nv12_10b_asm!(
+                0, 64, 128, 192, 256, 320, 384, 448, 512, 576,
+                640, 704, 768, 832, 896, 960, 1024, 1088, 1152, 1216;
+                src, ub, vb, off, mask
+            );
+            off += 1280;
+        }
+        let mut i = off / 2;
+        while i < pairs {
+            *u_dst.add(i) = u16::from(*src.add(i * 2)) << 2;
+            *v_dst.add(i) = u16::from(*src.add(i * 2 + 1)) << 2;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+macro_rules! nv12_deint_avx2_asm {
+    ($($s:literal, $d:literal);+ @ $src:expr, $ud:expr, $vd:expr, $off:expr, $mask:expr) => {
+        core::arch::asm!(
+            $(
+                concat!("vmovdqu {a}, [{s} + {o}*2 + ", $s, "]"),
+                concat!("vmovdqu {b}, [{s} + {o}*2 + ", $s, " + 32]"),
+                "vpand {au}, {a}, {m}",
+                "vpsrlw {a}, {a}, 8",
+                "vpand {bu}, {b}, {m}",
+                "vpsrlw {b}, {b}, 8",
+                "vpackuswb {au}, {au}, {bu}",
+                "vpackuswb {a}, {a}, {b}",
+                concat!("vpermq {au}, {au}, 0xD8"),
+                concat!("vpermq {a}, {a}, 0xD8"),
+                concat!("vmovdqu [{ud} + {o} + ", $d, "], {au}"),
+                concat!("vmovdqu [{vd} + {o} + ", $d, "], {a}"),
+            )+
+            s = in(reg) $src,
+            ud = in(reg) $ud,
+            vd = in(reg) $vd,
+            o = in(reg) $off,
+            m = in(ymm_reg) $mask,
+            a = out(ymm_reg) _,
+            b = out(ymm_reg) _,
+            au = out(ymm_reg) _,
+            bu = out(ymm_reg) _,
+            options(nostack, preserves_flags),
+        )
+    };
+}
+
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 #[target_feature(enable = "avx2")]
-pub unsafe fn conv_to_10bit_avx2(input: &[u8], output: &mut [u8]) {
+pub unsafe fn deint_nv12_avx2(src: *const u8, u_dst: *mut u8, v_dst: *mut u8, pairs: usize) {
+    use std::arch::x86_64::_mm256_set1_epi16;
+    unsafe {
+        let mask = _mm256_set1_epi16(0x00FF);
+        let mut off: usize = 0;
+        while off + 320 <= pairs {
+            nv12_deint_avx2_asm!(
+                0, 0; 64, 32; 128, 64; 192, 96; 256, 128;
+                320, 160; 384, 192; 448, 224; 512, 256; 576, 288
+                @ src, u_dst, v_dst, off, mask
+            );
+            off += 320;
+        }
+        while off < pairs {
+            *u_dst.add(off) = *src.add(off * 2);
+            *v_dst.add(off) = *src.add(off * 2 + 1);
+            off += 1;
+        }
+    }
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+macro_rules! nv12_10b_avx2_asm {
+    ($($s:literal, $d:literal);+ @ $src:expr, $ud:expr, $vd:expr, $off:expr, $mask:expr) => {
+        core::arch::asm!(
+            $(
+                concat!("vmovdqu {a}, [{s} + {o} + ", $s, "]"),
+                concat!("vmovdqu {b}, [{s} + {o} + ", $s, " + 32]"),
+                "vpand {au}, {a}, {m}",
+                "vpsrlw {a}, {a}, 8",
+                "vpand {bu}, {b}, {m}",
+                "vpsrlw {b}, {b}, 8",
+                "vpsllw {au}, {au}, 2",
+                "vpsllw {a}, {a}, 2",
+                "vpsllw {bu}, {bu}, 2",
+                "vpsllw {b}, {b}, 2",
+                concat!("vmovdqu [{ud} + {o} + ", $d, "], {au}"),
+                concat!("vmovdqu [{ud} + {o} + ", $d, " + 32], {bu}"),
+                concat!("vmovdqu [{vd} + {o} + ", $d, "], {a}"),
+                concat!("vmovdqu [{vd} + {o} + ", $d, " + 32], {b}"),
+            )+
+            s = in(reg) $src,
+            ud = in(reg) $ud,
+            vd = in(reg) $vd,
+            o = in(reg) $off,
+            m = in(ymm_reg) $mask,
+            a = out(ymm_reg) _,
+            b = out(ymm_reg) _,
+            au = out(ymm_reg) _,
+            bu = out(ymm_reg) _,
+            options(nostack, preserves_flags),
+        )
+    };
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+#[target_feature(enable = "avx2")]
+pub unsafe fn deint_nv12_to_10b_avx2(
+    src: *const u8,
+    u_dst: *mut u16,
+    v_dst: *mut u16,
+    pairs: usize,
+) {
+    use std::arch::x86_64::_mm256_set1_epi16;
+    unsafe {
+        let mask = _mm256_set1_epi16(0x00FF);
+        let ub = u_dst.cast::<u8>();
+        let vb = v_dst.cast::<u8>();
+        let end = pairs * 2;
+        let mut off: usize = 0;
+        while off + 640 <= end {
+            nv12_10b_avx2_asm!(
+                0, 0; 64, 64; 128, 128; 192, 192; 256, 256;
+                320, 320; 384, 384; 448, 448; 512, 512; 576, 576
+                @ src, ub, vb, off, mask
+            );
+            off += 640;
+        }
+        let mut i = off / 2;
+        while i < pairs {
+            *u_dst.add(i) = u16::from(*src.add(i * 2)) << 2;
+            *v_dst.add(i) = u16::from(*src.add(i * 2 + 1)) << 2;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+#[target_feature(enable = "avx2")]
+pub unsafe fn conv_to_10b_avx2(input: &[u8], output: &mut [u8]) {
     use std::arch::x86_64::{
         __m128i, __m256i, _mm_loadu_si128, _mm256_cvtepu8_epi16, _mm256_slli_epi16,
         _mm256_storeu_si256,

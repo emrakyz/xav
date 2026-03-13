@@ -521,7 +521,7 @@ fn init_pipe_crop(inf: VidInf, crop: (u32, u32)) -> (VidInf, (u32, u32), Option<
         let mut inf = inf;
         inf.width = y.width;
         inf.height = y.height;
-        inf.is_10bit = y.is_10bit;
+        inf.is_10b = y.is_10b;
         inf.dar = None;
         (inf, new_crop, Some(reader))
     } else {
