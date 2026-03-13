@@ -90,7 +90,7 @@ pub fn fd_scenes(
     let details = VideoDetails {
         width: cropped_w as usize,
         height: cropped_h as usize,
-        bit_depth: if inf.is_10bit { 10 } else { 8 },
+        bit_depth: if inf.is_10b { 10 } else { 8 },
         chroma_sampling: ChromaSubsampling::Yuv420,
         frame_rate: Rational32::new(inf.fps_num as i32, inf.fps_den as i32),
     };
@@ -119,7 +119,7 @@ pub fn fd_scenes(
     let crop_v = cv as usize;
     let crop_h = ch as usize;
 
-    let results = if inf.is_10bit {
+    let results = if inf.is_10b {
         let bd = unsafe { NonZeroU8::new_unchecked(10) };
         detect_scene_changes::<u16>(&details, opts, None, Some(&progs_callback), || {
             build_luma_frame::<u16>(&mut dec, w, h, bd, crop_v, crop_h)

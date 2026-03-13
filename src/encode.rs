@@ -40,7 +40,7 @@ use crate::{
         make_enc_cmd, set_svt_config,
     },
     error::fatal,
-    ffms::{DecodeStrat, VidInf, conv_to_10bit, nv12_to_10bit},
+    ffms::{DecodeStrat, VidInf, conv_to_10b, nv12_to_10b},
     pipeline::Pipeline,
     progs::{LibEncTracker, ProgsTrack},
     svt::{
@@ -194,7 +194,7 @@ pub fn encode_all(
 
     let strat = unsafe { args.decode_strat.unwrap_unchecked() };
     let (strat, svt_enc_fn): (_, SvtEncFn) =
-        if args.encoder == SvtAv1 && inf.is_10bit && args.chunk_buffer == args.worker {
+        if args.encoder == SvtAv1 && inf.is_10b && args.chunk_buffer == args.worker {
             (strat.to_raw(), enc_svt_direct)
         } else if matches!(
             strat,
@@ -434,7 +434,7 @@ fn run_metrics_worker(
     let mut vship: Option<VshipProcessor> = None;
     let mut unpacked_buf = vec![
         0u8;
-        if ctx.inf.is_10bit {
+        if ctx.inf.is_10b {
             ctx.pipe.conv_buf_size
         } else {
             0
@@ -1388,7 +1388,7 @@ macro_rules! make_send_svt {
                         (*io_ptr).cb = frame[y_size..].as_ptr().cast_mut();
                         (*io_ptr).cr = frame[y_size + uv_size..].as_ptr().cast_mut();
                     }
-                } else if cfg.inf.is_10bit {
+                } else if cfg.inf.is_10b {
                     (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
                 } else {
                     #[allow(clippy::redundant_closure_call)]
@@ -1416,11 +1416,11 @@ macro_rules! make_send_svt {
 
 make_send_svt!(
     send_svt_conv,
-    |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_to_10bit(frame, buf)
+    |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_to_10b(frame, buf)
 );
 make_send_svt!(
     send_svt_nv12,
-    |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_to_10bit(
+    |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_to_10b(
         frame,
         buf,
         pipe.final_w,

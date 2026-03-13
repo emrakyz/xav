@@ -65,7 +65,7 @@ pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f6
 }
 
 macro_rules! calc_metrics_impl {
-    ($name:ident, $is_10bit:expr) => {
+    ($name:ident, $is_10b:expr) => {
         pub fn $name(
             pkg: &WorkPkg,
             probe_path: &Path,
@@ -87,7 +87,7 @@ macro_rules! calc_metrics_impl {
             let frame_size = pipe.frame_size;
             let start = Instant::now();
 
-            let pixel_size = if $is_10bit { 2 } else { 1 };
+            let pixel_size = if $is_10b { 2 } else { 1 };
             let y_size = pipe.final_w * pipe.final_h * pixel_size;
             let uv_size = y_size / 4;
             let ys = i64::try_from(pipe.final_w * pixel_size).unwrap_or(0);
@@ -109,7 +109,7 @@ macro_rules! calc_metrics_impl {
                         &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
                     let of = dec.decode_next();
 
-                    let input_yuv: &[u8] = if $is_10bit {
+                    let input_yuv: &[u8] = if $is_10b {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);
                         unpacked_buf
                     } else {
@@ -195,4 +195,4 @@ fn aggregate_scores(
 }
 
 calc_metrics_impl!(calc_metrics_8bit, false);
-calc_metrics_impl!(calc_metrics_10bit, true);
+calc_metrics_impl!(calc_metrics_10b, true);

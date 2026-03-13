@@ -15,13 +15,13 @@ use crate::{
             HwP010Pack, HwP010Raw, HwP010RawCrop,
         },
         VidInf, VideoDecoder, calc_8bit_size, calc_packed_size, extr_8bit, extr_8bit_crop,
-        extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10bit_crop,
-        extr_10bit_crop_fast, extr_10bit_crop_fast_rem, extr_10bit_crop_pack_stride,
-        extr_10bit_crop_pack_stride_rem, extr_10bit_crop_rem, extr_10bit_pack, extr_10bit_pack_rem,
-        extr_10bit_pack_stride, extr_10bit_pack_stride_rem, extr_10bit_raw, extr_10bit_raw_crop,
-        extr_10bit_raw_crop_fast, extr_10bit_raw_crop_stride, extr_10bit_raw_stride, extr_hw_nv12,
-        extr_hw_nv12_crop, extr_hw_nv12_crop_to10, extr_hw_nv12_to10, extr_hw_p010_raw,
-        extr_hw_p010_raw_crop, pack_10bit, pack_10bit_rem,
+        extr_8bit_crop_fast, extr_8bit_fast, extr_8bit_stride, extr_10b_crop, extr_10b_crop_fast,
+        extr_10b_crop_fast_rem, extr_10b_crop_pack_stride, extr_10b_crop_pack_stride_rem,
+        extr_10b_crop_rem, extr_10b_pack, extr_10b_pack_rem, extr_10b_pack_stride,
+        extr_10b_pack_stride_rem, extr_10b_raw, extr_10b_raw_crop, extr_10b_raw_crop_fast,
+        extr_10b_raw_crop_stride, extr_10b_raw_stride, extr_hw_nv12, extr_hw_nv12_crop,
+        extr_hw_nv12_crop_to10, extr_hw_nv12_to10, extr_hw_p010_raw, extr_hw_p010_raw_crop,
+        pack_10b, pack_10b_rem,
     },
     util::assume_unreachable,
     worker::{Semaphore, WorkPkg},
@@ -138,16 +138,16 @@ pub fn decode_chunks(
             dispatch_8bit(&filtered, &mut dec, inf, tx, strat, sem);
         }
         HwP010Raw | HwP010RawCrop { .. } => {
-            dispatch_hw_10bit_raw(&filtered, &mut dec, inf, tx, strat, sem);
+            dispatch_hw_10b_raw(&filtered, &mut dec, inf, tx, strat, sem);
         }
         HwP010Pack | HwP010CropPack { .. } => {
-            dispatch_hw_10bit_pack(&filtered, &mut dec, inf, tx, strat, sem);
+            dispatch_hw_10b_pack(&filtered, &mut dec, inf, tx, strat, sem);
         }
-        _ => dispatch_10bit(&filtered, &mut dec, inf, tx, strat, sem),
+        _ => dispatch_10b(&filtered, &mut dec, inf, tx, strat, sem),
     }
 }
 
-fn dispatch_10bit(
+fn dispatch_10b(
     filtered: &[Chunk],
     dec: &mut VideoDecoder,
     inf: &VidInf,
@@ -156,7 +156,7 @@ fn dispatch_10bit(
     sem: &Arc<Semaphore>,
 ) {
     if strat.is_raw() {
-        dispatch_10bit_raw(filtered, dec, inf, tx, strat, sem);
+        dispatch_10b_raw(filtered, dec, inf, tx, strat, sem);
         return;
     }
     match strat {
@@ -234,7 +234,7 @@ fn dispatch_10bit(
     }
 }
 
-fn dispatch_10bit_raw(
+fn dispatch_10b_raw(
     filtered: &[Chunk],
     dec: &mut VideoDecoder,
     inf: &VidInf,
@@ -359,7 +359,7 @@ fn dispatch_8bit(
     }
 }
 
-fn dispatch_hw_10bit_raw(
+fn dispatch_hw_10b_raw(
     filtered: &[Chunk],
     dec: &mut VideoDecoder,
     inf: &VidInf,
@@ -386,7 +386,7 @@ fn dispatch_hw_10bit_raw(
     }
 }
 
-fn dispatch_hw_10bit_pack(
+fn dispatch_hw_10b_pack(
     filtered: &[Chunk],
     dec: &mut VideoDecoder,
     inf: &VidInf,
@@ -446,17 +446,17 @@ fn dec_hw_p010_pack(
             let y_pack = (w as usize * h as usize * 5) / 4;
             let uv_pack = (w as usize * h as usize / 4 * 5) / 4;
             let dst = &mut dat[i * fsz..(i + 1) * fsz];
-            pack_10bit(&raw_buf[..y_raw], &mut dst[..y_pack]);
-            pack_10bit(
+            pack_10b(&raw_buf[..y_raw], &mut dst[..y_pack]);
+            pack_10b(
                 &raw_buf[y_raw..y_raw + uv_raw],
                 &mut dst[y_pack..y_pack + uv_pack],
             );
-            pack_10bit(
+            pack_10b(
                 &raw_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
                 &mut dst[y_pack + uv_pack..],
             );
         } else {
-            pack_10bit_rem(
+            pack_10b_rem(
                 raw_buf,
                 &mut dat[i * fsz..(i + 1) * fsz],
                 w as usize,
@@ -494,17 +494,17 @@ fn dec_hw_p010_crop_pack(
             let y_pack = (w as usize * h as usize * 5) / 4;
             let uv_pack = (w as usize * h as usize / 4 * 5) / 4;
             let dst = &mut dat[i * fsz..(i + 1) * fsz];
-            pack_10bit(&raw_buf[..y_raw], &mut dst[..y_pack]);
-            pack_10bit(
+            pack_10b(&raw_buf[..y_raw], &mut dst[..y_pack]);
+            pack_10b(
                 &raw_buf[y_raw..y_raw + uv_raw],
                 &mut dst[y_pack..y_pack + uv_pack],
             );
-            pack_10bit(
+            pack_10b(
                 &raw_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
                 &mut dst[y_pack + uv_pack..],
             );
         } else {
-            pack_10bit_rem(
+            pack_10b_rem(
                 raw_buf,
                 &mut dat[i * fsz..(i + 1) * fsz],
                 w as usize,
@@ -549,43 +549,28 @@ macro_rules! dec_linear {
     };
 }
 
-dec_linear!(dec_10_fast, extr_10bit_pack, &VidInf, inf);
-dec_linear!(dec_10_stride, extr_10bit_pack_stride, &VidInf, inf);
-dec_linear!(dec_10_crop_fast, extr_10bit_crop_fast, &CropCalc, cc);
-dec_linear!(dec_10_crop, extr_10bit_crop, &CropCalc, cc);
-dec_linear!(dec_10_fast_rem, extr_10bit_pack_rem, &VidInf, inf);
-dec_linear!(dec_10_stride_rem, extr_10bit_pack_stride_rem, &VidInf, inf);
-dec_linear!(
-    dec_10_crop_fast_rem,
-    extr_10bit_crop_fast_rem,
-    &CropCalc,
-    cc
-);
-dec_linear!(dec_10_crop_rem, extr_10bit_crop_rem, &CropCalc, cc);
-dec_linear!(dec_10_raw, extr_10bit_raw, &VidInf, inf);
-dec_linear!(dec_10_raw_stride, extr_10bit_raw_stride, &VidInf, inf);
-dec_linear!(
-    dec_10_raw_crop_fast,
-    extr_10bit_raw_crop_fast,
-    &CropCalc,
-    cc
-);
-dec_linear!(dec_10_raw_crop, extr_10bit_raw_crop, &CropCalc, cc);
+dec_linear!(dec_10_fast, extr_10b_pack, &VidInf, inf);
+dec_linear!(dec_10_stride, extr_10b_pack_stride, &VidInf, inf);
+dec_linear!(dec_10_crop_fast, extr_10b_crop_fast, &CropCalc, cc);
+dec_linear!(dec_10_crop, extr_10b_crop, &CropCalc, cc);
+dec_linear!(dec_10_fast_rem, extr_10b_pack_rem, &VidInf, inf);
+dec_linear!(dec_10_stride_rem, extr_10b_pack_stride_rem, &VidInf, inf);
+dec_linear!(dec_10_crop_fast_rem, extr_10b_crop_fast_rem, &CropCalc, cc);
+dec_linear!(dec_10_crop_rem, extr_10b_crop_rem, &CropCalc, cc);
+dec_linear!(dec_10_raw, extr_10b_raw, &VidInf, inf);
+dec_linear!(dec_10_raw_stride, extr_10b_raw_stride, &VidInf, inf);
+dec_linear!(dec_10_raw_crop_fast, extr_10b_raw_crop_fast, &CropCalc, cc);
+dec_linear!(dec_10_raw_crop, extr_10b_raw_crop, &CropCalc, cc);
 dec_linear!(
     dec_10_raw_crop_stride,
-    extr_10bit_raw_crop_stride,
+    extr_10b_raw_crop_stride,
     &CropCalc,
     cc
 );
-dec_linear!(
-    dec_10_crop_stride,
-    extr_10bit_crop_pack_stride,
-    &CropCalc,
-    cc
-);
+dec_linear!(dec_10_crop_stride, extr_10b_crop_pack_stride, &CropCalc, cc);
 dec_linear!(
     dec_10_crop_stride_rem,
-    extr_10bit_crop_pack_stride_rem,
+    extr_10b_crop_pack_stride_rem,
     &CropCalc,
     cc
 );
@@ -671,14 +656,14 @@ pub fn decode_pipe(
         return;
     }
 
-    let fsz = if inf.is_10bit {
+    let fsz = if inf.is_10b {
         calc_packed_size(w, h)
     } else {
         calc_8bit_size(w, h)
     };
-    let has_rem = inf.is_10bit && !w.is_multiple_of(8);
+    let has_rem = inf.is_10b && !w.is_multiple_of(8);
 
-    match (inf.is_10bit, cc, has_rem) {
+    match (inf.is_10b, cc, has_rem) {
         (true, Some(cc), false) => {
             let mut crop_buf = vec![0u8; cc.new_w as usize * cc.new_h as usize * 3];
             pipe_loop(chunks, reader, skip, sem, tx, raw_fsz, |ch, raw| {
@@ -758,12 +743,12 @@ fn dec_pipe_10(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usi
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        pack_10bit(&src[..y_raw], &mut dst[..y_pack]);
-        pack_10bit(
+        pack_10b(&src[..y_raw], &mut dst[..y_pack]);
+        pack_10b(
             &src[y_raw..y_raw + uv_raw],
             &mut dst[y_pack..y_pack + uv_pack],
         );
-        pack_10bit(&src[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
+        pack_10b(&src[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
     }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
@@ -776,7 +761,7 @@ fn dec_pipe_10_rem(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz:
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        pack_10bit_rem(&src[..y_raw], dst, w as usize, h as usize);
+        pack_10b_rem(&src[..y_raw], dst, w as usize, h as usize);
     }
     WorkPkg::new(ch.clone(), dat, len, w, h)
 }
@@ -800,12 +785,12 @@ fn dec_pipe_10_crop(
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let uv_raw = y_raw / 4;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        pack_10bit(&crop_buf[..y_raw], &mut dst[..y_pack]);
-        pack_10bit(
+        pack_10b(&crop_buf[..y_raw], &mut dst[..y_pack]);
+        pack_10b(
             &crop_buf[y_raw..y_raw + uv_raw],
             &mut dst[y_pack..y_pack + uv_pack],
         );
-        pack_10bit(&crop_buf[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
+        pack_10b(&crop_buf[y_raw + uv_raw..], &mut dst[y_pack + uv_pack..]);
     }
     WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)
 }
@@ -826,7 +811,7 @@ fn dec_pipe_10_crop_rem(
         cc.crop(src, crop_buf);
         let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        pack_10bit_rem(
+        pack_10b_rem(
             &crop_buf[..y_raw],
             dst,
             cc.new_w as usize,
