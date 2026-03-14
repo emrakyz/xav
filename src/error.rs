@@ -50,6 +50,7 @@ impl From<String> for Xerr {
 }
 
 #[cold]
+#[inline(never)]
 pub fn fatal<E: Display>(e: E) -> ! {
     if IN_ALT_SCREEN.load(Relaxed) {
         print!("\x1b[?25h\x1b[?1049l");
@@ -59,6 +60,8 @@ pub fn fatal<E: Display>(e: E) -> ! {
     unsafe { _exit(1) }
 }
 
+#[cold]
+#[inline(never)]
 pub fn eprint(args: Arguments<'_>) {
     if IN_ALT_SCREEN.load(Relaxed) {
         print!("\x1b[?1049l");

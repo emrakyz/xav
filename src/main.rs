@@ -62,7 +62,7 @@ use encode::TQ_SCORES;
 use encode::encode_all;
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
-use ffms::{DecodeStrat, VidInf, gcd, get_decode_strat, get_vidinf};
+use ffms::{DecodeStrat, VidInf, VideoDecoder, gcd, get_decode_strat, get_vidinf};
 use noise::gen_table;
 use scd::fd_scenes;
 #[cfg(feature = "vship")]
@@ -691,6 +691,10 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     let tq = args.target_quality.is_some();
     #[cfg(not(feature = "vship"))]
     let tq = false;
+    if args.hwaccel {
+        let mut dec = VideoDecoder::new_hw(&args.input, 1)?;
+        inf.y_linesize = unsafe { (*dec.decode_next()).linesize[0] as usize };
+    }
     args.decode_strat = Some(get_decode_strat(&inf, crop, args.hwaccel, tq));
 
     let grain_table = if let Some(iso) = args.noise {
