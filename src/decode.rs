@@ -11,8 +11,12 @@ use crate::{
             B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
             B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
             B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride,
-            B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack,
-            HwP010Pack, HwP010Raw, HwP010RawCrop,
+            B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12Stride, HwNv12To10,
+            HwNv12To10Stride, HwP010CropPack, HwP010CropPackPkRem, HwP010CropPackRem,
+            HwP010CropPackRemPkRem, HwP010Pack, HwP010PackPkRem, HwP010PackPkRemStride,
+            HwP010PackRem, HwP010PackRemPkRem, HwP010PackRemPkRemStride, HwP010PackRemStride,
+            HwP010PackStride, HwP010Raw, HwP010RawCrop, HwP010RawCropRem, HwP010RawRem,
+            HwP010RawRemStride, HwP010RawStride,
         },
         VidInf, VideoDecoder, calc_8b_size, calc_packed_size, extr_8b, extr_8b_crop,
         extr_8b_crop_fast, extr_8b_fast, extr_8b_stride, extr_10b_crop, extr_10b_crop_fast,
@@ -20,8 +24,9 @@ use crate::{
         extr_10b_crop_rem, extr_10b_pack, extr_10b_pack_rem, extr_10b_pack_stride,
         extr_10b_pack_stride_rem, extr_10b_raw, extr_10b_raw_crop, extr_10b_raw_crop_fast,
         extr_10b_raw_crop_stride, extr_10b_raw_stride, extr_hw_nv12, extr_hw_nv12_crop,
-        extr_hw_nv12_crop_to10, extr_hw_nv12_to10, extr_hw_p010_raw, extr_hw_p010_raw_crop,
-        pack_10b, pack_10b_rem,
+        extr_hw_nv12_crop_to10, extr_hw_nv12_stride, extr_hw_nv12_to10, extr_hw_nv12_to10_stride,
+        extr_hw_p010_raw, extr_hw_p010_raw_crop, extr_hw_p010_raw_crop_rem, extr_hw_p010_raw_rem,
+        extr_hw_p010_raw_rem_stride, extr_hw_p010_raw_stride, pack_10b, pack_10b_rem,
     },
     util::assume_unreachable,
     worker::{Semaphore, WorkPkg},
@@ -132,15 +137,33 @@ pub fn decode_chunks(
         | B8Crop { .. }
         | B8CropStride { .. }
         | HwNv12
+        | HwNv12Stride
         | HwNv12Crop { .. }
         | HwNv12To10
+        | HwNv12To10Stride
         | HwNv12CropTo10 { .. } => {
             dispatch_8b(&filtered, &mut dec, inf, tx, strat, sem);
         }
-        HwP010Raw | HwP010RawCrop { .. } => {
+        HwP010Raw
+        | HwP010RawRem
+        | HwP010RawStride
+        | HwP010RawRemStride
+        | HwP010RawCrop { .. }
+        | HwP010RawCropRem { .. } => {
             dispatch_hw_10b_raw(&filtered, &mut dec, inf, tx, strat, sem);
         }
-        HwP010Pack | HwP010CropPack { .. } => {
+        HwP010Pack
+        | HwP010PackPkRem
+        | HwP010PackRem
+        | HwP010PackRemPkRem
+        | HwP010PackStride
+        | HwP010PackPkRemStride
+        | HwP010PackRemStride
+        | HwP010PackRemPkRemStride
+        | HwP010CropPack { .. }
+        | HwP010CropPackPkRem { .. }
+        | HwP010CropPackRem { .. }
+        | HwP010CropPackRemPkRem { .. } => {
             dispatch_hw_10b_pack(&filtered, &mut dec, inf, tx, strat, sem);
         }
         _ => dispatch_10b(&filtered, &mut dec, inf, tx, strat, sem),
@@ -334,6 +357,13 @@ fn dispatch_8b(
                 _ = tx.send(dec_hw_nv12(ch, dec, inf, inf.width, inf.height, f));
             }
         }
+        HwNv12Stride => {
+            let f = calc_8b_size(inf.width, inf.height);
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send(dec_hw_nv12_stride(ch, dec, inf, inf.width, inf.height, f));
+            }
+        }
         HwNv12Crop { cc } => {
             let f = calc_8b_size(cc.new_w, cc.new_h);
             for ch in filtered {
@@ -346,6 +376,15 @@ fn dispatch_8b(
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_hw_nv12_to10(ch, dec, inf, inf.width, inf.height, f));
+            }
+        }
+        HwNv12To10Stride => {
+            let f = calc_8b_size(inf.width, inf.height);
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send(dec_hw_nv12_to10_stride(
+                    ch, dec, inf, inf.width, inf.height, f,
+                ));
             }
         }
         HwNv12CropTo10 { cc } => {
@@ -375,11 +414,45 @@ fn dispatch_hw_10b_raw(
                 _ = tx.send(dec_hw_p010_raw(ch, dec, inf, inf.width, inf.height, f));
             }
         }
+        HwP010RawRem => {
+            let f = (inf.width as usize * inf.height as usize) * 3;
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send(dec_hw_p010_raw_rem(ch, dec, inf, inf.width, inf.height, f));
+            }
+        }
+        HwP010RawStride => {
+            let f = (inf.width as usize * inf.height as usize) * 3;
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send(dec_hw_p010_raw_stride(
+                    ch, dec, inf, inf.width, inf.height, f,
+                ));
+            }
+        }
+        HwP010RawRemStride => {
+            let f = (inf.width as usize * inf.height as usize) * 3;
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send(dec_hw_p010_raw_rem_stride(
+                    ch, dec, inf, inf.width, inf.height, f,
+                ));
+            }
+        }
         HwP010RawCrop { cc } => {
             let f = (cc.new_w as usize * cc.new_h as usize) * 3;
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_hw_p010_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
+            }
+        }
+        HwP010RawCropRem { cc } => {
+            let f = (cc.new_w as usize * cc.new_h as usize) * 3;
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send(dec_hw_p010_raw_crop_rem(
+                    ch, dec, &cc, cc.new_w, cc.new_h, f,
+                ));
             }
         }
         _ => assume_unreachable(),
@@ -395,125 +468,181 @@ fn dispatch_hw_10b_pack(
     sem: &Arc<Semaphore>,
 ) {
     let (w, h) = match strat {
-        HwP010CropPack { cc } => (cc.new_w, cc.new_h),
+        HwP010CropPack { cc }
+        | HwP010CropPackPkRem { cc }
+        | HwP010CropPackRem { cc }
+        | HwP010CropPackRemPkRem { cc } => (cc.new_w, cc.new_h),
         _ => (inf.width, inf.height),
     };
     let fsz = calc_packed_size(w, h);
     let raw_fsz = (w as usize * h as usize) * 3;
     let mut raw_buf = vec![0u8; raw_fsz];
 
+    macro_rules! run {
+        ($dec_fn:ident, $ctx:expr) => {
+            for ch in filtered {
+                sem.acquire();
+                _ = tx.send($dec_fn(ch, dec, $ctx, w, h, fsz, &mut raw_buf));
+            }
+        };
+    }
     match strat {
-        HwP010Pack => {
-            for ch in filtered {
-                sem.acquire();
-                _ = tx.send(dec_hw_p010_pack(ch, dec, inf, w, h, fsz, &mut raw_buf));
-            }
-        }
-        HwP010CropPack { cc } => {
-            for ch in filtered {
-                sem.acquire();
-                _ = tx.send(dec_hw_p010_crop_pack(ch, dec, &cc, w, h, fsz, &mut raw_buf));
-            }
-        }
+        HwP010Pack => run!(dec_hw_p010_pack, inf),
+        HwP010PackPkRem => run!(dec_hw_p010_pack_pkrem, inf),
+        HwP010PackRem => run!(dec_hw_p010_pack_rem, inf),
+        HwP010PackRemPkRem => run!(dec_hw_p010_pack_rem_pkrem, inf),
+        HwP010PackStride => run!(dec_hw_p010_pack_stride, inf),
+        HwP010PackPkRemStride => run!(dec_hw_p010_pack_pkrem_stride, inf),
+        HwP010PackRemStride => run!(dec_hw_p010_pack_rem_stride, inf),
+        HwP010PackRemPkRemStride => run!(dec_hw_p010_pack_rem_pkrem_stride, inf),
+        HwP010CropPack { cc } => run!(dec_hw_p010_crop_pack, &cc),
+        HwP010CropPackPkRem { cc } => run!(dec_hw_p010_crop_pack_pkrem, &cc),
+        HwP010CropPackRem { cc } => run!(dec_hw_p010_crop_pack_rem, &cc),
+        HwP010CropPackRemPkRem { cc } => run!(dec_hw_p010_crop_pack_rem_pkrem, &cc),
         _ => assume_unreachable(),
     }
 }
 
 #[inline]
-fn dec_hw_p010_pack(
-    ch: &Chunk,
-    dec: &mut VideoDecoder,
-    inf: &VidInf,
-    w: u32,
-    h: u32,
-    fsz: usize,
-    raw_buf: &mut [u8],
-) -> WorkPkg {
-    dec.skip_to(ch.start);
-    let len = ch.end - ch.start;
-    let mut dat = vec![0u8; len * fsz];
-    let mut actual = len;
-    for i in 0..len {
-        let frame = dec.decode_next();
-        if dec.is_eof() {
-            actual = eof_truncate(&mut dat, i, fsz);
-            break;
-        }
-        extr_hw_p010_raw(frame, raw_buf, inf);
-        if w.is_multiple_of(8) {
-            let y_raw = (w as usize * h as usize) * 2;
-            let uv_raw = y_raw / 4;
-            let y_pack = (w as usize * h as usize * 5) / 4;
-            let uv_pack = (w as usize * h as usize / 4 * 5) / 4;
-            let dst = &mut dat[i * fsz..(i + 1) * fsz];
-            pack_10b(&raw_buf[..y_raw], &mut dst[..y_pack]);
-            pack_10b(
-                &raw_buf[y_raw..y_raw + uv_raw],
-                &mut dst[y_pack..y_pack + uv_pack],
-            );
-            pack_10b(
-                &raw_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
-                &mut dst[y_pack + uv_pack..],
-            );
-        } else {
-            pack_10b_rem(
-                raw_buf,
-                &mut dat[i * fsz..(i + 1) * fsz],
-                w as usize,
-                h as usize,
-            );
-        }
-    }
-    WorkPkg::new(ch.clone(), dat, actual, w, h)
+fn pack_hw_planes(raw_buf: &[u8], dst: &mut [u8], w: usize, h: usize) {
+    let y_raw = w * h * 2;
+    let uv_raw = y_raw / 4;
+    let y_pack = (w * h * 5) / 4;
+    let uv_pack = (w * h / 4 * 5) / 4;
+    pack_10b(&raw_buf[..y_raw], &mut dst[..y_pack]);
+    pack_10b(
+        &raw_buf[y_raw..y_raw + uv_raw],
+        &mut dst[y_pack..y_pack + uv_pack],
+    );
+    pack_10b(
+        &raw_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
+        &mut dst[y_pack + uv_pack..],
+    );
 }
 
 #[inline]
-fn dec_hw_p010_crop_pack(
-    ch: &Chunk,
-    dec: &mut VideoDecoder,
-    cc: &CropCalc,
-    w: u32,
-    h: u32,
-    fsz: usize,
-    raw_buf: &mut [u8],
-) -> WorkPkg {
-    dec.skip_to(ch.start);
-    let len = ch.end - ch.start;
-    let mut dat = vec![0u8; len * fsz];
-    let mut actual = len;
-    for i in 0..len {
-        let frame = dec.decode_next();
-        if dec.is_eof() {
-            actual = eof_truncate(&mut dat, i, fsz);
-            break;
-        }
-        extr_hw_p010_raw_crop(frame, raw_buf, cc);
-        if w.is_multiple_of(8) {
-            let y_raw = (w as usize * h as usize) * 2;
-            let uv_raw = y_raw / 4;
-            let y_pack = (w as usize * h as usize * 5) / 4;
-            let uv_pack = (w as usize * h as usize / 4 * 5) / 4;
-            let dst = &mut dat[i * fsz..(i + 1) * fsz];
-            pack_10b(&raw_buf[..y_raw], &mut dst[..y_pack]);
-            pack_10b(
-                &raw_buf[y_raw..y_raw + uv_raw],
-                &mut dst[y_pack..y_pack + uv_pack],
-            );
-            pack_10b(
-                &raw_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
-                &mut dst[y_pack + uv_pack..],
-            );
-        } else {
-            pack_10b_rem(
-                raw_buf,
-                &mut dat[i * fsz..(i + 1) * fsz],
-                w as usize,
-                h as usize,
-            );
-        }
-    }
-    WorkPkg::new(ch.clone(), dat, actual, w, h)
+fn pack_hw_planes_rem(raw_buf: &[u8], dst: &mut [u8], w: usize, h: usize) {
+    pack_10b_rem(raw_buf, dst, w, h);
 }
+
+macro_rules! dec_hw_pack {
+    ($name:ident, $extr:ident, $pack:ident, $ctx_ty:ty, $ctx_field:ident) => {
+        fn $name(
+            ch: &Chunk,
+            dec: &mut VideoDecoder,
+            $ctx_field: $ctx_ty,
+            w: u32,
+            h: u32,
+            fsz: usize,
+            raw_buf: &mut [u8],
+        ) -> WorkPkg {
+            dec.skip_to(ch.start);
+            let len = ch.end - ch.start;
+            let mut dat = vec![0u8; len * fsz];
+            let mut actual = len;
+            for i in 0..len {
+                let frame = dec.decode_next();
+                if dec.is_eof() {
+                    actual = eof_truncate(&mut dat, i, fsz);
+                    break;
+                }
+                $extr(frame, raw_buf, $ctx_field);
+                $pack(
+                    raw_buf,
+                    &mut dat[i * fsz..(i + 1) * fsz],
+                    w as usize,
+                    h as usize,
+                );
+            }
+            WorkPkg::new(ch.clone(), dat, actual, w, h)
+        }
+    };
+}
+
+dec_hw_pack!(
+    dec_hw_p010_pack,
+    extr_hw_p010_raw,
+    pack_hw_planes,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_pkrem,
+    extr_hw_p010_raw,
+    pack_hw_planes_rem,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_rem,
+    extr_hw_p010_raw_rem,
+    pack_hw_planes,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_rem_pkrem,
+    extr_hw_p010_raw_rem,
+    pack_hw_planes_rem,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_crop_pack,
+    extr_hw_p010_raw_crop,
+    pack_hw_planes,
+    &CropCalc,
+    cc
+);
+dec_hw_pack!(
+    dec_hw_p010_crop_pack_pkrem,
+    extr_hw_p010_raw_crop,
+    pack_hw_planes_rem,
+    &CropCalc,
+    cc
+);
+dec_hw_pack!(
+    dec_hw_p010_crop_pack_rem,
+    extr_hw_p010_raw_crop_rem,
+    pack_hw_planes,
+    &CropCalc,
+    cc
+);
+dec_hw_pack!(
+    dec_hw_p010_crop_pack_rem_pkrem,
+    extr_hw_p010_raw_crop_rem,
+    pack_hw_planes_rem,
+    &CropCalc,
+    cc
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_stride,
+    extr_hw_p010_raw_stride,
+    pack_hw_planes,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_pkrem_stride,
+    extr_hw_p010_raw_stride,
+    pack_hw_planes_rem,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_rem_stride,
+    extr_hw_p010_raw_rem_stride,
+    pack_hw_planes,
+    &VidInf,
+    inf
+);
+dec_hw_pack!(
+    dec_hw_p010_pack_rem_pkrem_stride,
+    extr_hw_p010_raw_rem_stride,
+    pack_hw_planes_rem,
+    &VidInf,
+    inf
+);
 
 #[cold]
 fn eof_truncate(dat: &mut Vec<u8>, i: usize, fsz: usize) -> usize {
@@ -579,11 +708,37 @@ dec_linear!(dec_8_stride, extr_8b_stride, &VidInf, inf);
 dec_linear!(dec_8_crop_fast, extr_8b_crop_fast, &CropCalc, cc);
 dec_linear!(dec_8_crop, extr_8b_crop, &CropCalc, cc);
 dec_linear!(dec_hw_nv12, extr_hw_nv12, &VidInf, inf);
+dec_linear!(dec_hw_nv12_stride, extr_hw_nv12_stride, &VidInf, inf);
 dec_linear!(dec_hw_nv12_crop, extr_hw_nv12_crop, &CropCalc, cc);
 dec_linear!(dec_hw_nv12_to10, extr_hw_nv12_to10, &VidInf, inf);
+dec_linear!(
+    dec_hw_nv12_to10_stride,
+    extr_hw_nv12_to10_stride,
+    &VidInf,
+    inf
+);
 dec_linear!(dec_hw_nv12_crop_to10, extr_hw_nv12_crop_to10, &CropCalc, cc);
 dec_linear!(dec_hw_p010_raw, extr_hw_p010_raw, &VidInf, inf);
+dec_linear!(
+    dec_hw_p010_raw_stride,
+    extr_hw_p010_raw_stride,
+    &VidInf,
+    inf
+);
 dec_linear!(dec_hw_p010_raw_crop, extr_hw_p010_raw_crop, &CropCalc, cc);
+dec_linear!(dec_hw_p010_raw_rem, extr_hw_p010_raw_rem, &VidInf, inf);
+dec_linear!(
+    dec_hw_p010_raw_rem_stride,
+    extr_hw_p010_raw_rem_stride,
+    &VidInf,
+    inf
+);
+dec_linear!(
+    dec_hw_p010_raw_crop_rem,
+    extr_hw_p010_raw_crop_rem,
+    &CropCalc,
+    cc
+);
 
 #[inline]
 fn dec_8_crop_stride(
@@ -635,7 +790,11 @@ pub fn decode_pipe(
         | HwNv12Crop { cc }
         | HwNv12CropTo10 { cc }
         | HwP010RawCrop { cc }
-        | HwP010CropPack { cc } => Some(cc),
+        | HwP010RawCropRem { cc }
+        | HwP010CropPack { cc }
+        | HwP010CropPackPkRem { cc }
+        | HwP010CropPackRem { cc }
+        | HwP010CropPackRemPkRem { cc } => Some(cc),
         _ => None,
     };
 

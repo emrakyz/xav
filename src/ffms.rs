@@ -10,12 +10,12 @@ use std::{
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 use crate::simd::{
     conv_to_10b_avx2, deint_nv12_avx2, deint_nv12_to_10b_avx2, deint_p010_avx2, pack_10b_avx2,
-    unpack_10b_avx2,
+    shift_p010_avx2, unpack_10b_avx2,
 };
 #[cfg(target_feature = "avx512bw")]
 use crate::simd::{
     conv_to_10b_avx512, deint_nv12_avx512, deint_nv12_to_10b_avx512, deint_p010_avx512,
-    pack_10b_avx512, unpack_10b_avx512,
+    pack_10b_avx512, shift_p010_avx512, unpack_10b_avx512,
 };
 use crate::{
     Xerr,
@@ -25,8 +25,11 @@ use crate::{
         B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast, B10CropFastRem,
         B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem, B10Raw, B10RawCrop,
         B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride, B10StrideRem, HwNv12,
-        HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack, HwP010Pack, HwP010Raw,
-        HwP010RawCrop,
+        HwNv12Crop, HwNv12CropTo10, HwNv12Stride, HwNv12To10, HwNv12To10Stride, HwP010CropPack,
+        HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem, HwP010Pack,
+        HwP010PackPkRem, HwP010PackPkRemStride, HwP010PackRem, HwP010PackRemPkRem,
+        HwP010PackRemPkRemStride, HwP010PackRemStride, HwP010PackStride, HwP010Raw, HwP010RawCrop,
+        HwP010RawCropRem, HwP010RawRem, HwP010RawRemStride, HwP010RawStride,
     },
 };
 
@@ -1354,9 +1357,25 @@ pub enum DecodeStrat {
     HwNv12To10,
     HwNv12CropTo10 { cc: CropCalc },
     HwP010Raw,
+    HwP010RawRem,
     HwP010RawCrop { cc: CropCalc },
+    HwP010RawCropRem { cc: CropCalc },
     HwP010Pack,
+    HwP010PackRem,
     HwP010CropPack { cc: CropCalc },
+    HwP010CropPackRem { cc: CropCalc },
+    HwP010PackPkRem,
+    HwP010PackRemPkRem,
+    HwP010CropPackPkRem { cc: CropCalc },
+    HwP010CropPackRemPkRem { cc: CropCalc },
+    HwP010PackPkRemStride,
+    HwP010PackRemPkRemStride,
+    HwNv12Stride,
+    HwNv12To10Stride,
+    HwP010RawStride,
+    HwP010RawRemStride,
+    HwP010PackStride,
+    HwP010PackRemStride,
 }
 
 impl DecodeStrat {
@@ -1367,8 +1386,12 @@ impl DecodeStrat {
             B10CropFast { cc } | B10CropFastRem { cc } => B10RawCropFast { cc },
             B10Crop { cc } | B10CropRem { cc } => B10RawCrop { cc },
             B10CropStride { cc } | B10CropStrideRem { cc } => B10RawCropStride { cc },
-            HwP010Pack => HwP010Raw,
-            HwP010CropPack { cc } => HwP010RawCrop { cc },
+            HwP010Pack | HwP010PackPkRem => HwP010Raw,
+            HwP010PackRem | HwP010PackRemPkRem => HwP010RawRem,
+            HwP010CropPack { cc } | HwP010CropPackPkRem { cc } => HwP010RawCrop { cc },
+            HwP010CropPackRem { cc } | HwP010CropPackRemPkRem { cc } => HwP010RawCropRem { cc },
+            HwP010PackStride | HwP010PackPkRemStride => HwP010RawStride,
+            HwP010PackRemStride | HwP010PackRemPkRemStride => HwP010RawRemStride,
             other => other,
         }
     }
@@ -1382,7 +1405,11 @@ impl DecodeStrat {
                 | B10RawCrop { .. }
                 | B10RawCropStride { .. }
                 | HwP010Raw
+                | HwP010RawRem
+                | HwP010RawStride
+                | HwP010RawRemStride
                 | HwP010RawCrop { .. }
+                | HwP010RawCropRem { .. }
         )
     }
 
@@ -1390,13 +1417,29 @@ impl DecodeStrat {
         matches!(
             self,
             HwNv12
+                | HwNv12Stride
                 | HwNv12Crop { .. }
                 | HwNv12To10
+                | HwNv12To10Stride
                 | HwNv12CropTo10 { .. }
                 | HwP010Raw
+                | HwP010RawRem
+                | HwP010RawStride
+                | HwP010RawRemStride
                 | HwP010RawCrop { .. }
+                | HwP010RawCropRem { .. }
                 | HwP010Pack
+                | HwP010PackPkRem
+                | HwP010PackRem
+                | HwP010PackRemPkRem
+                | HwP010PackStride
+                | HwP010PackPkRemStride
+                | HwP010PackRemStride
+                | HwP010PackRemPkRemStride
                 | HwP010CropPack { .. }
+                | HwP010CropPackPkRem { .. }
+                | HwP010CropPackRem { .. }
+                | HwP010CropPackRemPkRem { .. }
         )
     }
 }
@@ -1404,19 +1447,47 @@ impl DecodeStrat {
 pub fn get_decode_strat(inf: &VidInf, crop: (u32, u32), hwaccel: bool, tq: bool) -> DecodeStrat {
     if hwaccel {
         let has_crop = crop != (0, 0);
-        return match (inf.is_10b, has_crop, tq) {
-            (false, false, false) => HwNv12To10,
-            (false, true, false) => HwNv12CropTo10 {
+        let pix_sz = if inf.is_10b { 2 } else { 1 };
+        let has_pad = inf.y_linesize != inf.width as usize * pix_sz;
+        return match (inf.is_10b, has_crop, tq, has_pad) {
+            (false, false, false, false) => HwNv12To10,
+            (false, false, false, true) => HwNv12To10Stride,
+            (false, true, false, _) => HwNv12CropTo10 {
                 cc: CropCalc::new(inf, crop, 1),
             },
-            (false, false, true) => HwNv12,
-            (false, true, true) => HwNv12Crop {
+            (false, false, true, false) => HwNv12,
+            (false, false, true, true) => HwNv12Stride,
+            (false, true, true, _) => HwNv12Crop {
                 cc: CropCalc::new(inf, crop, 1),
             },
-            (true, false, _) => HwP010Pack,
-            (true, true, _) => HwP010CropPack {
-                cc: CropCalc::new(inf, crop, 2),
-            },
+            (true, false, _, false) => {
+                let w = inf.width as usize;
+                match (w.is_multiple_of(SHIFT_CHUNK), w.is_multiple_of(8)) {
+                    (true, true) => HwP010Pack,
+                    (true, false) => HwP010PackPkRem,
+                    (false, true) => HwP010PackRem,
+                    (false, false) => HwP010PackRemPkRem,
+                }
+            }
+            (true, false, _, true) => {
+                let w = inf.width as usize;
+                match (w.is_multiple_of(SHIFT_CHUNK), w.is_multiple_of(8)) {
+                    (true, true) => HwP010PackStride,
+                    (true, false) => HwP010PackPkRemStride,
+                    (false, true) => HwP010PackRemStride,
+                    (false, false) => HwP010PackRemPkRemStride,
+                }
+            }
+            (true, true, ..) => {
+                let cc = CropCalc::new(inf, crop, 2);
+                let w = cc.new_w as usize;
+                match (w.is_multiple_of(SHIFT_CHUNK), w.is_multiple_of(8)) {
+                    (true, true) => HwP010CropPack { cc },
+                    (true, false) => HwP010CropPackPkRem { cc },
+                    (false, true) => HwP010CropPackRem { cc },
+                    (false, false) => HwP010CropPackRemPkRem { cc },
+                }
+            }
         };
     }
     let y_ls = inf.y_linesize;
@@ -2057,18 +2128,6 @@ pub fn extr_10b_raw_crop_stride(frame: *const VidFrame, output: &mut [u8], cc: &
 }
 
 #[inline]
-unsafe fn hw_copy_plane(src: *const u8, dst: *mut u8, ls: usize, row_bytes: usize, rows: usize) {
-    unsafe {
-        if ls == row_bytes {
-            copy_nonoverlapping(src, dst, row_bytes * rows);
-        } else {
-            for row in 0..rows {
-                copy_nonoverlapping(src.add(row * ls), dst.add(row * row_bytes), row_bytes);
-            }
-        }
-    }
-}
-
 fn deint_nv12_row(src: &[u8], u_dst: &mut [u8], v_dst: &mut [u8]) {
     #[cfg(target_feature = "avx512bw")]
     unsafe {
@@ -2125,10 +2184,54 @@ fn deint_p010_row(src: &[u16], u_dst: &mut [u16], v_dst: &mut [u16]) {
         });
 }
 
+#[cfg(target_feature = "avx512bw")]
+pub const SHIFT_CHUNK: usize = 320;
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+pub const SHIFT_CHUNK: usize = 160;
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+pub const SHIFT_CHUNK: usize = 1;
+
 fn shift_p010_row(src: &[u16], dst: &mut [u16]) {
+    #[cfg(target_feature = "avx512bw")]
+    unsafe {
+        shift_p010_avx512(src.as_ptr(), dst.as_mut_ptr(), dst.len());
+    }
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+    unsafe {
+        shift_p010_avx2(src.as_ptr(), dst.as_mut_ptr(), dst.len());
+    }
+    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
     src.iter()
         .zip(dst.iter_mut())
         .for_each(|(&s, d)| *d = s >> 6);
+}
+
+fn shift_p010_row_rem(src: &[u16], dst: &mut [u16]) {
+    let len = dst.len();
+    #[cfg(target_feature = "avx512bw")]
+    unsafe {
+        shift_p010_avx512(src.as_ptr(), dst.as_mut_ptr(), len);
+        shift_p010_tail(src, dst, (len / 320) * 320);
+    }
+    #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+    unsafe {
+        shift_p010_avx2(src.as_ptr(), dst.as_mut_ptr(), len);
+        shift_p010_tail(src, dst, (len / 160) * 160);
+    }
+    #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+    src.iter()
+        .zip(dst.iter_mut())
+        .for_each(|(&s, d)| *d = s >> 6);
+}
+
+#[cold]
+#[inline(never)]
+fn shift_p010_tail(src: &[u16], dst: &mut [u16], start: usize) {
+    unsafe {
+        for i in start..dst.len() {
+            *dst.get_unchecked_mut(i) = *src.get_unchecked(i) >> 6;
+        }
+    }
 }
 
 fn deint_nv12_row_to_10b(src: &[u8], u_dst: &mut [u16], v_dst: &mut [u16]) {
@@ -2180,29 +2283,44 @@ pub fn extr_hw_nv12(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
         let f = &*frame;
         let w = inf.width as usize;
         let h = inf.height as usize;
+        let y_size = w * h;
+        let uv_w = w / 2;
+        let uv_size = uv_w * (h / 2);
+
+        copy_nonoverlapping(f.data[0], output.as_mut_ptr(), y_size);
+
+        let src = from_raw_parts(f.data[1], w * (h / 2));
+        let u_dst = from_raw_parts_mut(output.as_mut_ptr().add(y_size), uv_size);
+        let v_dst = from_raw_parts_mut(output.as_mut_ptr().add(y_size + uv_size), uv_size);
+        deint_nv12_row(src, u_dst, v_dst);
+    }
+}
+
+pub fn extr_hw_nv12_stride(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+    unsafe {
+        let f = &*frame;
+        let w = inf.width as usize;
+        let h = inf.height as usize;
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
         let y_size = w * h;
         let uv_w = w / 2;
         let uv_size = uv_w * (h / 2);
 
-        hw_copy_plane(f.data[0], output.as_mut_ptr(), y_ls, w, h);
+        for row in 0..h {
+            copy_nonoverlapping(
+                f.data[0].add(row * y_ls),
+                output.as_mut_ptr().add(row * w),
+                w,
+            );
+        }
 
-        if uv_ls == w {
-            let src = from_raw_parts(f.data[1], w * (h / 2));
-            let u_dst = from_raw_parts_mut(output.as_mut_ptr().add(y_size), uv_size);
-            let v_dst = from_raw_parts_mut(output.as_mut_ptr().add(y_size + uv_size), uv_size);
+        for row in 0..h / 2 {
+            let src = from_raw_parts(f.data[1].add(row * uv_ls), uv_w * 2);
+            let u_dst = from_raw_parts_mut(output.as_mut_ptr().add(y_size + row * uv_w), uv_w);
+            let v_dst =
+                from_raw_parts_mut(output.as_mut_ptr().add(y_size + uv_size + row * uv_w), uv_w);
             deint_nv12_row(src, u_dst, v_dst);
-        } else {
-            for row in 0..h / 2 {
-                let src = from_raw_parts(f.data[1].add(row * uv_ls), uv_w * 2);
-                let u_dst = from_raw_parts_mut(output.as_mut_ptr().add(y_size + row * uv_w), uv_w);
-                let v_dst = from_raw_parts_mut(
-                    output.as_mut_ptr().add(y_size + uv_size + row * uv_w),
-                    uv_w,
-                );
-                deint_nv12_row(src, u_dst, v_dst);
-            }
         }
     }
 }
@@ -2236,7 +2354,19 @@ pub fn extr_hw_nv12_crop(frame: *const VidFrame, output: &mut [u8], cc: &CropCal
     }
 }
 
-pub fn extr_hw_nv12_to10(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+pub const fn extr_hw_nv12_to10(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+    unsafe {
+        let f = &*frame;
+        let w = inf.width as usize;
+        let h = inf.height as usize;
+        let y_size = w * h;
+
+        copy_nonoverlapping(f.data[0], output.as_mut_ptr(), y_size);
+        copy_nonoverlapping(f.data[1], output.as_mut_ptr().add(y_size), w * (h / 2));
+    }
+}
+
+pub fn extr_hw_nv12_to10_stride(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
     unsafe {
         let f = &*frame;
         let w = inf.width as usize;
@@ -2245,8 +2375,20 @@ pub fn extr_hw_nv12_to10(frame: *const VidFrame, output: &mut [u8], inf: &VidInf
         let uv_ls = f.linesize[1] as usize;
         let y_size = w * h;
 
-        hw_copy_plane(f.data[0], output.as_mut_ptr(), y_ls, w, h);
-        hw_copy_plane(f.data[1], output.as_mut_ptr().add(y_size), uv_ls, w, h / 2);
+        for row in 0..h {
+            copy_nonoverlapping(
+                f.data[0].add(row * y_ls),
+                output.as_mut_ptr().add(row * w),
+                w,
+            );
+        }
+        for row in 0..h / 2 {
+            copy_nonoverlapping(
+                f.data[1].add(row * uv_ls),
+                output.as_mut_ptr().add(y_size + row * w),
+                w,
+            );
+        }
     }
 }
 
@@ -2282,6 +2424,31 @@ pub fn extr_hw_nv12_crop_to10(frame: *const VidFrame, output: &mut [u8], cc: &Cr
 pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, output: &mut [u8], w: usize, h: usize) {
     unsafe {
         let f = &*frame;
+        let y_size = w * h * 2;
+        let uv_w = w / 2;
+        let uv_size = uv_w * (h / 2) * 2;
+
+        let src = from_raw_parts(f.data[0].cast::<u16>(), w * h);
+        let dst = from_raw_parts_mut(output.as_mut_ptr().cast::<u16>(), w * h);
+        shift_p010_row(src, dst);
+
+        let src = from_raw_parts(f.data[1].cast::<u16>(), w * (h / 2));
+        let u_dst = from_raw_parts_mut(
+            output.as_mut_ptr().add(y_size).cast::<u16>(),
+            uv_w * (h / 2),
+        );
+        let v_dst = from_raw_parts_mut(
+            output.as_mut_ptr().add(y_size + uv_size).cast::<u16>(),
+            uv_w * (h / 2),
+        );
+        deint_p010_row(src, u_dst, v_dst);
+    }
+}
+
+#[inline]
+pub fn extr_hw_p010_raw_wh_stride(frame: *const VidFrame, output: &mut [u8], w: usize, h: usize) {
+    unsafe {
+        let f = &*frame;
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
         let w_bytes = w * 2;
@@ -2289,55 +2456,115 @@ pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, output: &mut [u8], w: usize, 
         let uv_w = w / 2;
         let uv_size = uv_w * (h / 2) * 2;
 
-        if y_ls == w_bytes {
-            let src = from_raw_parts(f.data[0].cast::<u16>(), w * h);
-            let dst = from_raw_parts_mut(output.as_mut_ptr().cast::<u16>(), w * h);
+        for row in 0..h {
+            let src = from_raw_parts(f.data[0].add(row * y_ls).cast::<u16>(), w);
+            let dst = from_raw_parts_mut(output.as_mut_ptr().add(row * w_bytes).cast::<u16>(), w);
             shift_p010_row(src, dst);
-        } else {
-            for row in 0..h {
-                let src = from_raw_parts(f.data[0].add(row * y_ls).cast::<u16>(), w);
-                let dst =
-                    from_raw_parts_mut(output.as_mut_ptr().add(row * w_bytes).cast::<u16>(), w);
-                shift_p010_row(src, dst);
-            }
         }
 
-        if uv_ls == w_bytes {
-            let src = from_raw_parts(f.data[1].cast::<u16>(), w * (h / 2));
+        for row in 0..h / 2 {
+            let src = from_raw_parts(f.data[1].add(row * uv_ls).cast::<u16>(), w);
             let u_dst = from_raw_parts_mut(
-                output.as_mut_ptr().add(y_size).cast::<u16>(),
-                uv_w * (h / 2),
+                output
+                    .as_mut_ptr()
+                    .add(y_size + row * uv_w * 2)
+                    .cast::<u16>(),
+                uv_w,
             );
             let v_dst = from_raw_parts_mut(
-                output.as_mut_ptr().add(y_size + uv_size).cast::<u16>(),
-                uv_w * (h / 2),
+                output
+                    .as_mut_ptr()
+                    .add(y_size + uv_size + row * uv_w * 2)
+                    .cast::<u16>(),
+                uv_w,
             );
             deint_p010_row(src, u_dst, v_dst);
-        } else {
-            for row in 0..h / 2 {
-                let src = from_raw_parts(f.data[1].add(row * uv_ls).cast::<u16>(), w);
-                let u_dst = from_raw_parts_mut(
-                    output
-                        .as_mut_ptr()
-                        .add(y_size + row * uv_w * 2)
-                        .cast::<u16>(),
-                    uv_w,
-                );
-                let v_dst = from_raw_parts_mut(
-                    output
-                        .as_mut_ptr()
-                        .add(y_size + uv_size + row * uv_w * 2)
-                        .cast::<u16>(),
-                    uv_w,
-                );
-                deint_p010_row(src, u_dst, v_dst);
-            }
         }
     }
 }
 
 pub fn extr_hw_p010_raw(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
     extr_hw_p010_raw_wh(frame, output, inf.width as usize, inf.height as usize);
+}
+
+pub fn extr_hw_p010_raw_stride(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+    extr_hw_p010_raw_wh_stride(frame, output, inf.width as usize, inf.height as usize);
+}
+
+#[inline]
+pub fn extr_hw_p010_raw_wh_rem(frame: *const VidFrame, output: &mut [u8], w: usize, h: usize) {
+    unsafe {
+        let f = &*frame;
+        let y_size = w * h * 2;
+        let uv_w = w / 2;
+        let uv_size = uv_w * (h / 2) * 2;
+
+        let src = from_raw_parts(f.data[0].cast::<u16>(), w * h);
+        let dst = from_raw_parts_mut(output.as_mut_ptr().cast::<u16>(), w * h);
+        shift_p010_row_rem(src, dst);
+
+        let src = from_raw_parts(f.data[1].cast::<u16>(), w * (h / 2));
+        let u_dst = from_raw_parts_mut(
+            output.as_mut_ptr().add(y_size).cast::<u16>(),
+            uv_w * (h / 2),
+        );
+        let v_dst = from_raw_parts_mut(
+            output.as_mut_ptr().add(y_size + uv_size).cast::<u16>(),
+            uv_w * (h / 2),
+        );
+        deint_p010_row(src, u_dst, v_dst);
+    }
+}
+
+#[inline]
+pub fn extr_hw_p010_raw_wh_rem_stride(
+    frame: *const VidFrame,
+    output: &mut [u8],
+    w: usize,
+    h: usize,
+) {
+    unsafe {
+        let f = &*frame;
+        let y_ls = f.linesize[0] as usize;
+        let uv_ls = f.linesize[1] as usize;
+        let w_bytes = w * 2;
+        let y_size = w * h * 2;
+        let uv_w = w / 2;
+        let uv_size = uv_w * (h / 2) * 2;
+
+        for row in 0..h {
+            let src = from_raw_parts(f.data[0].add(row * y_ls).cast::<u16>(), w);
+            let dst = from_raw_parts_mut(output.as_mut_ptr().add(row * w_bytes).cast::<u16>(), w);
+            shift_p010_row_rem(src, dst);
+        }
+
+        for row in 0..h / 2 {
+            let src = from_raw_parts(f.data[1].add(row * uv_ls).cast::<u16>(), w);
+            let u_dst = from_raw_parts_mut(
+                output
+                    .as_mut_ptr()
+                    .add(y_size + row * uv_w * 2)
+                    .cast::<u16>(),
+                uv_w,
+            );
+            let v_dst = from_raw_parts_mut(
+                output
+                    .as_mut_ptr()
+                    .add(y_size + uv_size + row * uv_w * 2)
+                    .cast::<u16>(),
+                uv_w,
+            );
+            deint_p010_row(src, u_dst, v_dst);
+        }
+    }
+}
+
+pub fn extr_hw_p010_raw_rem(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+    extr_hw_p010_raw_wh_rem(frame, output, inf.width as usize, inf.height as usize);
+}
+
+pub fn extr_hw_p010_raw_rem_stride(frame: *const VidFrame, output: &mut [u8], inf: &VidInf) {
+    extr_hw_p010_raw_wh_rem_stride(frame, output, inf.width as usize, inf.height as usize);
 }
 
 pub fn extr_hw_p010_raw_crop(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
@@ -2357,6 +2584,49 @@ pub fn extr_hw_p010_raw_crop(frame: *const VidFrame, output: &mut [u8], cc: &Cro
             let src = from_raw_parts(f.data[0].add((row + cv) * y_ls + ch * 2).cast::<u16>(), w);
             let dst = from_raw_parts_mut(output.as_mut_ptr().add(row * w * 2).cast::<u16>(), w);
             shift_p010_row(src, dst);
+        }
+
+        for row in 0..h / 2 {
+            let src = from_raw_parts(
+                f.data[1].add((row + cv / 2) * uv_ls + ch * 2).cast::<u16>(),
+                w,
+            );
+            let u_dst = from_raw_parts_mut(
+                output
+                    .as_mut_ptr()
+                    .add(y_size + row * uv_w * 2)
+                    .cast::<u16>(),
+                uv_w,
+            );
+            let v_dst = from_raw_parts_mut(
+                output
+                    .as_mut_ptr()
+                    .add(y_size + uv_size + row * uv_w * 2)
+                    .cast::<u16>(),
+                uv_w,
+            );
+            deint_p010_row(src, u_dst, v_dst);
+        }
+    }
+}
+
+pub fn extr_hw_p010_raw_crop_rem(frame: *const VidFrame, output: &mut [u8], cc: &CropCalc) {
+    unsafe {
+        let f = &*frame;
+        let w = cc.new_w as usize;
+        let h = cc.new_h as usize;
+        let y_ls = f.linesize[0] as usize;
+        let uv_ls = f.linesize[1] as usize;
+        let cv = cc.crop_v as usize;
+        let ch = cc.crop_h as usize;
+        let y_size = w * h * 2;
+        let uv_w = w / 2;
+        let uv_size = uv_w * (h / 2) * 2;
+
+        for row in 0..h {
+            let src = from_raw_parts(f.data[0].add((row + cv) * y_ls + ch * 2).cast::<u16>(), w);
+            let dst = from_raw_parts_mut(output.as_mut_ptr().add(row * w * 2).cast::<u16>(), w);
+            shift_p010_row_rem(src, dst);
         }
 
         for row in 0..h / 2 {

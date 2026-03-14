@@ -7,11 +7,11 @@ use crate::{
     ffms::{
         DecodeStrat,
         DecodeStrat::{
-            B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
-            B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
-            B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride,
-            B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwP010CropPack,
-            HwP010Pack, HwP010Raw, HwP010RawCrop,
+            B8Crop, B8CropFast, B8CropStride, B10Crop, B10CropFast, B10CropFastRem, B10CropRem,
+            B10CropStride, B10CropStrideRem, B10RawCrop, B10RawCropFast, B10RawCropStride,
+            HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride, HwP010CropPack,
+            HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem, HwP010RawCrop,
+            HwP010RawCropRem,
         },
         VidInf, calc_8b_size, calc_packed_size, conv_to_10b, nv12_to_10b, unpack_10b,
         unpack_10b_rem,
@@ -139,39 +139,20 @@ impl Pipeline {
             | HwNv12Crop { cc }
             | HwNv12CropTo10 { cc }
             | HwP010RawCrop { cc }
-            | HwP010CropPack { cc } => (cc.new_w as usize, cc.new_h as usize),
+            | HwP010RawCropRem { cc }
+            | HwP010CropPack { cc }
+            | HwP010CropPackPkRem { cc }
+            | HwP010CropPackRem { cc }
+            | HwP010CropPackRemPkRem { cc } => (cc.new_w as usize, cc.new_h as usize),
             _ => (inf.width as usize, inf.height as usize),
         };
 
-        let frame_size = match strat {
-            B10Raw
-            | B10RawStride
-            | B10RawCropFast { .. }
-            | B10RawCrop { .. }
-            | B10RawCropStride { .. }
-            | HwP010Raw
-            | HwP010RawCrop { .. } => final_w * final_h * 3,
-            B10Fast
-            | B10FastRem
-            | B10Stride
-            | B10StrideRem
-            | B10CropFast { .. }
-            | B10CropFastRem { .. }
-            | B10Crop { .. }
-            | B10CropRem { .. }
-            | B10CropStride { .. }
-            | B10CropStrideRem { .. }
-            | HwP010Pack
-            | HwP010CropPack { .. } => calc_packed_size(final_w as u32, final_h as u32),
-            B8Fast
-            | B8Stride
-            | B8CropFast { .. }
-            | B8Crop { .. }
-            | B8CropStride { .. }
-            | HwNv12
-            | HwNv12Crop { .. }
-            | HwNv12To10
-            | HwNv12CropTo10 { .. } => calc_8b_size(final_w as u32, final_h as u32),
+        let frame_size = if strat.is_raw() {
+            final_w * final_h * 3
+        } else if inf.is_10b {
+            calc_packed_size(final_w as u32, final_h as u32)
+        } else {
+            calc_8b_size(final_w as u32, final_h as u32)
         };
 
         let is_10b_output = inf.is_10b;
@@ -188,7 +169,7 @@ impl Pipeline {
 
         let has_rem = inf.is_10b && (final_w % 8) != 0;
 
-        let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12CropTo10 { .. });
+        let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
 
         let (unpack, write_frames): (UnpackFn, WriteFn) = if is_nv12_to_10 {
             (nv12_to_10b_wrap, write_frames_10b)
