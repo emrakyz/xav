@@ -24,6 +24,10 @@ use crate::{
 };
 
 mod audio;
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+mod avx2;
+#[cfg(target_feature = "avx512bw")]
+mod avx512;
 mod chunk;
 mod crop;
 mod decode;
@@ -36,10 +40,12 @@ mod interp;
 mod lavf;
 mod noise;
 mod opus;
+mod pack;
 pub mod pipeline;
 mod progs;
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+mod scalar;
 mod scd;
-mod simd;
 mod svt;
 #[cfg(feature = "vship")]
 mod tq;

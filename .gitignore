@@ -11,3 +11,4 @@ test_files/*.ffindex
 !LICENSE
 !README.md
 !.gitignore
+!.gitattributes

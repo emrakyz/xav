@@ -2,6 +2,12 @@ use std::{collections::HashSet, path::Path, sync::Arc, thread::available_paralle
 
 use crossbeam_channel::Sender;
 
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+use crate::avx2::{PACK_CHUNK, pack_10b};
+#[cfg(target_feature = "avx512bw")]
+use crate::avx512::{PACK_CHUNK, pack_10b};
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+use crate::scalar::{PACK_CHUNK, pack_10b};
 use crate::{
     chunk::Chunk,
     error::fatal,
@@ -10,24 +16,24 @@ use crate::{
         DecodeStrat::{
             B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
             B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
-            B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10Stride,
-            B10StrideRem, HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12Stride, HwNv12To10,
-            HwNv12To10Stride, HwP010CropPack, HwP010CropPackPkRem, HwP010CropPackRem,
-            HwP010CropPackRemPkRem, HwP010Pack, HwP010PackPkRem, HwP010PackPkRemStride,
-            HwP010PackRem, HwP010PackRemPkRem, HwP010PackRemPkRemStride, HwP010PackRemStride,
-            HwP010PackStride, HwP010Raw, HwP010RawCrop, HwP010RawCropRem, HwP010RawRem,
-            HwP010RawRemStride, HwP010RawStride,
+            B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10StrideRem,
+            HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12Stride,
+            HwNv12To10, HwNv12To10Stride, HwP010CropPack, HwP010CropPackPkRem, HwP010CropPackRem,
+            HwP010CropPackRemPkRem, HwP010Pack, HwP010PackPkRem, HwP010PackRem, HwP010PackRemPkRem,
+            HwP010PackRemPkRemStride, HwP010Raw, HwP010RawCrop, HwP010RawCropRem, HwP010RawRem,
+            HwP010RawRemStride,
         },
-        VidInf, VideoDecoder, calc_8b_size, calc_packed_size, extr_8b, extr_8b_crop,
-        extr_8b_crop_fast, extr_8b_fast, extr_8b_stride, extr_10b_crop, extr_10b_crop_fast,
-        extr_10b_crop_fast_rem, extr_10b_crop_pack_stride, extr_10b_crop_pack_stride_rem,
-        extr_10b_crop_rem, extr_10b_pack, extr_10b_pack_rem, extr_10b_pack_stride,
-        extr_10b_pack_stride_rem, extr_10b_raw, extr_10b_raw_crop, extr_10b_raw_crop_fast,
-        extr_10b_raw_crop_stride, extr_10b_raw_stride, extr_hw_nv12, extr_hw_nv12_crop,
+        VidInf, VideoDecoder, extr_8b, extr_8b_crop, extr_8b_crop_fast, extr_8b_fast,
+        extr_8b_stride, extr_10b_crop, extr_10b_crop_fast, extr_10b_crop_fast_rem,
+        extr_10b_crop_pack_stride, extr_10b_crop_pack_stride_rem, extr_10b_crop_rem, extr_10b_pack,
+        extr_10b_pack_rem, extr_10b_pack_stride_rem, extr_10b_raw, extr_10b_raw_crop,
+        extr_10b_raw_crop_fast, extr_10b_raw_crop_stride, extr_10b_raw_stride, extr_hw_nv12,
+        extr_hw_nv12_crop,
         extr_hw_nv12_crop_to10, extr_hw_nv12_stride, extr_hw_nv12_to10, extr_hw_nv12_to10_stride,
         extr_hw_p010_raw, extr_hw_p010_raw_crop, extr_hw_p010_raw_crop_rem, extr_hw_p010_raw_rem,
-        extr_hw_p010_raw_rem_stride, extr_hw_p010_raw_stride, pack_10b, pack_10b_rem,
+        extr_hw_p010_raw_rem_stride,
     },
+    pack::{calc_8b_size, calc_packed_size, pack_10b_rem, packed_row_size},
     util::assume_unreachable,
     worker::{Semaphore, WorkPkg},
     y4m::PipeReader,
@@ -133,8 +139,8 @@ pub fn decode_chunks(
     match strat {
         B8Fast
         | B8Stride
-        | B8CropFast { .. }
         | B8Crop { .. }
+        | B8CropFast { .. }
         | B8CropStride { .. }
         | HwNv12
         | HwNv12Stride
@@ -146,7 +152,6 @@ pub fn decode_chunks(
         }
         HwP010Raw
         | HwP010RawRem
-        | HwP010RawStride
         | HwP010RawRemStride
         | HwP010RawCrop { .. }
         | HwP010RawCropRem { .. } => {
@@ -156,9 +161,6 @@ pub fn decode_chunks(
         | HwP010PackPkRem
         | HwP010PackRem
         | HwP010PackRemPkRem
-        | HwP010PackStride
-        | HwP010PackPkRemStride
-        | HwP010PackRemStride
         | HwP010PackRemPkRemStride
         | HwP010CropPack { .. }
         | HwP010CropPackPkRem { .. }
@@ -195,13 +197,6 @@ fn dispatch_10b(
             for ch in filtered {
                 sem.acquire();
                 _ = tx.send(dec_10_fast_rem(ch, dec, inf, inf.width, inf.height, f));
-            }
-        }
-        B10Stride => {
-            let f = calc_packed_size(inf.width, inf.height);
-            for ch in filtered {
-                sem.acquire();
-                _ = tx.send(dec_10_stride(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B10StrideRem => {
@@ -421,15 +416,6 @@ fn dispatch_hw_10b_raw(
                 _ = tx.send(dec_hw_p010_raw_rem(ch, dec, inf, inf.width, inf.height, f));
             }
         }
-        HwP010RawStride => {
-            let f = (inf.width as usize * inf.height as usize) * 3;
-            for ch in filtered {
-                sem.acquire();
-                _ = tx.send(dec_hw_p010_raw_stride(
-                    ch, dec, inf, inf.width, inf.height, f,
-                ));
-            }
-        }
         HwP010RawRemStride => {
             let f = (inf.width as usize * inf.height as usize) * 3;
             for ch in filtered {
@@ -491,9 +477,6 @@ fn dispatch_hw_10b_pack(
         HwP010PackPkRem => run!(dec_hw_p010_pack_pkrem, inf),
         HwP010PackRem => run!(dec_hw_p010_pack_rem, inf),
         HwP010PackRemPkRem => run!(dec_hw_p010_pack_rem_pkrem, inf),
-        HwP010PackStride => run!(dec_hw_p010_pack_stride, inf),
-        HwP010PackPkRemStride => run!(dec_hw_p010_pack_pkrem_stride, inf),
-        HwP010PackRemStride => run!(dec_hw_p010_pack_rem_stride, inf),
         HwP010PackRemPkRemStride => run!(dec_hw_p010_pack_rem_pkrem_stride, inf),
         HwP010CropPack { cc } => run!(dec_hw_p010_crop_pack, &cc),
         HwP010CropPackPkRem { cc } => run!(dec_hw_p010_crop_pack_pkrem, &cc),
@@ -522,7 +505,23 @@ fn pack_hw_planes(raw_buf: &[u8], dst: &mut [u8], w: usize, h: usize) {
 
 #[inline]
 fn pack_hw_planes_rem(raw_buf: &[u8], dst: &mut [u8], w: usize, h: usize) {
+    let y_raw = w * h * 2;
+    let uv_raw = y_raw / 4;
+    let y_pack = packed_row_size(w) * h;
+    let uv_pack = packed_row_size(w / 2) * (h / 2);
     pack_10b_rem(raw_buf, dst, w, h);
+    pack_10b_rem(
+        &raw_buf[y_raw..y_raw + uv_raw],
+        &mut dst[y_pack..y_pack + uv_pack],
+        w / 2,
+        h / 2,
+    );
+    pack_10b_rem(
+        &raw_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
+        &mut dst[y_pack + uv_pack..],
+        w / 2,
+        h / 2,
+    );
 }
 
 macro_rules! dec_hw_pack {
@@ -616,27 +615,6 @@ dec_hw_pack!(
     cc
 );
 dec_hw_pack!(
-    dec_hw_p010_pack_stride,
-    extr_hw_p010_raw_stride,
-    pack_hw_planes,
-    &VidInf,
-    inf
-);
-dec_hw_pack!(
-    dec_hw_p010_pack_pkrem_stride,
-    extr_hw_p010_raw_stride,
-    pack_hw_planes_rem,
-    &VidInf,
-    inf
-);
-dec_hw_pack!(
-    dec_hw_p010_pack_rem_stride,
-    extr_hw_p010_raw_rem_stride,
-    pack_hw_planes,
-    &VidInf,
-    inf
-);
-dec_hw_pack!(
     dec_hw_p010_pack_rem_pkrem_stride,
     extr_hw_p010_raw_rem_stride,
     pack_hw_planes_rem,
@@ -679,12 +657,11 @@ macro_rules! dec_linear {
 }
 
 dec_linear!(dec_10_fast, extr_10b_pack, &VidInf, inf);
-dec_linear!(dec_10_stride, extr_10b_pack_stride, &VidInf, inf);
 dec_linear!(dec_10_crop_fast, extr_10b_crop_fast, &CropCalc, cc);
+dec_linear!(dec_10_crop_fast_rem, extr_10b_crop_fast_rem, &CropCalc, cc);
 dec_linear!(dec_10_crop, extr_10b_crop, &CropCalc, cc);
 dec_linear!(dec_10_fast_rem, extr_10b_pack_rem, &VidInf, inf);
 dec_linear!(dec_10_stride_rem, extr_10b_pack_stride_rem, &VidInf, inf);
-dec_linear!(dec_10_crop_fast_rem, extr_10b_crop_fast_rem, &CropCalc, cc);
 dec_linear!(dec_10_crop_rem, extr_10b_crop_rem, &CropCalc, cc);
 dec_linear!(dec_10_raw, extr_10b_raw, &VidInf, inf);
 dec_linear!(dec_10_raw_stride, extr_10b_raw_stride, &VidInf, inf);
@@ -719,12 +696,6 @@ dec_linear!(
 );
 dec_linear!(dec_hw_nv12_crop_to10, extr_hw_nv12_crop_to10, &CropCalc, cc);
 dec_linear!(dec_hw_p010_raw, extr_hw_p010_raw, &VidInf, inf);
-dec_linear!(
-    dec_hw_p010_raw_stride,
-    extr_hw_p010_raw_stride,
-    &VidInf,
-    inf
-);
 dec_linear!(dec_hw_p010_raw_crop, extr_hw_p010_raw_crop, &CropCalc, cc);
 dec_linear!(dec_hw_p010_raw_rem, extr_hw_p010_raw_rem, &VidInf, inf);
 dec_linear!(
@@ -775,17 +746,17 @@ pub fn decode_pipe(
     sem: &Arc<Semaphore>,
 ) {
     let cc = match strat {
-        B10CropFast { cc }
-        | B10CropFastRem { cc }
-        | B10Crop { cc }
+        B10Crop { cc }
         | B10CropRem { cc }
+        | B10CropFast { cc }
+        | B10CropFastRem { cc }
         | B10CropStride { cc }
         | B10CropStrideRem { cc }
-        | B8CropFast { cc }
         | B8Crop { cc }
+        | B8CropFast { cc }
         | B8CropStride { cc }
-        | B10RawCropFast { cc }
         | B10RawCrop { cc }
+        | B10RawCropFast { cc }
         | B10RawCropStride { cc }
         | HwNv12Crop { cc }
         | HwNv12CropTo10 { cc }
@@ -820,7 +791,7 @@ pub fn decode_pipe(
     } else {
         calc_8b_size(w, h)
     };
-    let has_rem = inf.is_10b && !w.is_multiple_of(8);
+    let has_rem = inf.is_10b && !(w as usize).is_multiple_of(PACK_CHUNK);
 
     match (inf.is_10b, cc, has_rem) {
         (true, Some(cc), false) => {
@@ -916,13 +887,29 @@ fn dec_pipe_10(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usi
 fn dec_pipe_10_rem(ch: &Chunk, data: &[u8], raw_fsz: usize, w: u32, h: u32, fsz: usize) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
-    let y_raw = (w * h * 2) as usize;
+    let (w, h) = (w as usize, h as usize);
+    let y_raw = w * h * 2;
+    let uv_raw = y_raw / 4;
+    let y_pack = packed_row_size(w) * h;
+    let uv_pack = packed_row_size(w / 2) * (h / 2);
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
-        pack_10b_rem(&src[..y_raw], dst, w as usize, h as usize);
+        pack_10b_rem(&src[..y_raw], dst, w, h);
+        pack_10b_rem(
+            &src[y_raw..y_raw + uv_raw],
+            &mut dst[y_pack..y_pack + uv_pack],
+            w / 2,
+            h / 2,
+        );
+        pack_10b_rem(
+            &src[y_raw + uv_raw..y_raw + 2 * uv_raw],
+            &mut dst[y_pack + uv_pack..],
+            w / 2,
+            h / 2,
+        );
     }
-    WorkPkg::new(ch.clone(), dat, len, w, h)
+    WorkPkg::new(ch.clone(), dat, len, w as u32, h as u32)
 }
 
 #[inline]
@@ -965,16 +952,27 @@ fn dec_pipe_10_crop_rem(
 ) -> WorkPkg {
     let len = ch.end - ch.start;
     let mut dat = vec![0u8; len * fsz];
+    let (w, h) = (cc.new_w as usize, cc.new_h as usize);
+    let y_raw = w * h * 2;
+    let uv_raw = y_raw / 4;
+    let y_pack = packed_row_size(w) * h;
+    let uv_pack = packed_row_size(w / 2) * (h / 2);
     for i in 0..len {
         let src = &data[i * raw_fsz..(i + 1) * raw_fsz];
         cc.crop(src, crop_buf);
-        let y_raw = (cc.new_w * cc.new_h * 2) as usize;
         let dst = &mut dat[i * fsz..(i + 1) * fsz];
+        pack_10b_rem(&crop_buf[..y_raw], dst, w, h);
         pack_10b_rem(
-            &crop_buf[..y_raw],
-            dst,
-            cc.new_w as usize,
-            cc.new_h as usize,
+            &crop_buf[y_raw..y_raw + uv_raw],
+            &mut dst[y_pack..y_pack + uv_pack],
+            w / 2,
+            h / 2,
+        );
+        pack_10b_rem(
+            &crop_buf[y_raw + uv_raw..y_raw + 2 * uv_raw],
+            &mut dst[y_pack + uv_pack..],
+            w / 2,
+            h / 2,
         );
     }
     WorkPkg::new(ch.clone(), dat, len, cc.new_w, cc.new_h)

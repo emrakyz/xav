@@ -30,6 +30,12 @@ use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
 use sonic_rs::from_str;
 
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+use crate::avx2::{SHIFT_CHUNK, conv_to_10b};
+#[cfg(target_feature = "avx512bw")]
+use crate::avx512::{SHIFT_CHUNK, conv_to_10b};
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+use crate::scalar::{SHIFT_CHUNK, conv_to_10b};
 use crate::{
     Args,
     chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
@@ -40,8 +46,8 @@ use crate::{
         make_enc_cmd, set_svt_config,
     },
     error::fatal,
-    ffms::{DecodeStrat, VidInf, conv_to_10b, nv12_to_10b},
-    pipeline::Pipeline,
+    ffms::{DecodeStrat, VidInf, nv12_to_10b, nv12_to_10b_rem},
+    pipeline::{Pipeline, conv_to_10b_rem},
     progs::{LibEncTracker, ProgsTrack},
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
@@ -159,6 +165,29 @@ struct TQWorkerCtx<'a> {
     worker_count: usize,
 }
 
+fn resolve_svt_enc(
+    strat: DecodeStrat,
+    is_nv12: bool,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> SvtEncFn {
+    if strat.is_raw() {
+        enc_svt_direct
+    } else if is_nv12 {
+        let y_ok = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK);
+        let uv_ok = (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
+        if y_ok && uv_ok {
+            enc_svt_nv12_drop
+        } else {
+            enc_svt_nv12_drop_rem
+        }
+    } else if !inf.is_10b && !pipe.frame_size.is_multiple_of(SHIFT_CHUNK) {
+        enc_svt_drop_rem
+    } else {
+        enc_svt_drop
+    }
+}
+
 pub fn encode_all(
     chunks: &[Chunk],
     inf: &VidInf,
@@ -193,23 +222,24 @@ pub fn encode_all(
     let prog = Arc::new(prog);
 
     let strat = unsafe { args.decode_strat.unwrap_unchecked() };
-    let (strat, svt_enc_fn): (_, SvtEncFn) =
-        if args.encoder == SvtAv1 && inf.is_10b && args.chunk_buffer == args.worker {
-            (strat.to_raw(), enc_svt_direct)
-        } else if matches!(
-            strat,
-            DecodeStrat::HwNv12To10 | DecodeStrat::HwNv12CropTo10 { .. }
-        ) {
-            (strat, enc_svt_nv12_drop)
-        } else {
-            (strat, enc_svt_drop)
-        };
+    let is_nv12 = matches!(
+        strat,
+        DecodeStrat::HwNv12To10
+            | DecodeStrat::HwNv12To10Stride
+            | DecodeStrat::HwNv12CropTo10 { .. }
+    );
+    let strat = if args.encoder == SvtAv1 && inf.is_10b && args.chunk_buffer == args.worker {
+        strat.to_raw()
+    } else {
+        strat
+    };
     let pipe = Pipeline::new(
         inf,
         strat,
         #[cfg(feature = "vship")]
         None,
     );
+    let svt_enc_fn = resolve_svt_enc(strat, is_nv12, inf, &pipe);
 
     let (tx, rx) = bounded::<WorkPkg>(args.chunk_buffer);
     let rx = Arc::new(rx);
@@ -848,6 +878,12 @@ fn spawn_tq_encoders(
         );
         let prog_clone = Arc::clone(sc.prog);
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
+        let svt_enc: SvtEncFn = if !sc.inf.is_10b && !sc.pipe.frame_size.is_multiple_of(SHIFT_CHUNK)
+        {
+            enc_svt_lib_rem
+        } else {
+            enc_svt_lib
+        };
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
                 inf: &inf,
@@ -856,7 +892,7 @@ fn spawn_tq_encoders(
                 grain: grain.as_deref(),
                 prog: &prog_clone,
                 encoder,
-                svt_enc: enc_svt_lib,
+                svt_enc,
             };
             tq_enc_loop(
                 &rx,
@@ -1419,8 +1455,21 @@ make_send_svt!(
     |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_to_10b(frame, buf)
 );
 make_send_svt!(
+    send_svt_conv_rem,
+    |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_to_10b_rem(frame, buf)
+);
+make_send_svt!(
     send_svt_nv12,
     |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_to_10b(
+        frame,
+        buf,
+        pipe.final_w,
+        pipe.final_h
+    )
+);
+make_send_svt!(
+    send_svt_nv12_rem,
+    |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_to_10b_rem(
         frame,
         buf,
         pipe.final_w,
@@ -1450,6 +1499,28 @@ fn enc_svt_lib(
     finish_svt(handle, &mut out, &mut tracker, ctx.prog);
 }
 
+#[cfg(feature = "vship")]
+fn enc_svt_lib_rem(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let (handle, mut out, mut tracker) = send_svt_conv_rem(
+        yuv.as_slice(),
+        cfg,
+        ctx,
+        conv_buf,
+        worker_id,
+        track_frames,
+        crf_score,
+    );
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
 fn enc_svt_drop(
     yuv: &mut Vec<u8>,
     cfg: &EncConfig,
@@ -1465,6 +1536,21 @@ fn enc_svt_drop(
     finish_svt(handle, &mut out, &mut tracker, ctx.prog);
 }
 
+fn enc_svt_drop_rem(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let (handle, mut out, mut tracker) =
+        send_svt_conv_rem(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
+    *yuv = Vec::new();
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
 fn enc_svt_nv12_drop(
     yuv: &mut Vec<u8>,
     cfg: &EncConfig,
@@ -1476,6 +1562,21 @@ fn enc_svt_nv12_drop(
 ) {
     let (handle, mut out, mut tracker) =
         send_svt_nv12(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
+    *yuv = Vec::new();
+    finish_svt(handle, &mut out, &mut tracker, ctx.prog);
+}
+
+fn enc_svt_nv12_drop_rem(
+    yuv: &mut Vec<u8>,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    conv_buf: &mut [u8],
+    worker_id: usize,
+    track_frames: bool,
+    crf_score: Option<(f32, Option<f64>)>,
+) {
+    let (handle, mut out, mut tracker) =
+        send_svt_nv12_rem(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
     *yuv = Vec::new();
     finish_svt(handle, &mut out, &mut tracker, ctx.prog);
 }
@@ -1591,5 +1692,35 @@ fn finish_svt(
     unsafe {
         svt_av1_enc_deinit(handle);
         svt_av1_enc_deinit_handle(handle);
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_access {
+    use super::*;
+
+    pub fn resolve_svt_enc_addr(
+        strat: DecodeStrat,
+        is_nv12: bool,
+        inf: &VidInf,
+        pipe: &Pipeline,
+    ) -> usize {
+        super::resolve_svt_enc(strat, is_nv12, inf, pipe) as usize
+    }
+
+    pub fn enc_svt_direct_addr() -> usize {
+        (super::enc_svt_direct as SvtEncFn) as usize
+    }
+    pub fn enc_svt_drop_addr() -> usize {
+        (super::enc_svt_drop as SvtEncFn) as usize
+    }
+    pub fn enc_svt_drop_rem_addr() -> usize {
+        (super::enc_svt_drop_rem as SvtEncFn) as usize
+    }
+    pub fn enc_svt_nv12_drop_addr() -> usize {
+        (super::enc_svt_nv12_drop as SvtEncFn) as usize
+    }
+    pub fn enc_svt_nv12_drop_rem_addr() -> usize {
+        (super::enc_svt_nv12_drop_rem as SvtEncFn) as usize
     }
 }

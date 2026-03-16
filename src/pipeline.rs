@@ -2,6 +2,12 @@
 use std::path::Path;
 use std::{io::Write as _, process::ChildStdin};
 
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+use crate::avx2::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_to_10b, unpack_10b};
+#[cfg(target_feature = "avx512bw")]
+use crate::avx512::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_to_10b, unpack_10b};
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+use crate::scalar::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_to_10b, unpack_10b};
 use crate::{
     encode::get_frame,
     ffms::{
@@ -9,13 +15,13 @@ use crate::{
         DecodeStrat::{
             B8Crop, B8CropFast, B8CropStride, B10Crop, B10CropFast, B10CropFastRem, B10CropRem,
             B10CropStride, B10CropStrideRem, B10RawCrop, B10RawCropFast, B10RawCropStride,
-            HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride, HwP010CropPack,
-            HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem, HwP010RawCrop,
-            HwP010RawCropRem,
+            HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride,
+            HwP010CropPack, HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem,
+            HwP010RawCrop, HwP010RawCropRem,
         },
-        VidInf, calc_8b_size, calc_packed_size, conv_to_10b, nv12_to_10b, unpack_10b,
-        unpack_10b_rem,
+        VidInf, nv12_to_10b, nv12_to_10b_rem,
     },
+    pack::{calc_8b_size, calc_packed_size, unpack_10b_rem},
 };
 #[cfg(feature = "vship")]
 use crate::{
@@ -56,8 +62,8 @@ pub type ComputeMetricFn =
 #[cfg(feature = "vship")]
 pub type AggregateScoresFn = fn(&mut Vec<f64>) -> f64;
 
-fn unpack_10b_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    unpack_10b(input, output, pipe.final_w, pipe.final_h);
+fn unpack_10b_wrap(input: &[u8], output: &mut [u8], _pipe: &Pipeline) {
+    unpack_10b(input, output);
 }
 
 fn unpack_10b_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
@@ -66,6 +72,10 @@ fn unpack_10b_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
 
 fn nv12_to_10b_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
     nv12_to_10b(input, output, pipe.final_w, pipe.final_h);
+}
+
+fn nv12_to_10b_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
+    nv12_to_10b_rem(input, output, pipe.final_w, pipe.final_h);
 }
 
 pub fn write_frames_10b(
@@ -92,6 +102,32 @@ pub fn write_frames_8b(
     for i in 0..frame_count {
         let frame = get_frame(frames, i, pipe.frame_size);
         conv_to_10b(frame, buf);
+        _ = stdin.write_all(buf);
+    }
+}
+
+pub fn conv_to_10b_rem(input: &[u8], output: &mut [u8]) {
+    let aligned = input.len() / SHIFT_CHUNK * SHIFT_CHUNK;
+    if aligned > 0 {
+        conv_to_10b(&input[..aligned], &mut output[..aligned * 2]);
+    }
+    for i in aligned..input.len() {
+        let [lo, hi] = (u16::from(input[i]) << 2).to_le_bytes();
+        output[i * 2] = lo;
+        output[i * 2 + 1] = hi;
+    }
+}
+
+pub fn write_frames_8b_rem(
+    stdin: &mut ChildStdin,
+    frames: &[u8],
+    frame_count: usize,
+    buf: &mut [u8],
+    pipe: &Pipeline,
+) {
+    for i in 0..frame_count {
+        let frame = get_frame(frames, i, pipe.frame_size);
+        conv_to_10b_rem(frame, buf);
         _ = stdin.write_all(buf);
     }
 }
@@ -124,17 +160,17 @@ impl Pipeline {
         #[cfg(feature = "vship")] target_quality: Option<&str>,
     ) -> Self {
         let (final_w, final_h) = match strat {
-            B10CropFast { cc }
-            | B10CropFastRem { cc }
-            | B10Crop { cc }
+            B10Crop { cc }
             | B10CropRem { cc }
+            | B10CropFast { cc }
+            | B10CropFastRem { cc }
             | B10CropStride { cc }
             | B10CropStrideRem { cc }
-            | B8CropFast { cc }
             | B8Crop { cc }
+            | B8CropFast { cc }
             | B8CropStride { cc }
-            | B10RawCropFast { cc }
             | B10RawCrop { cc }
+            | B10RawCropFast { cc }
             | B10RawCropStride { cc }
             | HwNv12Crop { cc }
             | HwNv12CropTo10 { cc }
@@ -167,16 +203,27 @@ impl Pipeline {
             final_w * final_h * 3 / 2 * 2
         };
 
-        let has_rem = inf.is_10b && (final_w % 8) != 0;
+        let has_rem =
+            inf.is_10b && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_size.is_multiple_of(UNPACK_CHUNK));
 
         let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
 
         let (unpack, write_frames): (UnpackFn, WriteFn) = if is_nv12_to_10 {
-            (nv12_to_10b_wrap, write_frames_10b)
+            let y_ok = (final_w * final_h).is_multiple_of(SHIFT_CHUNK);
+            let uv_ok = (final_w / 2 * (final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
+            if y_ok && uv_ok {
+                (nv12_to_10b_wrap, write_frames_10b)
+            } else {
+                (nv12_to_10b_rem_wrap, write_frames_10b)
+            }
         } else if is_raw {
             (unpack_noop, write_frames_10b)
         } else if !is_10b_output {
-            (unpack_noop, write_frames_8b)
+            if frame_size.is_multiple_of(SHIFT_CHUNK) {
+                (unpack_noop, write_frames_8b)
+            } else {
+                (unpack_noop, write_frames_8b_rem)
+            }
         } else if has_rem {
             (unpack_10b_rem_wrap, write_frames_10b)
         } else {
@@ -284,4 +331,24 @@ fn compute_cvvdp(
             .compute_cvvdp(input_planes, output_planes, input_strides, output_strides)
             .unwrap_unchecked()
     }
+}
+
+#[cfg(test)]
+pub(crate) mod test_access {
+    use super::*;
+
+    pub const UNPACK_NOOP: UnpackFn = super::unpack_noop;
+    pub const UNPACK_10B: UnpackFn = super::unpack_10b_wrap;
+    pub const UNPACK_10B_REM: UnpackFn = super::unpack_10b_rem_wrap;
+    pub const NV12_TO_10B: UnpackFn = super::nv12_to_10b_wrap;
+    pub const NV12_TO_10B_REM: UnpackFn = super::nv12_to_10b_rem_wrap;
+
+    #[cfg(feature = "vship")]
+    #[allow(dead_code)]
+    pub const COMPUTE_SSIMULACRA2: ComputeMetricFn = super::compute_ssimulacra2;
+    #[cfg(feature = "vship")]
+    #[allow(dead_code)]
+    pub const COMPUTE_BUTTERAUGLI: ComputeMetricFn = super::compute_butteraugli;
+    #[cfg(feature = "vship")]
+    pub const COMPUTE_CVVDP: ComputeMetricFn = super::compute_cvvdp;
 }
