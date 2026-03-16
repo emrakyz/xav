@@ -3,7 +3,6 @@
 !/src/
 !/.cargo/
 !/test_files/
-test_files/*.ffindex
 !.rustfmt.toml
 !build.rs
 !build.sh
@@ -11,4 +10,3 @@ test_files/*.ffindex
 !LICENSE
 !README.md
 !.gitignore
-!.gitattributes
