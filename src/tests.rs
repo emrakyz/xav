@@ -823,7 +823,7 @@ hw!(
 );
 hw!(
     hw_p010_pack_pk_rem,
-    "10b_960x480.mp4",
+    "10b_1280x720.mp4",
     (0, 0),
     false,
     1,
@@ -864,7 +864,7 @@ hw!(
 );
 hw!(
     hw_p010_crop_pack_pk_rem,
-    "10b_968x480.mp4",
+    "10b_1288x720.mp4",
     (0, 4),
     false,
     1,
@@ -1070,7 +1070,7 @@ mod tq {
     tq_hw!(hw_p010_pack, "10b_1920x1080.mp4", (0, 0), false, HwP010Pack);
     tq_hw!(
         hw_p010_pack_pk_rem,
-        "10b_960x480.mp4",
+        "10b_1280x720.mp4",
         (0, 0),
         false,
         HwP010PackPkRem
@@ -1106,7 +1106,7 @@ mod tq {
     );
     tq_hw!(
         hw_p010_crop_pack_pk_rem,
-        "10b_968x480.mp4",
+        "10b_1288x720.mp4",
         (0, 4),
         false,
         HwP010CropPackPkRem { .. }

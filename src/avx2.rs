@@ -362,7 +362,8 @@ macro_rules! shift_p010_asm {
             "xor {o:e}, {o:e}",
             "2:",
             $(
-                concat!("vpsrlw {a}, [{s} + {o} + ", $off, "], 6"),
+                concat!("vmovdqu {a}, [{s} + {o} + ", $off, "]"),
+                "vpsrlw {a}, {a}, 6",
                 concat!("vmovdqu [{d} + {o} + ", $off, "], {a}"),
             )+
             concat!("add {o}, ", $stride),
