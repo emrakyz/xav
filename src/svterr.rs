@@ -380,6 +380,10 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
             chk_frange(key, name, val, 0.0, 8.0)?;
         }
 
+        "color-primaries" | "transfer-characteristics" | "matrix-coefficients"
+        | "color-range" | "chroma-sample-position" | "mastering-display"
+        | "content-light" => {}
+
         _ => {
             return Err(err(key, format_args!("{Y}unknown or wrong parameter")));
         }
