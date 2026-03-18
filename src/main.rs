@@ -47,6 +47,7 @@ mod progs;
 mod scalar;
 mod scd;
 mod svt;
+mod svterr;
 #[cfg(feature = "vship")]
 mod tq;
 mod util;
@@ -422,6 +423,14 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
         )?;
     }
 
+    if result.encoder == SvtAv1 {
+        svterr::validate(&result.params)?;
+        #[cfg(feature = "vship")]
+        if let Some(ref pp) = result.probe_params {
+            svterr::validate(pp)?;
+        }
+    }
+
     Ok(result)
 }
 
@@ -629,6 +638,18 @@ fn scd_and_audio(
     }
 }
 
+fn validate_all_scenes(scenes: &[chunk::Scene], enc: Encoder) -> Result<(), Xerr> {
+    validate_scenes(scenes)?;
+    if enc == SvtAv1 {
+        for s in scenes {
+            if let Some(ref p) = s.params {
+                svterr::validate(p)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn main_with_args(args: &Args) -> Result<(), Xerr> {
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     _ = stdout().flush();
@@ -681,7 +702,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         scenes
     };
 
-    validate_scenes(&scenes)?;
+    validate_all_scenes(&scenes, args.encoder)?;
     if args.sc_only {
         return Ok(());
     }

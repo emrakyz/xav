@@ -9,14 +9,14 @@ install_deps() {
 
         case "${pm}" in
                 "pacman")
-                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson)
+                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson ffmpeg curl)
                         ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
                         ;;
                 "dnf")
                         pkgs=(
                                 glibc-static libstdc++-static nasm rustup clang clang-libs
                                 llvm lld compiler-rt llvm-libunwind-static autoconf automake
-                                libtool cmake ninja-build pkgconf meson
+                                libtool cmake ninja-build pkgconf meson ffmpeg curl
                         )
                         ${priv:-} dnf install -y "${pkgs[@]}"
                         ;;
@@ -738,6 +738,17 @@ build_svtav1() {
         loginf b "Building SVT-AV1 (${svt_fork_name})"
 
         local logfile="/tmp/build_svtav1_$.log"
+        local pgo_dir="${BUILD_DIR}/SVT-AV1/pgo"
+
+        pgo_params=(
+                --preset 1 --tune 0 --keyint 0 --scd 0 --scm 0 --tile-rows 0 --tile-columns 0 --rc 0
+                --width 1920 --height 1080 --forced-max-frame-width 1920 --forced-max-frame-height 1080
+                --frames 65 --nb 65 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
+                --color-format 1 --asm max --color-range 0 --color-primaries 1
+                --transfer-characteristics 1 --matrix-coefficients 1 --chroma-sample-position 1
+                --progress 0 --no-progress 1 --lp 5 --enable-qm 1 --enable-variance-boost 1
+                --luminance-qp-bias 0 --sharpness 1 --passes 1 --film-grain 0
+        )
 
         git clone "${svt_fork_url}" "${BUILD_DIR}/SVT-AV1" > "${logfile}" 2>&1
         cd "${BUILD_DIR}/SVT-AV1"
@@ -751,13 +762,26 @@ build_svtav1() {
         sed -i '/FORTIFY_SOURCE/s/^/#/' CMakeLists.txt
         sed -i '/gdwarf/s/^/#/' CMakeLists.txt
         sed -i '/gnull/s/^/#/' CMakeLists.txt
+        sed -i 's|"${LLVM_PROFDATA} merge --sparse=true \*.profraw -o default.profdata"|"cd ${SVT_AV1_PGO_DIR} \&\& ${LLVM_PROFDATA} merge --sparse=true *.profraw -o default.profdata"|' CMakeLists.txt
+
+        mkdir -p "${pgo_dir}"
+        loginf b "Downloading PGO training video"
+        curl -L "https://media.xiph.org/video/derf/webm/Netflix_FoodMarket2_4096x2160_60fps_10bit_420.webm" -o "${pgo_dir}/i.webm" >> "${logfile}" 2>&1
+        ffmpeg -hide_banner -v error -stats -y -nostdin -i "${pgo_dir}/i.webm" -frames:v 65 -vf "scale=1920:1080:flags=lanczos+accurate_rnd+full_chroma_int:param0=4" -pix_fmt yuv420p10le -strict -1 -f rawvideo "${pgo_dir}/i.yuv" >> "${logfile}" 2>&1
+        rm -f "${pgo_dir}/i.webm"
 
         cd Build/linux
         grep -q avx512f /proc/cpuinfo && HAS_512="enable-avx512" || HAS_512="disable-avx512"
-        export LLVM_PROFILE_FILE="${BUILD_DIR}/SVT-AV1/Build/linux/Release/%p.profraw"
-        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo >> "${logfile}" 2>&1 && {
+        export LLVM_PROFILE_FILE="${pgo_dir}/%p.profraw"
+        loginf b "SVT-AV1 PGO generate"
+        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo pgo-dir="${pgo_dir}" pgo-compile-gen >> "${logfile}" 2>&1
+        loginf b "Running PGO training encode"
+        "${BUILD_DIR}/SVT-AV1/Bin/Release/SvtAv1EncApp" -i "${pgo_dir}/i.yuv" -b /dev/null "${pgo_params[@]}" >> "${logfile}" 2>&1
+        loginf b "SVT-AV1 PGO use"
+        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo pgo-dir="${pgo_dir}" pgo-compile-use >> "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
                 loginf g "SVT-AV1 built successfully"
+                rm -f "${pgo_dir}/i.yuv"
         } || {
                 echo -e "\n${R}Build failed! Output:${N}\n"
                 cat "${logfile}"

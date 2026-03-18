@@ -15,9 +15,9 @@ use crate::{
         DecodeStrat::{
             B8Crop, B8CropFast, B8CropStride, B10Crop, B10CropFast, B10CropFastRem, B10CropRem,
             B10CropStride, B10CropStrideRem, B10RawCrop, B10RawCropFast, B10RawCropStride,
-            HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride,
-            HwP010CropPack, HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem,
-            HwP010RawCrop, HwP010RawCropRem,
+            HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride, HwP010CropPack,
+            HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem, HwP010RawCrop,
+            HwP010RawCropRem,
         },
         VidInf, nv12_to_10b, nv12_to_10b_rem,
     },
@@ -203,8 +203,8 @@ impl Pipeline {
             final_w * final_h * 3 / 2 * 2
         };
 
-        let has_rem =
-            inf.is_10b && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_size.is_multiple_of(UNPACK_CHUNK));
+        let has_rem = inf.is_10b
+            && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_size.is_multiple_of(UNPACK_CHUNK));
 
         let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
 

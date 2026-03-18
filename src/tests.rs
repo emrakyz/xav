@@ -6,7 +6,7 @@ use std::{
     mem::{size_of, zeroed},
     path::{Path, PathBuf},
     process::{self, Command, Stdio},
-    ptr::null_mut,
+    ptr::{fn_addr_eq, null_mut},
     slice::from_raw_parts,
     sync::{
         Arc, Once,
@@ -322,12 +322,12 @@ fn verify_dispatch(strat: DecodeStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: b
     } else {
         (pipe_ta::UNPACK_10B, write_frames_10b)
     };
-    assert_eq!(
-        pipe.unpack as usize, exp_unpack as usize,
+    assert!(
+        fn_addr_eq(pipe.unpack, exp_unpack),
         "wrong unpack fn for {name}"
     );
-    assert_eq!(
-        pipe.write_frames as usize, exp_write as usize,
+    assert!(
+        fn_addr_eq(pipe.write_frames, exp_write),
         "wrong write_frames fn for {name}"
     );
 
@@ -358,19 +358,18 @@ fn verify_dispatch(strat: DecodeStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: b
             tq::{calc_metrics_8b, calc_metrics_10b},
         };
 
-        assert_eq!(
-            pipe.compute_metric as usize,
-            pipe_ta::COMPUTE_CVVDP as usize,
+        assert!(
+            fn_addr_eq(pipe.compute_metric, pipe_ta::COMPUTE_CVVDP),
             "wrong compute_metric for {name}"
         );
 
-        let expected_calc = if inf.is_10b {
-            (calc_metrics_10b as CalcMetricsFn) as usize
+        let expected_calc: CalcMetricsFn = if inf.is_10b {
+            calc_metrics_10b
         } else {
-            (calc_metrics_8b as CalcMetricsFn) as usize
+            calc_metrics_8b
         };
-        assert_eq!(
-            pipe.calc_metrics as usize, expected_calc,
+        assert!(
+            fn_addr_eq(pipe.calc_metrics, expected_calc),
             "wrong calc_metrics fn for {name}"
         );
     }

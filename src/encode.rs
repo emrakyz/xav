@@ -165,12 +165,7 @@ struct TQWorkerCtx<'a> {
     worker_count: usize,
 }
 
-fn resolve_svt_enc(
-    strat: DecodeStrat,
-    is_nv12: bool,
-    inf: &VidInf,
-    pipe: &Pipeline,
-) -> SvtEncFn {
+fn resolve_svt_enc(strat: DecodeStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> SvtEncFn {
     if strat.is_raw() {
         enc_svt_direct
     } else if is_nv12 {
@@ -1696,7 +1691,8 @@ fn finish_svt(
 }
 
 #[cfg(test)]
-pub(crate) mod test_access {
+#[allow(function_casts_as_integer, clippy::fn_to_numeric_cast_any)]
+pub mod test_access {
     use super::*;
 
     pub fn resolve_svt_enc_addr(
