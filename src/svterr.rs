@@ -147,14 +147,16 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
     if NOT_RELEVANT.contains(&name) {
         return Some(err(
             key,
-            format_args!("{Y}The parameter {R}{key} {Y}is not relevant with xav"),
+            format_args!(
+                "{Y}The parameter {R}{key} {Y}is not relevant with xav and should not be set"
+            ),
         ));
     }
     if AUTO_SET.contains(&name) {
         return Some(err(
             key,
             format_args!(
-                "{Y}The parameter {R}{key} {Y}is used by xav automatically, you should never add \
+                "{Y}The parameter {R}{key} {Y}is used by xav automatically, you should never set \
                  it."
             ),
         ));
@@ -164,17 +166,18 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
             key,
             format_args!(
                 "{Y}xav only encodes in 10bit (yuv420p10le), and preferably with high-bit-depth \
-                 mode decisions as it's objectively superior"
+                 mode decisions as it's objectively superior This parameter should not be set"
             ),
         ),
         "qp" | "q" => err(
             key,
-            format_args!("{Y}xav does not use q|qp mode. CRF mode is used"),
+            format_args!("{Y}xav does not use q|qp mode. CRF mode is used. It should not be set"),
         ),
         "tbr" => err(
             key,
             format_args!(
-                "{Y}Target bitrate can not be used with CRF mode\nxav only encodes in CRF"
+                "{Y}Target bitrate can not be used with CRF mode and should not be set\nxav only \
+                 encodes in CRF"
             ),
         ),
         "aq-mode" => err(
@@ -187,14 +190,16 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
         ),
         "pass" | "passes" | "stats" => err(
             key,
-            format_args!("{Y}2 pass is not relevant for svt-av1 CRF encoding"),
+            format_args!(
+                "{Y}2 pass is not relevant for svt-av1 CRF encoding. This should not be set"
+            ),
         ),
         "keyint" | "force-key-frames" => err(
             key,
             format_args!(
                 "{Y}This parameter is set by xav automatically. You should not change it.\nWith \
                  chunked encoding, the optimal is to have keyframes at scene changes,\nmeaning \
-                 each chunk's starting frame will be a keyframe."
+                 each chunk's starting frame will be a keyframe. This should not be set."
             ),
         ),
         "scd" => err(
@@ -222,7 +227,7 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
         "film-grain-denoise" => err(
             key,
             format_args!(
-                "{Y}film-grain-denoise should not be used as it is severely detrimental.\nUse \
+                "{Y}film-grain-denoise should not be set as it is severely detrimental.\nUse \
                  external denoising if needed; or encoder options that don't\nprioritize sharpness"
             ),
         ),
@@ -230,7 +235,7 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
             key,
             format_args!(
                 "{Y}xav already uses its own photon-noise implementation\nthe parameter {R}{key} \
-                 {Y}is useless with it"
+                 {Y}is useless with it. You should not set it."
             ),
         ),
         _ => return None,
@@ -260,11 +265,11 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
                 1,
                 6,
                 format_args!(
-                    "{Y}lp is the level of parallelism (it is not the number of cores/threads \
-                     used). It adapts the per-worker CPU usage based on the input video and your \
-                     CPU\n{Y}For less workers, higher values are recommended\nFor many workers, \
-                     lower values are recommended\nIt is always advised to test \
-                     {C}3{Y}/{C}4{Y}/{C}5 {Y}first"
+                    "{Y}lp must be between 1 and 6 and it is the level of parallelism (it is not \
+                     the number of cores/threads used). It adapts the per-worker CPU usage based \
+                     on the input video and your CPU\n{Y}For less workers, higher values are \
+                     recommended\nFor many workers, lower values are recommended\nIt is always \
+                     advised to test {C}3{Y}/{C}4{Y}/{C}5 {Y}first"
                 ),
             )?;
         }
@@ -380,8 +385,12 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
             chk_frange(key, name, val, 0.0, 8.0)?;
         }
 
-        "color-primaries" | "transfer-characteristics" | "matrix-coefficients"
-        | "color-range" | "chroma-sample-position" | "mastering-display"
+        "color-primaries"
+        | "transfer-characteristics"
+        | "matrix-coefficients"
+        | "color-range"
+        | "chroma-sample-position"
+        | "mastering-display"
         | "content-light" => {}
 
         _ => {
