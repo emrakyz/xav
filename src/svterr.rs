@@ -242,6 +242,7 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
     match name {
         "preset" => {

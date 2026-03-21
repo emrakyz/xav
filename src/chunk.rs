@@ -439,7 +439,8 @@ fn run_merge(
     let mut content = String::new();
     for file in files {
         let abs_path = file.canonicalize()?;
-        _ = writeln!(content, "file '{}'", abs_path.display());
+        let s = abs_path.display().to_string().replace('\'', "'\\''");
+        _ = writeln!(content, "file '{s}'");
     }
     write(&concat_list, content)?;
 
@@ -665,7 +666,8 @@ fn concat_segments(segments: &[PathBuf], output: &Path) -> Result<bool, Xerr> {
 
     let mut content = String::new();
     for seg in segments {
-        _ = writeln!(content, "file '{}'", seg.canonicalize()?.display());
+        let s = seg.canonicalize()?.display().to_string().replace('\'', "'\\''");
+        _ = writeln!(content, "file '{s}'");
     }
     write(&concat_list, content)?;
 
