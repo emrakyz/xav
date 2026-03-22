@@ -4,6 +4,7 @@ use std::{
     fmt::Write as _,
     fs::{OpenOptions, copy},
     io::{BufRead as _, BufReader as StdBufReader},
+    path::PathBuf,
     sync::OnceLock,
 };
 use std::{
@@ -12,7 +13,7 @@ use std::{
     io::{BufWriter, Write},
     mem::{size_of, zeroed},
     panic::resume_unwind,
-    path::{Path, PathBuf},
+    path::Path,
     ptr::null_mut,
     slice::from_raw_parts,
     sync::{
