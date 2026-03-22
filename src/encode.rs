@@ -142,7 +142,6 @@ struct EncWorkerCtx<'a> {
     inf: &'a VidInf,
     pipe: &'a Pipeline,
     work_dir: &'a Path,
-    grain: Option<&'a Path>,
     prog: &'a Arc<ProgsTrack>,
     encoder: Encoder,
     svt_enc: SvtEncFn,
@@ -189,7 +188,6 @@ pub fn encode_all(
     args: &Args,
     path: &Path,
     work_dir: &Path,
-    grain_table: Option<&PathBuf>,
     pipe_reader: Option<PipeReader>,
 ) {
     let resume_data = load_resume_data(work_dir);
@@ -198,7 +196,7 @@ pub fn encode_all(
     {
         let is_tq = args.target_quality.is_some() && args.qp_range.is_some();
         if is_tq {
-            encode_tq(chunks, inf, args, path, work_dir, grain_table, pipe_reader);
+            encode_tq(chunks, inf, args, path, work_dir, pipe_reader);
             return;
         }
     }
@@ -261,7 +259,6 @@ pub fn encode_all(
         let pipe = pipe.clone();
         let params = args.params.clone();
         let stats_clone = stats.clone();
-        let grain = grain_table.cloned();
         let wd = work_dir.to_path_buf();
         let prog_clone = Arc::clone(&prog);
         let sem_clone = Arc::clone(&sem);
@@ -272,7 +269,6 @@ pub fn encode_all(
                 inf: &inf,
                 pipe: &pipe,
                 work_dir: &wd,
-                grain: grain.as_deref(),
                 prog: &prog_clone,
                 encoder,
                 svt_enc: svt_enc_fn,
@@ -722,7 +718,6 @@ fn encode_tq(
     args: &Args,
     path: &Path,
     work_dir: &Path,
-    grain_table: Option<&PathBuf>,
     pipe_reader: Option<PipeReader>,
 ) {
     let resume_data = load_resume_data(work_dir);
@@ -781,7 +776,7 @@ fn encode_tq(
         &sc,
     );
 
-    let workers = spawn_tq_encoders(&enc_rx, &met_tx, &sc, grain_table);
+    let workers = spawn_tq_encoders(&enc_rx, &met_tx, &sc);
 
     init_device().unwrap_or_else(|e| fatal(e));
     join_one(dec.handle);
@@ -860,17 +855,12 @@ fn spawn_tq_encoders(
     enc_rx: &Arc<Receiver<WorkPkg>>,
     met_tx: &Sender<WorkPkg>,
     sc: &TQSpawnCtx,
-    grain_table: Option<&PathBuf>,
 ) -> Vec<JoinHandle<()>> {
     let mut workers = Vec::new();
     for worker_id in 0..sc.worker_count {
         let (rx, tx) = (Arc::clone(enc_rx), met_tx.clone());
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
-        let (params, probe_params, grain) = (
-            sc.args.params.clone(),
-            sc.args.probe_params.clone(),
-            grain_table.cloned(),
-        );
+        let (params, probe_params) = (sc.args.params.clone(), sc.args.probe_params.clone());
         let prog_clone = Arc::clone(sc.prog);
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
         let svt_enc: SvtEncFn = if !sc.inf.is_10b && !sc.pipe.frame_size.is_multiple_of(SHIFT_CHUNK)
@@ -884,7 +874,6 @@ fn spawn_tq_encoders(
                 inf: &inf,
                 pipe: &pipe,
                 work_dir: &wd,
-                grain: grain.as_deref(),
                 prog: &prog_clone,
                 encoder,
                 svt_enc,
@@ -931,7 +920,6 @@ fn enc_tq_probe(
             zone_params: pkg.chunk.params.as_deref(),
             crf: crf as f32,
             output: out,
-            grain_table: ctx.grain,
             chunk_idx: pkg.chunk.idx,
             width: pkg.width,
             height: pkg.height,
@@ -954,7 +942,6 @@ fn enc_tq_probe(
         zone_params: pkg.chunk.params.as_deref(),
         crf: crf as f32,
         output: out,
-        grain_table: ctx.grain,
         chunk_idx: pkg.chunk.idx,
         width: pkg.width,
         height: pkg.height,
@@ -1056,7 +1043,6 @@ fn enc_chunk(
             zone_params: pkg.chunk.params.as_deref(),
             crf,
             output: &out,
-            grain_table: ctx.grain,
             chunk_idx: pkg.chunk.idx,
             width: pkg.width,
             height: pkg.height,
@@ -1071,7 +1057,6 @@ fn enc_chunk(
         zone_params: pkg.chunk.params.as_deref(),
         crf,
         output: &out,
-        grain_table: ctx.grain,
         chunk_idx: pkg.chunk.idx,
         width: pkg.width,
         height: pkg.height,

@@ -20,7 +20,6 @@
 - Full SIMD (AVX512/AVX2/Scalar) internals
 - Automated color & HDR metadata and frame/container metadata parsing
 - Fully automated, very fast and safe cropping, by also accounting for multi AR videos
-- Optional FGS tables (photon noise)
 - Convenient optional Opus audio encoding: With optional automated bitrate calculation, stereo downmixing and loudness normalization based on AC-4 standards: [ETSI TS 103 190-1, Section 6.2.17](https://www.etsi.org/deliver/etsi_ts/103100_103199/10319001/01.03.01_60/ts_10319001v010301p.pdf)
 - Detailed progress monitoring for encoders and quality metric testing
 - Detailed video output summary, TQ output summary and TQ related JSON log file

@@ -38,7 +38,6 @@ mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
 mod lavf;
-mod noise;
 mod opus;
 mod pack;
 pub mod pipeline;
@@ -70,7 +69,6 @@ use encode::encode_all;
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
 use ffms::{DecodeStrat, VidInf, VideoDecoder, gcd, get_decode_strat, get_vidinf};
-use noise::gen_table;
 use scd::fd_scenes;
 #[cfg(feature = "vship")]
 use tq::{inverse_jod, jod};
@@ -91,7 +89,6 @@ pub struct Args {
     pub worker: usize,
     pub scene_file: PathBuf,
     pub params: String,
-    pub noise: Option<u32>,
     pub audio: Option<AudioSpec>,
     pub input: PathBuf,
     pub output: PathBuf,
@@ -134,7 +131,6 @@ fn print_help() {
     println!("{C}-w {P}┃ {C}--worker     {W}Encoder count");
     println!("{C}-b {P}┃ {C}--buffer     {W}Extra chunks to hold in front buffer");
     println!("{C}-s {P}┃ {C}--sc         {W}Specify SCD file. Auto gen if not specified");
-    println!("{C}-n {P}┃ {C}--noise      {W}Add noise {B}[1-64]{W}: {R}1{B}={W}ISO100, {R}64{B}={W}ISO6400");
     println!("{C}-r {P}┃ {C}--range      {W}Trim and splice frame ranges: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio      {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     println!("                  {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"");
@@ -158,7 +154,6 @@ fn print_help() {
     println!("  {C}-w {R}5                {P}\\  {B}# {W}Spawn {R}5 {W}encoder instances simultaneously");
     println!("  {C}-b {R}1                {P}\\  {B}# {W}Decode {R}1 {W}extra chunk in memory for less waiting");
     println!("  {C}-s {G}scd.txt          {P}\\  {B}# {W}Optionally use a scene file from external SCD tools");
-    println!("  {C}-n {R}4                {P}\\  {B}# {W}Add ISO-{R}400 {W}photon noise");
     println!("  {C}-r {G}\"0-120,240-480\"  {P}\\  {B}# {W}Only encode given frame ranges and combine");
     println!("  {C}-a {G}\"norm 1,2\"       {P}\\  {B}# {W}Encode {R}2 {W}streams using Opus with stereo downmixing");
     #[cfg(feature = "vship")]
@@ -187,14 +182,6 @@ fn parse_args() -> Result<Args, Xerr> {
             fatal("argument parsing failed");
         }
     }
-}
-
-fn parse_noise(v: &str) -> Result<u32, Xerr> {
-    let val: u32 = v.parse()?;
-    if !(1..=64).contains(&val) {
-        return Err("Noise ISO must be between 1-64".into());
-    }
-    Ok(val * 100)
 }
 
 fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
@@ -293,7 +280,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut worker, mut chunk_buffer, mut sc_only, mut hwaccel) = (1usize, None, false, false);
     let (mut scene_file, mut input, mut output) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
     let (mut encoder, mut params) = (Encoder::default(), String::new());
-    let (mut noise, mut audio, mut ranges) = (None, None, None);
+    let (mut audio, mut ranges) = (None, None);
     #[cfg(feature = "vship")]
     let (mut target_quality, mut qp_range, mut cvvdp_config, mut probe_params) = (
         None::<String>,
@@ -325,11 +312,6 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "-a" | "--audio" => {
                 if let Some(v) = next_arg(args, &mut i) {
                     audio = Some(parse_audio_arg(v)?);
-                }
-            }
-            "-n" | "--noise" => {
-                if let Some(v) = next_arg(args, &mut i) {
-                    noise = Some(parse_noise(v)?);
                 }
             }
             #[cfg(feature = "vship")]
@@ -367,7 +349,6 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         worker,
         scene_file,
         params,
-        noise,
         audio,
         input,
         output,
@@ -724,28 +705,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
     args.decode_strat = Some(get_decode_strat(&inf, crop, args.hwaccel, tq));
 
-    let grain_table = if let Some(iso) = args.noise {
-        let table_path = work_dir.join("grain.tbl");
-        gen_table(iso, &inf, &table_path)?;
-        Some(table_path)
-    } else {
-        None
-    };
-
     let chunks = chunkify(&scenes);
 
     let prior_secs = get_resume(&work_dir).map_or(0, |r| r.prior_secs);
     init_elapsed(prior_secs);
     let enc_start = Instant::now();
-    encode_all(
-        &chunks,
-        &inf,
-        &args,
-        &args.input,
-        &work_dir,
-        grain_table.as_ref(),
-        pipe_reader,
-    );
+    encode_all(&chunks, &inf, &args, &args.input, &work_dir, pipe_reader);
     let enc_time = enc_start.elapsed() + Duration::from_secs(prior_secs);
 
     let video_mkv = work_dir.join("encode").join("video.mkv");

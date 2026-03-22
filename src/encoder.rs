@@ -1,18 +1,14 @@
 use std::{
     arch::is_x86_feature_detected,
     ffi::CString,
-    fs::read_to_string,
-    mem::zeroed,
     path::Path,
     process::{Command, Stdio},
 };
 
-use av1_grain::parse_grain_table;
-
 use crate::{
     Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
     ffms::VidInf,
-    svt::{AomFilmGrain, EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter},
+    svt::{EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter},
     util::assume_unreachable,
 };
 
@@ -58,7 +54,6 @@ pub struct EncConfig<'a> {
     pub zone_params: Option<&'a str>,
     pub crf: f32,
     pub output: &'a Path,
-    pub grain_table: Option<&'a Path>,
     pub chunk_idx: usize,
     pub width: u32,
     pub height: u32,
@@ -741,69 +736,11 @@ pub fn set_svt_config(config: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
         parse_svt_param(config, "content-light", cl);
     }
 
-    if let Some(gt) = cfg.grain_table {
-        load_fgs_table(config, gt);
-    }
-
     parse_svt_params(config, cfg.params);
 
     if let Some(z) = cfg.zone_params {
         parse_svt_params(config, z);
     }
-}
-
-fn load_fgs_table(config: *mut EbSvtAv1EncConfiguration, path: &Path) {
-    let Ok(text) = read_to_string(path) else {
-        return;
-    };
-    let Ok(segments) = parse_grain_table(&text) else {
-        return;
-    };
-    let Some(seg) = segments.into_iter().next() else {
-        return;
-    };
-
-    let mut fg = Box::new(unsafe { zeroed::<AomFilmGrain>() });
-    fg.apply_grain = 1;
-    fg.ignore_ref = 1;
-    fg.update_parameters = 1;
-    fg.random_seed = seg.random_seed;
-    fg.ar_coeff_lag = i32::from(seg.ar_coeff_lag);
-    fg.ar_coeff_shift = i32::from(seg.ar_coeff_shift);
-    fg.scaling_shift = i32::from(seg.scaling_shift);
-    fg.grain_scale_shift = i32::from(seg.grain_scale_shift);
-    fg.chroma_scaling_from_luma = i32::from(seg.chroma_scaling_from_luma);
-    fg.overlap_flag = i32::from(seg.overlap_flag);
-    fg.cb_mult = i32::from(seg.cb_mult);
-    fg.cb_luma_mult = i32::from(seg.cb_luma_mult);
-    fg.cb_offset = i32::from(seg.cb_offset);
-    fg.cr_mult = i32::from(seg.cr_mult);
-    fg.cr_luma_mult = i32::from(seg.cr_luma_mult);
-    fg.cr_offset = i32::from(seg.cr_offset);
-
-    fg.num_y_points = i32::from(seg.scaling_points_y.len() as u8);
-    for (i, &[x, y]) in seg.scaling_points_y.iter().enumerate() {
-        fg.scaling_points_y[i] = [i32::from(x), i32::from(y)];
-    }
-    fg.num_cb_points = i32::from(seg.scaling_points_cb.len() as u8);
-    for (i, &[x, y]) in seg.scaling_points_cb.iter().enumerate() {
-        fg.scaling_points_cb[i] = [i32::from(x), i32::from(y)];
-    }
-    fg.num_cr_points = i32::from(seg.scaling_points_cr.len() as u8);
-    for (i, &[x, y]) in seg.scaling_points_cr.iter().enumerate() {
-        fg.scaling_points_cr[i] = [i32::from(x), i32::from(y)];
-    }
-    for (i, v) in seg.ar_coeffs_y.iter().enumerate() {
-        fg.ar_coeffs_y[i] = i32::from(*v);
-    }
-    for (i, v) in seg.ar_coeffs_cb.iter().enumerate() {
-        fg.ar_coeffs_cb[i] = i32::from(*v);
-    }
-    for (i, v) in seg.ar_coeffs_cr.iter().enumerate() {
-        fg.ar_coeffs_cr[i] = i32::from(*v);
-    }
-
-    unsafe { (*config).fgs_table = Box::into_raw(fg).cast() };
 }
 
 const fn chroma_pos_str(v: i32) -> &'static str {

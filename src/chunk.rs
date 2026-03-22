@@ -666,7 +666,11 @@ fn concat_segments(segments: &[PathBuf], output: &Path) -> Result<bool, Xerr> {
 
     let mut content = String::new();
     for seg in segments {
-        let s = seg.canonicalize()?.display().to_string().replace('\'', "'\\''");
+        let s = seg
+            .canonicalize()?
+            .display()
+            .to_string()
+            .replace('\'', "'\\''");
         _ = writeln!(content, "file '{s}'");
     }
     write(&concat_list, content)?;

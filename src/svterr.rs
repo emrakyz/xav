@@ -119,6 +119,8 @@ const NOT_RELEVANT: &[&str] = &[
     "speed",
     "auto-tiling",
     "low-memory",
+    "fgs-table",
+    "enable-mfmv",
 ];
 
 const AUTO_SET: &[&str] = &[
@@ -231,13 +233,6 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
                  external denoising if needed; or encoder options that don't\nprioritize sharpness"
             ),
         ),
-        "fgs-table" | "photon-noise" | "photon-noise-chroma" => err(
-            key,
-            format_args!(
-                "{Y}xav already uses its own photon-noise implementation\nthe parameter {R}{key} \
-                 {Y}is useless with it. You should not set it."
-            ),
-        ),
         _ => return None,
     })
 }
@@ -346,16 +341,20 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
             chk_range(key, name, val, 0, 50)?;
         }
 
-        "complex-hvs" => {
-            chk_range(key, name, val, 0, 1)?;
-        }
-
-        "mbr-overshoot-pct" | "luminance-qp-bias" => {
+        "noise" | "mbr-overshoot-pct" | "luminance-qp-bias" => {
             chk_range(key, name, val, 0, 100)?;
         }
 
-        "enable-mfmv" => {
-            chk_range(key, name, val, -1, 1)?;
+        "noise-chroma" => {
+            chk_range(key, name, val, -2, 100)?;
+        }
+
+        "noise-size" => {
+            chk_range(key, name, val, -1, 15)?;
+        }
+
+        "complex-hvs" => {
+            chk_range(key, name, val, 0, 1)?;
         }
 
         "variance-boost-strength" => {

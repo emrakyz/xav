@@ -20,7 +20,6 @@ vship = []
 libc = "0.2.183"
 crossbeam-channel = "0.5.15"
 av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", default-features = false, features = ["asm", "static_simd"] }
-av1-grain = { version = "0.4.1", default-features = false, features = ["create", "parse"] }
 ebur128 = "0.1.10"
 sonic-rs = "0.5.7"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -198,7 +198,6 @@ fn svt_encode(converted: &[u8], pipe: &Pipeline, inf: &VidInf, frame_count: usiz
         zone_params: None,
         crf: 20.0,
         output,
-        grain_table: None,
         chunk_idx: 0,
         width: w as u32,
         height: h as u32,
