@@ -303,6 +303,7 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
         | "enable-variance-boost"
         | "adaptive-film-grain"
         | "alt-lambda-factors"
+        | "noise-chroma-from-luma"
         | "sharp-tx" => {
             chk_switch(key, name, val)?;
         }
@@ -341,16 +342,20 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
             chk_range(key, name, val, 0, 50)?;
         }
 
-        "noise" | "mbr-overshoot-pct" | "luminance-qp-bias" => {
+        "mbr-overshoot-pct" | "luminance-qp-bias" => {
             chk_range(key, name, val, 0, 100)?;
         }
 
+        "noise" => {
+            chk_range(key, name, val, 0, 200)?;
+        }
+
         "noise-chroma" => {
-            chk_range(key, name, val, -2, 100)?;
+            chk_range(key, name, val, -1, 200)?;
         }
 
         "noise-size" => {
-            chk_range(key, name, val, -1, 15)?;
+            chk_range(key, name, val, -1, 13)?;
         }
 
         "complex-hvs" => {
