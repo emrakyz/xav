@@ -646,7 +646,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     #[cfg(feature = "vship")]
     TQ_RESUMED.get_or_init(|| !is_new_encode);
 
-    if is_new_encode {
+    if !get_resume(&work_dir).is_some_and(|r| !r.chnks_done.is_empty()) {
         save_args(&work_dir)?;
     }
 
