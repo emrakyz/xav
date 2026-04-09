@@ -640,6 +640,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     let hash = hash_input(&canonical_input);
     let work_dir = canonical_input.with_file_name(format!(".{}", &hash[..7]));
 
+    #[cfg(feature = "vship")]
     let is_new_encode = !work_dir.exists();
     create_dir_all(&work_dir)?;
 
