@@ -184,33 +184,6 @@ detect_deps() {
                 }
         done
 
-        "${IS_MAC}" && {
-                GLIBC_STATIC_PATH="" LIBSTDCXX_STATIC_PATH="" COMPILERRT_STATIC_PATH=""
-                HAS_GLIBC_STATIC=false HAS_LIBSTDCXX_STATIC=false HAS_COMPILERRT_STATIC=false
-        } || {
-                GLIBC_STATIC_PATH="$(find_lib libc.a "${ALL_STATIC_DIRS[@]}" || true)"
-                [[ -n "${GLIBC_STATIC_PATH}" ]] && HAS_GLIBC_STATIC=true || HAS_GLIBC_STATIC=false
-
-                LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
-                [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
-
-                COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
-                [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
-        }
-
-        RUST_SYSROOT="$(rustc --print sysroot 2> /dev/null || true)"
-        RUST_STDLIB_PATH=""
-        [[ -n "${RUST_SYSROOT}" ]] && RUST_STDLIB_PATH="$(find "${RUST_SYSROOT}" -name 'libstd-*.rlib' -print -quit 2> /dev/null || true)"
-        [[ -n "${RUST_STDLIB_PATH}" ]] && HAS_RUST_STDLIB=true || HAS_RUST_STDLIB=false
-
-        HAS_STATIC_LIBS=true
-        for req in HAS_GLIBC_STATIC HAS_LIBSTDCXX_STATIC HAS_COMPILERRT_STATIC; do
-                [[ "${!req}" == false ]] && {
-                        HAS_STATIC_LIBS=false
-                        break
-                }
-        done
-
         VSHIP_SEARCH_DIRS=(
                 "${HOME}/.local/src/Vship"
                 "/usr/lib64"
@@ -285,9 +258,9 @@ detect_deps() {
 
         ELIGIBLE=()
         [[ "${HAS_HARD_REQS}" == true ]] && {
-                [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                [[ "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
+                ELIGIBLE+=(true)
         } || ELIGIBLE=(false false false)
 }
 
@@ -340,19 +313,10 @@ show_build_menu() {
         echo
 
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
-        echo -e "${C}║${W}  Fully Static Build Time Requirements                                 ${C}║${N}"
+        echo -e "${C}║${W}  VSHIP (Optional — required for modes with TQ)                        ${C}║${N}"
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
-        printf "  ${Y}%-30b${N} %b\n" "Glibc static:" "$(dep_status "${HAS_GLIBC_STATIC}" "${GLIBC_STATIC_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "libstdc++ static:" "$(dep_status "${HAS_LIBSTDCXX_STATIC}" "${LIBSTDCXX_STATIC_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "compiler-rt static:" "$(dep_status "${HAS_COMPILERRT_STATIC}" "${COMPILERRT_STATIC_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "Rust STDLIB static:" "$(dep_status "${HAS_RUST_STDLIB}" "${RUST_STDLIB_PATH}")"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${VSHIP_SEARCH_DIRS[@]}")"
-        echo
-
-        echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
-        echo -e "${C}║${W}  Dynamic Build Requirements                                           ${C}║${N}"
-        echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) VSHIP:" "$(dep_status "${HAS_VSHIP}" "${VSHIP_PATH}")"
+        printf "  ${Y}%-30b${N} %b\n" "VSHIP static:" "$(dep_status_locations "${HAS_VSHIP_STATIC}" "${VSHIP_STATIC_PATH}" "${VSHIP_SEARCH_DIRS[@]}")"
+        printf "  ${Y}%-30b${N} %b\n" "VSHIP dynamic:" "$(dep_status "${HAS_VSHIP}" "${VSHIP_PATH}")"
         echo
 
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
@@ -377,9 +341,9 @@ show_build_menu() {
 
         for i in "${!BUILD_MODES[@]}"; do
                 local idx=$((i + 1))
-                [[ "${ELIGIBLE[i]}" == true ]] \
-                        && printf "  ${G}[x] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}" \
-                        || printf "  ${R}[ ] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
+                [[ "${ELIGIBLE[i]}" == true ]] &&
+                        printf "  ${G}[x] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}" ||
+                        printf "  ${R}[ ] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
         done
         echo
 
@@ -899,6 +863,8 @@ main() {
                         ;;
         esac
 
+        "${IS_MAC}" && config_file=".cargo/config.toml.mac"
+
         [[ -n "${svt_fork}" ]] && {
                 local fork_idx=-1
                 for i in "${!SVT_FORK_NAMES[@]}"; do
@@ -956,6 +922,7 @@ main() {
         local binary_path
 
         [[ "${build_static}" == true ]] && binary_path="target/x86_64-unknown-linux-gnu/release/xav" || binary_path="target/release/xav"
+        "${IS_MAC}" && binary_path="target/release/xav"
 
         cargo build --release ${cargo_features} > "${logfile}" 2>&1 && {
                 rm -f "${logfile}"

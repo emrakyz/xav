@@ -1,12 +1,13 @@
 use std::{env, path::Path, process};
 
-const SYS_PATHS: [&str; 6] = [
+const SYS_PATHS: [&str; 7] = [
     "/usr/lib64",
     "/usr/lib",
     "/usr/local/lib64",
     "/usr/local/lib",
     "/lib64",
     "/lib",
+    "/opt/homebrew/lib",
 ];
 
 fn find_static_lib(primary_paths: &[String], lib_name: &str) {
