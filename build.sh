@@ -5,7 +5,7 @@ set -Eeuo pipefail
 install_deps() {
         ((UID != 0)) && { for i in sudo doas; do command -v "${i}" > /dev/null 2>&1 && priv="${i}"; done; }
 
-        for i in pacman dnf emerge; do command -v "${i}" > /dev/null 2>&1 && pm="${i}"; done
+        for i in pacman dnf emerge brew; do command -v "${i}" > /dev/null 2>&1 && pm="${i}" || pm="unknown"; done
 
         case "${pm}" in
                 "pacman")
@@ -23,6 +23,13 @@ install_deps() {
                 "emerge")
                         echo "You need Rust Nightly (-9999), nasm, clang/llvm toolchain"
                         echo "USEFLAGS needed for toolchain: atomic-builtins profile static-libs sanitize compiler-rt"
+                        ;;
+                "brew")
+                        pkgs=(
+                                rustup nasm llvm lld autoconf automake libtool
+                                cmake ninja meson pkgconf ffmpeg curl
+                        )
+                        brew install "${pkgs[@]}"
                         ;;
                 *)
                         echo "ERROR: You need Rust Nightly, nasm, clang/llvm/lld/compiler-rt toolchain"
