@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 
+((BASH_VERSINFO[0] >= 5)) || {
+        echo "You need Bash 5+. On Mac, use brew to install a newer Bash."
+        exit 1
+}
+
 set -Eeuo pipefail
+
+[[ "${OSTYPE}" == darwin* ]] && IS_MAC=true || IS_MAC=false
+"${IS_MAC}" && LLVM_PREFIX="$(brew --prefix llvm)" && export PATH="${LLVM_PREFIX}/bin:${PATH}"
 
 install_deps() {
         ((UID != 0)) && { for i in sudo doas; do command -v "${i}" > /dev/null 2>&1 && priv="${i}"; done; }
@@ -143,21 +151,17 @@ detect_deps() {
 
         RUST_NIGHTLY_PATH="$(find_bin rustc || true)"
         RUSTC_VERSION=""
-        if [[ -n "${RUST_NIGHTLY_PATH}" ]]; then
+        [[ -n "${RUST_NIGHTLY_PATH}" ]] && {
                 RUSTC_VERSION="$(rustc --version 2> /dev/null || true)"
                 [[ "${RUSTC_VERSION}" == *nightly* ]] && HAS_RUST_NIGHTLY=true || HAS_RUST_NIGHTLY=false
-        else
-                HAS_RUST_NIGHTLY=false
-        fi
+        } || HAS_RUST_NIGHTLY=false
 
         NASM_PATH="$(find_bin nasm || true)"
         NASM_VERSION=""
-        if [[ -n "${NASM_PATH}" ]]; then
+        [[ -n "${NASM_PATH}" ]] && {
                 HAS_NASM=true
                 NASM_VERSION="$(nasm --version 2> /dev/null | head -1 || true)"
-        else
-                HAS_NASM=false
-        fi
+        } || HAS_NASM=false
 
         LLD_PATH="$(find_bin ld.lld || true)"
         [[ -n "${LLD_PATH}" ]] && HAS_LLD=true || HAS_LLD=false
@@ -169,9 +173,7 @@ detect_deps() {
         [[ -n "${LLVM_PATH}" ]] && HAS_LLVM=true || HAS_LLVM=false
 
         COMPILERRT_PATH="$(find_lib libclang_rt.builtins.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
-        if [[ -z "${COMPILERRT_PATH}" ]]; then
-                COMPILERRT_PATH="$(find_lib libclang_rt.builtins-x86_64.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
-        fi
+        [[ -z "${COMPILERRT_PATH}" ]] && COMPILERRT_PATH="$(find_lib libclang_rt.builtins-x86_64.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
         [[ -n "${COMPILERRT_PATH}" ]] && HAS_COMPILERRT=true || HAS_COMPILERRT=false
 
         HAS_HARD_REQS=true
@@ -182,20 +184,23 @@ detect_deps() {
                 }
         done
 
-        GLIBC_STATIC_PATH="$(find_lib libc.a "${ALL_STATIC_DIRS[@]}" || true)"
-        [[ -n "${GLIBC_STATIC_PATH}" ]] && HAS_GLIBC_STATIC=true || HAS_GLIBC_STATIC=false
+        "${IS_MAC}" && {
+                GLIBC_STATIC_PATH="" LIBSTDCXX_STATIC_PATH="" COMPILERRT_STATIC_PATH=""
+                HAS_GLIBC_STATIC=false HAS_LIBSTDCXX_STATIC=false HAS_COMPILERRT_STATIC=false
+        } || {
+                GLIBC_STATIC_PATH="$(find_lib libc.a "${ALL_STATIC_DIRS[@]}" || true)"
+                [[ -n "${GLIBC_STATIC_PATH}" ]] && HAS_GLIBC_STATIC=true || HAS_GLIBC_STATIC=false
 
-        LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
-        [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
+                LIBSTDCXX_STATIC_PATH="$(find_lib libstdc++.a "${ALL_STATIC_DIRS[@]}" || true)"
+                [[ -n "${LIBSTDCXX_STATIC_PATH}" ]] && HAS_LIBSTDCXX_STATIC=true || HAS_LIBSTDCXX_STATIC=false
 
-        COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
-        [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
+                COMPILERRT_STATIC_PATH="${COMPILERRT_PATH}"
+                [[ -n "${COMPILERRT_STATIC_PATH}" ]] && HAS_COMPILERRT_STATIC=true || HAS_COMPILERRT_STATIC=false
+        }
 
         RUST_SYSROOT="$(rustc --print sysroot 2> /dev/null || true)"
         RUST_STDLIB_PATH=""
-        if [[ -n "${RUST_SYSROOT}" ]]; then
-                RUST_STDLIB_PATH="$(find "${RUST_SYSROOT}" -name 'libstd-*.rlib' -print -quit 2> /dev/null || true)"
-        fi
+        [[ -n "${RUST_SYSROOT}" ]] && RUST_STDLIB_PATH="$(find "${RUST_SYSROOT}" -name 'libstd-*.rlib' -print -quit 2> /dev/null || true)"
         [[ -n "${RUST_STDLIB_PATH}" ]] && HAS_RUST_STDLIB=true || HAS_RUST_STDLIB=false
 
         HAS_STATIC_LIBS=true
@@ -231,86 +236,68 @@ detect_deps() {
 
         FFMPEG_PATH="$(find_bin ffmpeg || true)"
         FFMPEG_VERSION=""
-        if [[ -n "${FFMPEG_PATH}" ]]; then
+        [[ -n "${FFMPEG_PATH}" ]] && {
                 HAS_FFMPEG=true
                 FFMPEG_VERSION="$(ffmpeg -version 2> /dev/null | head -1 || true)"
-        else
-                HAS_FFMPEG=false
-        fi
+        } || HAS_FFMPEG=false
 
         MP4BOX_PATH="$(find_bin MP4Box || true)"
         MP4BOX_VERSION=""
-        if [[ -n "${MP4BOX_PATH}" ]]; then
+        [[ -n "${MP4BOX_PATH}" ]] && {
                 HAS_MP4BOX=true
                 MP4BOX_VERSION="$(MP4Box -version 2>&1 | head -1 || true)"
-        else
-                HAS_MP4BOX=false
-        fi
+        } || HAS_MP4BOX=false
 
         MKVMERGE_PATH="$(find_bin mkvmerge || true)"
         MKVMERGE_VERSION=""
-        if [[ -n "${MKVMERGE_PATH}" ]]; then
+        [[ -n "${MKVMERGE_PATH}" ]] && {
                 HAS_MKVMERGE=true
                 MKVMERGE_VERSION="$(mkvmerge --version 2> /dev/null | head -1 || true)"
-        else
-                HAS_MKVMERGE=false
-        fi
+        } || HAS_MKVMERGE=false
 
         AVMENC_PATH="$(find_bin avmenc || true)"
         AVMENC_VERSION=""
-        if [[ -n "${AVMENC_PATH}" ]]; then
+        [[ -n "${AVMENC_PATH}" ]] && {
                 HAS_AVMENC=true
                 AVMENC_VERSION="$(avmenc --help 2>&1 | head -1 || true)"
-        else
-                HAS_AVMENC=false
-        fi
+        } || HAS_AVMENC=false
 
         VVENCFFAPP_PATH="$(find_bin vvencFFapp || true)"
         VVENCFFAPP_VERSION=""
-        if [[ -n "${VVENCFFAPP_PATH}" ]]; then
+        [[ -n "${VVENCFFAPP_PATH}" ]] && {
                 HAS_VVENCFFAPP=true
                 VVENCFFAPP_VERSION="$(vvencFFapp --version 2>&1 | head -1 || true)"
-        else
-                HAS_VVENCFFAPP=false
-        fi
+        } || HAS_VVENCFFAPP=false
 
         X265_PATH="$(find_bin x265 || true)"
         X265_VERSION=""
-        if [[ -n "${X265_PATH}" ]]; then
+        [[ -n "${X265_PATH}" ]] && {
                 HAS_X265=true
                 X265_VERSION="$(x265 --version 2>&1 | head -1 || true)"
-        else
-                HAS_X265=false
-        fi
+        } || HAS_X265=false
 
         X264_PATH="$(find_bin x264 || true)"
         X264_VERSION=""
-        if [[ -n "${X264_PATH}" ]]; then
+        [[ -n "${X264_PATH}" ]] && {
                 HAS_X264=true
                 X264_VERSION="$(x264 --version 2>&1 | head -1 || true)"
-        else
-                HAS_X264=false
-        fi
+        } || HAS_X264=false
 
         ELIGIBLE=()
-        if [[ "${HAS_HARD_REQS}" == true ]]; then
+        [[ "${HAS_HARD_REQS}" == true ]] && {
                 [[ "${HAS_STATIC_LIBS}" == true && "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
                 [[ "${HAS_STATIC_LIBS}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-        else
-                ELIGIBLE=(false false false)
-        fi
+        } || ELIGIBLE=(false false false)
 }
 
 dep_status() {
         local has="${1}" path="${2}" ver="${3:-}"
         local NF="${R}  Not Found${N}"
 
-        if [[ "${has}" == true ]]; then
+        [[ "${has}" == true ]] && {
                 [[ -n "${ver}" ]] && echo -e "${G}✅ ${path} ${W}(${ver})${N}" || echo -e "${G}✅ ${path}${N}"
-        else
-                echo -e "${NF}"
-        fi
+        } || echo -e "${NF}"
 }
 
 dep_status_locations() {
@@ -318,19 +305,25 @@ dep_status_locations() {
         shift 2
         local search_dirs=("${@}")
 
-        if [[ "${has}" == true ]]; then
-                echo -e "${G}✅ ${path}${N}"
-        else
+        [[ "${has}" == true ]] && echo -e "${G}✅ ${path}${N}" || {
                 echo -e "${R}  Not Found in:${N}"
                 for dir in "${search_dirs[@]}"; do
                         echo -e "      ${R}- ${dir}${N}"
                 done
-        fi
+        }
 }
 
 show_build_menu() {
         detect_deps
         [[ ! " ${ELIGIBLE[*]} " =~ " true " ]] && install_deps && detect_deps
+
+        for i in cargo ffmpeg clang pkgconf ninja meson cmake; do
+                command -v "${i}" > /dev/null 2>&1 || {
+                        echo "Missing from PATH: ${i}"
+                        echo "You should restart your terminal to update PATH"
+                        exit 1
+                }
+        done
 
         cargo clean > /dev/null 2>&1
         rm -f Cargo.lock
@@ -384,11 +377,9 @@ show_build_menu() {
 
         for i in "${!BUILD_MODES[@]}"; do
                 local idx=$((i + 1))
-                if [[ "${ELIGIBLE[i]}" == true ]]; then
-                        printf "  ${G}[x] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
-                else
-                        printf "  ${R}[ ] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
-                fi
+                [[ "${ELIGIBLE[i]}" == true ]] \
+                        && printf "  ${G}[x] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}" \
+                        || printf "  ${R}[ ] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
         done
         echo
 
@@ -411,9 +402,7 @@ cleanup_existing() {
         echo -e "\n${Y}Found existing build directories:${N}"
         printf "  ${P}- %s${N}\n" "${found[@]}"
 
-        if [[ -n "${preset}" ]]; then
-                loginf b "Using existing builds"
-        else
+        [[ -n "${preset}" ]] && loginf b "Using existing builds" || {
                 echo -ne "\n${C}Remove and rebuild? (y/n): ${N}"
                 read -r choice
 
@@ -424,7 +413,7 @@ cleanup_existing() {
                         done
                         loginf g "Cleanup complete"
                 } || loginf b "Using existing builds"
-        fi
+        }
 
         echo
 }
@@ -832,7 +821,7 @@ setup_toolchain() {
 
         export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fno-pic -fno-pie"
         export CFLAGS="${COMMON_FLAGS}"
-        export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
+        "${IS_MAC}" && export CXXFLAGS="${COMMON_FLAGS} -stdlib=libc++" || export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
 }
 
@@ -882,10 +871,10 @@ main() {
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
                         [[ "${mode_choice}" =~ ^[1-4]$ ]] && {
-                                if [[ "${ELIGIBLE[mode_choice - 1]}" == false ]]; then
+                                [[ "${ELIGIBLE[mode_choice - 1]}" == false ]] && {
                                         echo -e "${R}Mode ${mode_choice} is not eligible on this system.${N}"
                                         continue
-                                fi
+                                }
                                 loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
                                 break
                         }
@@ -910,7 +899,7 @@ main() {
                         ;;
         esac
 
-        if [[ -n "${svt_fork}" ]]; then
+        [[ -n "${svt_fork}" ]] && {
                 local fork_idx=-1
                 for i in "${!SVT_FORK_NAMES[@]}"; do
                         [[ "${SVT_FORK_NAMES[i]}" == "${svt_fork}" ]] && {
@@ -923,7 +912,8 @@ main() {
                         echo "Valid forks: ${SVT_FORK_NAMES[*]}"
                         exit 1
                 }
-        else
+                :
+        } || {
                 echo -e "\n${C}Select SVT-AV1 fork:${N}"
                 for i in "${!SVT_FORK_NAMES[@]}"; do
                         printf "  ${Y}%d) ${P}%s${N}\n" "$((i + 1))" "${SVT_FORK_NAMES[i]}"
@@ -937,7 +927,7 @@ main() {
                                 break
                         }
                 done
-        fi
+        }
         svt_fork_name="${SVT_FORK_NAMES[fork_idx]}"
         svt_fork_url="${SVT_FORK_URLS[fork_idx]}"
         loginf g "SVT-AV1 fork: ${svt_fork_name}"
