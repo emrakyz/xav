@@ -622,6 +622,7 @@ dec_hw_pack!(
 );
 
 #[cold]
+#[inline(never)]
 fn eof_truncate(dat: &mut Vec<u8>, i: usize, fsz: usize) -> usize {
     dat.truncate(i * fsz);
     i

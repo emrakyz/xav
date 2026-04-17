@@ -1,5 +1,6 @@
 const MAX_TAU2: f64 = 9.0;
 
+#[inline]
 pub fn lerp(x: &[f64; 2], y: &[f64; 2], xi: f64) -> Option<f64> {
     if x[1] <= x[0] {
         return None;

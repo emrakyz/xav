@@ -15,10 +15,12 @@ pub const fn packed_row_size(w: usize) -> usize {
     (w * 2 * 5).div_ceil(8).next_multiple_of(5)
 }
 
+#[inline]
 pub const fn calc_8b_size(w: u32, h: u32) -> usize {
     (w * h * 3 / 2) as usize
 }
 
+#[inline]
 pub const fn calc_packed_size(w: u32, h: u32) -> usize {
     let y_row = packed_row_size(w as usize);
     let uv_row = packed_row_size(w as usize / 2);
@@ -33,7 +35,7 @@ pub fn copy_with_stride(src: *const u8, stride: usize, width: usize, height: usi
     }
 }
 
-#[inline]
+#[inline(always)]
 pub fn pack_4_pix_10b(input: [u8; 8], output: &mut [u8; 5]) {
     let raw = u64::from_le_bytes(input);
     let p0 = u64::from(raw as u16);
@@ -44,7 +46,7 @@ pub fn pack_4_pix_10b(input: [u8; 8], output: &mut [u8; 5]) {
     output.copy_from_slice(&packed.to_le_bytes()[..5]);
 }
 
-#[inline]
+#[inline(always)]
 pub const fn unpack_4_pix_10b(input: [u8; 5], output: &mut [u8; 8]) {
     let packed = u64::from_le_bytes([input[0], input[1], input[2], input[3], input[4], 0, 0, 0]);
     let result = (packed & 0x3FF)

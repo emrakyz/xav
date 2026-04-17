@@ -11,6 +11,8 @@ fn err(key: &str, msg: Arguments<'_>) -> Xerr {
     format!("{R}{key} {msg}{N}").into()
 }
 
+#[cold]
+#[inline(never)]
 fn chk_range(key: &str, name: &str, val: &str, lo: i64, hi: i64) -> Result<i64, Xerr> {
     match val.parse::<i64>() {
         Ok(v) if v >= lo && v <= hi => Ok(v),
@@ -22,6 +24,8 @@ fn chk_range(key: &str, name: &str, val: &str, lo: i64, hi: i64) -> Result<i64, 
     }
 }
 
+#[cold]
+#[inline(never)]
 fn chk_switch(key: &str, name: &str, val: &str) -> Result<i64, Xerr> {
     match val.parse::<i64>() {
         Ok(v @ (0 | 1)) => Ok(v),
@@ -33,6 +37,8 @@ fn chk_switch(key: &str, name: &str, val: &str) -> Result<i64, Xerr> {
     }
 }
 
+#[cold]
+#[inline(never)]
 fn chk_custom(key: &str, val: &str, lo: i64, hi: i64, msg: Arguments<'_>) -> Result<i64, Xerr> {
     match val.parse::<i64>() {
         Ok(v) if v >= lo && v <= hi => Ok(v),
@@ -41,6 +47,8 @@ fn chk_custom(key: &str, val: &str, lo: i64, hi: i64, msg: Arguments<'_>) -> Res
     }
 }
 
+#[cold]
+#[inline(never)]
 fn chk_frange(key: &str, name: &str, val: &str, lo: f64, hi: f64) -> Result<(), Xerr> {
     match val.parse::<f64>() {
         Ok(v) if v >= lo && v <= hi => Ok(()),

@@ -307,7 +307,7 @@ struct TQCtx {
 
 #[cfg(feature = "vship")]
 impl TQCtx {
-    #[inline]
+    #[inline(always)]
     fn converged(&self, score: f64) -> bool {
         if self.use_butteraugli {
             (self.target - score).abs() <= self.tolerance
@@ -316,7 +316,7 @@ impl TQCtx {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn update_bounds_and_check(&self, state: &mut TQState, score: f64) -> bool {
         if self.use_butteraugli {
             if score > self.target + self.tolerance {
@@ -332,7 +332,7 @@ impl TQCtx {
         state.search_min > state.search_max
     }
 
-    #[inline]
+    #[inline(always)]
     fn best_probe<'a>(&self, probes: &'a [Probe]) -> &'a Probe {
         unsafe {
             probes
@@ -346,7 +346,7 @@ impl TQCtx {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     const fn metric_name(&self) -> &'static str {
         if self.use_butteraugli {
             "butteraugli"
@@ -358,7 +358,8 @@ impl TQCtx {
     }
 }
 
-#[inline]
+#[cold]
+#[inline(never)]
 #[cfg(feature = "vship")]
 fn complete_chunk(
     chunk_idx: usize,

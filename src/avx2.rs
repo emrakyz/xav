@@ -49,7 +49,7 @@ macro_rules! pack_10b_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn pack_10b(input: &[u8], output: &mut [u8]) {
     use std::arch::x86_64::{_mm256_set_epi8, _mm256_set1_epi32, _mm256_set1_epi64x};
     let iters = input.len() / 192;
@@ -128,7 +128,7 @@ macro_rules! unpack_10b_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn unpack_10b(input: &[u8], output: &mut [u8]) {
     use std::arch::x86_64::{_mm256_set_epi8, _mm256_set1_epi64x};
     let iters = input.len() / 120;
@@ -176,7 +176,7 @@ macro_rules! conv_10b_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn conv_to_10b(input: &[u8], output: &mut [u8]) {
     let iters = input.len() / 160;
     let src = input.as_ptr();
@@ -227,7 +227,7 @@ macro_rules! deint_p010_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn deint_p010(src: &[u16], u_dst: &mut [u16], v_dst: &mut [u16]) {
     use std::arch::x86_64::_mm256_set_epi8;
     let iters = u_dst.len() / 160;
@@ -285,7 +285,7 @@ macro_rules! deint_nv12_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn deint_nv12(src: &[u8], u_dst: &mut [u8], v_dst: &mut [u8]) {
     use std::arch::x86_64::_mm256_set1_epi16;
     let iters = u_dst.len() / 320;
@@ -339,7 +339,7 @@ macro_rules! deint_nv12_to_10b_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn deint_nv12_to_10b(src: &[u8], u_dst: &mut [u16], v_dst: &mut [u16]) {
     use std::arch::x86_64::_mm256_set1_epi16;
     let iters = u_dst.len() / 320;
@@ -379,7 +379,7 @@ macro_rules! shift_p010_asm {
     };
 }
 
-#[inline]
+#[inline(always)]
 pub fn shift_p010(src: &[u16], dst: &mut [u16]) {
     let iters = dst.len() / 160;
     let sb = src.as_ptr().cast::<u8>();
@@ -393,7 +393,7 @@ pub fn shift_p010(src: &[u16], dst: &mut [u16]) {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub fn shift_p010_rem(src: &[u16], dst: &mut [u16]) {
     let len = dst.len();
     let iters = len / 160;

@@ -29,10 +29,12 @@ impl CropResult {
         }
     }
 
+    #[inline(always)]
     pub const fn has_crop(&self) -> bool {
         self.top > 0 || self.bottom > 0 || self.left > 0 || self.right > 0
     }
 
+    #[inline(always)]
     pub const fn to_tuple(self) -> (u32, u32) {
         let v = if self.top < self.bottom {
             self.top
@@ -91,7 +93,7 @@ pub fn detect_crop(
     })
 }
 
-#[inline]
+#[inline(always)]
 const fn update_best(best: &mut CropResult, crop: CropResult) {
     if crop.top < best.top {
         best.top = crop.top;
@@ -144,7 +146,7 @@ fn detect_frame_crop(
     }
 }
 
-#[inline]
+#[inline(always)]
 unsafe fn read_pixel(row_start: *const u8, col: usize, is_10b: bool, black_clamp: u16) -> u16 {
     let val = unsafe {
         if is_10b {
@@ -156,7 +158,7 @@ unsafe fn read_pixel(row_start: *const u8, col: usize, is_10b: bool, black_clamp
     if val < black_clamp { black_clamp } else { val }
 }
 
-#[inline]
+#[inline(always)]
 const fn get_thresholds(is_10b: bool) -> (u16, u16, u16) {
     if is_10b { (128, 64, 64) } else { (32, 16, 16) }
 }
@@ -303,6 +305,7 @@ unsafe fn detect_right_crop(
     None
 }
 
+#[inline]
 const fn prev_multiple_of_2(n: u32) -> u32 {
     n & !1
 }
