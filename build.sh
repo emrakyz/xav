@@ -919,15 +919,12 @@ main() {
         loginf b "Building XAV"
 
         local logfile="/tmp/build_cargo_$.log"
-        local binary_path
-
-        [[ "${build_static}" == true ]] && binary_path="target/x86_64-unknown-linux-gnu/release/xav" || binary_path="target/release/xav"
-        "${IS_MAC}" && binary_path="target/release/xav"
 
         cargo build --release ${cargo_features} > "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
                 loginf g "Build complete"
-                loginf g "Binary: ${XAV_DIR}/${binary_path}"
+                loginf g "Binary: ${XAV_DIR}/target/release/xav"
+                /usr/bin/ls -la "${XAV_DIR}/target/release/xav" --color=always
         } || {
                 echo -e "\n${R}Build failed! Output:${N}\n"
                 cat "${logfile}"
