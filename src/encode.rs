@@ -10,6 +10,7 @@ use std::{
 use std::{
     collections::HashSet,
     fs::{File, metadata},
+    hint::cold_path,
     io::{BufWriter, Write},
     mem::{size_of, zeroed},
     panic::resume_unwind,
@@ -1418,6 +1419,7 @@ macro_rules! make_send_svt {
 
                 let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
                 if ret != EB_ERROR_NONE {
+                    cold_path();
                     fatal(format_args!(
                         "svt_av1_enc_send_picture failed at frame {i}: {ret}"
                     ));
@@ -1626,6 +1628,7 @@ fn enc_svt_direct(
 
         let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
         if ret != EB_ERROR_NONE {
+            cold_path();
             fatal(format_args!(
                 "svt_av1_enc_send_picture failed at frame {i}: {ret}"
             ));

@@ -1,4 +1,6 @@
-use std::{collections::HashSet, path::Path, sync::Arc, thread::available_parallelism};
+use std::{
+    collections::HashSet, hint::cold_path, path::Path, sync::Arc, thread::available_parallelism,
+};
 
 use crossbeam_channel::Sender;
 
@@ -541,6 +543,7 @@ macro_rules! dec_hw_pack {
             for i in 0..len {
                 let frame = dec.decode_next();
                 if dec.is_eof() {
+                    cold_path();
                     actual = eof_truncate(&mut dat, i, fsz);
                     break;
                 }
@@ -646,6 +649,7 @@ macro_rules! dec_linear {
             for i in 0..len {
                 let frame = dec.decode_next();
                 if dec.is_eof() {
+                    cold_path();
                     actual = eof_truncate(&mut dat, i, fsz);
                     break;
                 }
@@ -727,6 +731,7 @@ fn dec_8_crop_stride(
     for i in 0..len {
         let frame = dec.decode_next();
         if dec.is_eof() {
+            cold_path();
             actual = eof_truncate(&mut dat, i, fsz);
             break;
         }
