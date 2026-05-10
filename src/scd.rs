@@ -92,7 +92,14 @@ pub fn fd_scenes(
         height: cropped_h as usize,
         bit_depth: if inf.is_10b { 10 } else { 8 },
         chroma_sampling: ChromaSubsampling::Yuv420,
-        frame_rate: Rational32::new(inf.fps_num as i32, inf.fps_den as i32),
+        // Rational32::new panics on denom == 0. get_vidinf normally produces
+        // a valid fps_den, but fall back to 1/1 defensively since flash
+        // detection only uses frame_rate as a time scale.
+        frame_rate: if inf.fps_den > 0 {
+            Rational32::new(inf.fps_num as i32, inf.fps_den as i32)
+        } else {
+            Rational32::new(1, 1)
+        },
     };
 
     let opts = DetectionOptions {

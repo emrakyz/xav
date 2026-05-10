@@ -799,7 +799,11 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
             return Err(ff_err("decoder: open failed"));
         }
 
-        probe_streams(fmt_ctx, AVMEDIA_TYPE_VIDEO, 0x8000);
+        // The 32K probe used by per-decode probe_streams calls is too small
+        // to settle avg_frame_rate for high-bitrate VFR sources.
+        // avformat_find_stream_info isn't safe to re-call on the same context,
+        // so use FFmpeg's default 5MB up front. get_vidinf only runs once at startup.
+        probe_streams(fmt_ctx, AVMEDIA_TYPE_VIDEO, 5_000_000);
 
         let mut dec: *const c_void = null();
         let idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, addr_of_mut!(dec), 0);
