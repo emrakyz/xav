@@ -17,7 +17,7 @@ static = []
 vship = []
 
 [dependencies]
-libc = "0.2.185"
+libc = "0.2.186"
 crossbeam-channel = "0.5.15"
 av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", default-features = false, features = ["asm", "static_simd"] }
 ebur128 = "0.1.10"
