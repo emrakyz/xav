@@ -1,7 +1,5 @@
 use std::{
-    fs::remove_file,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
     thread::scope,
 };
 
@@ -12,7 +10,6 @@ use crate::{
         AudioBitrate::{Auto, Fixed, Norm},
         AudioStreams::{All, Specific},
     },
-    chunk::add_mp4_subs,
     error::{
         Xerr,
         Xerr::{Done, Msg},
@@ -25,10 +22,10 @@ use crate::{
 
 #[derive(Clone, Copy)]
 pub struct NormParams {
-    pub i: f64,
+    pub i: f32,
     pub tp: f32,
-    pub lra: f64,
-    pub bitrate: u32,
+    pub lra: f32,
+    pub bitrate: u16,
 }
 
 impl NormParams {
@@ -46,7 +43,7 @@ impl NormParams {
 #[non_exhaustive]
 pub enum AudioBitrate {
     Auto,
-    Fixed(u32),
+    Fixed(u16),
     Norm(NormParams),
 }
 
@@ -54,7 +51,7 @@ pub enum AudioBitrate {
 #[non_exhaustive]
 pub enum AudioStreams {
     All,
-    Specific(Vec<usize>),
+    Specific(Vec<u8>),
 }
 
 #[derive(Clone)]
@@ -65,26 +62,10 @@ pub struct AudioSpec {
 
 #[derive(Clone)]
 pub struct AudioStream {
-    pub index: usize,
-    pub channels: u32,
+    pub index: u8,
+    pub channels: u8,
     pub lang: Option<String>,
 }
-
-const FF_FLAGS: [&str; 13] = [
-    "-fflags",
-    "+genpts+igndts+discardcorrupt+bitexact",
-    "-bitexact",
-    "-avoid_negative_ts",
-    "make_zero",
-    "-err_detect",
-    "ignore_err",
-    "-ignore_unknown",
-    "-reset_timestamps",
-    "1",
-    "-start_at_zero",
-    "-output_ts_offset",
-    "0",
-];
 
 fn parse_norm(s: &str) -> Result<NormParams, Xerr> {
     if s == "norm" {
@@ -133,7 +114,7 @@ pub fn parse_audio_arg(arg: &str) -> Result<AudioSpec, Xerr> {
     })
 }
 
-fn lang_name(code: &str) -> &str {
+pub fn lang_name(code: &str) -> &str {
     match code {
         "eng" => "English",
         "rus" => "Russian",
@@ -261,13 +242,13 @@ fn downmix_chunk(src: &[f32], dst: &mut [f32], ch: usize, n: usize) {
 fn encode_direct(
     input: &Path,
     stream: &AudioStream,
-    bitrate: u32,
+    bitrate: u16,
     output: &Path,
     sample_ranges: Option<&[(i64, i64)]>,
     progs_line: usize,
 ) -> Result<(), Xerr> {
-    let mut dec = AudioDecoder::new(input, stream.index as i32)?;
-    let ch = dec.channels() as usize;
+    let mut dec = AudioDecoder::new(input, i32::from(stream.index))?;
+    let ch = usize::from(dec.channels());
     let total: i64 = sample_ranges.map_or_else(
         || dec.total_samples(),
         |r| r.iter().map(|&(s, e)| e - s).sum(),
@@ -335,7 +316,7 @@ fn analyze_loudness(
     sample_ranges: Option<&[(i64, i64)]>,
     total: i64,
     progs_line: usize,
-    tid: usize,
+    tid: u8,
 ) -> Result<EbuR128, Xerr> {
     let mut dec = AudioDecoder::new(input, stream_idx)?;
     let mut ebur =
@@ -402,8 +383,8 @@ fn encode_norm(
     np: NormParams,
     progs_line: usize,
 ) -> Result<(), Xerr> {
-    let dec = AudioDecoder::new(input, stream.index as i32)?;
-    let ch = dec.channels() as usize;
+    let dec = AudioDecoder::new(input, i32::from(stream.index))?;
+    let ch = usize::from(dec.channels());
     let total: i64 = sample_ranges.map_or_else(
         || dec.total_samples(),
         |r| r.iter().map(|&(s, e)| e - s).sum(),
@@ -413,23 +394,23 @@ fn encode_norm(
 
     let ebur = analyze_loudness(
         input,
-        stream.index as i32,
+        i32::from(stream.index),
         ch,
         sample_ranges,
         total,
         progs_line,
         tid,
     )?;
-    let lufs = ebur.loudness_global().map_err(|e| e.to_string())?;
-    let lra = ebur.loudness_range().map_err(|e| e.to_string())?;
+    let lufs = ebur.loudness_global().map_err(|e| e.to_string())? as f32;
+    let lra = ebur.loudness_range().map_err(|e| e.to_string())? as f32;
 
-    let mut gain = 10f64.powf((np.i - lufs) / 20.0);
+    let mut gain = 10f32.powf((np.i - lufs) / 20.0);
     if lra > np.lra {
         gain *= np.lra / lra;
     }
     let tp_limit = 10f32.powf(np.tp / 20.0);
 
-    let mut dec2 = AudioDecoder::new(input, stream.index as i32)?;
+    let mut dec2 = AudioDecoder::new(input, i32::from(stream.index))?;
     let mut enc = Encoder::new(output, 2, np.bitrate, FAMILY_MONO_STEREO)?;
     let mut stereo = vec![0f32; 96000 * 2];
     let mut progs = ProgsBar::new();
@@ -454,8 +435,7 @@ fn encode_norm(
                         st.copy_from_slice(&chunk[start * ch..end * ch]);
                     }
                     for s in st.iter_mut() {
-                        *s = (f64::from(*s) * gain) as f32;
-                        *s = s.clamp(-tp_limit, tp_limit);
+                        *s = (*s * gain).clamp(-tp_limit, tp_limit);
                     }
                     enc.write_float(st, 2)?;
                     encoded += cnt as i64;
@@ -475,8 +455,7 @@ fn encode_norm(
                 st.copy_from_slice(chunk);
             }
             for s in st.iter_mut() {
-                *s = (f64::from(*s) * gain) as f32;
-                *s = s.clamp(-tp_limit, tp_limit);
+                *s = (*s * gain).clamp(-tp_limit, tp_limit);
             }
             enc.write_float(st, 2)?;
             encoded += n as i64;
@@ -495,7 +474,7 @@ fn encode_norm(
 struct TrackJob {
     stream: AudioStream,
     do_norm: bool,
-    bitrate: u32,
+    bitrate: u16,
     path: PathBuf,
     line: usize,
 }
@@ -537,9 +516,9 @@ pub fn encode_audio_streams(
                             6 => 5.1,
                             7 => 6.1,
                             8 => 7.1,
-                            _ => f64::from(s.channels),
+                            _ => f32::from(s.channels),
                         };
-                        (128.0 * (cc / 2.0f64).powf(0.75)) as u32
+                        (128.0 * (cc / 2.0f32).powf(0.75)) as u16
                     }
                     AudioBitrate::Fixed(b) => b,
                 }
@@ -577,90 +556,4 @@ pub fn encode_audio_streams(
             .map(|h| h.join().map_err(|_e| Msg("Audio thread panicked".into()))?)
             .collect()
     })
-}
-
-fn mux_files(
-    video: &Path,
-    files: &[(AudioStream, PathBuf)],
-    input: &Path,
-    output: &Path,
-    has_ranges: bool,
-    dar: Option<(u32, u32)>,
-) -> Result<(), Xerr> {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-loglevel",
-        "error",
-        "-hide_banner",
-        "-nostdin",
-        "-stats",
-        "-y",
-        "-i",
-    ])
-    .arg(video);
-
-    for item in files {
-        cmd.arg("-i").arg(&item.1);
-    }
-
-    let is_mp4 = output.extension().is_some_and(|e| e == "mp4");
-
-    if !has_ranges && !is_mp4 {
-        cmd.arg("-i").arg(input);
-    }
-
-    cmd.args(["-map", "0:v"]);
-
-    for i in 0..files.len() {
-        cmd.args(["-map", &format!("{}:a", i + 1)]);
-    }
-
-    if !has_ranges && !is_mp4 {
-        let input_idx = files.len() + 1;
-        cmd.args(["-map", &format!("{input_idx}")])
-            .args(["-map", &format!("-{input_idx}:V")])
-            .args(["-map", &format!("-{input_idx}:a")])
-            .args(["-map_chapters", &input_idx.to_string()]);
-    }
-
-    for (i, item) in files.iter().enumerate() {
-        let code = item.0.lang.as_deref().unwrap_or("und");
-        cmd.args([&format!("-metadata:s:a:{i}"), &format!("language={code}")]);
-        cmd.args([
-            &format!("-metadata:s:a:{i}"),
-            &format!("title={}", lang_name(code)),
-        ]);
-    }
-
-    cmd.args(["-c", "copy"]);
-    if let Some((dw, dh)) = dar {
-        cmd.args(["-aspect", &format!("{dw}:{dh}")]);
-    }
-    cmd.args(FF_FLAGS)
-        .arg(output)
-        .status()
-        .ok()
-        .filter(ExitStatus::success)
-        .ok_or("Muxing failed")?;
-    Ok(())
-}
-
-pub fn mux_audio(
-    files: &[(AudioStream, PathBuf)],
-    video: &Path,
-    input: &Path,
-    output: &Path,
-    has_ranges: bool,
-    dar: Option<(u32, u32)>,
-) -> Result<(), Xerr> {
-    mux_files(video, files, input, output, has_ranges, dar)?;
-
-    if !has_ranges && output.extension().is_some_and(|e| e == "mp4") {
-        add_mp4_subs(input, output);
-    }
-
-    for item in files {
-        _ = remove_file(&item.1);
-    }
-    Ok(())
 }

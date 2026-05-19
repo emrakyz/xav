@@ -1,5 +1,3 @@
-#[cfg(feature = "vship")]
-use std::sync::OnceLock;
 use std::{
     collections::hash_map::DefaultHasher,
     env::args as env_args,
@@ -35,8 +33,6 @@ mod encode;
 mod encoder;
 mod error;
 mod ffms;
-#[cfg(feature = "vship")]
-mod interp;
 mod lavf;
 mod opus;
 mod pack;
@@ -55,23 +51,17 @@ mod vship;
 mod worker;
 mod y4m;
 
-use audio::{
-    AudioSpec, AudioStream, encode_audio_streams, frame_to_sample, mux_audio, parse_audio_arg,
-};
+use audio::{AudioSpec, AudioStream, encode_audio_streams, frame_to_sample, parse_audio_arg};
 use chunk::{
     Chunk, chunkify, get_resume, init_elapsed, load_scenes, merge_out, translate_scenes,
     validate_scenes,
 };
 use crop::{CropDetectConfig, detect_crop};
-#[cfg(feature = "vship")]
-use encode::TQ_SCORES;
 use encode::encode_all;
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
 use ffms::{DecodeStrat, VidInf, VideoDecoder, gcd, get_decode_strat, get_vidinf};
 use scd::fd_scenes;
-#[cfg(feature = "vship")]
-use tq::{inverse_jod, jod};
 use y4m::{PipeReader, init_pipe};
 
 #[cfg(test)]
@@ -79,9 +69,6 @@ use y4m::{PipeReader, init_pipe};
 mod tests;
 
 use util::{B, C, G, N, P, R, W, Y};
-
-#[cfg(feature = "vship")]
-static TQ_RESUMED: OnceLock<bool> = OnceLock::new();
 
 #[derive(Clone)]
 pub struct Args {
@@ -238,7 +225,7 @@ fn validate_output(output: &Path, encoder: Encoder) -> Result<(), Xerr> {
 
 #[cfg(feature = "vship")]
 fn validate_range(s: &str, name: &str) -> Result<(), Xerr> {
-    let parts: Vec<f64> = s.split('-').filter_map(|v| v.parse().ok()).collect();
+    let parts: Vec<f32> = s.split('-').filter_map(|v| v.parse().ok()).collect();
     if parts.len() != 2 {
         return Err(format!("{name} requires a range: <min>-<max>").into());
     }
@@ -412,6 +399,10 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
         }
     }
 
+    if result.hwaccel && y4m::is_pipe() {
+        return Err("Hardware accelerated decoding can not be used with a pipe".into());
+    }
+
     Ok(result)
 }
 
@@ -536,41 +527,29 @@ fn adjust_dar(inf: &mut VidInf, crop: (u32, u32)) {
     }
 }
 
-fn finalize_audio(
+fn acquire_audio(
     spec: &AudioSpec,
     cached: Option<Vec<(AudioStream, PathBuf)>>,
     args: &Args,
     inf: &VidInf,
-    video_mkv: &Path,
     work_dir: &Path,
-) -> Result<(), Xerr> {
-    let files = if let Some(f) = cached {
-        f
-    } else {
-        print!("\x1b[H\x1b[2J");
-        _ = stdout().flush();
-        let sample_ranges = args.ranges.as_ref().map(|r| {
-            r.iter()
-                .map(|&(s, e)| {
-                    (
-                        frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
-                        frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
-                    )
-                })
-                .collect::<Vec<_>>()
-        });
-        encode_audio_streams(spec, &args.input, work_dir, sample_ranges.as_deref(), 1)?
-    };
-    mux_audio(
-        &files,
-        video_mkv,
-        &args.input,
-        &args.output,
-        args.ranges.is_some(),
-        inf.dar,
-    )?;
-    remove_file(video_mkv)?;
-    Ok(())
+) -> Result<Vec<(AudioStream, PathBuf)>, Xerr> {
+    if let Some(f) = cached {
+        return Ok(f);
+    }
+    print!("\x1b[H\x1b[2J");
+    _ = stdout().flush();
+    let sample_ranges = args.ranges.as_ref().map(|r| {
+        r.iter()
+            .map(|&(s, e)| {
+                (
+                    frame_to_sample(s, inf.fps_num, inf.fps_den, 48000),
+                    frame_to_sample(e, inf.fps_num, inf.fps_den, 48000),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    encode_audio_streams(spec, &args.input, work_dir, sample_ranges.as_deref(), 1)
 }
 
 type AudioResult = Vec<(AudioStream, PathBuf)>;
@@ -640,12 +619,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     let hash = hash_input(&canonical_input);
     let work_dir = canonical_input.with_file_name(format!(".{}", &hash[..7]));
 
-    #[cfg(feature = "vship")]
-    let is_new_encode = !work_dir.exists();
     create_dir_all(&work_dir)?;
-
-    #[cfg(feature = "vship")]
-    TQ_RESUMED.get_or_init(|| !is_new_encode);
 
     if get_resume(&work_dir).is_none_or(|r| r.chnks_done.is_empty()) {
         save_args(&work_dir)?;
@@ -714,29 +688,26 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     encode_all(&chunks, &inf, &args, &args.input, &work_dir, pipe_reader);
     let enc_time = enc_start.elapsed() + Duration::from_secs(prior_secs);
 
-    let video_mkv = work_dir.join("encode").join("video.mkv");
+    let audio_tracks = if let Some(ref audio_spec) = args.audio
+        && args.encoder != Avm
+    {
+        acquire_audio(audio_spec, audio_files, &args, &inf, &work_dir)?
+    } else {
+        Vec::new()
+    };
 
     merge_out(
         &work_dir.join("encode"),
-        if args.audio.is_some() && args.encoder != Avm {
-            &video_mkv
-        } else {
-            &args.output
-        },
+        &args.output,
         &inf,
-        if args.audio.is_some() || args.encoder == Avm {
-            None
-        } else {
-            Some(&args.input)
-        },
         args.encoder,
+        &audio_tracks,
+        (args.encoder != Avm).then_some(args.input.as_path()),
         args.ranges.as_deref(),
     )?;
 
-    if let Some(ref audio_spec) = args.audio
-        && args.encoder != Avm
-    {
-        finalize_audio(audio_spec, audio_files, &args, &inf, &video_mkv, &work_dir)?;
+    for t in &audio_tracks {
+        _ = remove_file(&t.1);
     }
 
     print_summary(&args, &inf, &chunks, crop, enc_time);
@@ -757,16 +728,16 @@ fn print_summary(
     let input_size = metadata(&args.input).map_or(0, |m| m.len());
     let output_size = metadata(&args.output).map_or(0, |m| m.len());
     let total_frames: usize = chunks.iter().map(|c| c.end - c.start).sum();
-    let duration = total_frames as f64 * f64::from(inf.fps_den) / f64::from(inf.fps_num);
-    let input_br = (input_size as f64 * 8.0) / duration / 1000.0;
-    let output_br = (output_size as f64 * 8.0) / duration / 1000.0;
-    let change = ((output_size as f64 / input_size as f64) - 1.0) * 100.0;
+    let duration = total_frames as f32 * inf.fps_den as f32 / inf.fps_num as f32;
+    let input_br = (input_size as f32 * 8.0) / duration / 1000.0;
+    let output_br = (output_size as f32 * 8.0) / duration / 1000.0;
+    let change = ((output_size as f32 / input_size as f32) - 1.0) * 100.0;
 
     let fmt_size = |b: u64| {
         if b > 1_000_000_000 {
-            format!("{:.2} GB", b as f64 / 1_000_000_000.0)
+            format!("{:.2} GB", b as f32 / 1_000_000_000.0)
         } else {
-            format!("{:.2} MB", b as f64 / 1_000_000.0)
+            format!("{:.2} MB", b as f32 / 1_000_000.0)
         }
     };
 
@@ -776,8 +747,8 @@ fn print_summary(
         "\u{f06c3}"
     };
     let change_color = if change < 0.0 { G } else { R };
-    let fps_rate = f64::from(inf.fps_num) / f64::from(inf.fps_den);
-    let enc_speed = total_frames as f64 / enc_time.as_secs_f64();
+    let fps_rate = inf.fps_num as f32 / inf.fps_den as f32;
+    let enc_speed = total_frames as f32 / enc_time.as_secs_f32();
     let enc_secs = enc_time.as_secs();
     let (eh, em, es) = (enc_secs / 3600, (enc_secs % 3600) / 60, enc_secs % 60);
     let dur_secs = duration as u64;
@@ -830,59 +801,6 @@ fn main() -> Result<(), Xerr> {
         print!("\x1b[?1049l");
         _ = stdout().flush();
         fatal(format_args!("{e}\n{}, FAIL", args.output.display()));
-    }
-
-    #[cfg(feature = "vship")]
-    if args.target_quality.is_some()
-        && let Some(v) = TQ_SCORES.get()
-    {
-        let mut s = unsafe { v.lock().unwrap_unchecked() }.clone();
-
-        let tq_parts: Vec<f64> = unsafe { args.target_quality.as_ref().unwrap_unchecked() }
-            .split('-')
-            .filter_map(|s| s.parse().ok())
-            .collect();
-        let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
-        let is_butteraugli = tq_target < 8.0;
-        let cvvdp_per_frame =
-            tq_target > 8.0 && tq_target <= 10.0 && args.metric_mode.starts_with('p');
-
-        if is_butteraugli {
-            s.sort_unstable_by(|a, b| b.total_cmp(a));
-        } else {
-            s.sort_unstable_by(f64::total_cmp);
-        }
-
-        let jod_mean = |scores: &[f64]| -> f64 {
-            let q = scores.iter().map(|&x| inverse_jod(x)).sum::<f64>() / scores.len() as f64;
-            jod(q)
-        };
-
-        let m = if cvvdp_per_frame {
-            jod_mean(&s)
-        } else {
-            s.iter().sum::<f64>() / s.len() as f64
-        };
-
-        if TQ_RESUMED.get().copied().unwrap_or(false) {
-            println!("\nBelow stats are only for the last run when resume used\n");
-            println!("{Y}Mean: {W}{m:.4}");
-        } else {
-            println!("\n{Y}Mean: {W}{m:.4}");
-        }
-        for p in [25.0, 10.0, 5.0, 1.0, 0.1] {
-            let i = ((s.len() as f64 * p / 100.0).ceil() as usize).min(s.len());
-            let pct_mean = if cvvdp_per_frame {
-                jod_mean(&s[..i])
-            } else {
-                s[..i].iter().sum::<f64>() / i as f64
-            };
-            println!("{Y}Mean of worst {p}%: {W}{pct_mean:.4}");
-        }
-        println!(
-            "{Y}STDDEV: {W}{:.4}{N}",
-            (s.iter().map(|&x| (x - m).powi(2)).sum::<f64>() / s.len() as f64).sqrt()
-        );
     }
 
     Ok(())

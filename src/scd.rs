@@ -10,15 +10,12 @@ use std::{
     thread::available_parallelism,
 };
 
-use av_scenechange::{
-    DetectionOptions, Rational32,
-    SceneDetectionSpeed::Standard,
-    VideoDetails, detect_scene_changes,
-    v_frame::{
-        chroma::ChromaSubsampling,
-        frame::{Frame, FrameBuilder},
-        pixel::Pixel,
-    },
+use av_scenechange::{VideoDetails, detect_scene_changes};
+use num_rational::Rational32;
+use v_frame::{
+    chroma::ChromaSubsampling,
+    frame::{Frame, FrameBuilder},
+    pixel::Pixel,
 };
 
 use crate::{
@@ -95,14 +92,6 @@ pub fn fd_scenes(
         frame_rate: Rational32::new(inf.fps_num as i32, inf.fps_den as i32),
     };
 
-    let opts = DetectionOptions {
-        analysis_speed: Standard,
-        detect_flashes: true,
-        min_scenecut_distance: None,
-        max_scenecut_distance: None,
-        lookahead_distance: 5,
-    };
-
     let progs = Arc::new(Mutex::new(ProgsBar::new()));
 
     let progs_callback = {
@@ -121,12 +110,12 @@ pub fn fd_scenes(
 
     let results = if inf.is_10b {
         let bd = unsafe { NonZeroU8::new_unchecked(10) };
-        detect_scene_changes::<u16>(&details, opts, None, Some(&progs_callback), || {
+        detect_scene_changes::<u16, _>(&details, None, Some(&progs_callback), || {
             build_luma_frame::<u16>(&mut dec, w, h, bd, crop_v, crop_h)
         })
     } else {
         let bd = unsafe { NonZeroU8::new_unchecked(8) };
-        detect_scene_changes::<u8>(&details, opts, None, Some(&progs_callback), || {
+        detect_scene_changes::<u8, _>(&details, None, Some(&progs_callback), || {
             build_luma_frame::<u8>(&mut dec, w, h, bd, crop_v, crop_h)
         })
     };
@@ -136,10 +125,10 @@ pub fn fd_scenes(
     }
     ProgsBar::finish_scenes();
 
-    let mut scores: Vec<Option<(f64, f64)>> = vec![None; tot_frames];
+    let mut scores: Vec<Option<(f32, f32)>> = vec![None; tot_frames];
     for (k, v) in results.scores {
         if k < tot_frames {
-            scores[k] = Some((v.inter_cost, v.threshold));
+            scores[k] = Some((v.inter_cost as f32, v.threshold as f32));
         }
     }
 
@@ -159,7 +148,7 @@ fn refine_scenes(
     scene_changes: &[usize],
     tot_frames: usize,
     max_dist: usize,
-    scores: &[Option<(f64, f64)>],
+    scores: &[Option<(f32, f32)>],
 ) -> Vec<usize> {
     let mut scenes = Vec::new();
     for i in 0..scene_changes.len() {
@@ -187,8 +176,8 @@ fn refine_scenes(
                     scores[idx].map(|(inter_cost, threshold)| {
                         let inter_score = inter_cost / threshold;
                         let distance_from_mid =
-                            (middle_point.max(size) - middle_point.min(size)) as f64;
-                        let distance_weighting = 1.0 - distance_from_mid / range_size as f64;
+                            (middle_point.max(size) - middle_point.min(size)) as f32;
+                        let distance_weighting = 1.0 - distance_from_mid / range_size as f32;
                         (size, inter_score * distance_weighting)
                     })
                 })

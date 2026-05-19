@@ -29,6 +29,42 @@ fn main() {
         process::exit(1);
     });
 
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
+        let feats = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+        let has = |f: &str| feats.split(',').any(|x| x == f);
+        let set = if has("avx512bw") {
+            Some("avx512")
+        } else if has("avx2") {
+            Some("avx2")
+        } else {
+            None
+        };
+        if let Some(set) = set {
+            let mut b = nasm_rs::Build::new();
+            b.include("asm");
+            for k in [
+                "pack",
+                "unpack",
+                "conv",
+                "deint_p010",
+                "deint_nv12",
+                "deint_nv12_to_10b",
+                "shift_p010",
+            ] {
+                b.file(format!("asm/{set}/{k}.asm"));
+            }
+            for k in ["pchip", "fc", "lerp", "bs"] {
+                b.file(format!("asm/avx2/{k}.asm"));
+            }
+            b.compile("xavasm").unwrap_or_else(|e| {
+                println!("cargo:warning=nasm: {e}");
+                process::exit(1);
+            });
+            println!("cargo:rustc-link-lib=static=xavasm");
+        }
+        println!("cargo:rerun-if-changed=asm");
+    }
+
     println!("cargo:rustc-link-search=native={home}/.local/src/FFmpeg/install/lib");
     println!("cargo:rustc-link-search=native={home}/.local/src/dav1d/build/src");
     println!("cargo:rustc-link-search=native={home}/.local/src/vulkan/install/lib");

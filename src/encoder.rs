@@ -54,7 +54,7 @@ pub struct EncConfig<'a> {
     pub zone_params: Option<&'a str>,
     pub crf: f32,
     pub output: &'a Path,
-    pub chunk_idx: usize,
+    pub chunk_idx: u16,
     pub width: u32,
     pub height: u32,
     pub frames: usize,
@@ -82,6 +82,7 @@ fn make_avm_cmd(cfg: &EncConfig) -> Command {
     let fps_str = format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den);
 
     cmd.args([
+        "--threads=1",
         "--codec=av2",
         "--profile=0",
         "--usage=0",
@@ -549,7 +550,7 @@ fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
     }
 }
 
-const fn h26x_color_primaries_str(v: i32) -> &'static str {
+const fn h26x_color_primaries_str(v: i8) -> &'static str {
     match v {
         1 => "bt709",
         4 => "bt470m",
@@ -565,7 +566,7 @@ const fn h26x_color_primaries_str(v: i32) -> &'static str {
     }
 }
 
-const fn h26x_transfer_char_str(v: i32) -> &'static str {
+const fn h26x_transfer_char_str(v: i8) -> &'static str {
     match v {
         1 => "bt709",
         4 => "bt470m",
@@ -587,7 +588,7 @@ const fn h26x_transfer_char_str(v: i32) -> &'static str {
     }
 }
 
-const fn h26x_matrix_coeff_str(v: i32) -> &'static str {
+const fn h26x_matrix_coeff_str(v: i8) -> &'static str {
     match v {
         0 => "gbr",
         1 => "bt709",
@@ -606,7 +607,7 @@ const fn h26x_matrix_coeff_str(v: i32) -> &'static str {
     }
 }
 
-const fn color_primaries_str(v: i32) -> &'static str {
+const fn color_primaries_str(v: i8) -> &'static str {
     match v {
         1 => "bt709",
         4 => "bt470m",
@@ -623,7 +624,7 @@ const fn color_primaries_str(v: i32) -> &'static str {
     }
 }
 
-const fn transfer_char_str(v: i32) -> &'static str {
+const fn transfer_char_str(v: i8) -> &'static str {
     match v {
         1 => "bt709",
         4 => "bt470m",
@@ -645,7 +646,7 @@ const fn transfer_char_str(v: i32) -> &'static str {
     }
 }
 
-const fn matrix_coeff_str(v: i32) -> &'static str {
+const fn matrix_coeff_str(v: i8) -> &'static str {
     match v {
         0 => "identity",
         1 => "bt709",
@@ -742,7 +743,7 @@ pub fn set_svt_config(config: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
     }
 }
 
-const fn chroma_pos_str(v: i32) -> &'static str {
+const fn chroma_pos_str(v: i8) -> &'static str {
     match v {
         1 => "left",
         2 => "center",

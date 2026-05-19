@@ -5,7 +5,6 @@ use std::{
     fs::{OpenOptions, copy},
     io::{BufRead as _, BufReader as StdBufReader},
     path::PathBuf,
-    sync::OnceLock,
 };
 use std::{
     collections::HashSet,
@@ -32,10 +31,23 @@ use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
 use sonic_rs::from_str;
 
+#[cfg(all(
+    feature = "vship",
+    target_feature = "avx2",
+    not(target_feature = "avx512bw")
+))]
+use crate::avx2::binary_search;
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 use crate::avx2::{SHIFT_CHUNK, conv_to_10b};
+#[cfg(all(feature = "vship", target_feature = "avx512bw"))]
+use crate::avx512::binary_search;
 #[cfg(target_feature = "avx512bw")]
 use crate::avx512::{SHIFT_CHUNK, conv_to_10b};
+#[cfg(all(
+    feature = "vship",
+    not(any(target_feature = "avx2", target_feature = "avx512bw"))
+))]
+use crate::scalar::binary_search;
 #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
 use crate::scalar::{SHIFT_CHUNK, conv_to_10b};
 use crate::{
@@ -50,7 +62,7 @@ use crate::{
     error::fatal,
     ffms::{DecodeStrat, VidInf, nv12_to_10b, nv12_to_10b_rem},
     pipeline::{Pipeline, conv_to_10b_rem},
-    progs::{LibEncTracker, ProgsTrack},
+    progs::{LibEncTracker, ProgsTrack, Watch},
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
         EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
@@ -64,13 +76,10 @@ use crate::{
 #[cfg(feature = "vship")]
 use crate::{
     pipeline::MetricsProgress,
-    tq::{Probe, ProbeLog, binary_search, interpolate_crf},
+    tq::{Probe, ProbeLog, interpolate_crf},
     vship::{VshipProcessor, init_device},
     worker::TQState,
 };
-
-#[cfg(feature = "vship")]
-pub static TQ_SCORES: OnceLock<Mutex<Vec<f64>>> = OnceLock::new();
 
 fn join_one(handle: JoinHandle<()>) {
     if let Err(e) = handle.join() {
@@ -126,8 +135,8 @@ fn load_resume_data(work_dir: &Path) -> ResumeInf {
     })
 }
 
-fn build_skip_set(resume_data: &ResumeInf) -> (HashSet<usize>, usize, usize) {
-    let skip_indices: HashSet<usize> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
+fn build_skip_set(resume_data: &ResumeInf) -> (HashSet<u16>, usize, usize) {
+    let skip_indices: HashSet<u16> = resume_data.chnks_done.iter().map(|c| c.idx).collect();
     let completed_count = skip_indices.len();
     let completed_frames: usize = resume_data.chnks_done.iter().map(|c| c.frames).sum();
     (skip_indices, completed_count, completed_frames)
@@ -138,7 +147,7 @@ fn create_stats(completed_count: usize, resume_data: &ResumeInf) -> Arc<WorkerSt
 }
 
 type SvtEncFn =
-    fn(&mut Vec<u8>, &EncConfig, &EncWorkerCtx, &mut [u8], usize, bool, Option<(f32, Option<f64>)>);
+    fn(&mut Vec<u8>, &EncConfig, &EncWorkerCtx, &mut [u8], usize, bool, Option<(f32, Option<f32>)>);
 
 struct EncWorkerCtx<'a> {
     inf: &'a VidInf,
@@ -156,7 +165,7 @@ struct TQWorkerCtx<'a> {
     work_dir: &'a Path,
     metric_mode: &'a str,
     prog: &'a Arc<ProgsTrack>,
-    done_tx: &'a Sender<usize>,
+    done_tx: &'a Sender<u16>,
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     stats: Option<&'a Arc<WorkerStats>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
@@ -296,20 +305,19 @@ pub fn encode_all(
 #[derive(Copy, Clone)]
 #[cfg(feature = "vship")]
 struct TQCtx {
-    target: f64,
-    tolerance: f64,
-    qp_min: f64,
-    qp_max: f64,
+    target: f32,
+    tolerance: f32,
+    qp_min: f32,
+    qp_max: f32,
     use_butteraugli: bool,
     use_cvvdp: bool,
-    cvvdp_per_frame: bool,
     cvvdp_config: Option<&'static str>,
 }
 
 #[cfg(feature = "vship")]
 impl TQCtx {
     #[inline(always)]
-    fn converged(&self, score: f64) -> bool {
+    fn converged(&self, score: f32) -> bool {
         if self.use_butteraugli {
             (self.target - score).abs() <= self.tolerance
         } else {
@@ -318,7 +326,7 @@ impl TQCtx {
     }
 
     #[inline(always)]
-    fn update_bounds_and_check(&self, state: &mut TQState, score: f64) -> bool {
+    fn update_bounds_and_check(&self, state: &mut TQState, score: f32) -> bool {
         if self.use_butteraugli {
             if score > self.target + self.tolerance {
                 state.search_max = state.last_crf - 0.25;
@@ -363,7 +371,7 @@ impl TQCtx {
 #[inline(never)]
 #[cfg(feature = "vship")]
 fn complete_chunk(
-    chunk_idx: usize,
+    chunk_idx: u16,
     chunk_frames: usize,
     probe_path: &Path,
     ctx: &TQWorkerCtx,
@@ -397,7 +405,7 @@ fn complete_chunk(
         s.total_size.fetch_add(comp.size, Relaxed);
     }
 
-    let probes_with_size: Vec<(f64, f64, u64)> = tq_state
+    let probes_with_size: Vec<(f32, f32, u64)> = tq_state
         .probes
         .iter()
         .map(|p| {
@@ -421,37 +429,18 @@ fn complete_chunk(
     };
     write_chunk_log(&log_entry, ctx.work_dir);
     unsafe { ctx.tq_logger.lock().unwrap_unchecked() }.push(log_entry);
-
-    let mut tq_scores = unsafe {
-        TQ_SCORES
-            .get_or_init(|| Mutex::new(Vec::new()))
-            .lock()
-            .unwrap_unchecked()
-    };
-    if ctx.tq_ctx.use_cvvdp && !ctx.tq_ctx.cvvdp_per_frame {
-        tq_scores.push(best.score);
-    } else {
-        let matched = unsafe {
-            tq_state
-                .probes
-                .iter()
-                .find(|p| (p.crf - best.crf).abs() < 0.001)
-                .unwrap_unchecked()
-        };
-        tq_scores.extend_from_slice(&matched.frame_scores);
-    }
 }
 
 #[cfg(feature = "vship")]
 #[inline]
-fn probe_path(dir: &Path, idx: usize, crf: f64, ext: &str) -> PathBuf {
+fn probe_path(dir: &Path, idx: u16, crf: f32, ext: &str) -> PathBuf {
     dir.join("split").join(format!("{idx:04}_{crf:.2}.{ext}"))
 }
 
 #[cfg(feature = "vship")]
 fn run_metrics_worker(
     rx: &Arc<Receiver<WorkPkg>>,
-    rework_tx: &Sender<WorkPkg>,
+    work_tx: &Sender<WorkPkg>,
     ctx: &TQWorkerCtx,
     worker_id: usize,
 ) {
@@ -506,7 +495,7 @@ fn run_metrics_worker(
         let mp = MetricsProgress {
             prog: ctx.prog,
             slot: metrics_slot,
-            crf: crf as f32,
+            crf,
             last_score,
         };
         let (score, frame_scores) = (ctx.pipe.calc_metrics)(
@@ -526,16 +515,15 @@ fn run_metrics_worker(
             frame_scores,
         });
 
-        let should_complete = ctx.tq_ctx.converged(score)
-            || tq_state.round > 10
-            || ctx.tq_ctx.update_bounds_and_check(tq_state, score);
+        let should_complete =
+            ctx.tq_ctx.converged(score) || ctx.tq_ctx.update_bounds_and_check(tq_state, score);
 
         if should_complete {
             let best = ctx.tq_ctx.best_probe(&tq_state.probes);
             if ctx.use_probe_params {
                 tq_state.final_encode = true;
                 tq_state.last_crf = best.crf;
-                _ = rework_tx.send(pkg);
+                _ = work_tx.send(pkg);
             } else {
                 let bp = probe_path(
                     ctx.work_dir,
@@ -546,7 +534,7 @@ fn run_metrics_worker(
                 complete_chunk(pkg.chunk.idx, pkg.frame_count, &bp, ctx, tq_state, best);
             }
         } else {
-            _ = rework_tx.send(pkg);
+            _ = work_tx.send(pkg);
         }
     }
 }
@@ -555,9 +543,9 @@ fn run_metrics_worker(
 fn parse_tq_ctx(args: &Args) -> TQCtx {
     let tq_str = unsafe { args.target_quality.as_ref().unwrap_unchecked() };
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
-    let tq_parts: Vec<f64> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
-    let qp_parts: Vec<f64> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
-    let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
+    let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
+    let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
+    let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
     let cvvdp_config: Option<&'static str> = args
         .cvvdp_config
         .as_ref()
@@ -569,16 +557,14 @@ fn parse_tq_ctx(args: &Args) -> TQCtx {
         qp_max: qp_parts[1],
         use_butteraugli: tq_target < 8.0,
         use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
-        cvvdp_per_frame: tq_target > 8.0 && tq_target <= 10.0 && args.metric_mode.starts_with('p'),
         cvvdp_config,
     }
 }
 
 #[cfg(feature = "vship")]
 fn tq_coordinate(
-    decode_rx: &Receiver<WorkPkg>,
-    rework_rx: &Receiver<WorkPkg>,
-    done_rx: &Receiver<usize>,
+    work_rx: &Receiver<WorkPkg>,
+    done_rx: &Receiver<u16>,
     enc_tx: &Sender<WorkPkg>,
     total_chunks: usize,
     permits: &Semaphore,
@@ -586,8 +572,7 @@ fn tq_coordinate(
     let mut completed = 0;
     while completed < total_chunks {
         select! {
-            recv(decode_rx) -> pkg => { if let Ok(pkg) = pkg { _ =enc_tx.send(pkg); } }
-            recv(rework_rx) -> pkg => { if let Ok(pkg) = pkg { _ =enc_tx.send(pkg); } }
+            recv(work_rx) -> pkg => { if let Ok(pkg) = pkg { _ = enc_tx.send(pkg); } }
             recv(done_rx) -> result => { if result.is_ok() { permits.release(); completed += 1; } }
         }
     }
@@ -595,13 +580,12 @@ fn tq_coordinate(
 
 #[cfg(feature = "vship")]
 #[inline]
-fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f64 {
+fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f32 {
     tq.round += 1;
     let c = if tq.round <= 2 {
         binary_search(tq.search_min, tq.search_max)
     } else {
         interpolate_crf(&tq.probes, tq.target, tq.round)
-            .unwrap_or_else(|| binary_search(tq.search_min, tq.search_max))
     }
     .clamp(tq.search_min, tq.search_max);
     let c = if encoder.integer_qp() { c.round() } else { c };
@@ -666,8 +650,8 @@ fn tq_enc_loop(
 struct TQDecodeResult {
     enc_tx: Sender<WorkPkg>,
     enc_rx: Receiver<WorkPkg>,
-    rework_tx: Sender<WorkPkg>,
-    done_tx: Sender<usize>,
+    work_tx: Sender<WorkPkg>,
+    done_tx: Sender<u16>,
     handle: JoinHandle<()>,
 }
 
@@ -676,39 +660,55 @@ fn spawn_tq_decode(
     chunks: &[Chunk],
     path: &Path,
     inf: &VidInf,
-    skip: HashSet<usize>,
+    skip: HashSet<u16>,
     strat: DecodeStrat,
     permits: &Arc<Semaphore>,
     pipe_reader: Option<PipeReader>,
 ) -> TQDecodeResult {
     let total = chunks.iter().filter(|c| !skip.contains(&c.idx)).count();
     let (enc_tx, enc_rx) = bounded::<WorkPkg>(2);
-    let (rework_tx, rework_rx) = bounded::<WorkPkg>(2);
-    let (done_tx, done_rx) = bounded::<usize>(4);
+    let (work_tx, work_rx) = bounded::<WorkPkg>(4);
+    let (done_tx, done_rx) = bounded::<u16>(4);
 
     let chunks = chunks.to_vec();
     let path = path.to_path_buf();
     let inf = inf.clone();
     let enc_tx2 = enc_tx.clone();
+    let work_tx_dec = work_tx.clone();
     let permits_dec = Arc::clone(permits);
     let permits_done = Arc::clone(permits);
     let handle = spawn(move || {
-        let (dtx, drx) = bounded::<WorkPkg>(2);
         let inf2 = inf.clone();
         let dec = spawn(move || {
             if let Some(mut r) = pipe_reader {
-                decode_pipe(&chunks, &mut r, &inf2, &dtx, &skip, strat, &permits_dec);
+                decode_pipe(
+                    &chunks,
+                    &mut r,
+                    &inf2,
+                    &work_tx_dec,
+                    &skip,
+                    strat,
+                    &permits_dec,
+                );
             } else {
-                decode_chunks(&chunks, &path, &inf2, &dtx, &skip, strat, &permits_dec);
+                decode_chunks(
+                    &chunks,
+                    &path,
+                    &inf2,
+                    &work_tx_dec,
+                    &skip,
+                    strat,
+                    &permits_dec,
+                );
             }
         });
-        tq_coordinate(&drx, &rework_rx, &done_rx, &enc_tx2, total, &permits_done);
+        tq_coordinate(&work_rx, &done_rx, &enc_tx2, total, &permits_done);
         join_one(dec);
     });
     TQDecodeResult {
         enc_tx,
         enc_rx,
-        rework_tx,
+        work_tx,
         done_tx,
         handle,
     }
@@ -771,13 +771,8 @@ fn encode_tq(
         worker_count: args.worker,
     };
 
-    let metrics_workers = spawn_tq_metrics(
-        args.metric_worker,
-        &met_rx,
-        &dec.rework_tx,
-        &dec.done_tx,
-        &sc,
-    );
+    let metrics_workers =
+        spawn_tq_metrics(args.metric_worker, &met_rx, &dec.work_tx, &dec.done_tx, &sc);
 
     let workers = spawn_tq_encoders(&enc_rx, &met_tx, &sc);
 
@@ -785,7 +780,7 @@ fn encode_tq(
     join_one(dec.handle);
     drop(dec.enc_tx);
     join_all(workers);
-    drop(dec.rework_tx);
+    drop(dec.work_tx);
     drop(met_tx);
     join_all(metrics_workers);
 
@@ -814,13 +809,13 @@ struct TQSpawnCtx<'a> {
 fn spawn_tq_metrics(
     metric_worker: usize,
     met_rx: &Arc<Receiver<WorkPkg>>,
-    rework_tx: &Sender<WorkPkg>,
-    done_tx: &Sender<usize>,
+    work_tx: &Sender<WorkPkg>,
+    done_tx: &Sender<u16>,
     sc: &TQSpawnCtx,
 ) -> Vec<JoinHandle<()>> {
     let mut metrics_workers = Vec::new();
     for worker_id in 0..metric_worker {
-        let (rx, rework_tx) = (Arc::clone(met_rx), rework_tx.clone());
+        let (rx, work_tx) = (Arc::clone(met_rx), work_tx.clone());
         let done_tx = done_tx.clone();
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
         let (metric_mode, st) = (sc.args.metric_mode.clone(), sc.stats.clone());
@@ -847,7 +842,7 @@ fn spawn_tq_metrics(
                 use_probe_params,
                 worker_count,
             };
-            run_metrics_worker(&rx, &rework_tx, &ctx, worker_id);
+            run_metrics_worker(&rx, &work_tx, &ctx, worker_id);
         }));
     }
     metrics_workers
@@ -898,7 +893,7 @@ fn spawn_tq_encoders(
 #[cfg(feature = "vship")]
 fn enc_tq_probe(
     pkg: &mut WorkPkg,
-    crf: f64,
+    crf: f32,
     params: &str,
     ctx: &EncWorkerCtx,
     conv_buf: &mut [u8],
@@ -921,7 +916,7 @@ fn enc_tq_probe(
             inf: ctx.inf,
             params,
             zone_params: pkg.chunk.params.as_deref(),
-            crf: crf as f32,
+            crf,
             output: out,
             chunk_idx: pkg.chunk.idx,
             width: pkg.width,
@@ -935,7 +930,7 @@ fn enc_tq_probe(
             conv_buf,
             worker_id,
             false,
-            Some((crf as f32, last_score)),
+            Some((crf, last_score)),
         );
         return out.to_path_buf();
     }
@@ -943,7 +938,7 @@ fn enc_tq_probe(
         inf: ctx.inf,
         params,
         zone_params: pkg.chunk.params.as_deref(),
-        crf: crf as f32,
+        crf,
         output: out,
         chunk_idx: pkg.chunk.idx,
         width: pkg.width,
@@ -962,18 +957,24 @@ fn enc_tq_probe(
         SvtAv1 => assume_unreachable(),
         X265 | X264 => ctx.prog.watch_enc(
             unsafe { child.stderr.take().unwrap_unchecked() },
-            worker_id,
-            pkg.chunk.idx,
-            false,
-            Some((crf as f32, last_score)),
+            Watch {
+                worker_id,
+                chunk_idx: pkg.chunk.idx,
+                frames: pkg.frame_count,
+                track_frames: false,
+                crf_score: Some((crf, last_score)),
+            },
             ctx.encoder,
         ),
         Avm | Vvenc => ctx.prog.watch_enc(
             unsafe { child.stdout.take().unwrap_unchecked() },
-            worker_id,
-            pkg.chunk.idx,
-            false,
-            Some((crf as f32, last_score)),
+            Watch {
+                worker_id,
+                chunk_idx: pkg.chunk.idx,
+                frames: pkg.frame_count,
+                track_frames: false,
+                crf_score: Some((crf, last_score)),
+            },
             ctx.encoder,
         ),
     }
@@ -1073,18 +1074,24 @@ fn enc_chunk(
         SvtAv1 => assume_unreachable(),
         X265 | X264 => ctx.prog.watch_enc(
             unsafe { child.stderr.take().unwrap_unchecked() },
-            worker_id,
-            pkg.chunk.idx,
-            true,
-            None,
+            Watch {
+                worker_id,
+                chunk_idx: pkg.chunk.idx,
+                frames: pkg.frame_count,
+                track_frames: true,
+                crf_score: None,
+            },
             ctx.encoder,
         ),
         Avm | Vvenc => ctx.prog.watch_enc(
             unsafe { child.stdout.take().unwrap_unchecked() },
-            worker_id,
-            pkg.chunk.idx,
-            true,
-            None,
+            Watch {
+                worker_id,
+                chunk_idx: pkg.chunk.idx,
+                frames: pkg.frame_count,
+                track_frames: true,
+                crf_score: None,
+            },
             ctx.encoder,
         ),
     }
@@ -1138,29 +1145,21 @@ pub fn write_chunk_log(chunk_log: &ProbeLog, work_dir: &Path) {
 fn format_tq_json(
     all_logs: &[TqChunkLine],
     metric_name: &str,
-    fps: f64,
+    fps: f32,
     round_counts: &BTreeMap<usize, usize>,
     crf_counts: &BTreeMap<u64, usize>,
 ) -> String {
     let total = all_logs.len();
-    let avg_probes = all_logs.iter().map(|l| l.p.len()).sum::<usize>() as f64 / total as f64;
+    let avg_probes = all_logs.iter().map(|l| l.p.len()).sum::<usize>() as f32 / total as f32;
     let in_range = all_logs.iter().filter(|l| l.r <= 6).count();
 
-    let calc_kbs = |size: u64, frames: usize| -> f64 {
-        let d = frames as f64 / fps;
+    let calc_kbs = |size: u64, frames: usize| -> f32 {
+        let d = frames as f32 / fps;
         if d > 0.0 {
-            (size as f64 * 8.0) / d / 1000.0
+            (size as f32 * 8.0) / d / 1000.0
         } else {
             0.0
         }
-    };
-
-    let method_name = |round: usize| match round {
-        1 | 2 => "binary",
-        3 => "linear",
-        4 => "fritsch_carlson",
-        5 => "pchip",
-        _ => "akima",
     };
 
     let mut out = String::new();
@@ -1209,12 +1208,11 @@ fn format_tq_json(
     _ = writeln!(out, "  \"rounds\": {{");
     let rv: Vec<_> = round_counts.iter().collect();
     for (i, &(round, count)) in rv.iter().enumerate() {
-        let pct = (*count as f64 / total as f64 * 100.0 * 100.0).round() / 100.0;
+        let pct = (*count as f32 / total as f32 * 100.0 * 100.0).round() / 100.0;
         let comma = if i + 1 < rv.len() { "," } else { "" };
         _ = writeln!(
             out,
-            "    \"{round}\": {{ \"count\": {count}, \"method\": \"{}\", \"%\": {pct:.2} }}{comma}",
-            method_name(*round)
+            "    \"{round}\": {{ \"count\": {count}, \"%\": {pct:.2} }}{comma}"
         );
     }
     _ = writeln!(out, "  }},");
@@ -1228,7 +1226,7 @@ fn format_tq_json(
         _ = writeln!(
             out,
             "    {{ \"crf\": {:.2}, \"count\": {} }}{comma}",
-            crf as f64 / 100.0,
+            crf as f32 / 100.0,
             count
         );
     }
@@ -1243,9 +1241,9 @@ struct TqChunkLine {
     id: usize,
     r: usize,
     f: usize,
-    p: Vec<(f64, f64, u64)>,
-    fc: f64,
-    fs: f64,
+    p: Vec<(f32, f32, u64)>,
+    fc: f32,
+    fs: f32,
     fz: u64,
 }
 
@@ -1253,7 +1251,7 @@ struct TqChunkLine {
 fn write_tq_log(input: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
     let log_path = input.with_extension("json");
     let chunks_path = work_dir.join("chunks.json");
-    let fps = f64::from(inf.fps_num) / f64::from(inf.fps_den);
+    let fps = inf.fps_num as f32 / inf.fps_den as f32;
 
     let mut all_logs: Vec<TqChunkLine> = Vec::new();
     if let Ok(file) = File::open(&chunks_path) {
@@ -1355,7 +1353,7 @@ macro_rules! make_send_svt {
             conv_buf: &mut [u8],
             worker_id: usize,
             track_frames: bool,
-            crf_score: Option<(f32, Option<f64>)>,
+            crf_score: Option<(f32, Option<f32>)>,
         ) -> (*mut EbComponentType, BufWriter<File>, LibEncTracker) {
             let handle = init_svt(cfg);
             let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));
@@ -1469,7 +1467,7 @@ fn enc_svt_lib(
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let (handle, mut out, mut tracker) = send_svt_conv(
         yuv.as_slice(),
@@ -1491,7 +1489,7 @@ fn enc_svt_lib_rem(
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let (handle, mut out, mut tracker) = send_svt_conv_rem(
         yuv.as_slice(),
@@ -1512,7 +1510,7 @@ fn enc_svt_drop(
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let (handle, mut out, mut tracker) =
         send_svt_conv(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
@@ -1527,7 +1525,7 @@ fn enc_svt_drop_rem(
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let (handle, mut out, mut tracker) =
         send_svt_conv_rem(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
@@ -1542,7 +1540,7 @@ fn enc_svt_nv12_drop(
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let (handle, mut out, mut tracker) =
         send_svt_nv12(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
@@ -1557,7 +1555,7 @@ fn enc_svt_nv12_drop_rem(
     conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let (handle, mut out, mut tracker) =
         send_svt_nv12_rem(yuv, cfg, ctx, conv_buf, worker_id, track_frames, crf_score);
@@ -1572,7 +1570,7 @@ fn enc_svt_direct(
     _conv_buf: &mut [u8],
     worker_id: usize,
     track_frames: bool,
-    crf_score: Option<(f32, Option<f64>)>,
+    crf_score: Option<(f32, Option<f32>)>,
 ) {
     let handle = init_svt(cfg);
     let mut out = BufWriter::new(File::create(cfg.output).unwrap_or_else(|e| fatal(e)));

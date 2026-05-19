@@ -1,12 +1,12 @@
 use std::{
+    ffi::{CString, c_void},
     fmt::Write as _,
-    fs::{
-        DirEntry, File, create_dir_all, metadata, read_dir, read_to_string, remove_dir_all,
-        remove_file, rename, write,
-    },
+    fs::{DirEntry, File, read_dir, read_to_string, write},
     io::{Read as _, Seek as _, SeekFrom, Write as _, copy},
+    mem::size_of,
+    os::raw::c_int,
     path::{Path, PathBuf},
-    process::Command,
+    ptr::{null, null_mut},
     sync::{
         OnceLock,
         atomic::{AtomicU64, Ordering::Relaxed},
@@ -15,12 +15,19 @@ use std::{
 };
 
 use crate::{
-    encoder::{
-        Encoder,
-        Encoder::{Avm, Vvenc, X264, X265},
-    },
+    audio::{AudioStream, lang_name},
+    encoder::{Encoder, Encoder::Avm},
     error::Xerr,
-    ffms::VidInf,
+    ffms::{
+        AV_NOPTS_VALUE, AVChapter, AVCodecParameters, AVFMT_FLAG_BITEXACT, AVFormatContext,
+        AVIO_FLAG_WRITE, AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO, AVPacket,
+        AVRational, AVStream, VidInf, av_dict_copy, av_dict_free, av_dict_set, av_find_best_stream,
+        av_interleaved_write_frame, av_mallocz, av_packet_alloc, av_packet_free,
+        av_packet_rescale_ts, av_packet_unref, av_read_frame, av_write_trailer,
+        avcodec_parameters_copy, avformat_alloc_output_context2, avformat_close_input,
+        avformat_find_stream_info, avformat_free_context, avformat_new_stream, avformat_open_input,
+        avformat_query_codec, avformat_write_header, avio_closep, avio_open, gcd,
+    },
 };
 
 pub static PRIOR_SECS: AtomicU64 = AtomicU64::new(0);
@@ -39,7 +46,7 @@ pub struct Scene {
 
 #[derive(Clone)]
 pub struct Chunk {
-    pub idx: usize,
+    pub idx: u16,
     pub start: usize,
     pub end: usize,
     pub params: Option<Box<str>>,
@@ -47,7 +54,7 @@ pub struct Chunk {
 
 #[derive(Clone)]
 pub struct ChunkComp {
-    pub idx: usize,
+    pub idx: u16,
     pub frames: usize,
     pub size: u64,
 }
@@ -111,7 +118,7 @@ pub fn chunkify(scenes: &[Scene]) -> Vec<Chunk> {
         .iter()
         .enumerate()
         .map(|(i, s)| Chunk {
-            idx: i,
+            idx: i as u16,
             start: s.s_frame,
             end: s.e_frame,
             params: s.params.clone(),
@@ -135,7 +142,7 @@ pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() == 3
                     && let (Ok(idx), Ok(frames), Ok(size)) = (
-                        parts[0].parse::<usize>(),
+                        parts[0].parse::<u16>(),
                         parts[1].parse::<usize>(),
                         parts[2].parse::<u64>(),
                     )
@@ -190,140 +197,519 @@ fn concat_ivf(files: &[PathBuf], output: &Path, total_frames: u32) -> Result<(),
     Ok(())
 }
 
-fn concat_vvc(files: &[PathBuf], output: &Path, inf: &VidInf) -> Result<(), Xerr> {
-    let temp_266 = output.with_extension("266");
-
-    let mut out = File::create(&temp_266)?;
-    for file in files {
-        copy(&mut File::open(file)?, &mut out)?;
+fn open_in(path: &Path) -> Result<*mut AVFormatContext, Xerr> {
+    let c = CString::new(path.to_str().ok_or("invalid input path")?)?;
+    let mut ctx: *mut AVFormatContext = null_mut();
+    unsafe {
+        if avformat_open_input(&raw mut ctx, c.as_ptr(), null(), null_mut()) < 0 {
+            return Err("could not open input".into());
+        }
+        if avformat_find_stream_info(ctx, null_mut()) < 0 {
+            avformat_close_input(&raw mut ctx);
+            return Err("could not read stream info".into());
+        }
     }
-    drop(out);
-
-    let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
-
-    let status = Command::new("MP4Box")
-        .args(["-flat", "-new"])
-        .args(["-for-test"])
-        .args(["-no-iod"])
-        .arg("-add")
-        .arg(format!("{}:fps={}", temp_266.display(), fps))
-        .arg(output)
-        .status()?;
-
-    _ = remove_file(&temp_266);
-
-    if !status.success() {
-        return Err("MP4Box VVC import failed".into());
-    }
-
-    Ok(())
+    Ok(ctx)
 }
 
-fn concat_h26x(
-    files: &[PathBuf],
-    output: &Path,
-    inf: &VidInf,
-    encoder: Encoder,
-) -> Result<(), Xerr> {
-    let temp_26x = output.with_extension(encoder.extension());
-    {
-        let mut out = File::create(&temp_26x)?;
-        for file in files {
-            copy(&mut File::open(file)?, &mut out)?;
-        }
+fn close_in(ctx: *mut AVFormatContext) {
+    if !ctx.is_null() {
+        let mut c = ctx;
+        unsafe { avformat_close_input(&raw mut c) };
     }
-
-    let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
-
-    if Command::new("MP4Box").arg("-version").output().is_ok() {
-        let status = Command::new("MP4Box")
-            .args(["-flat", "-new", "-for-test", "-no-iod", "-add"])
-            .arg(format!("{}:fps={}", temp_26x.display(), fps))
-            .arg(output)
-            .status()?;
-
-        _ = remove_file(&temp_26x);
-        if status.success() {
-            return Ok(());
-        }
-    }
-
-    if Command::new("mkvmerge").arg("--version").output().is_ok() {
-        let mut cmd = Command::new("mkvmerge");
-        cmd.arg("-o").arg(output);
-        cmd.args(["--default-duration", &format!("0:{fps}fps")]);
-        cmd.arg(&temp_26x);
-
-        let status = cmd.status()?;
-        _ = remove_file(&temp_26x);
-        if status.success() {
-            return Ok(());
-        }
-    }
-
-    _ = remove_file(&temp_26x);
-    Err("Neither MP4Box nor mkvmerge available for H.26x concat".into())
 }
 
-#[cfg(target_os = "windows")]
-const BATCH_SIZE: usize = usize::MAX;
-#[cfg(not(target_os = "windows"))]
-const BATCH_SIZE: usize = 960;
+fn ostream(ctx: *mut AVFormatContext, idx: c_int) -> *mut AVStream {
+    unsafe { *(*ctx).streams.add(idx as usize) }
+}
 
-const FF_FLAGS: [&str; 13] = [
-    "-fflags",
-    "+genpts+igndts+discardcorrupt+bitexact",
-    "-bitexact",
-    "-avoid_negative_ts",
-    "make_zero",
-    "-err_detect",
-    "ignore_err",
-    "-ignore_unknown",
-    "-reset_timestamps",
-    "1",
-    "-start_at_zero",
-    "-output_ts_offset",
-    "0",
-];
+fn best(ctx: *mut AVFormatContext, kind: c_int) -> c_int {
+    unsafe { av_find_best_stream(ctx, kind, -1, -1, null_mut(), 0) }
+}
 
-pub fn add_mp4_subs(input: &Path, output: &Path) {
-    let Ok(out) = Command::new("MP4Box").arg("-info").arg(input).output() else {
-        return;
+fn add_stream(octx: *mut AVFormatContext, par: *const AVCodecParameters) -> Option<c_int> {
+    unsafe {
+        let os = avformat_new_stream(octx, null());
+        (!os.is_null() && avcodec_parameters_copy((*os).codecpar, par) >= 0).then(|| (*os).index)
+    }
+}
+
+fn set_meta(st: *mut AVStream, key: &str, val: &str) {
+    if let (Ok(k), Ok(v)) = (CString::new(key), CString::new(val)) {
+        unsafe { av_dict_set(&raw mut (*st).metadata, k.as_ptr(), v.as_ptr(), 0) };
+    }
+}
+
+fn add_video(octx: *mut AVFormatContext, chunk0: &Path, inf: &VidInf) -> Result<c_int, Xerr> {
+    let cin = open_in(chunk0)?;
+    let v = best(cin, AVMEDIA_TYPE_VIDEO);
+    let res = if v < 0 {
+        Err("no video stream in chunk".into())
+    } else {
+        add_stream(octx, unsafe { (*ostream(cin, v)).codecpar })
+            .ok_or_else(|| Xerr::from("could not init video stream"))
     };
-    let info = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let combined = format!("{info}{stderr}");
+    close_in(cin);
+    let oi = res?;
+    let ov = ostream(octx, oi);
+    unsafe {
+        (*ov).time_base = AVRational {
+            num: inf.fps_den as c_int,
+            den: inf.fps_num as c_int,
+        };
+        (*ov).avg_frame_rate = AVRational {
+            num: inf.fps_num as c_int,
+            den: inf.fps_den as c_int,
+        };
+        if let Some((dw, dh)) = inf.dar {
+            let n = u64::from(dw) * u64::from(inf.height);
+            let d = u64::from(dh) * u64::from(inf.width);
+            let g = gcd(n, d).max(1);
+            (*(*ov).codecpar).sample_aspect_ratio = AVRational {
+                num: (n / g) as c_int,
+                den: (d / g) as c_int,
+            };
+        }
+    }
+    Ok(oi)
+}
 
-    let mut cmd = Command::new("MP4Box");
-    cmd.args(["-for-test", "-no-iod"]);
-    let mut has_tracks = false;
+fn add_opus(
+    octx: *mut AVFormatContext,
+    audio: &[(AudioStream, PathBuf)],
+) -> Vec<(*mut AVFormatContext, c_int, c_int)> {
+    let mut maps = Vec::new();
+    for entry in audio {
+        let Ok(ai) = open_in(&entry.1) else { continue };
+        let si = best(ai, AVMEDIA_TYPE_AUDIO);
+        let oi = if si < 0 {
+            None
+        } else {
+            add_stream(octx, unsafe { (*ostream(ai, si)).codecpar })
+        };
+        match oi {
+            Some(oi) => {
+                let code = entry.0.lang.as_deref().unwrap_or("und");
+                set_meta(ostream(octx, oi), "language", code);
+                set_meta(ostream(octx, oi), "title", lang_name(code));
+                maps.push((ai, si, oi));
+            }
+            None => close_in(ai),
+        }
+    }
+    maps
+}
 
-    for line in combined.lines() {
-        if line.contains("type: Text")
-            && let Some(track) = line
-                .split("Track ")
-                .nth(1)
-                .and_then(|s| s.split_whitespace().next())
-                .and_then(|s| s.parse::<u32>().ok())
-        {
-            cmd.arg("-add")
-                .arg(format!("{}#{}", input.display(), track));
-            has_tracks = true;
+fn add_src_streams(
+    octx: *mut AVFormatContext,
+    oformat: *const c_void,
+    src_ctx: *mut AVFormatContext,
+    passthrough_audio: bool,
+) -> Vec<(c_int, c_int)> {
+    let mut maps = Vec::new();
+    if src_ctx.is_null() {
+        return maps;
+    }
+    unsafe {
+        for i in 0..(*src_ctx).nb_streams {
+            let ist = *(*src_ctx).streams.add(i as usize);
+            let par = (*ist).codecpar;
+            let kind = (*par).codec_type;
+            let want =
+                (kind == AVMEDIA_TYPE_AUDIO && passthrough_audio) || kind == AVMEDIA_TYPE_SUBTITLE;
+            if want
+                && avformat_query_codec(oformat, (*par).codec_id, 0) != 0
+                && let Some(oi) = add_stream(octx, par)
+            {
+                av_dict_copy(&raw mut (*ostream(octx, oi)).metadata, (*ist).metadata, 0);
+                maps.push(((*ist).index, oi));
+            }
+        }
+    }
+    maps
+}
+
+fn copy_chapters(octx: *mut AVFormatContext, src_ctx: *mut AVFormatContext) {
+    unsafe {
+        let n = (*src_ctx).nb_chapters;
+        if n == 0 {
+            return;
+        }
+        let arr = av_mallocz(n as usize * size_of::<*mut AVChapter>()).cast::<*mut AVChapter>();
+        for i in 0..n as usize {
+            let inc = *(*src_ctx).chapters.add(i);
+            let oc = av_mallocz(size_of::<AVChapter>()).cast::<AVChapter>();
+            (*oc).id = (*inc).id;
+            (*oc).time_base = (*inc).time_base;
+            (*oc).start = (*inc).start;
+            (*oc).end = (*inc).end;
+            av_dict_copy(&raw mut (*oc).metadata, (*inc).metadata, 0);
+            *arr.add(i) = oc;
+        }
+        (*octx).chapters = arr;
+        (*octx).nb_chapters = n;
+    }
+}
+
+const TB_US: AVRational = AVRational {
+    num: 1,
+    den: 1_000_000,
+};
+
+fn rescale(a: i64, src: AVRational, dst: AVRational) -> i64 {
+    let d = i128::from(src.den) * i128::from(dst.num);
+    if d == 0 {
+        return 0;
+    }
+    let n = i128::from(a) * i128::from(src.num) * i128::from(dst.den);
+    let h = d.abs() / 2;
+    (if n >= 0 { (n + h) / d } else { (n - h) / d }) as i64
+}
+
+fn pkt_us(pkt: *mut AVPacket, tb: AVRational) -> i64 {
+    let ts = unsafe {
+        if (*pkt).dts == AV_NOPTS_VALUE {
+            (*pkt).pts
+        } else {
+            (*pkt).dts
+        }
+    };
+    if ts == AV_NOPTS_VALUE {
+        0
+    } else {
+        rescale(ts, tb, TB_US)
+    }
+}
+
+struct VidSt {
+    chunks: Vec<PathBuf>,
+    idx: usize,
+    ctx: *mut AVFormatContext,
+    cv: c_int,
+    frame: i64,
+    fps_tb: AVRational,
+    vidx: c_int,
+}
+
+struct Splice {
+    fps: AVRational,
+    map: Vec<(i64, i64, i64)>,
+}
+
+enum Src {
+    Video(VidSt),
+    Stream {
+        ctx: *mut AVFormatContext,
+        maps: Vec<(c_int, c_int)>,
+        splice: Option<Splice>,
+    },
+}
+
+struct Feed {
+    src: Src,
+    pkt: *mut AVPacket,
+    has: bool,
+    done: bool,
+    time: i64,
+    oi: c_int,
+    in_tb: AVRational,
+}
+
+fn fill_video(pkt: *mut AVPacket, v: &mut VidSt) -> Option<(i64, c_int, AVRational)> {
+    loop {
+        if v.ctx.is_null() {
+            let path = v.chunks.get(v.idx)?;
+            v.idx += 1;
+            if let Ok(c) = open_in(path) {
+                v.ctx = c;
+                v.cv = best(c, AVMEDIA_TYPE_VIDEO);
+                if v.cv < 0 {
+                    close_in(v.ctx);
+                    v.ctx = null_mut();
+                }
+            }
+            continue;
+        }
+        if unsafe { av_read_frame(v.ctx, pkt) } < 0 {
+            close_in(v.ctx);
+            v.ctx = null_mut();
+            continue;
+        }
+        if unsafe { (*pkt).stream_index } != v.cv {
+            unsafe { av_packet_unref(pkt) };
+            continue;
+        }
+        unsafe {
+            (*pkt).pts = v.frame;
+            (*pkt).dts = v.frame;
+            (*pkt).duration = 1;
+        }
+        let t = rescale(v.frame, v.fps_tb, TB_US);
+        v.frame += 1;
+        return Some((t, v.vidx, v.fps_tb));
+    }
+}
+
+fn build_splice(ranges: &[(usize, usize)], fps: AVRational) -> Splice {
+    let mut map = Vec::with_capacity(ranges.len());
+    let mut off: i64 = 0;
+    for &(s, e) in ranges {
+        let s = s as i64;
+        let ee = e as i64 + 1;
+        map.push((s, ee, off));
+        off += ee - s;
+    }
+    Splice { fps, map }
+}
+
+fn splice_pkt(pkt: *mut AVPacket, tb: AVRational, sp: &Splice) -> Option<i64> {
+    let pts = unsafe { (*pkt).pts };
+    if pts == AV_NOPTS_VALUE {
+        return None;
+    }
+    let dur = unsafe { (*pkt).duration }.max(0);
+    for &(s, ee, off) in &sp.map {
+        let s_t = rescale(s, sp.fps, tb);
+        let e_t = rescale(ee, sp.fps, tb);
+        if pts >= s_t && pts < e_t {
+            let out_pts = pts - s_t + rescale(off, sp.fps, tb);
+            unsafe {
+                (*pkt).pts = out_pts;
+                (*pkt).dts = out_pts;
+                (*pkt).duration = dur.min(e_t - pts);
+            }
+            return Some(out_pts);
+        }
+    }
+    None
+}
+
+fn fill_stream(
+    pkt: *mut AVPacket,
+    ctx: *mut AVFormatContext,
+    maps: &[(c_int, c_int)],
+    splice: Option<&Splice>,
+) -> Option<(i64, c_int, AVRational)> {
+    loop {
+        if unsafe { av_read_frame(ctx, pkt) } < 0 {
+            return None;
+        }
+        let si = unsafe { (*pkt).stream_index };
+        if let Some(&(_, oi)) = maps.iter().find(|&&(s, _)| s == si) {
+            let in_tb = unsafe { (*ostream(ctx, si)).time_base };
+            match splice {
+                Some(sp) => {
+                    if let Some(op) = splice_pkt(pkt, in_tb, sp) {
+                        return Some((rescale(op, in_tb, TB_US), oi, in_tb));
+                    }
+                    unsafe { av_packet_unref(pkt) };
+                    continue;
+                }
+                None => return Some((pkt_us(pkt, in_tb), oi, in_tb)),
+            }
+        }
+        unsafe { av_packet_unref(pkt) };
+    }
+}
+
+impl Feed {
+    fn video(chunks: Vec<PathBuf>, fps_tb: AVRational, vidx: c_int) -> Self {
+        Self {
+            src: Src::Video(VidSt {
+                chunks,
+                idx: 0,
+                ctx: null_mut(),
+                cv: -1,
+                frame: 0,
+                fps_tb,
+                vidx,
+            }),
+            pkt: unsafe { av_packet_alloc() },
+            has: false,
+            done: false,
+            time: 0,
+            oi: vidx,
+            in_tb: fps_tb,
         }
     }
 
-    if has_tracks {
-        cmd.arg(output);
-        _ = cmd.status();
+    fn stream(
+        ctx: *mut AVFormatContext,
+        maps: Vec<(c_int, c_int)>,
+        splice: Option<Splice>,
+    ) -> Self {
+        Self {
+            src: Src::Stream { ctx, maps, splice },
+            pkt: unsafe { av_packet_alloc() },
+            has: false,
+            done: false,
+            time: 0,
+            oi: -1,
+            in_tb: AVRational { num: 0, den: 1 },
+        }
     }
+
+    fn fill(&mut self) {
+        let pkt = self.pkt;
+        let r = match self.src {
+            Src::Video(ref mut v) => fill_video(pkt, v),
+            Src::Stream {
+                ref mut ctx,
+                ref mut maps,
+                ref splice,
+            } => fill_stream(pkt, *ctx, maps, splice.as_ref()),
+        };
+        match r {
+            Some((time, oi, in_tb)) => {
+                self.time = time;
+                self.oi = oi;
+                self.in_tb = in_tb;
+                self.has = true;
+            }
+            None => self.done = true,
+        }
+    }
+
+    fn write(&mut self, octx: *mut AVFormatContext) {
+        unsafe {
+            let out_tb = (*ostream(octx, self.oi)).time_base;
+            (*self.pkt).stream_index = self.oi;
+            av_packet_rescale_ts(self.pkt, self.in_tb, out_tb);
+            _ = av_interleaved_write_frame(octx, self.pkt);
+            av_packet_unref(self.pkt);
+        }
+        self.has = false;
+    }
+
+    fn close(self) {
+        let mut p = self.pkt;
+        unsafe { av_packet_free(&raw mut p) };
+        if let Src::Video(v) = self.src {
+            close_in(v.ctx);
+        }
+    }
+}
+
+fn mux_streams(octx: *mut AVFormatContext, feeds: &mut [Feed]) {
+    loop {
+        for f in feeds.iter_mut() {
+            if !f.has && !f.done {
+                f.fill();
+            }
+        }
+        let pick = feeds
+            .iter()
+            .enumerate()
+            .filter(|&(_, f)| f.has)
+            .min_by_key(|&(_, f)| f.time)
+            .map(|(i, _)| i);
+        match pick {
+            Some(i) => feeds[i].write(octx),
+            None => break,
+        }
+    }
+}
+
+fn remux(
+    chunks: &[PathBuf],
+    audio: &[(AudioStream, PathBuf)],
+    src: Option<&Path>,
+    ranges: Option<&[(usize, usize)]>,
+    out: &Path,
+    inf: &VidInf,
+) -> Result<(), Xerr> {
+    let first = chunks.first().ok_or("no encoded chunks to mux")?;
+    let out_c = CString::new(out.to_str().ok_or("invalid output path")?)?;
+
+    let mut octx: *mut AVFormatContext = null_mut();
+    if unsafe { avformat_alloc_output_context2(&raw mut octx, null(), null(), out_c.as_ptr()) } < 0
+        || octx.is_null()
+    {
+        return Err("could not create output container".into());
+    }
+    let oformat = unsafe { (*octx).oformat };
+
+    let vidx = match add_video(octx, first, inf) {
+        Ok(v) => v,
+        Err(e) => {
+            unsafe { avformat_free_context(octx) };
+            return Err(e);
+        }
+    };
+
+    let src_ctx = src.map_or(null_mut(), |s| open_in(s).unwrap_or(null_mut()));
+
+    let opus = add_opus(octx, audio);
+    let src_maps = add_src_streams(octx, oformat, src_ctx, audio.is_empty() && ranges.is_none());
+    if ranges.is_none() && !src_ctx.is_null() {
+        copy_chapters(octx, src_ctx);
+    }
+    let splice = ranges.map(|r| {
+        build_splice(
+            r,
+            AVRational {
+                num: inf.fps_den as c_int,
+                den: inf.fps_num as c_int,
+            },
+        )
+    });
+
+    unsafe { (*octx).flags |= AVFMT_FLAG_BITEXACT };
+
+    let avio_ok = unsafe { avio_open(&raw mut (*octx).pb, out_c.as_ptr(), AVIO_FLAG_WRITE) } >= 0;
+    let mut err = (!avio_ok).then_some("could not open output file");
+
+    if avio_ok {
+        let mut opts: *mut c_void = null_mut();
+        if let (Ok(k), Ok(v)) = (CString::new("write_crc32"), CString::new("0")) {
+            unsafe { av_dict_set(&raw mut opts, k.as_ptr(), v.as_ptr(), 0) };
+        }
+        let hdr = unsafe { avformat_write_header(octx, &raw mut opts) };
+        unsafe { av_dict_free(&raw mut opts) };
+
+        if hdr < 0 {
+            err = Some("could not write container header");
+        } else {
+            let mut feeds: Vec<Feed> = Vec::with_capacity(opus.len() + 2);
+            feeds.push(Feed::video(
+                chunks.to_vec(),
+                AVRational {
+                    num: inf.fps_den as c_int,
+                    den: inf.fps_num as c_int,
+                },
+                vidx,
+            ));
+            for entry in &opus {
+                feeds.push(Feed::stream(entry.0, vec![(entry.1, entry.2)], None));
+            }
+            if !src_ctx.is_null() && !src_maps.is_empty() {
+                feeds.push(Feed::stream(src_ctx, src_maps, splice));
+            }
+            mux_streams(octx, &mut feeds);
+            unsafe { av_write_trailer(octx) };
+            for f in feeds {
+                f.close();
+            }
+        }
+        unsafe { avio_closep(&raw mut (*octx).pb) };
+    }
+
+    for entry in &opus {
+        close_in(entry.0);
+    }
+    close_in(src_ctx);
+    unsafe { avformat_free_context(octx) };
+
+    err.map_or(Ok(()), |e| Err(e.into()))
 }
 
 pub fn merge_out(
     encode_dir: &Path,
     output: &Path,
     inf: &VidInf,
-    input: Option<&Path>,
     encoder: Encoder,
+    audio: &[(AudioStream, PathBuf)],
+    src: Option<&Path>,
     ranges: Option<&[(usize, usize)]>,
 ) -> Result<(), Xerr> {
     let mut files: Vec<_> = read_dir(encode_dir)?
@@ -343,271 +729,13 @@ pub fn merge_out(
             .unwrap_or(0)
     });
 
+    let paths: Vec<PathBuf> = files.iter().map(DirEntry::path).collect();
+
     if encoder == Avm {
-        return concat_ivf(
-            &files.iter().map(DirEntry::path).collect::<Vec<_>>(),
-            output,
-            inf.frames as u32,
-        );
+        return concat_ivf(&paths, output, inf.frames as u32);
     }
 
-    if encoder == Vvenc {
-        let temp_mp4 = encode_dir.join("temp_vvc.mp4");
-        concat_vvc(
-            &files.iter().map(DirEntry::path).collect::<Vec<_>>(),
-            &temp_mp4,
-            inf,
-        )?;
-
-        if input.is_none() {
-            rename(&temp_mp4, output)?;
-            return Ok(());
-        }
-
-        let result = mux_av(
-            &temp_mp4,
-            output,
-            inf,
-            unsafe { input.unwrap_unchecked() },
-            ranges,
-        );
-        _ = remove_file(&temp_mp4);
-        return result;
-    }
-
-    if matches!(encoder, X265 | X264) {
-        let temp_video = encode_dir.join("temp_hevc.mkv");
-        concat_h26x(
-            &files.iter().map(DirEntry::path).collect::<Vec<_>>(),
-            &temp_video,
-            inf,
-            encoder,
-        )?;
-
-        if let Some(input_file) = input {
-            let result = mux_av(&temp_video, output, inf, input_file, ranges);
-            _ = remove_file(&temp_video);
-            return result;
-        }
-
-        rename(&temp_video, output)?;
-        return Ok(());
-    }
-
-    if files.len() <= BATCH_SIZE {
-        return run_merge(
-            &files.iter().map(DirEntry::path).collect::<Vec<_>>(),
-            output,
-            inf,
-            input,
-            ranges,
-        );
-    }
-
-    let temp_dir = encode_dir.join("temp_merge");
-    create_dir_all(&temp_dir)?;
-
-    let batches: Vec<_> = files
-        .chunks(BATCH_SIZE)
-        .enumerate()
-        .map(|(i, chunk)| {
-            let path = temp_dir.join(format!("batch_{i}.{}", encoder.extension()));
-            run_merge(
-                &chunk.iter().map(DirEntry::path).collect::<Vec<_>>(),
-                &path,
-                inf,
-                None,
-                None,
-            )?;
-            Ok(path)
-        })
-        .collect::<Result<_, Xerr>>()?;
-
-    run_merge(&batches, output, inf, input, ranges)?;
-    remove_dir_all(&temp_dir)?;
-    Ok(())
-}
-
-fn run_merge(
-    files: &[PathBuf],
-    output: &Path,
-    inf: &VidInf,
-    input: Option<&Path>,
-    ranges: Option<&[(usize, usize)]>,
-) -> Result<(), Xerr> {
-    let concat_list = output.with_extension("txt");
-    let mut content = String::new();
-    for file in files {
-        let abs_path = file.canonicalize()?;
-        let s = abs_path.display().to_string().replace('\'', "'\\''");
-        _ = writeln!(content, "file '{s}'");
-    }
-    write(&concat_list, content)?;
-
-    let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
-    let video = if input.is_some() {
-        temp_dir.join("video.mkv")
-    } else {
-        output.to_path_buf()
-    };
-
-    let fps = format!("{}/{}", inf.fps_num, inf.fps_den);
-
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-f", "concat", "-safe", "0", "-i"])
-        .arg(&concat_list)
-        .args([
-            "-loglevel",
-            "error",
-            "-hide_banner",
-            "-nostdin",
-            "-stats",
-            "-y",
-        ])
-        .args(["-c", "copy", "-r", &fps])
-        .args(FF_FLAGS)
-        .arg(&video);
-
-    let status = cmd.status()?;
-    _ = remove_file(&concat_list);
-
-    if !status.success() {
-        if input.is_some() {
-            _ = remove_file(&video);
-        }
-        return Err("FFmpeg video concat failed".into());
-    }
-
-    if let Some(input) = input {
-        let temp_audio = temp_dir.join("audio.mka");
-
-        let has_audio = if let Some(r) = ranges {
-            let times = ranges_to_times(r, inf.fps_num, inf.fps_den);
-            extract_audio_ranges(input, &times, &temp_audio)?
-        } else {
-            extract_audio_full(input, &temp_audio)
-        };
-
-        let mut cmd2 = Command::new("ffmpeg");
-        cmd2.args([
-            "-loglevel",
-            "error",
-            "-hide_banner",
-            "-nostdin",
-            "-stats",
-            "-y",
-        ])
-        .args(["-i", &video.to_string_lossy()]);
-
-        if has_audio {
-            cmd2.args(["-i", &temp_audio.to_string_lossy()]);
-        }
-
-        if ranges.is_none() {
-            cmd2.args(["-i"]).arg(input);
-        }
-
-        let input_idx = if has_audio { "2" } else { "1" };
-
-        cmd2.args(["-map", "0:v"]);
-        if has_audio {
-            cmd2.args(["-map", "1:a"]);
-        }
-
-        if ranges.is_none() {
-            cmd2.args(["-map", input_idx])
-                .args(["-map", &format!("-{input_idx}:V")])
-                .args(["-map", &format!("-{input_idx}:a")])
-                .args(["-map_chapters", input_idx]);
-        }
-
-        cmd2.args(["-c", "copy"]);
-        if let Some((dw, dh)) = inf.dar {
-            cmd2.args(["-aspect", &format!("{dw}:{dh}")]);
-        }
-        cmd2.args(FF_FLAGS).arg(output);
-
-        let status2 = cmd2.status()?;
-        _ = remove_file(&video);
-        _ = remove_file(&temp_audio);
-
-        if !status2.success() {
-            return Err("FFmpeg mux failed".into());
-        }
-    }
-
-    Ok(())
-}
-
-fn mux_av(
-    video: &Path,
-    output: &Path,
-    inf: &VidInf,
-    input: &Path,
-    ranges: Option<&[(usize, usize)]>,
-) -> Result<(), Xerr> {
-    let temp_dir = video.parent().unwrap_or_else(|| Path::new("."));
-    let temp_audio = temp_dir.join("audio.mka");
-
-    let has_audio = if let Some(r) = ranges {
-        let times = ranges_to_times(r, inf.fps_num, inf.fps_den);
-        extract_audio_ranges(input, &times, &temp_audio)?
-    } else {
-        extract_audio_full(input, &temp_audio)
-    };
-
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args([
-        "-loglevel",
-        "error",
-        "-hide_banner",
-        "-nostdin",
-        "-stats",
-        "-y",
-    ])
-    .arg("-i")
-    .arg(video);
-
-    if has_audio {
-        cmd.arg("-i").arg(&temp_audio);
-    }
-
-    if ranges.is_none() {
-        cmd.arg("-i").arg(input);
-    }
-
-    let input_idx = if has_audio { "2" } else { "1" };
-
-    cmd.args(["-map", "0:v"]);
-    if has_audio {
-        cmd.args(["-map", "1:a"]);
-    }
-
-    if ranges.is_none() {
-        cmd.args(["-map", input_idx])
-            .args(["-map", &format!("-{input_idx}:V")])
-            .args(["-map", &format!("-{input_idx}:a")])
-            .args(["-map_chapters", input_idx]);
-    }
-
-    cmd.args(["-c", "copy"]);
-    if let Some((dw, dh)) = inf.dar {
-        cmd.args(["-aspect", &format!("{dw}:{dh}")]);
-    }
-    cmd.args(FF_FLAGS).arg(output);
-
-    let status = cmd.status()?;
-    _ = remove_file(&temp_audio);
-
-    if !status.success() {
-        return Err("FFmpeg mux failed".into());
-    }
-
-    if ranges.is_none() && output.extension().is_some_and(|e| e == "mp4") {
-        add_mp4_subs(input, output);
-    }
-
-    Ok(())
+    remux(&paths, audio, src, ranges, output, inf)
 }
 
 pub fn translate_scenes(scenes: &[Scene], ranges: &[(usize, usize)]) -> Vec<Scene> {
@@ -636,100 +764,4 @@ pub fn translate_scenes(scenes: &[Scene], ranges: &[(usize, usize)]) -> Vec<Scen
         }
     }
     out
-}
-
-fn extract_segment(input: &Path, output: &Path, start: Option<f64>, duration: Option<f64>) -> bool {
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "quiet", "-hide_banner", "-nostdin", "-y"]);
-
-    if let Some(s) = start {
-        cmd.args(["-ss", &format!("{s:.6}")]);
-    }
-    if let Some(d) = duration {
-        cmd.args(["-t", &format!("{d:.6}")]);
-    }
-
-    cmd.arg("-i")
-        .arg(input)
-        .args(["-vn", "-sn", "-dn", "-map", "0:a", "-c", "copy"])
-        .args(["-map_chapters", "-1"])
-        .args(FF_FLAGS)
-        .arg(output);
-
-    _ = cmd.status();
-    output.exists() && metadata(output).is_ok_and(|m| m.len() > 0)
-}
-
-fn concat_segments(segments: &[PathBuf], output: &Path) -> Result<bool, Xerr> {
-    let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
-    let concat_list = temp_dir.join("audio_concat.txt");
-
-    let mut content = String::new();
-    for seg in segments {
-        let s = seg
-            .canonicalize()?
-            .display()
-            .to_string()
-            .replace('\'', "'\\''");
-        _ = writeln!(content, "file '{s}'");
-    }
-    write(&concat_list, content)?;
-
-    let mut cmd = Command::new("ffmpeg");
-    cmd.args(["-loglevel", "error", "-hide_banner", "-nostdin", "-y"])
-        .args(["-f", "concat", "-safe", "0", "-i"])
-        .arg(&concat_list)
-        .args(["-c", "copy"])
-        .args(FF_FLAGS)
-        .arg(output);
-
-    _ = cmd.status();
-    _ = remove_file(&concat_list);
-
-    Ok(output.exists() && metadata(output).is_ok_and(|m| m.len() > 0))
-}
-
-fn extract_audio_full(input: &Path, output: &Path) -> bool {
-    extract_segment(input, output, None, None)
-}
-
-fn extract_audio_ranges(input: &Path, times: &[(f64, f64)], output: &Path) -> Result<bool, Xerr> {
-    if times.len() == 1 {
-        return Ok(extract_segment(
-            input,
-            output,
-            Some(times[0].0),
-            Some(times[0].1 - times[0].0),
-        ));
-    }
-
-    let temp_dir = output.parent().unwrap_or_else(|| Path::new("."));
-    let mut segments = Vec::new();
-
-    for (i, &(start, end)) in times.iter().enumerate() {
-        let seg_path = temp_dir.join(format!("audio_seg_{i}.mka"));
-        if extract_segment(input, &seg_path, Some(start), Some(end - start)) {
-            segments.push(seg_path);
-        }
-    }
-
-    if segments.is_empty() {
-        return Ok(false);
-    }
-
-    let result = concat_segments(&segments, output)?;
-
-    for seg in &segments {
-        _ = remove_file(seg);
-    }
-
-    Ok(result)
-}
-
-pub fn ranges_to_times(ranges: &[(usize, usize)], fps_num: u32, fps_den: u32) -> Vec<(f64, f64)> {
-    let fps = f64::from(fps_num) / f64::from(fps_den);
-    ranges
-        .iter()
-        .map(|&(s, e)| (s as f64 / fps, (e + 1) as f64 / fps))
-        .collect()
 }

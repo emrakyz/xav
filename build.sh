@@ -201,33 +201,9 @@ detect_deps() {
         while IFS= read -r d; do
                 LLVM_LIB_DIRS+=("${d}")
         done < <(find /usr/lib/llvm /usr/lib64/llvm -maxdepth 3 -type d -name "lib64" -o -type d -name "lib" 2> /dev/null || true)
-        POLLY_PATH="$(find_lib libPolly.so "${SYS_LIB_DIRS[@]}" "${LLVM_LIB_DIRS[@]}" || true)"
-        [[ -z "${POLLY_PATH}" ]] && POLLY_PATH="$(find_lib LLVMPolly.so "${SYS_LIB_DIRS[@]}" "${LLVM_LIB_DIRS[@]}" || true)"
-        [[ -n "${POLLY_PATH}" ]] && HAS_POLLY=true || HAS_POLLY=false
 
         VSHIP_PATH="$(find_lib libvship.so "${SYS_LIB_DIRS[@]}" || true)"
         [[ -n "${VSHIP_PATH}" ]] && HAS_VSHIP=true || HAS_VSHIP=false
-
-        FFMPEG_PATH="$(find_bin ffmpeg || true)"
-        FFMPEG_VERSION=""
-        [[ -n "${FFMPEG_PATH}" ]] && {
-                HAS_FFMPEG=true
-                FFMPEG_VERSION="$(ffmpeg -version 2> /dev/null | head -1 || true)"
-        } || HAS_FFMPEG=false
-
-        MP4BOX_PATH="$(find_bin MP4Box || true)"
-        MP4BOX_VERSION=""
-        [[ -n "${MP4BOX_PATH}" ]] && {
-                HAS_MP4BOX=true
-                MP4BOX_VERSION="$(MP4Box -version 2>&1 | head -1 || true)"
-        } || HAS_MP4BOX=false
-
-        MKVMERGE_PATH="$(find_bin mkvmerge || true)"
-        MKVMERGE_VERSION=""
-        [[ -n "${MKVMERGE_PATH}" ]] && {
-                HAS_MKVMERGE=true
-                MKVMERGE_VERSION="$(mkvmerge --version 2> /dev/null | head -1 || true)"
-        } || HAS_MKVMERGE=false
 
         AVMENC_PATH="$(find_bin avmenc || true)"
         AVMENC_VERSION=""
@@ -323,10 +299,6 @@ show_build_menu() {
         echo -e "${C}╔═══════════════════════════════════════════════════════════════════════╗${N}"
         echo -e "${C}║${W}  Runtime Requirements                                                 ${C}║${N}"
         echo -e "${C}╚═══════════════════════════════════════════════════════════════════════╝${N}"
-        printf "  ${Y}%-30b${N} %b\n" "ffmpeg (Always needed for final muxing):" " $(dep_status "${HAS_FFMPEG}" "${FFMPEG_PATH}" "${FFMPEG_VERSION}")"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) MP4Box (create VVC timestamps):                 " " $(dep_status "${HAS_MP4BOX}" "${MP4BOX_PATH}" "${MP4BOX_VERSION}")"
-        printf "  ${Y}%-30b${N} %b\n" "(Optional) mkvmerge (create h26* timestamps):" "               $(dep_status "${HAS_MKVMERGE}" "${MKVMERGE_PATH}" "${MKVMERGE_VERSION}")"
-        echo
         echo -e "  ${W}Encoder Binaries (Optional):${N}"
         printf "  ${Y}%-30b${N} %b\n" "avmenc:" "$(dep_status "${HAS_AVMENC}" "${AVMENC_PATH}" "${AVMENC_VERSION}")"
         printf "  ${Y}%-30b${N} %b\n" "vvencFFapp:" "$(dep_status "${HAS_VVENCFFAPP}" "${VVENCFFAPP_PATH}" "${VVENCFFAPP_VERSION}")"
@@ -360,7 +332,7 @@ cleanup_existing() {
                 [FFmpeg]="install/lib/libavcodec.a"
                 [opus]="install/lib/libopus.a"
                 [libopusenc]="install/lib/libopusenc.a"
-                [SVT-AV1]="Bin/Release/libSvtAv1Enc.a"
+                ["SVT-AV1"]="Bin/Release/libSvtAv1Enc.a"
                 [vulkan]="install/lib/pkgconfig/vulkan.pc"
         )
 
@@ -660,6 +632,13 @@ build_ffmpeg() {
                 --enable-hwaccel=h264_vulkan \
                 --enable-hwaccel=hevc_vulkan \
                 --enable-hwaccel=av1_vulkan \
+                --enable-muxer=matroska \
+                --enable-muxer=webm \
+                --enable-muxer=mp4 \
+                --enable-muxer=ivf \
+                --enable-bsf=extract_extradata \
+                --enable-bsf=aac_adtstoasc \
+                --enable-demuxer=ogg \
                 --enable-hwaccel=vp9_vulkan >> "${logfile}" 2>&1
 
         make -j"$(nproc)" >> "${logfile}" 2>&1
@@ -687,7 +666,7 @@ build_opus() {
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_INSTALL_PREFIX="${BUILD_DIR}/opus/install" \
                 -DCMAKE_C_COMPILER="${CC}" \
-                -DCMAKE_C_FLAGS="${CFLAGS}" \
+                -DCMAKE_C_FLAGS="${CFLAGS/ -ffast-math/}" \
                 -DCMAKE_INSTALL_LIBDIR=lib \
                 -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
                 -DOPUS_BUILD_TESTING=OFF \
@@ -751,7 +730,7 @@ build_svtav1() {
         pgo_params=(
                 --preset 1 --tune 0 --keyint 0 --scd 0 --scm 0 --tile-rows 0 --tile-columns 0 --rc 0
                 --width 1920 --height 1080 --forced-max-frame-width 1920 --forced-max-frame-height 1080
-                --frames 65 --nb 65 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
+                --frames 96 --nb 96 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
                 --color-format 1 --asm max --color-range 0 --color-primaries 1
                 --transfer-characteristics 1 --matrix-coefficients 1 --chroma-sample-position 1
                 --progress 0 --no-progress 1 --lp 5 --enable-qm 1 --enable-variance-boost 1
@@ -774,7 +753,7 @@ build_svtav1() {
         mkdir -p "${pgo_dir}"
         loginf b "Downloading PGO training video"
         curl -L "https://media.xiph.org/video/derf/webm/Netflix_FoodMarket2_4096x2160_60fps_10bit_420.webm" -o "${pgo_dir}/i.webm" >> "${logfile}" 2>&1
-        ffmpeg -hide_banner -v error -stats -y -nostdin -i "${pgo_dir}/i.webm" -frames:v 65 -vf "scale=1920:1080:flags=lanczos+accurate_rnd+full_chroma_int:param0=4" -pix_fmt yuv420p10le -strict -1 -f rawvideo "${pgo_dir}/i.yuv" >> "${logfile}" 2>&1
+        ffmpeg -hide_banner -v error -stats -y -nostdin -i "${pgo_dir}/i.webm" -frames:v 96 -vf "scale=1920:1080:flags=lanczos+accurate_rnd+full_chroma_int:param0=4" -pix_fmt yuv420p10le -strict -1 -f rawvideo "${pgo_dir}/i.yuv" >> "${logfile}" 2>&1
         rm -f "${pgo_dir}/i.webm"
 
         cd Build/linux
@@ -808,29 +787,7 @@ setup_toolchain() {
         export OBJCOPY="llvm-objcopy"
         export OBJDUMP="llvm-objdump"
 
-        [[ "${HAS_POLLY}" == true ]] && export POLLY_FLAGS="-mllvm -polly \
--mllvm -polly-position=before-vectorizer \
--mllvm -polly-parallel \
--mllvm -polly-omp-backend=LLVM \
--mllvm -polly-vectorizer=stripmine \
--mllvm -polly-tiling \
--mllvm -polly-register-tiling \
--mllvm -polly-2nd-level-tiling \
--mllvm -polly-detect-keep-going \
--mllvm -polly-enable-delicm=true \
--mllvm -polly-dependences-computeout=2 \
--mllvm -polly-postopts=true \
--mllvm -polly-pragma-based-opts \
--mllvm -polly-pattern-matching-based-opts=true \
--mllvm -polly-reschedule=true \
--mllvm -enable-loop-distribute \
--mllvm -enable-unroll-and-jam \
--mllvm -polly-ast-use-context \
--mllvm -polly-invariant-load-hoisting \
--mllvm -polly-run-inliner \
--mllvm -polly-run-dce"
-
-        export COMMON_FLAGS="-O3 -march=native -mtune=native -flto=thin -pipe -fno-math-errno -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm ${POLLY_FLAGS:-} -fno-pic -fno-pie"
+        export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native -flto=thin -pipe -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm -fno-pic -fno-pie -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables"
         export CFLAGS="${COMMON_FLAGS}"
         "${IS_MAC}" && export CXXFLAGS="${COMMON_FLAGS} -stdlib=libc++" || export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
@@ -896,17 +853,14 @@ main() {
                 1)
                         config_file=".cargo/config.toml.static"
                         cargo_features="--no-default-features --features vship"
-                        build_static=true
                         ;;
                 2)
                         config_file=".cargo/config.toml.static"
                         cargo_features="--no-default-features --features vship"
-                        build_static=false
                         ;;
                 3)
                         config_file=".cargo/config.toml.static"
                         cargo_features="--no-default-features"
-                        build_static=true
                         ;;
         esac
 
@@ -951,16 +905,22 @@ main() {
 
         clone_phase
 
-        build_opus & PID_OPUS="${!}"
-        build_dav1d & PID_DAV1D="${!}"
-        build_vulkan & PID_VULKAN="${!}"
-        build_svtav1 & PID_SVTAV1="${!}"
+        build_opus &
+        PID_OPUS="${!}"
+        build_dav1d &
+        PID_DAV1D="${!}"
+        build_vulkan &
+        PID_VULKAN="${!}"
+        build_svtav1 &
+        PID_SVTAV1="${!}"
 
         wait "${PID_OPUS}" || exit 1
-        build_opusenc & PID_OPUSENC="${!}"
+        build_opusenc &
+        PID_OPUSENC="${!}"
 
         wait "${PID_DAV1D}" && wait "${PID_VULKAN}" || exit 1
-        build_ffmpeg & PID_FFMPEG="${!}"
+        build_ffmpeg &
+        PID_FFMPEG="${!}"
 
         wait "${PID_OPUSENC}" && wait "${PID_FFMPEG}" && wait "${PID_SVTAV1}" || exit 1
 

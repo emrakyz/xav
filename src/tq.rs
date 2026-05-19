@@ -1,67 +1,66 @@
 use std::{path::Path, thread::available_parallelism, time::Instant};
 
+#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
+use crate::avx2::{fritsch_carlson, lerp, pchip};
+#[cfg(target_feature = "avx512bw")]
+use crate::avx512::{fritsch_carlson, lerp, pchip};
+#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
+use crate::scalar::{fritsch_carlson, lerp, pchip};
 use crate::{
     error::fatal,
     ffms::VideoDecoder,
-    interp::{akima, fritsch_carlson, lerp, pchip},
     pipeline::{MetricsProgress, Pipeline},
     vship::VshipProcessor,
     worker::WorkPkg,
 };
 
-pub const JOD_A: f64 = 0.043_956_939_131_021_5;
-pub const JOD_EXP: f64 = 0.930_204_272_270_202_6;
+pub const JOD_A: f32 = 0.043_956_94;
+pub const JOD_EXP: f32 = 0.930_204_3;
 
-pub fn inverse_jod(score: f64) -> f64 {
+pub fn inverse_jod(score: f32) -> f32 {
     ((10.0 - score) / JOD_A).powf(1.0 / JOD_EXP)
 }
 
-pub fn jod(q: f64) -> f64 {
+pub fn jod(q: f32) -> f32 {
     JOD_A.mul_add(-q.powf(JOD_EXP), 10.0)
 }
 
 #[derive(Clone)]
 pub struct Probe {
-    pub crf: f64,
-    pub score: f64,
-    pub frame_scores: Vec<f64>,
+    pub crf: f32,
+    pub score: f32,
+    pub frame_scores: Vec<f32>,
 }
 
 #[derive(Clone)]
 pub struct ProbeLog {
-    pub chunk_idx: usize,
-    pub probes: Vec<(f64, f64, u64)>,
-    pub final_crf: f64,
-    pub final_score: f64,
+    pub chunk_idx: u16,
+    pub probes: Vec<(f32, f32, u64)>,
+    pub final_crf: f32,
+    pub final_score: f32,
     pub final_size: u64,
-    pub round: usize,
+    pub round: u8,
     pub frames: usize,
 }
 
-fn round_crf(crf: f64) -> f64 {
+fn round_crf(crf: f32) -> f32 {
     (crf * 4.0).round() / 4.0
 }
 
-pub fn binary_search(min: f64, max: f64) -> f64 {
-    round_crf(f64::midpoint(min, max))
-}
-
-pub fn interpolate_crf(probes: &[Probe], target: f64, round: usize) -> Option<f64> {
-    let mut pairs: Vec<(f64, f64)> = probes.iter().map(|p| (p.score, p.crf)).collect();
+pub fn interpolate_crf(probes: &[Probe], target: f32, round: u8) -> f32 {
+    let mut pairs: Vec<(f32, f32)> = probes.iter().map(|p| (p.score, p.crf)).collect();
     pairs.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
-    let x: Vec<f64> = pairs.iter().map(|p| p.0).collect();
-    let y: Vec<f64> = pairs.iter().map(|p| p.1).collect();
+    let x: Vec<f32> = pairs.iter().map(|p| p.0).collect();
+    let y: Vec<f32> = pairs.iter().map(|p| p.1).collect();
 
     let result = match round {
-        1 | 2 => None,
-        3 => lerp(&[x[0], x[1]], &[y[0], y[1]], target),
+        3 => lerp(&x, &y, target),
         4 => fritsch_carlson(&x, &y, target),
-        5 => pchip(&[x[0], x[1], x[2], x[3]], &[y[0], y[1], y[2], y[3]], target),
-        _ => akima(&x, &y, target),
+        _ => pchip(&x, &y, target),
     };
 
-    result.map(round_crf)
+    round_crf(result)
 }
 
 macro_rules! calc_metrics_impl {
@@ -74,7 +73,7 @@ macro_rules! calc_metrics_impl {
             metric_mode: &str,
             unpacked_buf: &mut [u8],
             mp: &MetricsProgress,
-        ) -> (f64, Vec<f64>) {
+        ) -> (f32, Vec<f32>) {
             let cvvdp_per_frame = pipe.reset_cvvdp && metric_mode.starts_with('p');
             if pipe.reset_cvvdp {
                 vship.reset_cvvdp();
@@ -162,35 +161,35 @@ macro_rules! calc_metrics_impl {
 }
 
 fn aggregate_scores(
-    scores: &mut [f64],
+    scores: &mut [f32],
     pipe: &Pipeline,
     metric_mode: &str,
     cvvdp_per_frame: bool,
-) -> f64 {
+) -> f32 {
     if pipe.reset_cvvdp && !cvvdp_per_frame {
         scores.last().copied().unwrap_or(0.0)
     } else if cvvdp_per_frame {
-        let percentile: f64 = metric_mode
+        let percentile: f32 = metric_mode
             .strip_prefix('p')
             .and_then(|p| p.parse().ok())
             .unwrap_or(15.0);
-        let mut q: Vec<f64> = scores.iter().map(|&s| inverse_jod(s)).collect();
+        let mut q: Vec<f32> = scores.iter().map(|&s| inverse_jod(s)).collect();
         q.sort_unstable_by(|a, b| b.total_cmp(a));
-        let cutoff = ((q.len() as f64 * percentile / 100.0).ceil() as usize).min(q.len());
-        jod(q[..cutoff].iter().sum::<f64>() / cutoff as f64)
+        let cutoff = ((q.len() as f32 * percentile / 100.0).ceil() as usize).min(q.len());
+        jod(q[..cutoff].iter().sum::<f32>() / cutoff as f32)
     } else if metric_mode == "mean" {
-        scores.iter().sum::<f64>() / scores.len() as f64
+        scores.iter().sum::<f32>() / scores.len() as f32
     } else if let Some(p) = metric_mode.strip_prefix('p') {
-        let percentile: f64 = p.parse().unwrap_or(15.0);
+        let percentile: f32 = p.parse().unwrap_or(15.0);
         if pipe.sort_descending {
             scores.sort_unstable_by(|a, b| b.total_cmp(a));
         } else {
-            scores.sort_unstable_by(f64::total_cmp);
+            scores.sort_unstable_by(f32::total_cmp);
         }
-        let cutoff = ((scores.len() as f64 * percentile / 100.0).ceil() as usize).min(scores.len());
-        scores[..cutoff].iter().sum::<f64>() / cutoff as f64
+        let cutoff = ((scores.len() as f32 * percentile / 100.0).ceil() as usize).min(scores.len());
+        scores[..cutoff].iter().sum::<f32>() / cutoff as f32
     } else {
-        scores.iter().sum::<f64>() / scores.len() as f64
+        scores.iter().sum::<f32>() / scores.len() as f32
     }
 }
 

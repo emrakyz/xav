@@ -49,8 +49,8 @@ fn chk_custom(key: &str, val: &str, lo: i64, hi: i64, msg: Arguments<'_>) -> Res
 
 #[cold]
 #[inline(never)]
-fn chk_frange(key: &str, name: &str, val: &str, lo: f64, hi: f64) -> Result<(), Xerr> {
-    match val.parse::<f64>() {
+fn chk_frange(key: &str, name: &str, val: &str, lo: f32, hi: f32) -> Result<(), Xerr> {
+    match val.parse::<f32>() {
         Ok(v) if v >= lo && v <= hi => Ok(()),
         Ok(_) => Err(err(
             key,
@@ -278,7 +278,7 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
             )?;
         }
 
-        "crf" => match val.parse::<f64>() {
+        "crf" => match val.parse::<f32>() {
             Ok(v) if (0.0..=70.0).contains(&v) => {}
             Ok(_) => {
                 return Err(err(

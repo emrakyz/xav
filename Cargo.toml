@@ -19,11 +19,18 @@ vship = []
 [dependencies]
 libc = "0.2.186"
 crossbeam-channel = "0.5.15"
-av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", default-features = false, features = ["asm", "static_simd"] }
 ebur128 = "0.1.10"
 sonic-rs = "0.5.8"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
+
+# av-scenechange
+av-scenechange = { git = "https://github.com/emrakyz/av-scenechange" }
+v_frame = { version = "0.5.2", features = ["padding_api"] }
+num-rational = { version = "0.4.2", default-features = false }
+
+[build-dependencies]
+nasm-rs = { version = "0.3.2", features = ["parallel"] }
 
 [profile.release]
 opt-level = 3
@@ -94,7 +101,6 @@ map_with_unused_argument_over_ranges = "deny"
 mem_forget = "deny"
 missing_assert_message = "deny"
 missing_asserts_for_indexing = "deny"
-missing_trait_methods = "deny"
 mixed_read_write_in_expression = "deny"
 mod_module_files = "deny"
 module_name_repetitions = "deny"

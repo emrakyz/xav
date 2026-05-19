@@ -50,7 +50,7 @@ pub struct AudioDecoder {
     pkt: *mut AVPacket,
     frame: *mut VidFrame,
     stream_idx: c_int,
-    channels: u32,
+    channels: u8,
     total_samples: i64,
 }
 
@@ -84,7 +84,7 @@ impl AudioDecoder {
 
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
-            let channels = par.ch_layout.nb_channels as u32;
+            let channels = par.ch_layout.nb_channels as u8;
 
             let total_samples = if (*stream).duration > 0 && (*stream).time_base.den > 0 {
                 (*stream).duration * i64::from((*stream).time_base.num) * 48000
@@ -142,7 +142,7 @@ impl AudioDecoder {
         }
     }
 
-    pub const fn channels(&self) -> u32 {
+    pub const fn channels(&self) -> u8 {
         self.channels
     }
 
@@ -156,7 +156,7 @@ impl AudioDecoder {
     ) -> Result<(), Xerr> {
         let result = (|| -> Result<(), Xerr> {
             const MAX_OUT: usize = 96000;
-            let ch = self.channels as usize;
+            let ch = usize::from(self.channels);
             let mut out_buf = vec![0f32; MAX_OUT * ch];
 
             unsafe {
@@ -206,7 +206,7 @@ impl AudioDecoder {
         out_buf: &mut [f32],
         cb: &mut F,
     ) -> Result<(), Xerr> {
-        let ch = self.channels as usize;
+        let ch = usize::from(self.channels);
         let max_per_ch = (out_buf.len() / ch) as c_int;
 
         loop {

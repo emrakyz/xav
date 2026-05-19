@@ -1,0 +1,19 @@
+%include "dav1d_x86inc.asm"
+
+SECTION .text
+
+INIT_YMM avx2
+cglobal conv_to_10b, 3, 3, 1, src, dst, n
+    xor           eax, eax
+.loop:
+%assign g 0
+%rep 10
+    vpmovzxbw     m0, [srcq + rax + g*16]
+    vpsllw        m0, m0, 2
+    vmovdqu       [dstq + rax*2 + g*32], m0
+%assign g g+1
+%endrep
+    add           rax, 160
+    dec           nq
+    jg            .loop
+    RET

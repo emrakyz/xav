@@ -41,7 +41,7 @@ pub struct MetricsProgress<'a> {
     pub prog: &'a ProgsTrack,
     pub slot: usize,
     pub crf: f32,
-    pub last_score: Option<f64>,
+    pub last_score: Option<f32>,
 }
 
 #[cfg(feature = "vship")]
@@ -53,14 +53,14 @@ pub type CalcMetricsFn = fn(
     &str,
     &mut [u8],
     &MetricsProgress,
-) -> (f64, Vec<f64>);
+) -> (f32, Vec<f32>);
 
 #[cfg(feature = "vship")]
 pub type ComputeMetricFn =
-    fn(&VshipProcessor, [*const u8; 3], [*const u8; 3], [i64; 3], [i64; 3]) -> f64;
+    fn(&VshipProcessor, [*const u8; 3], [*const u8; 3], [i64; 3], [i64; 3]) -> f32;
 
 #[cfg(feature = "vship")]
-pub type AggregateScoresFn = fn(&mut Vec<f64>) -> f64;
+pub type AggregateScoresFn = fn(&mut Vec<f32>) -> f32;
 
 fn unpack_10b_wrap(input: &[u8], output: &mut [u8], _pipe: &Pipeline) {
     unpack_10b(input, output);
@@ -269,8 +269,8 @@ fn resolve_metrics(
     target_quality.map_or(
         (compute_ssimulacra2 as ComputeMetricFn, false, false, calc),
         |tq| {
-            let tq_parts: Vec<f64> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-            let tq_target = f64::midpoint(tq_parts[0], tq_parts[1]);
+            let tq_parts: Vec<f32> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
+            let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
 
             let use_butteraugli = tq_target < 8.0;
             let use_cvvdp = tq_target > 8.0 && tq_target <= 10.0;
@@ -295,7 +295,7 @@ fn compute_ssimulacra2(
     output_planes: [*const u8; 3],
     input_strides: [i64; 3],
     output_strides: [i64; 3],
-) -> f64 {
+) -> f32 {
     unsafe {
         vship
             .compute_ssimulacra2(input_planes, output_planes, input_strides, output_strides)
@@ -310,7 +310,7 @@ fn compute_butteraugli(
     output_planes: [*const u8; 3],
     input_strides: [i64; 3],
     output_strides: [i64; 3],
-) -> f64 {
+) -> f32 {
     unsafe {
         vship
             .compute_butteraugli(input_planes, output_planes, input_strides, output_strides)
@@ -325,7 +325,7 @@ fn compute_cvvdp(
     output_planes: [*const u8; 3],
     input_strides: [i64; 3],
     output_strides: [i64; 3],
-) -> f64 {
+) -> f32 {
     unsafe {
         vship
             .compute_cvvdp(input_planes, output_planes, input_strides, output_strides)

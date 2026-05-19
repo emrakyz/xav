@@ -42,7 +42,11 @@ use crate::{
     util::assume_unreachable,
 };
 
-const AVMEDIA_TYPE_VIDEO: c_int = 0;
+pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
+pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
+pub const AVIO_FLAG_WRITE: c_int = 2;
+pub const AVFMT_FLAG_BITEXACT: c_int = 0x0400;
+pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 const AVERROR_EOF: c_int = -541_478_725;
 const AVERROR_EAGAIN: c_int = -11;
 const AVSEEK_FLAG_BACKWARD: c_int = 1;
@@ -71,7 +75,7 @@ pub struct AVChannelLayout {
 #[repr(C)]
 pub struct AVCodecParameters {
     pub codec_type: c_int,
-    codec_id: c_int,
+    pub codec_id: c_int,
     _codec_tag: u32,
     _extradata: *mut u8,
     _extradata_size: c_int,
@@ -85,7 +89,7 @@ pub struct AVCodecParameters {
     _level: c_int,
     width: c_int,
     height: c_int,
-    sample_aspect_ratio: AVRational,
+    pub sample_aspect_ratio: AVRational,
     framerate: AVRational,
     _field_order: c_int,
     _color_range: c_int,
@@ -111,28 +115,32 @@ pub struct AVStream {
     nb_frames: i64,
     _disposition: c_int,
     pub discard: c_int,
-    sample_aspect_ratio: AVRational,
-    metadata: *mut c_void,
-    avg_frame_rate: AVRational,
+    pub sample_aspect_ratio: AVRational,
+    pub metadata: *mut c_void,
+    pub avg_frame_rate: AVRational,
 }
 
 #[repr(C)]
 pub struct AVFormatContext {
     _av_class: *const c_void,
     _iformat: *const c_void,
-    _oformat: *const c_void,
+    pub oformat: *const c_void,
     _priv_data: *mut c_void,
-    _pb: *mut c_void,
+    pub pb: *mut c_void,
     _ctx_flags: c_int,
     pub nb_streams: u32,
     pub streams: *mut *mut AVStream,
     _nb_stream_groups: u32,
     _stream_groups: *mut c_void,
-    _nb_chapters: u32,
-    _chapters: *mut c_void,
+    pub nb_chapters: u32,
+    pub chapters: *mut *mut AVChapter,
     _url: *mut i8,
     _start_time: i64,
     pub duration: i64,
+    _bit_rate: i64,
+    _packet_size: c_uint,
+    _max_delay: c_int,
+    pub flags: c_int,
 }
 
 #[repr(C)]
@@ -200,10 +208,23 @@ struct AVContentLightMetadata {
 pub struct AVPacket {
     _buf: *mut c_void,
     pub pts: i64,
-    _dts: i64,
+    pub dts: i64,
     _data: *mut u8,
     _size: c_int,
     pub stream_index: c_int,
+    pub flags: c_int,
+    _side_data: *mut c_void,
+    _side_data_elems: c_int,
+    pub duration: i64,
+}
+
+#[repr(C)]
+pub struct AVChapter {
+    pub id: i64,
+    pub time_base: AVRational,
+    pub start: i64,
+    pub end: i64,
+    pub metadata: *mut c_void,
 }
 
 unsafe extern "C" {
@@ -247,6 +268,38 @@ unsafe extern "C" {
     pub fn av_packet_free(pkt: *mut *mut AVPacket);
     pub fn av_packet_unref(pkt: *mut AVPacket);
     pub fn av_read_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
+    pub fn avformat_alloc_output_context2(
+        ctx: *mut *mut AVFormatContext,
+        oformat: *const c_void,
+        format_name: *const c_char,
+        filename: *const c_char,
+    ) -> c_int;
+    pub fn avformat_new_stream(s: *mut AVFormatContext, c: *const c_void) -> *mut AVStream;
+    pub fn avcodec_parameters_copy(
+        dst: *mut AVCodecParameters,
+        src: *const AVCodecParameters,
+    ) -> c_int;
+    pub fn avio_open(s: *mut *mut c_void, url: *const c_char, flags: c_int) -> c_int;
+    pub fn avio_closep(s: *mut *mut c_void) -> c_int;
+    pub fn avformat_write_header(s: *mut AVFormatContext, options: *mut *mut c_void) -> c_int;
+    pub fn av_interleaved_write_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
+    pub fn av_write_trailer(s: *mut AVFormatContext) -> c_int;
+    pub fn avformat_free_context(s: *mut AVFormatContext);
+    pub fn av_dict_set(
+        pm: *mut *mut c_void,
+        key: *const c_char,
+        value: *const c_char,
+        flags: c_int,
+    ) -> c_int;
+    pub fn av_dict_copy(dst: *mut *mut c_void, src: *const c_void, flags: c_int) -> c_int;
+    pub fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
+    pub fn av_mallocz(size: usize) -> *mut c_void;
+    pub fn av_dict_free(m: *mut *mut c_void);
+    pub fn avformat_query_codec(
+        ofmt: *const c_void,
+        codec_id: c_int,
+        std_compliance: c_int,
+    ) -> c_int;
     pub fn av_frame_alloc() -> *mut VidFrame;
     pub fn av_frame_free(frame: *mut *mut VidFrame);
     fn av_seek_frame(
@@ -289,7 +342,7 @@ unsafe extern "C" {
 }
 
 const AV_LOG_ERROR: c_int = 16;
-const AVMEDIA_TYPE_AUDIO: c_int = 1;
+pub const AVMEDIA_TYPE_AUDIO: c_int = 1;
 
 static LAST_FF_LOG: Mutex<String> = Mutex::new(String::new());
 
@@ -382,12 +435,12 @@ pub struct VidInf {
     pub fps_num: u32,
     pub fps_den: u32,
     pub frames: usize,
-    pub color_primaries: Option<i32>,
-    pub transfer_characteristics: Option<i32>,
-    pub matrix_coefficients: Option<i32>,
+    pub color_primaries: Option<i8>,
+    pub transfer_characteristics: Option<i8>,
+    pub matrix_coefficients: Option<i8>,
     pub is_10b: bool,
-    pub color_range: Option<i32>,
-    pub chroma_sample_position: Option<i32>,
+    pub color_range: Option<i8>,
+    pub chroma_sample_position: Option<i8>,
     pub mastering_display: Option<String>,
     pub content_light: Option<String>,
     pub y_linesize: usize,
@@ -864,12 +917,12 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
             fps_num,
             fps_den,
             frames,
-            color_primaries: fmeta.color_primaries,
-            transfer_characteristics: fmeta.transfer_characteristics,
-            matrix_coefficients: fmeta.matrix_coefficients,
+            color_primaries: Some(def_color(fmeta.color_primaries)),
+            transfer_characteristics: Some(def_color(fmeta.transfer_characteristics)),
+            matrix_coefficients: Some(def_color(fmeta.matrix_coefficients)),
             is_10b: fmeta.is_10b,
-            color_range: fmeta.color_range,
-            chroma_sample_position: fmeta.chroma_sample_position,
+            color_range: Some(fmeta.color_range.map_or(0, |v| v as i8)),
+            chroma_sample_position: Some(fmeta.chroma_sample_position.map_or(1, |v| v as i8)),
             mastering_display: fmeta.mastering_display,
             content_light: fmeta.content_light,
             y_linesize: fmeta.y_linesize,
@@ -877,7 +930,7 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
     }
 }
 
-pub fn get_audio_streams(path: &Path) -> Result<Vec<(usize, u32, Option<String>)>, Xerr> {
+pub fn get_audio_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr> {
     unsafe {
         let cpath = CString::new(path.to_str().ok_or("invalid path")?)?;
         let mut fmt_ctx: *mut AVFormatContext = null_mut();
@@ -898,7 +951,7 @@ pub fn get_audio_streams(path: &Path) -> Result<Vec<(usize, u32, Option<String>)
             if par.codec_type != AVMEDIA_TYPE_AUDIO {
                 continue;
             }
-            let channels = par.ch_layout.nb_channels.cast_unsigned();
+            let channels = par.ch_layout.nb_channels as u8;
             let lang = {
                 let entry = av_dict_get(stream.metadata, lang_key.as_ptr(), null(), 0);
                 if entry.is_null() {
@@ -910,7 +963,7 @@ pub fn get_audio_streams(path: &Path) -> Result<Vec<(usize, u32, Option<String>)
                         .map(ToOwned::to_owned)
                 }
             };
-            result.push((stream.index as usize, channels, lang));
+            result.push((stream.index as u8, channels, lang));
         }
 
         avformat_close_input(addr_of_mut!(fmt_ctx));
@@ -943,6 +996,13 @@ impl FrameMeta {
             is_10b: false,
             y_linesize: width,
         }
+    }
+}
+
+const fn def_color(v: Option<c_int>) -> i8 {
+    match v {
+        Some(x) if x != 2 => x as i8,
+        _ => 1,
     }
 }
 

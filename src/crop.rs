@@ -115,10 +115,10 @@ fn calculate_sample_frames(total_frames: usize, sample_count: usize) -> Vec<usiz
     }
 
     let mut frames = Vec::with_capacity(sample_count);
-    let step = total_frames as f64 / (sample_count + 1) as f64;
+    let step = total_frames as f32 / (sample_count + 1) as f32;
 
     for i in 1..=sample_count {
-        let frame_idx = (i as f64 * step).round() as usize;
+        let frame_idx = (i as f32 * step).round() as usize;
         frames.push(frame_idx.min(total_frames - 1));
     }
 

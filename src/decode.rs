@@ -118,7 +118,7 @@ pub fn decode_chunks(
     path: &Path,
     inf: &VidInf,
     tx: &Sender<WorkPkg>,
-    skip: &HashSet<usize>,
+    skip: &HashSet<u16>,
     strat: DecodeStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -746,7 +746,7 @@ pub fn decode_pipe(
     reader: &mut PipeReader,
     inf: &VidInf,
     tx: &Sender<WorkPkg>,
-    skip: &HashSet<usize>,
+    skip: &HashSet<u16>,
     strat: DecodeStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -838,7 +838,7 @@ pub fn decode_pipe(
 fn pipe_loop<F>(
     chunks: &[Chunk],
     reader: &mut PipeReader,
-    skip: &HashSet<usize>,
+    skip: &HashSet<u16>,
     sem: &Arc<Semaphore>,
     tx: &Sender<WorkPkg>,
     raw_fsz: usize,

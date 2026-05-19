@@ -17,12 +17,12 @@ pub struct WorkPkg {
 #[cfg(feature = "vship")]
 pub struct TQState {
     pub probes: Vec<Probe>,
-    pub probe_sizes: Vec<(f64, u64)>,
-    pub search_min: f64,
-    pub search_max: f64,
-    pub round: usize,
-    pub target: f64,
-    pub last_crf: f64,
+    pub probe_sizes: Vec<(f32, u64)>,
+    pub search_min: f32,
+    pub search_max: f32,
+    pub round: u8,
+    pub target: f32,
+    pub last_crf: f32,
     pub final_encode: bool,
 }
 

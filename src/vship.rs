@@ -362,7 +362,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, Xerr> {
+    ) -> Result<f32, Xerr> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
@@ -380,7 +380,7 @@ impl VshipProcessor {
                 return Err(vship_err_str(&errbuf));
             }
 
-            Ok(score)
+            Ok(score as f32)
         }
     }
 
@@ -402,7 +402,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, Xerr> {
+    ) -> Result<f32, Xerr> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = 0.0;
@@ -422,7 +422,7 @@ impl VshipProcessor {
                 return Err(vship_err_str(&errbuf));
             }
 
-            Ok(score)
+            Ok(score as f32)
         }
     }
 
@@ -432,7 +432,7 @@ impl VshipProcessor {
         planes2: [*const u8; 3],
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
-    ) -> Result<f64, Xerr> {
+    ) -> Result<f32, Xerr> {
         unsafe {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
             let mut score = VshipButteraugliScore {
@@ -457,7 +457,7 @@ impl VshipProcessor {
                 return Err(vship_err_str(&errbuf));
             }
 
-            Ok(score.norm_q)
+            Ok(score.norm_q as f32)
         }
     }
 }
