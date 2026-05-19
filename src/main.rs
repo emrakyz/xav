@@ -33,6 +33,18 @@ mod encode;
 mod encoder;
 mod error;
 mod ffms;
+#[cfg(all(
+    feature = "vship",
+    any(target_feature = "avx2", target_feature = "avx512bw")
+))]
+#[path = "interp_simd.rs"]
+mod interp;
+#[cfg(all(
+    feature = "vship",
+    not(any(target_feature = "avx2", target_feature = "avx512bw"))
+))]
+#[path = "interp_scalar.rs"]
+mod interp;
 mod lavf;
 mod opus;
 mod pack;

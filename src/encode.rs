@@ -23,31 +23,19 @@ use std::{
     thread::{JoinHandle, spawn},
 };
 
-#[cfg(feature = "vship")]
-use crossbeam_channel::Sender;
-#[cfg(feature = "vship")]
-use crossbeam_channel::select;
 use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
-use sonic_rs::from_str;
+use {
+    crossbeam_channel::{Sender, select},
+    sonic_rs::from_str,
+};
 
-#[cfg(all(
-    feature = "vship",
-    target_feature = "avx2",
-    not(target_feature = "avx512bw")
-))]
-use crate::avx2::binary_search;
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 use crate::avx2::{SHIFT_CHUNK, conv_to_10b};
-#[cfg(all(feature = "vship", target_feature = "avx512bw"))]
-use crate::avx512::binary_search;
 #[cfg(target_feature = "avx512bw")]
 use crate::avx512::{SHIFT_CHUNK, conv_to_10b};
-#[cfg(all(
-    feature = "vship",
-    not(any(target_feature = "avx2", target_feature = "avx512bw"))
-))]
-use crate::scalar::binary_search;
+#[cfg(feature = "vship")]
+use crate::interp::binary_search;
 #[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
 use crate::scalar::{SHIFT_CHUNK, conv_to_10b};
 use crate::{

@@ -1,14 +1,9 @@
 use std::{path::Path, thread::available_parallelism, time::Instant};
 
-#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
-use crate::avx2::{fritsch_carlson, lerp, pchip};
-#[cfg(target_feature = "avx512bw")]
-use crate::avx512::{fritsch_carlson, lerp, pchip};
-#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
-use crate::scalar::{fritsch_carlson, lerp, pchip};
 use crate::{
     error::fatal,
     ffms::VideoDecoder,
+    interp::{fritsch_carlson, lerp, pchip},
     pipeline::{MetricsProgress, Pipeline},
     vship::VshipProcessor,
     worker::WorkPkg,
