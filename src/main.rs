@@ -72,7 +72,7 @@ use crop::{CropDetectConfig, detect_crop};
 use encode::encode_all;
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
-use ffms::{DecodeStrat, VidInf, VideoDecoder, gcd, get_decode_strat, get_vidinf};
+use ffms::{DecodeStrat, VidInf, VideoDecoder, get_decode_strat, get_vidinf, vid_bytes};
 use scd::fd_scenes;
 use y4m::{PipeReader, init_pipe};
 
@@ -528,17 +528,6 @@ fn init_pipe_crop(inf: VidInf, crop: (u32, u32)) -> (VidInf, (u32, u32), Option<
     }
 }
 
-fn adjust_dar(inf: &mut VidInf, crop: (u32, u32)) {
-    if let Some((dw, dh)) = inf.dar {
-        let fw = u64::from(inf.width - crop.1 * 2);
-        let fh = u64::from(inf.height - crop.0 * 2);
-        let n = u64::from(dw) * u64::from(inf.height) * fw;
-        let d = u64::from(dh) * u64::from(inf.width) * fh;
-        let g = gcd(n, d);
-        inf.dar = Some(((n / g) as u32, (d / g) as u32));
-    }
-}
-
 fn acquire_audio(
     spec: &AudioSpec,
     cached: Option<Vec<(AudioStream, PathBuf)>>,
@@ -680,8 +669,6 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let (mut inf, crop, pipe_reader) = init_pipe_crop(inf, crop);
 
-    adjust_dar(&mut inf, crop);
-
     #[cfg(feature = "vship")]
     let tq = args.target_quality.is_some();
     #[cfg(not(feature = "vship"))]
@@ -741,8 +728,8 @@ fn print_summary(
     let output_size = metadata(&args.output).map_or(0, |m| m.len());
     let total_frames: usize = chunks.iter().map(|c| c.end - c.start).sum();
     let duration = total_frames as f32 * inf.fps_den as f32 / inf.fps_num as f32;
-    let input_br = (input_size as f32 * 8.0) / duration / 1000.0;
-    let output_br = (output_size as f32 * 8.0) / duration / 1000.0;
+    let input_br = vid_bytes(&args.input, args.ranges.as_deref()) as f32 * 8.0 / duration / 1000.0;
+    let output_br = vid_bytes(&args.output, None) as f32 * 8.0 / duration / 1000.0;
     let change = ((output_size as f32 / input_size as f32) - 1.0) * 100.0;
 
     let fmt_size = |b: u64| {

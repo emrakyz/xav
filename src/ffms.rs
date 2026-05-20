@@ -210,7 +210,7 @@ pub struct AVPacket {
     pub pts: i64,
     pub dts: i64,
     _data: *mut u8,
-    _size: c_int,
+    pub size: c_int,
     pub stream_index: c_int,
     pub flags: c_int,
     _side_data: *mut c_void,
@@ -837,6 +837,38 @@ fn decode_first_frame(
         av_packet_free(addr_of_mut!(pkt));
         avcodec_free_context(addr_of_mut!(codec_ctx));
         fmeta
+    }
+}
+
+pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>) -> u64 {
+    unsafe {
+        let Ok(cp) = CString::new(path.to_str().unwrap_or("")) else { return 0 };
+        let mut c: *mut AVFormatContext = null_mut();
+        if avformat_open_input(addr_of_mut!(c), cp.as_ptr(), null(), null_mut()) < 0 {
+            return 0;
+        }
+        probe_streams(c, AVMEDIA_TYPE_VIDEO, 0x80000);
+        let idx = av_find_best_stream(c, AVMEDIA_TYPE_VIDEO, -1, -1, null_mut(), 0);
+        let mut total = 0u64;
+        if idx >= 0 {
+            let s = &*(*(*c).streams.add(idx as usize));
+            let mul = i64::from(s.time_base.num) * i64::from(s.avg_frame_rate.num);
+            let div = i64::from(s.time_base.den) * i64::from(s.avg_frame_rate.den);
+            let start = s.start_time.max(0);
+            let mut pkt = av_packet_alloc();
+            while av_read_frame(c, pkt) >= 0 {
+                if (*pkt).stream_index == idx {
+                    let f = if div > 0 { (((*pkt).pts - start) * mul + div / 2) / div } else { 0 };
+                    if ranges.is_none_or(|rs| rs.iter().any(|&(a, b)| f >= a as i64 && f <= b as i64)) {
+                        total += (*pkt).size.max(0) as u64;
+                    }
+                }
+                av_packet_unref(pkt);
+            }
+            av_packet_free(addr_of_mut!(pkt));
+        }
+        avformat_close_input(addr_of_mut!(c));
+        total
     }
 }
 
