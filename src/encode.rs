@@ -503,8 +503,9 @@ fn run_metrics_worker(
             frame_scores,
         });
 
-        let should_complete =
-            ctx.tq_ctx.converged(score) || ctx.tq_ctx.update_bounds_and_check(tq_state, score);
+        let should_complete = ctx.tq_ctx.converged(score)
+            || tq_state.probes.iter().filter(|p| p.score == score).count() > 1
+            || ctx.tq_ctx.update_bounds_and_check(tq_state, score);
 
         if should_complete {
             let best = ctx.tq_ctx.best_probe(&tq_state.probes);
