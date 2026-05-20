@@ -2,7 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     env::args as env_args,
     fs::{
-        create_dir_all, metadata, read_to_string, remove_dir_all, remove_file, write as write_to,
+        create_dir_all, read_to_string, remove_dir_all, remove_file, write as write_to,
     },
     hash::{Hash as _, Hasher as _},
     io::{Write as _, stdout},
@@ -724,19 +724,21 @@ fn print_summary(
     print!("\x1b[?25h\x1b[?1049l");
     _ = stdout().flush();
 
-    let input_size = metadata(&args.input).map_or(0, |m| m.len());
-    let output_size = metadata(&args.output).map_or(0, |m| m.len());
+    let input_size = vid_bytes(&args.input, args.ranges.as_deref());
+    let output_size = vid_bytes(&args.output, None);
     let total_frames: usize = chunks.iter().map(|c| c.end - c.start).sum();
     let duration = total_frames as f32 * inf.fps_den as f32 / inf.fps_num as f32;
-    let input_br = vid_bytes(&args.input, args.ranges.as_deref()) as f32 * 8.0 / duration / 1000.0;
-    let output_br = vid_bytes(&args.output, None) as f32 * 8.0 / duration / 1000.0;
+    let input_br = input_size as f32 * 8.0 / duration / 1000.0;
+    let output_br = output_size as f32 * 8.0 / duration / 1000.0;
     let change = ((output_size as f32 / input_size as f32) - 1.0) * 100.0;
 
     let fmt_size = |b: u64| {
-        if b > 1_000_000_000 {
+        if b >= 1_000_000_000 {
             format!("{:.2} GB", b as f32 / 1_000_000_000.0)
-        } else {
+        } else if b >= 1_000_000 {
             format!("{:.2} MB", b as f32 / 1_000_000.0)
+        } else {
+            format!("{} KB", b / 1_000)
         }
     };
 
