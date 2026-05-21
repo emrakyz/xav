@@ -497,15 +497,19 @@ fn run_metrics_worker(
         );
 
         let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
+
+        let should_complete = ctx.tq_ctx.converged(score)
+            || tq_state
+                .probes
+                .iter()
+                .any(|p| (p.crf - crf) * (p.score - score) >= 0.0)
+            || ctx.tq_ctx.update_bounds_and_check(tq_state, score);
+
         tq_state.probes.push(Probe {
             crf,
             score,
             frame_scores,
         });
-
-        let should_complete = ctx.tq_ctx.converged(score)
-            || tq_state.probes.iter().any(|p| p.crf != crf && (p.crf - crf) * (p.score - score) >= 0.0)
-            || ctx.tq_ctx.update_bounds_and_check(tq_state, score);
 
         if should_complete {
             let best = ctx.tq_ctx.best_probe(&tq_state.probes);
