@@ -67,7 +67,7 @@ pub fn pchip(x: &[f32], y: &[f32], xi: f32) -> f32 {
     )
 }
 
-pub fn fritsch_carlson(x: &[f32], y: &[f32], xi: f32) -> f32 {
+pub fn fc_spline(x: &[f32], y: &[f32], xi: f32) -> f32 {
     let k = usize::from(xi >= x[1] && xi <= x[2]);
 
     let d0 = (y[1] - y[0]) / (x[1] - x[0]);
@@ -108,6 +108,6 @@ fn round_crf(crf: f32) -> f32 {
     (crf * 4.0).round() / 4.0
 }
 
-pub fn binary_search(min: f32, max: f32) -> f32 {
+pub fn bisect(min: f32, max: f32) -> f32 {
     round_crf(f32::midpoint(min, max))
 }

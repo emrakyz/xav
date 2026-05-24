@@ -6,7 +6,7 @@ c_mask:  dw 0x00ff
 SECTION .text
 
 INIT_YMM avx2
-cglobal deint_nv12_to_10b, 4, 4, 5, src, ud, vd, n
+cglobal deint_nv12_10b, 4, 4, 5, src, ud, vd, n
     vpbroadcastw  m0, [c_mask]
     xor           eax, eax
 .loop:

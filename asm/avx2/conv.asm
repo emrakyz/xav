@@ -3,7 +3,7 @@
 SECTION .text
 
 INIT_YMM avx2
-cglobal conv_to_10b, 3, 3, 1, src, dst, n
+cglobal conv_10b, 3, 3, 1, src, dst, n
     xor           eax, eax
 .loop:
 %assign g 0

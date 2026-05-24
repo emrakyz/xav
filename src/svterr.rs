@@ -412,7 +412,7 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
     Ok(())
 }
 
-pub fn validate(params: &str) -> Result<(), Xerr> {
+pub fn val(params: &str) -> Result<(), Xerr> {
     let mut hl: i64 = 5;
     let mut smgs: Option<(i64, &str)> = None;
     let mut tune: Option<i64> = None;

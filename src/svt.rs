@@ -218,16 +218,16 @@ pub struct EbSvtAv1EncConfiguration {
 unsafe extern "C" {
     pub fn svt_av1_enc_init_handle(
         p_handle: *mut *mut EbComponentType,
-        config_ptr: *mut EbSvtAv1EncConfiguration,
+        conf_ptr: *mut EbSvtAv1EncConfiguration,
     ) -> i32;
 
     pub fn svt_av1_enc_set_parameter(
         svt_enc_component: *mut EbComponentType,
-        config: *mut EbSvtAv1EncConfiguration,
+        conf: *mut EbSvtAv1EncConfiguration,
     ) -> i32;
 
     pub fn svt_av1_enc_parse_parameter(
-        config: *mut EbSvtAv1EncConfiguration,
+        conf: *mut EbSvtAv1EncConfiguration,
         name: *const i8,
         value: *const i8,
     ) -> i32;

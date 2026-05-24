@@ -5,9 +5,9 @@ use crate::chunk::Chunk;
 use crate::tq::Probe;
 
 pub struct WorkPkg {
-    pub chunk: Chunk,
+    pub chnk: Chunk,
     pub yuv: Vec<u8>,
-    pub frame_count: usize,
+    pub frame_cnt: usize,
     pub width: u32,
     pub height: u32,
     #[cfg(feature = "vship")]
@@ -17,27 +17,21 @@ pub struct WorkPkg {
 #[cfg(feature = "vship")]
 pub struct TQState {
     pub probes: Vec<Probe>,
-    pub probe_sizes: Vec<(f32, u64)>,
+    pub probe_szs: Vec<(f32, u64)>,
     pub search_min: f32,
     pub search_max: f32,
     pub round: u8,
     pub target: f32,
     pub last_crf: f32,
-    pub final_encode: bool,
+    pub final_enc: bool,
 }
 
 impl WorkPkg {
-    pub const fn new(
-        chunk: Chunk,
-        yuv: Vec<u8>,
-        frame_count: usize,
-        width: u32,
-        height: u32,
-    ) -> Self {
+    pub const fn new(chnk: Chunk, yuv: Vec<u8>, frame_cnt: usize, width: u32, height: u32) -> Self {
         Self {
-            chunk,
+            chnk,
             yuv,
-            frame_count,
+            frame_cnt,
             width,
             height,
             #[cfg(feature = "vship")]
@@ -59,12 +53,12 @@ impl Semaphore {
         }
     }
 
-    pub fn acquire(&self) {
-        let mut count = unsafe { self.state.lock().unwrap_unchecked() };
-        while *count == 0 {
-            count = unsafe { self.cvar.wait(count).unwrap_unchecked() };
+    pub fn acq(&self) {
+        let mut cnt = unsafe { self.state.lock().unwrap_unchecked() };
+        while *cnt == 0 {
+            cnt = unsafe { self.cvar.wait(cnt).unwrap_unchecked() };
         }
-        *count -= 1;
+        *cnt -= 1;
     }
 
     pub fn release(&self) {

@@ -2,31 +2,28 @@
 use std::path::Path;
 use std::{io::Write as _, process::ChildStdin};
 
-#[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
-use crate::avx2::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_to_10b, unpack_10b};
-#[cfg(target_feature = "avx512bw")]
-use crate::avx512::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_to_10b, unpack_10b};
-#[cfg(not(any(target_feature = "avx2", target_feature = "avx512bw")))]
-use crate::scalar::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_to_10b, unpack_10b};
 use crate::{
-    encode::get_frame,
+    enc::get_frame,
     ffms::{
-        DecodeStrat,
-        DecodeStrat::{
+        DecStrat,
+        DecStrat::{
             B8Crop, B8CropFast, B8CropStride, B10Crop, B10CropFast, B10CropFastRem, B10CropRem,
             B10CropStride, B10CropStrideRem, B10RawCrop, B10RawCropFast, B10RawCropStride,
             HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride, HwP010CropPack,
             HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem, HwP010RawCrop,
             HwP010RawCropRem,
         },
-        VidInf, nv12_to_10b, nv12_to_10b_rem,
+        VidInf, nv12_10b, nv12_10b_rem,
     },
-    pack::{calc_8b_size, calc_packed_size, unpack_10b_rem},
+    pack::{
+        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, conv_10b, unpack_10b,
+        unpack_10b_rem,
+    },
 };
 #[cfg(feature = "vship")]
 use crate::{
     progs::ProgsTrack,
-    tq::{calc_metrics_8b, calc_metrics_10b},
+    tq::{calc_metric_8b, calc_metric_10b},
     vship::VshipProcessor,
     worker::WorkPkg,
 };
@@ -37,7 +34,7 @@ pub type WriteFn = fn(&mut ChildStdin, &[u8], usize, &mut [u8], &Pipeline);
 const fn unpack_noop(_: &[u8], _: &mut [u8], _: &Pipeline) {}
 
 #[cfg(feature = "vship")]
-pub struct MetricsProgress<'a> {
+pub struct MetricProgs<'a> {
     pub prog: &'a ProgsTrack,
     pub slot: usize,
     pub crf: f32,
@@ -45,14 +42,14 @@ pub struct MetricsProgress<'a> {
 }
 
 #[cfg(feature = "vship")]
-pub type CalcMetricsFn = fn(
+pub type CalcMetricFn = fn(
     &WorkPkg,
     &Path,
     &Pipeline,
     &VshipProcessor,
     &str,
     &mut [u8],
-    &MetricsProgress,
+    &MetricProgs,
 ) -> (f32, Vec<f32>);
 
 #[cfg(feature = "vship")]
@@ -62,31 +59,31 @@ pub type ComputeMetricFn =
 #[cfg(feature = "vship")]
 pub type AggregateScoresFn = fn(&mut Vec<f32>) -> f32;
 
-fn unpack_10b_wrap(input: &[u8], output: &mut [u8], _pipe: &Pipeline) {
-    unpack_10b(input, output);
+fn unpack_10b_wrap(inp: &[u8], out: &mut [u8], _pipe: &Pipeline) {
+    unpack_10b(inp, out);
 }
 
-fn unpack_10b_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    unpack_10b_rem(input, output, pipe.final_w, pipe.final_h);
+fn unpack_10b_rem_wrap(inp: &[u8], out: &mut [u8], pipe: &Pipeline) {
+    unpack_10b_rem(inp, out, pipe.final_w, pipe.final_h);
 }
 
-fn nv12_to_10b_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    nv12_to_10b(input, output, pipe.final_w, pipe.final_h);
+fn nv12_10b_wrap(inp: &[u8], out: &mut [u8], pipe: &Pipeline) {
+    nv12_10b(inp, out, pipe.final_w, pipe.final_h);
 }
 
-fn nv12_to_10b_rem_wrap(input: &[u8], output: &mut [u8], pipe: &Pipeline) {
-    nv12_to_10b_rem(input, output, pipe.final_w, pipe.final_h);
+fn nv12_10b_rem_wrap(inp: &[u8], out: &mut [u8], pipe: &Pipeline) {
+    nv12_10b_rem(inp, out, pipe.final_w, pipe.final_h);
 }
 
 pub fn write_frames_10b(
     stdin: &mut ChildStdin,
     frames: &[u8],
-    frame_count: usize,
+    frame_cnt: usize,
     buf: &mut [u8],
     pipe: &Pipeline,
 ) {
-    for i in 0..frame_count {
-        let frame = get_frame(frames, i, pipe.frame_size);
+    for i in 0..frame_cnt {
+        let frame = get_frame(frames, i, pipe.frame_sz);
         (pipe.unpack)(frame, buf, pipe);
         _ = stdin.write_all(buf);
     }
@@ -95,39 +92,39 @@ pub fn write_frames_10b(
 pub fn write_frames_8b(
     stdin: &mut ChildStdin,
     frames: &[u8],
-    frame_count: usize,
+    frame_cnt: usize,
     buf: &mut [u8],
     pipe: &Pipeline,
 ) {
-    for i in 0..frame_count {
-        let frame = get_frame(frames, i, pipe.frame_size);
-        conv_to_10b(frame, buf);
+    for i in 0..frame_cnt {
+        let frame = get_frame(frames, i, pipe.frame_sz);
+        conv_10b(frame, buf);
         _ = stdin.write_all(buf);
     }
 }
 
-pub fn conv_to_10b_rem(input: &[u8], output: &mut [u8]) {
-    let aligned = input.len() / SHIFT_CHUNK * SHIFT_CHUNK;
+pub fn conv_10b_rem(inp: &[u8], out: &mut [u8]) {
+    let aligned = inp.len() / SHIFT_CHUNK * SHIFT_CHUNK;
     if aligned > 0 {
-        conv_to_10b(&input[..aligned], &mut output[..aligned * 2]);
+        conv_10b(&inp[..aligned], &mut out[..aligned * 2]);
     }
-    for i in aligned..input.len() {
-        let [lo, hi] = (u16::from(input[i]) << 2).to_le_bytes();
-        output[i * 2] = lo;
-        output[i * 2 + 1] = hi;
+    for i in aligned..inp.len() {
+        let [lo, hi] = (u16::from(inp[i]) << 2).to_le_bytes();
+        out[i * 2] = lo;
+        out[i * 2 + 1] = hi;
     }
 }
 
 pub fn write_frames_8b_rem(
     stdin: &mut ChildStdin,
     frames: &[u8],
-    frame_count: usize,
+    frame_cnt: usize,
     buf: &mut [u8],
     pipe: &Pipeline,
 ) {
-    for i in 0..frame_count {
-        let frame = get_frame(frames, i, pipe.frame_size);
-        conv_to_10b_rem(frame, buf);
+    for i in 0..frame_cnt {
+        let frame = get_frame(frames, i, pipe.frame_sz);
+        conv_10b_rem(frame, buf);
         _ = stdin.write_all(buf);
     }
 }
@@ -136,14 +133,14 @@ pub fn write_frames_8b_rem(
 pub struct Pipeline {
     pub final_w: usize,
     pub final_h: usize,
-    pub frame_size: usize,
-    pub y_size: usize,
-    pub uv_size: usize,
-    pub conv_buf_size: usize,
+    pub frame_sz: usize,
+    pub y_sz: usize,
+    pub uv_sz: usize,
+    pub conv_buf_sz: usize,
     pub unpack: UnpackFn,
     pub write_frames: WriteFn,
     #[cfg(feature = "vship")]
-    pub calc_metrics: CalcMetricsFn,
+    pub calc_metric: CalcMetricFn,
     #[cfg(feature = "vship")]
     pub compute_metric: ComputeMetricFn,
     #[cfg(feature = "vship")]
@@ -154,11 +151,7 @@ pub struct Pipeline {
 
 impl Pipeline {
     #[must_use]
-    pub fn new(
-        inf: &VidInf,
-        strat: DecodeStrat,
-        #[cfg(feature = "vship")] target_quality: Option<&str>,
-    ) -> Self {
+    pub fn new(inf: &VidInf, strat: DecStrat, #[cfg(feature = "vship")] tq: Option<&str>) -> Self {
         let (final_w, final_h) = match strat {
             B10Crop { cc }
             | B10CropRem { cc }
@@ -183,43 +176,43 @@ impl Pipeline {
             _ => (inf.width as usize, inf.height as usize),
         };
 
-        let frame_size = if strat.is_raw() {
+        let frame_sz = if strat.is_raw() {
             final_w * final_h * 3
         } else if inf.is_10b {
-            calc_packed_size(final_w as u32, final_h as u32)
+            calc_packed_sz(final_w as u32, final_h as u32)
         } else {
-            calc_8b_size(final_w as u32, final_h as u32)
+            calc_8b_sz(final_w as u32, final_h as u32)
         };
 
-        let is_10b_output = inf.is_10b;
-        let pixel_size = if is_10b_output { 2 } else { 1 };
-        let y_size = final_w * final_h * pixel_size;
-        let uv_size = y_size / 4;
+        let is_10b_out = inf.is_10b;
+        let pix_sz = if is_10b_out { 2 } else { 1 };
+        let y_sz = final_w * final_h * pix_sz;
+        let uv_sz = y_sz / 4;
 
         let is_raw = strat.is_raw();
-        let conv_buf_size = if is_raw {
+        let conv_buf_sz = if is_raw {
             0
         } else {
             final_w * final_h * 3 / 2 * 2
         };
 
         let has_rem = inf.is_10b
-            && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_size.is_multiple_of(UNPACK_CHUNK));
+            && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_sz.is_multiple_of(UNPACK_CHUNK));
 
-        let is_nv12_to_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
+        let is_nv12_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
 
-        let (unpack, write_frames): (UnpackFn, WriteFn) = if is_nv12_to_10 {
+        let (unpack, write_frames): (UnpackFn, WriteFn) = if is_nv12_10 {
             let y_ok = (final_w * final_h).is_multiple_of(SHIFT_CHUNK);
             let uv_ok = (final_w / 2 * (final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
             if y_ok && uv_ok {
-                (nv12_to_10b_wrap, write_frames_10b)
+                (nv12_10b_wrap, write_frames_10b)
             } else {
-                (nv12_to_10b_rem_wrap, write_frames_10b)
+                (nv12_10b_rem_wrap, write_frames_10b)
             }
         } else if is_raw {
             (unpack_noop, write_frames_10b)
-        } else if !is_10b_output {
-            if frame_size.is_multiple_of(SHIFT_CHUNK) {
+        } else if !is_10b_out {
+            if frame_sz.is_multiple_of(SHIFT_CHUNK) {
                 (unpack_noop, write_frames_8b)
             } else {
                 (unpack_noop, write_frames_8b_rem)
@@ -231,20 +224,20 @@ impl Pipeline {
         };
 
         #[cfg(feature = "vship")]
-        let (compute_metric, reset_cvvdp, sort_descending, calc_metrics) =
-            resolve_metrics(is_10b_output, target_quality);
+        let (compute_metric, reset_cvvdp, sort_descending, calc_metric) =
+            resolve_metric(is_10b_out, tq);
 
         Self {
             final_w,
             final_h,
-            frame_size,
-            y_size,
-            uv_size,
-            conv_buf_size,
+            frame_sz,
+            y_sz,
+            uv_sz,
+            conv_buf_sz,
             unpack,
             write_frames,
             #[cfg(feature = "vship")]
-            calc_metrics,
+            calc_metric,
             #[cfg(feature = "vship")]
             compute_metric,
             #[cfg(feature = "vship")]
@@ -256,79 +249,73 @@ impl Pipeline {
 }
 
 #[cfg(feature = "vship")]
-fn resolve_metrics(
-    is_10b: bool,
-    target_quality: Option<&str>,
-) -> (ComputeMetricFn, bool, bool, CalcMetricsFn) {
-    let calc: CalcMetricsFn = if is_10b {
-        calc_metrics_10b
+fn resolve_metric(is_10b: bool, tq: Option<&str>) -> (ComputeMetricFn, bool, bool, CalcMetricFn) {
+    let calc: CalcMetricFn = if is_10b {
+        calc_metric_10b
     } else {
-        calc_metrics_8b
+        calc_metric_8b
     };
 
-    target_quality.map_or(
-        (compute_ssimulacra2 as ComputeMetricFn, false, false, calc),
-        |tq| {
-            let tq_parts: Vec<f32> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-            let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
+    tq.map_or((comp_ssimu2 as ComputeMetricFn, false, false, calc), |tq| {
+        let tq_parts: Vec<f32> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
+        let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
 
-            let use_butteraugli = tq_target < 8.0;
-            let use_cvvdp = tq_target > 8.0 && tq_target <= 10.0;
+        let use_butter = tq_target < 8.0;
+        let use_cvvdp = tq_target > 8.0 && tq_target <= 10.0;
 
-            let compute = if use_butteraugli {
-                compute_butteraugli as ComputeMetricFn
-            } else if use_cvvdp {
-                compute_cvvdp as ComputeMetricFn
-            } else {
-                compute_ssimulacra2 as ComputeMetricFn
-            };
+        let compute = if use_butter {
+            comp_butter as ComputeMetricFn
+        } else if use_cvvdp {
+            comp_cvvdp as ComputeMetricFn
+        } else {
+            comp_ssimu2 as ComputeMetricFn
+        };
 
-            (compute, use_cvvdp, use_butteraugli, calc)
-        },
-    )
+        (compute, use_cvvdp, use_butter, calc)
+    })
 }
 
 #[cfg(feature = "vship")]
-fn compute_ssimulacra2(
+fn comp_ssimu2(
     vship: &VshipProcessor,
-    input_planes: [*const u8; 3],
-    output_planes: [*const u8; 3],
-    input_strides: [i64; 3],
-    output_strides: [i64; 3],
+    inp_planes: [*const u8; 3],
+    out_planes: [*const u8; 3],
+    inp_strides: [i64; 3],
+    out_strides: [i64; 3],
 ) -> f32 {
     unsafe {
         vship
-            .compute_ssimulacra2(input_planes, output_planes, input_strides, output_strides)
+            .comp_ssimu2(inp_planes, out_planes, inp_strides, out_strides)
             .unwrap_unchecked()
     }
 }
 
 #[cfg(feature = "vship")]
-fn compute_butteraugli(
+fn comp_butter(
     vship: &VshipProcessor,
-    input_planes: [*const u8; 3],
-    output_planes: [*const u8; 3],
-    input_strides: [i64; 3],
-    output_strides: [i64; 3],
+    inp_planes: [*const u8; 3],
+    out_planes: [*const u8; 3],
+    inp_strides: [i64; 3],
+    out_strides: [i64; 3],
 ) -> f32 {
     unsafe {
         vship
-            .compute_butteraugli(input_planes, output_planes, input_strides, output_strides)
+            .comp_butter(inp_planes, out_planes, inp_strides, out_strides)
             .unwrap_unchecked()
     }
 }
 
 #[cfg(feature = "vship")]
-fn compute_cvvdp(
+fn comp_cvvdp(
     vship: &VshipProcessor,
-    input_planes: [*const u8; 3],
-    output_planes: [*const u8; 3],
-    input_strides: [i64; 3],
-    output_strides: [i64; 3],
+    inp_planes: [*const u8; 3],
+    out_planes: [*const u8; 3],
+    inp_strides: [i64; 3],
+    out_strides: [i64; 3],
 ) -> f32 {
     unsafe {
         vship
-            .compute_cvvdp(input_planes, output_planes, input_strides, output_strides)
+            .comp_cvvdp(inp_planes, out_planes, inp_strides, out_strides)
             .unwrap_unchecked()
     }
 }
@@ -340,15 +327,15 @@ pub(crate) mod test_access {
     pub const UNPACK_NOOP: UnpackFn = super::unpack_noop;
     pub const UNPACK_10B: UnpackFn = super::unpack_10b_wrap;
     pub const UNPACK_10B_REM: UnpackFn = super::unpack_10b_rem_wrap;
-    pub const NV12_TO_10B: UnpackFn = super::nv12_to_10b_wrap;
-    pub const NV12_TO_10B_REM: UnpackFn = super::nv12_to_10b_rem_wrap;
+    pub const NV12_10B: UnpackFn = super::nv12_10b_wrap;
+    pub const NV12_10B_REM: UnpackFn = super::nv12_10b_rem_wrap;
 
     #[cfg(feature = "vship")]
     #[allow(dead_code)]
-    pub const COMPUTE_SSIMULACRA2: ComputeMetricFn = super::compute_ssimulacra2;
+    pub const COMPUTE_SSIMULACRA2: ComputeMetricFn = super::comp_ssimu2;
     #[cfg(feature = "vship")]
     #[allow(dead_code)]
-    pub const COMPUTE_BUTTERAUGLI: ComputeMetricFn = super::compute_butteraugli;
+    pub const COMPUTE_BUTTERAUGLI: ComputeMetricFn = super::comp_butter;
     #[cfg(feature = "vship")]
-    pub const COMPUTE_CVVDP: ComputeMetricFn = super::compute_cvvdp;
+    pub const COMPUTE_CVVDP: ComputeMetricFn = super::comp_cvvdp;
 }

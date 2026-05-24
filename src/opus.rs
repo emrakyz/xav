@@ -69,7 +69,7 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    pub fn new(path: &Path, channels: u8, bitrate: u16, family: c_int) -> Result<Self, Xerr> {
+    pub fn new(path: &Path, channels: u8, brate: u16, family: c_int) -> Result<Self, Xerr> {
         let path_str = path.to_str().ok_or("invalid audio output path")?;
         let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
 
@@ -99,7 +99,7 @@ impl Encoder {
             check(ope_encoder_ctl(
                 ptr,
                 OPUS_SET_BITRATE_REQUEST,
-                c_int::from(bitrate) * 1000,
+                c_int::from(brate) * 1000,
             ))?;
             check(ope_encoder_ctl(ptr, OPUS_SET_VBR_REQUEST, 1i32))?;
             check(ope_encoder_ctl(ptr, OPUS_SET_VBR_CONSTRAINT_REQUEST, 0i32))?;

@@ -20,21 +20,21 @@ use v_frame::{
 
 use crate::{
     error::Xerr,
-    ffms::{VidInf, VideoDecoder},
+    ffms::{VidDecoder, VidInf},
     progs::ProgsBar,
 };
 
 const LUMA_PADDING: usize = 80;
 
 fn build_luma_frame<T: Pixel>(
-    dec: &mut VideoDecoder,
+    dec: &mut VidDecoder,
     w: NonZeroUsize,
     h: NonZeroUsize,
     bit_depth: NonZeroU8,
     crop_v: usize,
     crop_h: usize,
 ) -> Option<Frame<T>> {
-    let vf = dec.decode_next();
+    let vf = dec.dec_next();
     if dec.is_eof() {
         return None;
     }
@@ -64,11 +64,11 @@ fn build_luma_frame<T: Pixel>(
 
 pub fn fd_scenes(
     vid_path: &Path,
-    scene_file: &Path,
+    sc_file: &Path,
     inf: &VidInf,
     crop: (u32, u32),
     line: usize,
-    hwaccel: bool,
+    hwacc: bool,
 ) -> Result<(), Xerr> {
     let max_dist = 300;
     let tot_frames = inf.frames;
@@ -77,10 +77,10 @@ pub fn fd_scenes(
     let cropped_h = inf.height - cv * 2;
 
     let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-    let mut dec = if hwaccel {
-        VideoDecoder::new_hw(vid_path, thr)
+    let mut dec = if hwacc {
+        VidDecoder::new_hw(vid_path, thr)
     } else {
-        VideoDecoder::new(vid_path, thr)
+        VidDecoder::new(vid_path, thr)
     }
     .map_err(|e| e.to_string())?;
 
@@ -139,7 +139,7 @@ pub fn fd_scenes(
         _ = writeln!(content, "{scene_frame}");
     }
 
-    fs_write(scene_file, content)?;
+    fs_write(sc_file, content)?;
 
     Ok(())
 }
@@ -164,20 +164,20 @@ fn refine_scenes(
         let mut distance = e_frame - current_start;
 
         while distance > max_dist {
-            let minimum_split_count = distance / max_dist;
-            let middle_point = distance / (minimum_split_count + 1);
-            let min_size = middle_point / 2;
-            let max_size = min(max_dist, middle_point + min_size);
-            let range_size = max_size - min_size;
+            let minimum_split_cnt = distance / max_dist;
+            let middle_point = distance / (minimum_split_cnt + 1);
+            let min_sz = middle_point / 2;
+            let max_sz = min(max_dist, middle_point + min_sz);
+            let range_sz = max_sz - min_sz;
 
-            let split_point = (min_size..=max_size)
+            let split_point = (min_sz..=max_sz)
                 .filter_map(|size| {
                     let idx = current_start + size;
                     scores[idx].map(|(inter_cost, threshold)| {
                         let inter_score = inter_cost / threshold;
                         let distance_from_mid =
                             (middle_point.max(size) - middle_point.min(size)) as f32;
-                        let distance_weighting = 1.0 - distance_from_mid / range_size as f32;
+                        let distance_weighting = 1.0 - distance_from_mid / range_sz as f32;
                         (size, inter_score * distance_weighting)
                     })
                 })

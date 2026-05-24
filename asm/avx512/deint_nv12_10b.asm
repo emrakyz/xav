@@ -6,7 +6,7 @@ nt_mask: dw 0x03fc
 SECTION .text
 
 INIT_ZMM avx512
-cglobal deint_nv12_to_10b, 4, 4, 3, src, ud, vd, n
+cglobal deint_nv12_10b, 4, 4, 3, src, ud, vd, n
     vpbroadcastw  m0, [nt_mask]
     xor           eax, eax
 .loop:

@@ -262,7 +262,7 @@ unsafe extern "C" {
 pub struct VshipProcessor {
     handler: Option<VshipSSIMU2Handler>,
     cvvdp_handler: Option<VshipCVVDPHandler>,
-    butteraugli_handler: Option<VshipButteraugliHandler>,
+    butter_handler: Option<VshipButteraugliHandler>,
 }
 
 pub fn init_device() -> Result<(), Xerr> {
@@ -283,9 +283,9 @@ impl VshipProcessor {
         height: u32,
         inf: &VidInf,
         use_cvvdp: bool,
-        use_butteraugli: bool,
+        use_butter: bool,
         cvvdp_model: Option<&str>,
-        cvvdp_config: Option<&str>,
+        cvvdp_conf: Option<&str>,
     ) -> Result<Self, Xerr> {
         let fps = inf.fps_num as f32 / inf.fps_den as f32;
         unsafe {
@@ -294,7 +294,7 @@ impl VshipProcessor {
 
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
 
-            let handler = if !use_cvvdp && !use_butteraugli {
+            let handler = if !use_cvvdp && !use_butter {
                 let mut handler = zeroed::<VshipSSIMU2Handler>();
                 let ret = Vship_SSIMU2Init(from_mut(&mut handler), src_colorspace, dis_colorspace);
                 if ret as i32 != 0 {
@@ -310,7 +310,7 @@ impl VshipProcessor {
                 let mut handler = zeroed::<VshipCVVDPHandler>();
                 let model_key = CString::new(cvvdp_model.unwrap_or("xav"))?;
                 let config_cstr = CString::new(
-                    cvvdp_config.ok_or("CVVDP requires -d/--display <json_file> argument")?,
+                    cvvdp_conf.ok_or("CVVDP requires -d/--display <json_file> argument")?,
                 )?;
                 let ret = Vship_CVVDPInit2(
                     from_mut(&mut handler),
@@ -330,7 +330,7 @@ impl VshipProcessor {
                 None
             };
 
-            let butteraugli_handler = if use_butteraugli {
+            let butter_handler = if use_butter {
                 let mut handler = zeroed::<VshipButteraugliHandler>();
                 let ret = Vship_ButteraugliInit(
                     from_mut(&mut handler),
@@ -351,12 +351,12 @@ impl VshipProcessor {
             Ok(Self {
                 handler,
                 cvvdp_handler,
-                butteraugli_handler,
+                butter_handler,
             })
         }
     }
 
-    pub fn compute_ssimulacra2(
+    pub fn comp_ssimu2(
         &self,
         planes1: [*const u8; 3],
         planes2: [*const u8; 3],
@@ -396,7 +396,7 @@ impl VshipProcessor {
         }
     }
 
-    pub fn compute_cvvdp(
+    pub fn comp_cvvdp(
         &self,
         planes1: [*const u8; 3],
         planes2: [*const u8; 3],
@@ -426,7 +426,7 @@ impl VshipProcessor {
         }
     }
 
-    pub fn compute_butteraugli(
+    pub fn comp_butter(
         &self,
         planes1: [*const u8; 3],
         planes2: [*const u8; 3],
@@ -441,7 +441,7 @@ impl VshipProcessor {
                 norminf: 0.0,
             };
             let ret = Vship_ComputeButteraugli(
-                self.butteraugli_handler
+                self.butter_handler
                     .ok_or("Butteraugli handler not initialized")?,
                 from_mut(&mut score),
                 null(),
@@ -471,7 +471,7 @@ impl Drop for VshipProcessor {
             if let Some(h) = self.cvvdp_handler {
                 Vship_CVVDPFree(h);
             }
-            if let Some(h) = self.butteraugli_handler {
+            if let Some(h) = self.butter_handler {
                 Vship_ButteraugliFree(h);
             }
         }

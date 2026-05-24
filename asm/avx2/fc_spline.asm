@@ -10,7 +10,7 @@ cm2:  dd 0xc0000000           ; -2.0f
 SECTION .text
 
 INIT_XMM avx2
-cglobal fritsch_carlson, 2, 3, 0, x, y
+cglobal fc_spline, 2, 3, 0, x, y
     vmovaps       xmm1, xmm0
     vmovsd        xmm0, [yq + 4]
     vmovsd        xmm4, [xq + 4]

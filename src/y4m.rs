@@ -12,7 +12,7 @@ pub struct Y4mInfo {
 
 pub struct PipeReader {
     reader: BufReader<Stdin>,
-    pub frame_size: usize,
+    pub frame_sz: usize,
     frame_header: [u8; 6],
 }
 
@@ -24,9 +24,9 @@ impl PipeReader {
         self.reader.read_exact(dst).is_ok()
     }
 
-    pub fn skip_frames(&mut self, count: usize) {
-        let mut discard = vec![0u8; self.frame_size];
-        for _ in 0..count {
+    pub fn skip_frames(&mut self, cnt: usize) {
+        let mut discard = vec![0u8; self.frame_sz];
+        for _ in 0..cnt {
             _ = self.reader.read_exact(&mut self.frame_header);
             _ = self.reader.read_exact(&mut discard);
         }
@@ -57,7 +57,7 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
         }
     }
 
-    let frame_size = width as usize * height as usize * 3 / 2 * if is_10b { 2 } else { 1 };
+    let frame_sz = width as usize * height as usize * 3 / 2 * if is_10b { 2 } else { 1 };
     let info = Y4mInfo {
         width,
         height,
@@ -65,7 +65,7 @@ pub fn init_pipe() -> Option<(Y4mInfo, PipeReader)> {
     };
     let pipe_reader = PipeReader {
         reader,
-        frame_size,
+        frame_sz,
         frame_header: [0u8; 6],
     };
 

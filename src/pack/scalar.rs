@@ -1,37 +1,35 @@
-use crate::pack::{pack_4_pix_10b, unpack_4_pix_10b};
-
 pub const SHIFT_CHUNK: usize = 1;
 pub const PACK_CHUNK: usize = 8;
 pub const UNPACK_CHUNK: usize = 5;
 
-pub fn conv_to_10b(input: &[u8], output: &mut [u8]) {
-    input
+pub fn conv_10b(inp: &[u8], out: &mut [u8]) {
+    inp
         .iter()
-        .zip(output.chunks_exact_mut(2))
-        .for_each(|(&pixel, out_chunk)| {
-            let pixel_10b = (u16::from(pixel) << 2).to_le_bytes();
-            out_chunk.copy_from_slice(&pixel_10b);
+        .zip(out.chunks_exact_mut(2))
+        .for_each(|(&pix, out_chnk)| {
+            let pix_10b = (u16::from(pix) << 2).to_le_bytes();
+            out_chnk.copy_from_slice(&pix_10b);
         });
 }
 
-pub fn pack_10b(input: &[u8], output: &mut [u8]) {
-    input
+pub fn pack_10b(inp: &[u8], out: &mut [u8]) {
+    inp
         .chunks_exact(8)
-        .zip(output.chunks_exact_mut(5))
-        .for_each(|(i_chunk, o_chunk)| {
-            let i_arr: &[u8; 8] = unsafe { i_chunk.try_into().unwrap_unchecked() };
-            let o_arr: &mut [u8; 5] = unsafe { o_chunk.try_into().unwrap_unchecked() };
+        .zip(out.chunks_exact_mut(5))
+        .for_each(|(i_chnk, o_chnk)| {
+            let i_arr: &[u8; 8] = unsafe { i_chnk.try_into().unwrap_unchecked() };
+            let o_arr: &mut [u8; 5] = unsafe { o_chnk.try_into().unwrap_unchecked() };
             pack_4_pix_10b(*i_arr, o_arr);
         });
 }
 
-pub fn unpack_10b(input: &[u8], output: &mut [u8]) {
-    input
+pub fn unpack_10b(inp: &[u8], out: &mut [u8]) {
+    inp
         .chunks_exact(5)
-        .zip(output.chunks_exact_mut(8))
-        .for_each(|(i_chunk, o_chunk)| {
-            let i_arr: &[u8; 5] = unsafe { i_chunk.try_into().unwrap_unchecked() };
-            let o_arr: &mut [u8; 8] = unsafe { o_chunk.try_into().unwrap_unchecked() };
+        .zip(out.chunks_exact_mut(8))
+        .for_each(|(i_chnk, o_chnk)| {
+            let i_arr: &[u8; 5] = unsafe { i_chnk.try_into().unwrap_unchecked() };
+            let o_arr: &mut [u8; 8] = unsafe { o_chnk.try_into().unwrap_unchecked() };
             unpack_4_pix_10b(*i_arr, o_arr);
         });
 }
@@ -54,7 +52,7 @@ pub fn deint_p010(src: &[u16], u_dst: &mut [u16], v_dst: &mut [u16]) {
         });
 }
 
-pub fn deint_nv12_to_10b(src: &[u8], u_dst: &mut [u16], v_dst: &mut [u16]) {
+pub fn deint_nv12_10b(src: &[u8], u_dst: &mut [u16], v_dst: &mut [u16]) {
     src.chunks_exact(2)
         .zip(u_dst.iter_mut().zip(v_dst.iter_mut()))
         .for_each(|(uv, (u, v))| unsafe {

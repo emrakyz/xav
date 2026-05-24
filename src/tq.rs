@@ -2,9 +2,9 @@ use std::{path::Path, thread::available_parallelism, time::Instant};
 
 use crate::{
     error::fatal,
-    ffms::VideoDecoder,
-    interp::{fritsch_carlson, lerp, pchip},
-    pipeline::{MetricsProgress, Pipeline},
+    ffms::VidDecoder,
+    interp::{fc_spline, lerp, pchip},
+    pipeline::{MetricProgs, Pipeline},
     vship::VshipProcessor,
     worker::WorkPkg,
 };
@@ -29,11 +29,11 @@ pub struct Probe {
 
 #[derive(Clone)]
 pub struct ProbeLog {
-    pub chunk_idx: u16,
+    pub chnk_idx: u16,
     pub probes: Vec<(f32, f32, u64)>,
     pub final_crf: f32,
     pub final_score: f32,
-    pub final_size: u64,
+    pub final_sz: u64,
     pub round: u8,
     pub frames: usize,
 }
@@ -51,14 +51,14 @@ pub fn interpolate_crf(probes: &[Probe], target: f32, round: u8) -> f32 {
 
     let result = match round {
         3 => lerp(&x, &y, target),
-        4 => fritsch_carlson(&x, &y, target),
+        4 => fc_spline(&x, &y, target),
         _ => pchip(&x, &y, target),
     };
 
     round_crf(result)
 }
 
-macro_rules! calc_metrics_impl {
+macro_rules! calc_metric_impl {
     ($name:ident, $is_10b:expr) => {
         pub fn $name(
             pkg: &WorkPkg,
@@ -67,7 +67,7 @@ macro_rules! calc_metrics_impl {
             vship: &VshipProcessor,
             metric_mode: &str,
             unpacked_buf: &mut [u8],
-            mp: &MetricsProgress,
+            mp: &MetricProgs,
         ) -> (f32, Vec<f32>) {
             let cvvdp_per_frame = pipe.reset_cvvdp && metric_mode.starts_with('p');
             if pipe.reset_cvvdp {
@@ -75,33 +75,32 @@ macro_rules! calc_metrics_impl {
             }
 
             let threads = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-            let mut dec = VideoDecoder::new(probe_path, threads).unwrap_or_else(|e| fatal(e));
+            let mut dec = VidDecoder::new(probe_path, threads).unwrap_or_else(|e| fatal(e));
 
-            let mut scores = Vec::with_capacity(pkg.frame_count);
-            let frame_size = pipe.frame_size;
+            let mut scores = Vec::with_capacity(pkg.frame_cnt);
+            let frame_sz = pipe.frame_sz;
             let start = Instant::now();
 
-            let pixel_size = if $is_10b { 2 } else { 1 };
-            let y_size = pipe.final_w * pipe.final_h * pixel_size;
-            let uv_size = y_size / 4;
-            let ys = i64::try_from(pipe.final_w * pixel_size).unwrap_or(0);
-            let cs = i64::try_from(pipe.final_w / 2 * pixel_size).unwrap_or(0);
+            let pix_sz = if $is_10b { 2 } else { 1 };
+            let y_sz = pipe.final_w * pipe.final_h * pix_sz;
+            let uv_sz = y_sz / 4;
+            let ys = i64::try_from(pipe.final_w * pix_sz).unwrap_or(0);
+            let cs = i64::try_from(pipe.final_w / 2 * pix_sz).unwrap_or(0);
 
             macro_rules! process_frame {
                 ($frame_idx: expr) => {{
                     let elapsed = start.elapsed().as_secs_f32().max(0.001);
                     let fps = ($frame_idx + 1) as f32 / elapsed;
-                    mp.prog.show_metric_progress(
+                    mp.prog.show_metric_progs(
                         mp.slot,
-                        pkg.chunk.idx,
-                        ($frame_idx + 1, pkg.frame_count),
+                        pkg.chnk.idx,
+                        ($frame_idx + 1, pkg.frame_cnt),
                         fps,
                         (mp.crf, mp.last_score),
                     );
 
-                    let input_frame =
-                        &pkg.yuv[$frame_idx * frame_size..($frame_idx + 1) * frame_size];
-                    let of = dec.decode_next();
+                    let input_frame = &pkg.yuv[$frame_idx * frame_sz..($frame_idx + 1) * frame_sz];
+                    let of = dec.dec_next();
 
                     let input_yuv: &[u8] = if $is_10b {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);
@@ -112,8 +111,8 @@ macro_rules! calc_metrics_impl {
 
                     let input_planes = [
                         input_yuv.as_ptr(),
-                        input_yuv[y_size..].as_ptr(),
-                        input_yuv[y_size + uv_size..].as_ptr(),
+                        input_yuv[y_sz..].as_ptr(),
+                        input_yuv[y_sz + uv_sz..].as_ptr(),
                     ];
 
                     let of = unsafe { &*of };
@@ -139,12 +138,12 @@ macro_rules! calc_metrics_impl {
             }
 
             if cvvdp_per_frame {
-                for frame_idx in 0..pkg.frame_count {
+                for frame_idx in 0..pkg.frame_cnt {
                     process_frame!(frame_idx);
                     vship.reset_cvvdp_score();
                 }
             } else {
-                for frame_idx in 0..pkg.frame_count {
+                for frame_idx in 0..pkg.frame_cnt {
                     process_frame!(frame_idx);
                 }
             }
@@ -188,5 +187,5 @@ fn aggregate_scores(
     }
 }
 
-calc_metrics_impl!(calc_metrics_8b, false);
-calc_metrics_impl!(calc_metrics_10b, true);
+calc_metric_impl!(calc_metric_8b, false);
+calc_metric_impl!(calc_metric_10b, true);
