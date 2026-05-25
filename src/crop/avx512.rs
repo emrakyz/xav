@@ -33,7 +33,7 @@ unsafe extern "C" {
         mn: *mut u16,
         mx: *mut u16,
     );
-    fn xav_calc_samp_frames(step: f32, tot: usize, cnt: usize, out: *mut u32);
+    fn xav_calc_samp_frames(step_bits: u32, tot: usize, cnt: usize, out: *mut u32);
 }
 
 fn calc_samp_frames(tot_frames: usize, sample_cnt: usize) -> Vec<u32> {
@@ -44,7 +44,7 @@ fn calc_samp_frames(tot_frames: usize, sample_cnt: usize) -> Vec<u32> {
     let mut frames: Vec<u32> = Vec::with_capacity(cap);
     let step = tot_frames as f32 / (sample_cnt + 1) as f32;
     unsafe {
-        xav_calc_samp_frames(step, tot_frames, sample_cnt, frames.as_mut_ptr());
+        xav_calc_samp_frames(step.to_bits(), tot_frames, sample_cnt, frames.as_mut_ptr());
         frames.set_len(sample_cnt);
     }
     frames

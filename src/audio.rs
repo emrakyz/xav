@@ -222,7 +222,13 @@ fn downmix_chnk(src: &[f32], dst: &mut [f32], ch: usize, n: usize) {
         let (sl, sr, bl, br, bc) = match ch {
             6 => (src[b + 4], src[b + 5], 0.0, 0.0, 0.0),
             7 => (src[b + 5], src[b + 6], 0.0, 0.0, src[b + 4]),
-            8 => (src[b + 6], src[b + 7], src[b + 4], src[b + 5], 0.0),
+            8 => (
+                src[b + 6] * 0.707,
+                src[b + 7] * 0.707,
+                src[b + 4],
+                src[b + 5],
+                0.0,
+            ),
             _ => (0.0, 0.0, 0.0, 0.0, 0.0),
         };
         let o = i * 2;
