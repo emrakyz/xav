@@ -309,7 +309,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "-d" | "--display" => arg!(opt args, i, cvvdp_conf),
             #[cfg(feature = "vship")]
             "-P" | "--probe-param" => arg!(opt args, i, alt_param),
-            "--hwaccel" => hwacc = true,
+            "--hwacc" => hwacc = true,
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
