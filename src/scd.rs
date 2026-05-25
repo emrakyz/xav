@@ -50,7 +50,7 @@ pub fn fd_scenes(
     inf: &VidInf,
     crop: (u32, u32),
     line: usize,
-    hwacc: bool,
+    hwdec: bool,
 ) -> Result<(), Xerr> {
     let max_dist = 300;
     let tot_frames = inf.frames;
@@ -59,7 +59,7 @@ pub fn fd_scenes(
     let cropped_h = inf.height - cv * 2;
 
     let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-    let mut dec = if hwacc {
+    let mut dec = if hwdec {
         VidDecoder::new_hw(vid_path, thr)
     } else {
         VidDecoder::new(vid_path, thr)

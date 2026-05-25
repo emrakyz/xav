@@ -32,18 +32,19 @@ pub enum Xerr {
 
     #[error("")]
     Help,
-
-    #[error("")]
-    Done,
 }
 
 impl From<&str> for Xerr {
+    #[cold]
+    #[inline(never)]
     fn from(s: &str) -> Self {
         Msg(s.into())
     }
 }
 
 impl From<String> for Xerr {
+    #[cold]
+    #[inline(never)]
     fn from(s: String) -> Self {
         Msg(s)
     }

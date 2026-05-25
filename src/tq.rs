@@ -84,8 +84,8 @@ macro_rules! calc_metric_impl {
             let pix_sz = if $is_10b { 2 } else { 1 };
             let y_sz = pipe.final_w * pipe.final_h * pix_sz;
             let uv_sz = y_sz / 4;
-            let ys = i64::try_from(pipe.final_w * pix_sz).unwrap_or(0);
-            let cs = i64::try_from(pipe.final_w / 2 * pix_sz).unwrap_or(0);
+            let ys = (pipe.final_w * pix_sz) as i64;
+            let cs = (pipe.final_w / 2 * pix_sz) as i64;
 
             macro_rules! process_frame {
                 ($frame_idx: expr) => {{
@@ -163,10 +163,12 @@ fn aggregate_scores(
     if pipe.reset_cvvdp && !cvvdp_per_frame {
         scores.last().copied().unwrap_or(0.0)
     } else if cvvdp_per_frame {
-        let percentile: f32 = metric_mode
-            .strip_prefix('p')
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(15.0);
+        let percentile: f32 = unsafe {
+            metric_mode
+                .strip_prefix('p')
+                .and_then(|p| p.parse().ok())
+                .unwrap_unchecked()
+        };
         let mut q: Vec<f32> = scores.iter().map(|&s| inverse_jod(s)).collect();
         q.sort_unstable_by(|a, b| b.total_cmp(a));
         let cutoff = ((q.len() as f32 * percentile / 100.0).ceil() as usize).min(q.len());
@@ -174,7 +176,7 @@ fn aggregate_scores(
     } else if metric_mode == "mean" {
         scores.iter().sum::<f32>() / scores.len() as f32
     } else if let Some(p) = metric_mode.strip_prefix('p') {
-        let percentile: f32 = p.parse().unwrap_or(15.0);
+        let percentile: f32 = unsafe { p.parse().unwrap_unchecked() };
         if pipe.sort_descending {
             scores.sort_unstable_by(|a, b| b.total_cmp(a));
         } else {

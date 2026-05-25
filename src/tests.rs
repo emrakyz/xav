@@ -494,19 +494,19 @@ fn val_tq(
 fn run_test(
     filename: &str,
     crop: (u32, u32),
-    hwacc: bool,
+    hwdec: bool,
     tq: bool,
     buffer: usize,
     tq_mode: bool,
 ) -> DecStrat {
     let inp = test_path(filename);
     let mut inf = get_vidinf(&inp).unwrap();
-    if hwacc {
+    if hwdec {
         let mut dec = VidDecoder::new_hw(&inp, 1).unwrap();
         inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };
     }
 
-    let mut strat = ffms::get_dec_strat(&inf, crop, hwacc, tq);
+    let mut strat = ffms::get_dec_strat(&inf, crop, hwdec, tq);
     if buffer == 0 {
         strat = strat.to_raw();
     }

@@ -316,9 +316,8 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
         cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
     }
 
-    if let Some(cr) = cfg.inf.color_range {
-        cmd.args(["--input-range", if cr == 1 { "pc" } else { "tv" }]);
-    }
+    let cr = cfg.inf.color_range;
+    cmd.args(["--input-range", if cr == 1 { "pc" } else { "tv" }]);
 
     colorize_h26x(&mut cmd, cfg.inf, true);
 
@@ -342,25 +341,26 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
         }
     };
 
-    if let Some(cp) = inf.color_primaries {
-        cmd.args(["--colorprim", unk(h26x_color_prims_str(cp))]);
+    cmd.args([
+        "--colorprim",
+        unk(h26x_color_prims_str(inf.color_primaries)),
+    ]);
+    cmd.args([
+        "--transfer",
+        unk(h26x_trans_char_str(inf.transfer_characteristics)),
+    ]);
+    cmd.args([
+        "--colormatrix",
+        unk(h26x_matrix_coef_str(inf.matrix_coefficients)),
+    ]);
+    let cr = inf.color_range;
+    if is_x264 {
+        cmd.args(["--range", if cr == 1 { "pc" } else { "tv" }]);
+    } else {
+        cmd.args(["--range", if cr == 1 { "full" } else { "limited" }]);
     }
-    if let Some(tc) = inf.transfer_characteristics {
-        cmd.args(["--transfer", unk(h26x_trans_char_str(tc))]);
-    }
-    if let Some(mc) = inf.matrix_coefficients {
-        cmd.args(["--colormatrix", unk(h26x_matrix_coef_str(mc))]);
-    }
-    if let Some(cr) = inf.color_range {
-        if is_x264 {
-            cmd.args(["--range", if cr == 1 { "pc" } else { "tv" }]);
-        } else {
-            cmd.args(["--range", if cr == 1 { "full" } else { "limited" }]);
-        }
-    }
-    if let Some(csp) = inf.chroma_sample_position
-        && (1..=6).contains(&csp)
-    {
+    let csp = inf.chroma_sample_position;
+    if (1..=6).contains(&csp) {
         cmd.args(["--chromaloc", &(csp - 1).to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
@@ -380,12 +380,12 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
     }
 }
 
-fn x265_signal_preset(inf: &VidInf) -> Option<&'static str> {
+const fn x265_signal_preset(inf: &VidInf) -> Option<&'static str> {
     match (
-        inf.color_primaries?,
-        inf.transfer_characteristics?,
-        inf.matrix_coefficients?,
-        inf.color_range.unwrap_or(0),
+        inf.color_primaries,
+        inf.transfer_characteristics,
+        inf.matrix_coefficients,
+        inf.color_range,
     ) {
         (9, 16, 9, 0) => Some("BT2100_PQ_YCC"),
         (9, 16, 14, 0) => Some("BT2100_PQ_ICTCP"),
@@ -438,18 +438,22 @@ fn x265_color_volume(md: &str) -> Option<&'static str> {
 }
 
 fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
-    if let Some(cp) = inf.color_primaries {
-        cmd.arg(format!("--color-primaries={}", color_prims_str(cp)));
-    }
-    if let Some(tc) = inf.transfer_characteristics {
-        cmd.arg(format!("--transfer-characteristics={}", trans_char_str(tc)));
-    }
-    if let Some(mc) = inf.matrix_coefficients {
-        cmd.arg(format!("--matrix-coefficients={}", matrix_coef_str(mc)));
-    }
-    if let Some(csp) = inf.chroma_sample_position {
-        cmd.arg(format!("--chroma-sample-position={}", chroma_pos_str(csp)));
-    }
+    cmd.arg(format!(
+        "--color-primaries={}",
+        color_prims_str(inf.color_primaries)
+    ));
+    cmd.arg(format!(
+        "--transfer-characteristics={}",
+        trans_char_str(inf.transfer_characteristics)
+    ));
+    cmd.arg(format!(
+        "--matrix-coefficients={}",
+        matrix_coef_str(inf.matrix_coefficients)
+    ));
+    cmd.arg(format!(
+        "--chroma-sample-position={}",
+        chroma_pos_str(inf.chroma_sample_position)
+    ));
 }
 
 fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
@@ -489,8 +493,8 @@ fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
 }
 
 fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
-    let tc = inf.transfer_characteristics.unwrap_or(2);
-    let cp = inf.color_primaries.unwrap_or(2);
+    let tc = inf.transfer_characteristics;
+    let cp = inf.color_primaries;
 
     let is_hlg = tc == 18;
     let is_pq = tc == 16;
@@ -515,21 +519,22 @@ fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
         cmd.args(["--Sdr", sdr_mode]);
     }
 
-    if let Some(cp) = inf.color_primaries {
-        cmd.args(["--ColourPrimaries", h26x_color_prims_str(cp)]);
-    }
-    if let Some(tc) = inf.transfer_characteristics {
-        cmd.args(["--TransferCharacteristics", h26x_trans_char_str(tc)]);
-    }
-    if let Some(mc) = inf.matrix_coefficients {
-        cmd.args(["--MatrixCoefficients", h26x_matrix_coef_str(mc)]);
-    }
-    if let Some(cr) = inf.color_range {
-        cmd.args(["--Range", if cr == 1 { "full" } else { "limited" }]);
-    }
-    if let Some(csp) = inf.chroma_sample_position
-        && (1..=6).contains(&csp)
-    {
+    cmd.args([
+        "--ColourPrimaries",
+        h26x_color_prims_str(inf.color_primaries),
+    ]);
+    cmd.args([
+        "--TransferCharacteristics",
+        h26x_trans_char_str(inf.transfer_characteristics),
+    ]);
+    cmd.args([
+        "--MatrixCoefficients",
+        h26x_matrix_coef_str(inf.matrix_coefficients),
+    ]);
+    let cr = inf.color_range;
+    cmd.args(["--Range", if cr == 1 { "full" } else { "limited" }]);
+    let csp = inf.chroma_sample_position;
+    if (1..=6).contains(&csp) {
         cmd.args(["--ChromaSampleLocType", &(csp - 1).to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
@@ -706,21 +711,27 @@ pub fn set_svt_conf(conf: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
         parse_svt_param(conf, "crf", &format!("{:.2}", cfg.crf));
     }
 
-    if let Some(cp) = cfg.inf.color_primaries {
-        parse_svt_param(conf, "color-primaries", &cp.to_string());
-    }
-    if let Some(tc) = cfg.inf.transfer_characteristics {
-        parse_svt_param(conf, "transfer-characteristics", &tc.to_string());
-    }
-    if let Some(mc) = cfg.inf.matrix_coefficients {
-        parse_svt_param(conf, "matrix-coefficients", &mc.to_string());
-    }
-    if let Some(cr) = cfg.inf.color_range {
-        parse_svt_param(conf, "color-range", &cr.to_string());
-    }
-    if let Some(csp) = cfg.inf.chroma_sample_position {
-        parse_svt_param(conf, "chroma-sample-position", &csp.to_string());
-    }
+    parse_svt_param(
+        conf,
+        "color-primaries",
+        &cfg.inf.color_primaries.to_string(),
+    );
+    parse_svt_param(
+        conf,
+        "transfer-characteristics",
+        &cfg.inf.transfer_characteristics.to_string(),
+    );
+    parse_svt_param(
+        conf,
+        "matrix-coefficients",
+        &cfg.inf.matrix_coefficients.to_string(),
+    );
+    parse_svt_param(conf, "color-range", &cfg.inf.color_range.to_string());
+    parse_svt_param(
+        conf,
+        "chroma-sample-position",
+        &cfg.inf.chroma_sample_position.to_string(),
+    );
     if let Some(ref md) = cfg.inf.mastering_display {
         parse_svt_param(conf, "mastering-display", md);
     }

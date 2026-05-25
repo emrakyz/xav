@@ -70,8 +70,7 @@ pub struct Encoder {
 
 impl Encoder {
     pub fn new(path: &Path, channels: u8, brate: u16, family: c_int) -> Result<Self, Xerr> {
-        let path_str = path.to_str().ok_or("invalid audio output path")?;
-        let c_path = CString::new(path_str).map_err(|e| e.to_string())?;
+        let c_path = unsafe { CString::new(path.to_str().unwrap_unchecked()).unwrap_unchecked() };
 
         let comments = unsafe { ope_comments_create() };
         if comments.is_null() {

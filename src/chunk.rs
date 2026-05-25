@@ -199,7 +199,7 @@ fn concat_ivf(files: &[PathBuf], out: &Path, tot_frames: u32) -> Result<(), Xerr
 }
 
 fn open_in(path: &Path) -> Result<*mut AVFormatContext, Xerr> {
-    let c = CString::new(path.to_str().ok_or("invalid input path")?)?;
+    let c = unsafe { CString::new(path.to_str().unwrap_unchecked()).unwrap_unchecked() };
     let mut ctx: *mut AVFormatContext = null_mut();
     unsafe {
         if avformat_open_input(&raw mut ctx, c.as_ptr(), null(), null_mut()) < 0 {
@@ -632,7 +632,7 @@ fn remux(
     inf: &VidInf,
 ) -> Result<(), Xerr> {
     let first = chnks.first().ok_or("no encoded chunks to mux")?;
-    let out_c = CString::new(out.to_str().ok_or("invalid output path")?)?;
+    let out_c = unsafe { CString::new(out.to_str().unwrap_unchecked()).unwrap_unchecked() };
 
     let mut octx: *mut AVFormatContext = null_mut();
     if unsafe { avformat_alloc_output_context2(&raw mut octx, null(), null(), out_c.as_ptr()) } < 0

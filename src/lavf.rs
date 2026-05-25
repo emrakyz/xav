@@ -60,7 +60,7 @@ unsafe impl Send for AuDecoder {}
 impl AuDecoder {
     pub fn new(inp: &Path, stream_index: i32) -> Result<Self, Xerr> {
         unsafe {
-            let path = CString::new(inp.to_str().ok_or("invalid path")?)?;
+            let path = CString::new(inp.to_str().unwrap_unchecked()).unwrap_unchecked();
             let mut fmt_ctx: *mut AVFormatContext = null_mut();
 
             if avformat_open_input(&raw mut fmt_ctx, path.as_ptr(), null(), null_mut()) < 0 {

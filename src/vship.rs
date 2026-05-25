@@ -25,8 +25,8 @@ use crate::{
     },
 };
 
-#[inline]
 #[cold]
+#[inline(never)]
 fn vship_err_str(buf: &MaybeUninit<[u8; 1024]>) -> Xerr {
     unsafe {
         Msg(CStr::from_ptr(buf.as_ptr().cast())
@@ -480,42 +480,42 @@ impl Drop for VshipProcessor {
 
 fn create_yuv_colorspace(width: u32, height: u32, is_10b: bool, inf: &VidInf) -> VshipColorspace {
     let chroma_loc = match inf.chroma_sample_position {
-        Some(2) => TopLeft,
+        2 => TopLeft,
         _ => Left,
     };
 
     let matrix_val = match inf.matrix_coefficients {
-        Some(0) => Rgb,
-        Some(5) => YmBt470Bg,
-        Some(6) => St170M,
-        Some(9) => Bt2020Ncl,
-        Some(10) => Bt2020Cl,
-        Some(14) => Bt2100Ictcp,
+        0 => Rgb,
+        5 => YmBt470Bg,
+        6 => St170M,
+        9 => Bt2020Ncl,
+        10 => Bt2020Cl,
+        14 => Bt2100Ictcp,
         _ => YmBt709,
     };
 
     let transfer_val = match inf.transfer_characteristics {
-        Some(4) => TrBt470M,
-        Some(5) => TrBt470Bg,
-        Some(6) => Bt601,
-        Some(8) => Linear,
-        Some(13) => Srgb,
-        Some(16) => Pq,
-        Some(17) => St428,
-        Some(18) => Hlg,
+        4 => TrBt470M,
+        5 => TrBt470Bg,
+        6 => Bt601,
+        8 => Linear,
+        13 => Srgb,
+        16 => Pq,
+        17 => St428,
+        18 => Hlg,
         _ => TrBt709,
     };
 
     let primaries_val = match inf.color_primaries {
-        Some(-1) => Internal,
-        Some(4) => PrimBt470M,
-        Some(5) => PrimBt470Bg,
-        Some(9) => Bt2020,
+        -1 => Internal,
+        4 => PrimBt470M,
+        5 => PrimBt470Bg,
+        9 => Bt2020,
         _ => PrimBt709,
     };
 
     let range_val = match inf.color_range {
-        Some(2) => Full,
+        2 => Full,
         _ => Limited,
     };
 

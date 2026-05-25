@@ -91,7 +91,7 @@ pub struct Args {
     #[cfg(feature = "vship")]
     pub alt_param: Option<String>,
     pub sc_only: bool,
-    pub hwacc: bool,
+    pub hwdec: bool,
 }
 
 extern "C" fn restore() {
@@ -126,7 +126,7 @@ fn print_help() {
         println!("{C}-d {P}┃ {C}--display    {W}Display JSON file for CVVDP. Screen name must be {R}xav{W}");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probing ({R}NOT RECOMMENDED{W}; expert-only)");
     }
-    println!("   {P}┃ {C}--hwacc      {W}Use Vulkan hw decoding (perf depends on the input video and hardware)");
+    println!("   {P}┃ {C}--hwdec      {W}Use Vulkan hw decoding (perf depends on the input video and hardware)");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
 
     println!();
@@ -260,7 +260,7 @@ macro_rules! arg {
 }
 
 fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
-    let (mut worker, mut chnk_buff, mut sc_only, mut hwacc) = (1usize, None, false, false);
+    let (mut worker, mut chnk_buff, mut sc_only, mut hwdec) = (1usize, None, false, false);
     let (mut sc_file, mut inp, mut out) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
     let (mut encoder, mut params) = (Encoder::default(), String::new());
     let (mut au, mut ranges) = (None, None);
@@ -309,7 +309,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "-d" | "--display" => arg!(opt args, i, cvvdp_conf),
             #[cfg(feature = "vship")]
             "-P" | "--probe-param" => arg!(opt args, i, alt_param),
-            "--hwacc" => hwacc = true,
+            "--hwdec" => hwdec = true,
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
@@ -339,7 +339,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         chnk_buff: worker + chnk_buff.unwrap_or(0),
         ranges,
         sc_only,
-        hwacc,
+        hwdec,
         #[cfg(feature = "vship")]
         tq,
         #[cfg(feature = "vship")]
@@ -362,6 +362,10 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
 
     let mut result = parse_args_loop(args)?;
 
+    if result.inp == PathBuf::new() {
+        return Err("Missing input".into());
+    }
+
     if allow_resume && let Ok(saved_args) = get_saved_args(&result.inp) {
         return Ok(saved_args);
     }
@@ -370,13 +374,6 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     }
 
     apply_defaults(&mut result);
-
-    if result.sc_file == PathBuf::new()
-        || result.inp == PathBuf::new()
-        || result.out == PathBuf::new()
-    {
-        return Err("Missing args".into());
-    }
 
     #[cfg(feature = "vship")]
     if let Some(ref tq) = result.tq {
@@ -395,7 +392,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
         }
     }
 
-    if result.hwacc && y4m::is_pipe() {
+    if result.hwdec && y4m::is_pipe() {
         return Err("Hardware accelerated decoding can not be used with a pipe".into());
     }
 
@@ -467,7 +464,7 @@ fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
 
 fn ensure_sc_file(args: &Args, inf: &VidInf, crop: (u32, u32), line: usize) -> Result<(), Xerr> {
     if !args.sc_file.exists() {
-        fd_scenes(&args.inp, &args.sc_file, inf, crop, line, args.hwacc)?;
+        fd_scenes(&args.inp, &args.sc_file, inf, crop, line, args.hwdec)?;
     }
     Ok(())
 }
@@ -572,7 +569,7 @@ fn scd_and_au(
     au_handle: Option<AuHandle>,
 ) -> Result<Option<AuResult>, Xerr> {
     if let Some(handle) = au_handle {
-        fd_scenes(&args.inp, &args.sc_file, inf, crop, 1, args.hwacc)?;
+        fd_scenes(&args.inp, &args.sc_file, inf, crop, 1, args.hwdec)?;
         let result = handle
             .join()
             .map_err(|_e| Msg("Audio encoding thread panicked".into()))?;
@@ -657,11 +654,11 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     let tq = args.tq.is_some();
     #[cfg(not(feature = "vship"))]
     let tq = false;
-    if args.hwacc {
+    if args.hwdec {
         let mut dec = VidDecoder::new_hw(&args.inp, 1)?;
         inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };
     }
-    args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwacc, tq));
+    args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwdec, tq));
 
     let chnks = chnkify(&scenes);
 
