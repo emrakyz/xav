@@ -361,7 +361,7 @@ fn complete_chnk(
 ) {
     let dst = ctx
         .work_dir
-        .join("enc")
+        .join("encode")
         .join(format!("{chnk_idx:04}.{}", ctx.encoder.extension()));
     if probe_path != dst {
         _ = copy(probe_path, &dst);
@@ -439,7 +439,7 @@ fn run_metric_worker(
         let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
         if tq_st.final_enc {
             let best = ctx.tq_ctx.best_probe(&tq_st.probes);
-            let p = ctx.work_dir.join("enc").join(format!(
+            let p = ctx.work_dir.join("encode").join(format!(
                 "{:04}.{}",
                 pkg.chnk.idx,
                 ctx.encoder.extension()
@@ -610,7 +610,7 @@ fn tq_enc_loop(
         let (p, out) = if is_final {
             (
                 params,
-                Some(ctx.work_dir.join("enc").join(format!(
+                Some(ctx.work_dir.join("encode").join(format!(
                     "{:04}.{}",
                     pkg.chnk.idx,
                     ctx.encoder.extension()
