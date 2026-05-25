@@ -3,19 +3,15 @@ use std::{
     fmt::Write as _,
     fs::write as fs_write,
     mem::size_of,
-    num::{NonZeroU8, NonZeroUsize},
     path::Path,
     slice::from_raw_parts,
     sync::{Arc, Mutex},
     thread::available_parallelism,
 };
 
-use av_scenechange::{VideoDetails, detect_scene_changes};
-use num_rational::Rational32;
-use v_frame::{
-    chroma::ChromaSubsampling,
-    frame::{Frame, FrameBuilder},
-    pixel::Pixel,
+use av_scenechange::{
+    VideoDetails, detect_scene_changes,
+    frame::{Frame, Pixel},
 };
 
 use crate::{
@@ -24,13 +20,10 @@ use crate::{
     progs::ProgsBar,
 };
 
-const LUMA_PADDING: usize = 80;
-
 fn build_luma_frame<T: Pixel>(
     dec: &mut VidDecoder,
-    w: NonZeroUsize,
-    h: NonZeroUsize,
-    bit_depth: NonZeroU8,
+    w: usize,
+    h: usize,
     crop_v: usize,
     crop_h: usize,
 ) -> Option<Frame<T>> {
@@ -38,26 +31,15 @@ fn build_luma_frame<T: Pixel>(
     if dec.is_eof() {
         return None;
     }
-    let mut frame = unsafe {
-        FrameBuilder::new(w, h, ChromaSubsampling::Monochrome, bit_depth)
-            .luma_padding_left(LUMA_PADDING)
-            .luma_padding_right(LUMA_PADDING)
-            .luma_padding_top(LUMA_PADDING)
-            .luma_padding_bottom(LUMA_PADDING)
-            .build::<T>()
-            .unwrap_unchecked()
-    };
+    let mut frame = Frame::<T>::new(w, h);
     unsafe {
-        let stride = NonZeroUsize::new_unchecked((*vf).linesize[0] as usize);
+        let stride = (*vf).linesize[0] as usize;
         let bpp = size_of::<T>();
         let src = from_raw_parts(
-            (*vf).data[0].add(crop_v * stride.get() + crop_h * bpp),
-            stride.get() * h.get(),
+            (*vf).data[0].add(crop_v * stride + crop_h * bpp),
+            stride * h,
         );
-        frame
-            .y_plane
-            .copy_from_u8_slice_with_stride(src, stride)
-            .unwrap_unchecked();
+        frame.y_plane.copy_from_u8_with_stride(src, stride);
     }
     Some(frame)
 }
@@ -85,11 +67,7 @@ pub fn fd_scenes(
     .map_err(|e| e.to_string())?;
 
     let details = VideoDetails {
-        width: cropped_w as usize,
-        height: cropped_h as usize,
         bit_depth: if inf.is_10b { 10 } else { 8 },
-        chroma_sampling: ChromaSubsampling::Yuv420,
-        frame_rate: Rational32::new(inf.fps_num as i32, inf.fps_den as i32),
     };
 
     let progs = Arc::new(Mutex::new(ProgsBar::new()));
@@ -103,20 +81,18 @@ pub fn fd_scenes(
         }
     };
 
-    let w = unsafe { NonZeroUsize::new_unchecked(cropped_w as usize) };
-    let h = unsafe { NonZeroUsize::new_unchecked(cropped_h as usize) };
+    let w = cropped_w as usize;
+    let h = cropped_h as usize;
     let crop_v = cv as usize;
     let crop_h = ch as usize;
 
     let results = if inf.is_10b {
-        let bd = unsafe { NonZeroU8::new_unchecked(10) };
         detect_scene_changes::<u16, _>(&details, None, Some(&progs_callback), || {
-            build_luma_frame::<u16>(&mut dec, w, h, bd, crop_v, crop_h)
+            build_luma_frame::<u16>(&mut dec, w, h, crop_v, crop_h)
         })
     } else {
-        let bd = unsafe { NonZeroU8::new_unchecked(8) };
         detect_scene_changes::<u8, _>(&details, None, Some(&progs_callback), || {
-            build_luma_frame::<u8>(&mut dec, w, h, bd, crop_v, crop_h)
+            build_luma_frame::<u8>(&mut dec, w, h, crop_v, crop_h)
         })
     };
 

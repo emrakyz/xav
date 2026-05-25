@@ -23,11 +23,7 @@ ebur128 = "0.1.10"
 sonic-rs = "0.5.8"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-
-# av-scenechange
 av-scenechange = { git = "https://github.com/emrakyz/av-scenechange" }
-v_frame = { version = "0.5.2", features = ["padding_api"] }
-num-rational = { version = "0.4.2", default-features = false }
 
 [build-dependencies]
 nasm-rs = { version = "0.3.2", features = ["parallel"] }
