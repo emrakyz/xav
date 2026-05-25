@@ -213,9 +213,9 @@ impl AuDecoder {
         let merged = merge_ranges(ranges.iter().map(|&(a, b)| (a, b - 1)));
 
         for (a, b) in merged {
-            let ts = a * tb_den / (48000 * tb_num) + start_time;
+            let ts = a * AV_TIME_BASE / 48000;
             unsafe {
-                av_seek_frame(self.fmt_ctx, self.stream_idx, ts, AVSEEK_FLAG_BACKWARD);
+                av_seek_frame(self.fmt_ctx, -1, ts, AVSEEK_FLAG_BACKWARD);
                 avcodec_flush_buffers(self.codec_ctx);
             }
             let mut pos: i64 = -1;

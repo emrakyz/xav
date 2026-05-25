@@ -2,12 +2,33 @@
 
 SECTION .text
 INIT_ZMM avx512
-cglobal crop_col_stats_u8, 7, 8, 14, plane, stride, n, clamp, sum_p, min_p, max_p
+
+%macro FLUSH 0
+    vextracti64x4 ymm9, zmm5, 1
+    vpmovzxwd     zmm15, ymm5
+    vpaddd        zmm11, zmm11, zmm15
+    vpmovzxwd     zmm15, ymm9
+    vpaddd        zmm12, zmm12, zmm15
+    vextracti64x4 ymm9, zmm6, 1
+    vpmovzxwd     zmm15, ymm6
+    vpaddd        zmm13, zmm13, zmm15
+    vpmovzxwd     zmm15, ymm9
+    vpaddd        zmm14, zmm14, zmm15
+    vpxor         xmm5,  xmm5,  xmm5
+    vpxor         xmm6,  xmm6,  xmm6
+%endmacro
+
+cglobal crop_col_stats_u8, 7, 8, 16, plane, stride, n, clamp, sum_p, min_p, max_p, ctr
     vpbroadcastb  zmm0, clampd
     vpternlogd    zmm3, zmm3, zmm3, 0xFF
-    vpxor         xmm4, xmm4, xmm4
-    vpxor         xmm5, xmm5, xmm5
-    vpxor         xmm6, xmm6, xmm6
+    vpxor         xmm4,  xmm4,  xmm4
+    vpxor         xmm5,  xmm5,  xmm5
+    vpxor         xmm6,  xmm6,  xmm6
+    vpxor         xmm11, xmm11, xmm11
+    vpxor         xmm12, xmm12, xmm12
+    vpxor         xmm13, xmm13, xmm13
+    vpxor         xmm14, xmm14, xmm14
+    mov           ctrd, 16
 ALIGN 16
 .loop:
 %rep 8
@@ -30,17 +51,18 @@ ALIGN 16
     vpmaxub       zmm4, zmm4, zmm8
 %endrep
     sub           nq, 16
+    dec           ctrd
+    jnz           .check_end
+    FLUSH
+    mov           ctrd, 16
+.check_end:
+    test          nq, nq
     jnz           .loop
-    vextracti64x4 ymm7, zmm5, 1
-    vpmovzxwd     zmm8, ymm5
-    vpmovzxwd     zmm9, ymm7
-    vmovdqu64     [sum_pq], zmm8
-    vmovdqu64     [sum_pq + 64], zmm9
-    vextracti64x4 ymm7, zmm6, 1
-    vpmovzxwd     zmm8, ymm6
-    vpmovzxwd     zmm9, ymm7
-    vmovdqu64     [sum_pq + 128], zmm8
-    vmovdqu64     [sum_pq + 192], zmm9
+    FLUSH
+    vmovdqu64     [sum_pq + 0],   zmm11
+    vmovdqu64     [sum_pq + 64],  zmm12
+    vmovdqu64     [sum_pq + 128], zmm13
+    vmovdqu64     [sum_pq + 192], zmm14
     vmovdqu64     [min_pq], zmm3
     vmovdqu64     [max_pq], zmm4
     RET

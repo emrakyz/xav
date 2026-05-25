@@ -2,7 +2,51 @@
 
 SECTION .text
 INIT_YMM avx2
-cglobal crop_col_stats_u8, 7, 8, 16, plane, stride, n, clamp, sum_p, min_p, max_p
+
+%macro FLUSH 0
+    vpmovzxwd     ymm10, xmm5
+    vmovdqu       ymm11, [sum_pq + 0]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 0], ymm10
+    vextracti128  xmm9, ymm5, 1
+    vpmovzxwd     ymm10, xmm9
+    vmovdqu       ymm11, [sum_pq + 64]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 64], ymm10
+    vpmovzxwd     ymm10, xmm6
+    vmovdqu       ymm11, [sum_pq + 32]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 32], ymm10
+    vextracti128  xmm9, ymm6, 1
+    vpmovzxwd     ymm10, xmm9
+    vmovdqu       ymm11, [sum_pq + 96]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 96], ymm10
+    vpmovzxwd     ymm10, xmm7
+    vmovdqu       ymm11, [sum_pq + 128]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 128], ymm10
+    vextracti128  xmm9, ymm7, 1
+    vpmovzxwd     ymm10, xmm9
+    vmovdqu       ymm11, [sum_pq + 192]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 192], ymm10
+    vpmovzxwd     ymm10, xmm8
+    vmovdqu       ymm11, [sum_pq + 160]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 160], ymm10
+    vextracti128  xmm9, ymm8, 1
+    vpmovzxwd     ymm10, xmm9
+    vmovdqu       ymm11, [sum_pq + 224]
+    vpaddd        ymm10, ymm10, ymm11
+    vmovdqu       [sum_pq + 224], ymm10
+    vpxor         xmm5, xmm5, xmm5
+    vpxor         xmm6, xmm6, xmm6
+    vpxor         xmm7, xmm7, xmm7
+    vpxor         xmm8, xmm8, xmm8
+%endmacro
+
+cglobal crop_col_stats_u8, 7, 8, 16, plane, stride, n, clamp, sum_p, min_p, max_p, ctr
     vmovd         xmm0, clampd
     vpbroadcastb  ymm0, xmm0
     vpxor         xmm14, xmm14, xmm14
@@ -14,6 +58,16 @@ cglobal crop_col_stats_u8, 7, 8, 16, plane, stride, n, clamp, sum_p, min_p, max_
     vpxor         xmm6, xmm6, xmm6
     vpxor         xmm7, xmm7, xmm7
     vpxor         xmm8, xmm8, xmm8
+    vpxor         xmm9, xmm9, xmm9
+    vmovdqu       [sum_pq + 0],   ymm9
+    vmovdqu       [sum_pq + 32],  ymm9
+    vmovdqu       [sum_pq + 64],  ymm9
+    vmovdqu       [sum_pq + 96],  ymm9
+    vmovdqu       [sum_pq + 128], ymm9
+    vmovdqu       [sum_pq + 160], ymm9
+    vmovdqu       [sum_pq + 192], ymm9
+    vmovdqu       [sum_pq + 224], ymm9
+    mov           ctrd, 16
 ALIGN 16
 .loop:
 %rep 8
@@ -48,27 +102,14 @@ ALIGN 16
     vpaddw        ymm8,  ymm8,  ymm13
 %endrep
     sub           nq, 16
+    dec           ctrd
+    jnz           .check_end
+    FLUSH
+    mov           ctrd, 16
+.check_end:
+    test          nq, nq
     jnz           .loop
-    vpmovzxwd     ymm9,  xmm5
-    vmovdqu       [sum_pq],       ymm9
-    vextracti128  xmm5,  ymm5, 1
-    vpmovzxwd     ymm9,  xmm5
-    vmovdqu       [sum_pq + 64],  ymm9
-    vpmovzxwd     ymm9,  xmm6
-    vmovdqu       [sum_pq + 32],  ymm9
-    vextracti128  xmm6,  ymm6, 1
-    vpmovzxwd     ymm9,  xmm6
-    vmovdqu       [sum_pq + 96],  ymm9
-    vpmovzxwd     ymm9,  xmm7
-    vmovdqu       [sum_pq + 128], ymm9
-    vextracti128  xmm7,  ymm7, 1
-    vpmovzxwd     ymm9,  xmm7
-    vmovdqu       [sum_pq + 192], ymm9
-    vpmovzxwd     ymm9,  xmm8
-    vmovdqu       [sum_pq + 160], ymm9
-    vextracti128  xmm8,  ymm8, 1
-    vpmovzxwd     ymm9,  xmm8
-    vmovdqu       [sum_pq + 224], ymm9
+    FLUSH
     vmovdqu       [min_pq],       ymm1
     vmovdqu       [min_pq + 32],  ymm2
     vmovdqu       [max_pq],       ymm3

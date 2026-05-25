@@ -454,7 +454,8 @@ pub unsafe fn probe_streams(fmt_ctx: *mut AVFormatContext, keep_type: c_int, pro
         let n = (*fmt_ctx).nb_streams as usize;
         for i in 0..n {
             let stream = &mut *(*(*fmt_ctx).streams.add(i));
-            if (*stream.codecpar).codec_type != keep_type {
+            let ct = (*stream.codecpar).codec_type;
+            if ct != keep_type && ct != AVMEDIA_TYPE_VIDEO {
                 stream.discard = 48;
             }
         }
