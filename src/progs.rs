@@ -68,15 +68,11 @@ impl fmt::Write for Line {
 }
 
 fn write_el(w: &mut impl fmt::Write, h: usize, m: usize) {
-    if h != 0 || m != 0 {
-        _ = write!(w, "{W}{h:02}{P}:{W}{m:02} ");
-    }
+    _ = write!(w, "{W}{h:02}{P}:{W}{m:02} ");
 }
 
 fn write_eta(w: &mut impl fmt::Write, h: usize, m: usize) {
-    if h != 0 || m != 0 {
-        _ = write!(w, "{C}, {W}-{h:02}{P}:{W}{m:02}");
-    }
+    _ = write!(w, "{C}, {W}-{h:02}{P}:{W}{m:02}");
 }
 
 fn write_tag(w: &mut impl fmt::Write, idx: u16, cs: Option<(f32, Option<f32>)>) {
@@ -112,8 +108,8 @@ impl ProgsBar {
         }
     }
 
-    pub fn up_scenes(&mut self, current: usize, tot: usize, line: usize) {
-        if self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
+    pub fn up_frames(&mut self, current: usize, tot: usize, line: usize, label: &str) {
+        if current < tot && self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
             return;
         }
         self.last_update = Instant::now();
@@ -133,7 +129,7 @@ impl ProgsBar {
             _ = write!(l, "\r\x1b[2K");
         }
         write_el(&mut l, elapsed / 3600, (elapsed % 3600) / 60);
-        _ = write!(l, "{W}SCD: {C}[");
+        _ = write!(l, "{W}{label}: {C}[");
         write_bar(&mut l, filled, G_HASH, R_DASH);
         _ = write!(l, "{C}] {W}{perc}%{C}, {Y}{fps} FPS");
         write_eta(&mut l, eta_secs / 3600, (eta_secs % 3600) / 60);
@@ -142,17 +138,8 @@ impl ProgsBar {
         _ = io_stdout().flush();
     }
 
-    pub fn up_scenes_final(&mut self, tot: usize, line: usize) {
-        self.last_update = unsafe {
-            Instant::now()
-                .checked_sub(Durat::from_secs(1))
-                .unwrap_unchecked()
-        };
-        self.up_scenes(tot, tot, line);
-    }
-
     pub fn up_au(&mut self, current: usize, tot: usize, line: usize, pass: u8, track_id: u8) {
-        if self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
+        if current < tot && self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
             return;
         }
         self.last_update = Instant::now();
@@ -183,19 +170,6 @@ impl ProgsBar {
         print!("{}", l.as_str());
         _ = io_stdout().flush();
     }
-
-    pub fn up_au_final(&mut self, tot: usize, line: usize, pass: u8, track_id: u8) {
-        self.last_update = unsafe {
-            Instant::now()
-                .checked_sub(Durat::from_secs(1))
-                .unwrap_unchecked()
-        };
-        self.up_au(tot, tot, line, pass, track_id);
-    }
-
-    pub const fn finish_au() {}
-
-    pub const fn finish_scenes() {}
 }
 
 fn guard(m: &Mutex<Line>) -> MutexGuard<'_, Line> {

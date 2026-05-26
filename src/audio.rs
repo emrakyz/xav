@@ -283,9 +283,8 @@ fn enc_direct(
         None => dec.dec_all(cb)?,
     }
 
-    progs.up_au_final(tot as usize, progs_line, 1, tid);
+    progs.up_au(tot as usize, tot as usize, progs_line, 1, tid);
     drop(enc);
-    ProgsBar::finish_au();
     Ok(())
 }
 
@@ -323,7 +322,7 @@ fn calc_loudness(
         None => dec.dec_all(cb)?,
     }
 
-    progs.up_au_final(tot as usize, progs_line, 1, tid);
+    progs.up_au(tot as usize, tot as usize, progs_line, 1, tid);
     Ok(ebur)
 }
 
@@ -389,9 +388,8 @@ fn enc_norm(
         None => dec2.dec_all(cb)?,
     }
 
-    progs.up_au_final(tot as usize, progs_line, 2, tid);
+    progs.up_au(tot as usize, tot as usize, progs_line, 2, tid);
     drop(enc);
-    ProgsBar::finish_au();
     Ok(())
 }
 

@@ -557,7 +557,7 @@ fn spawn_au(args: &Args, work_dir: &Path, inf: &VidInf) -> Option<AuHandle> {
                     })
                     .collect::<Vec<_>>()
             });
-            enc_au_streams(&spec, &inp, &wd, samp_ranges.as_deref(), 3)
+            enc_au_streams(&spec, &inp, &wd, samp_ranges.as_deref(), 5)
         })
     })
 }
@@ -569,13 +569,13 @@ fn scd_and_au(
     au_handle: Option<AuHandle>,
 ) -> Result<Option<AuResult>, Xerr> {
     if let Some(handle) = au_handle {
-        fd_scenes(&args.inp, &args.sc_file, inf, crop, 1, args.hwdec)?;
+        fd_scenes(&args.inp, &args.sc_file, inf, crop, 3, args.hwdec)?;
         let result = handle
             .join()
             .map_err(|_e| Msg("Audio encoding thread panicked".into()))?;
         Ok(Some(result?))
     } else {
-        ensure_sc_file(args, inf, crop, 0)?;
+        ensure_sc_file(args, inf, crop, 3)?;
         Ok(None)
     }
 }
@@ -620,7 +620,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         sample_cnt: 13,
         min_black_pix: 2,
     };
-    let crop = match detect_crop(&args.inp, &inf, &conf, thr) {
+    let crop = match detect_crop(&args.inp, &inf, &conf, thr, 1) {
         Ok(detected) if detected.has_crop() => detected.to_tuple(),
         _ => (0, 0),
     };
@@ -696,12 +696,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 }
 
 fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_time: Durat) {
+    let tot_frames: usize = chnks.iter().map(|c| c.end - c.start).sum();
+    let inp_sz = vid_bytes(&args.inp, args.ranges.as_deref(), tot_frames);
+    let out_sz = vid_bytes(&args.out, None, tot_frames);
+
     print!("\x1b[?25h\x1b[?1049l");
     _ = stdout().flush();
-
-    let inp_sz = vid_bytes(&args.inp, args.ranges.as_deref());
-    let out_sz = vid_bytes(&args.out, None);
-    let tot_frames: usize = chnks.iter().map(|c| c.end - c.start).sum();
     let durat = tot_frames as f32 * inf.fps_den as f32 / inf.fps_num as f32;
     let inp_br = inp_sz as f32 * 8.0 / durat / 1000.0;
     let out_br = out_sz as f32 * 8.0 / durat / 1000.0;

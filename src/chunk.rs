@@ -29,6 +29,7 @@ use crate::{
         avformat_new_stream, avformat_open_input, avformat_query_codec, avformat_write_header,
         avio_closep, avio_open, gcd,
     },
+    progs::ProgsBar,
 };
 
 pub static PRIOR_SECS: AtomicU64 = AtomicU64::new(0);
@@ -603,7 +604,14 @@ impl Feed {
     }
 }
 
-fn mux_streams(octx: *mut AVFormatContext, feeds: &mut [Feed]) {
+fn mux_streams(
+    octx: *mut AVFormatContext,
+    feeds: &mut [Feed],
+    vidx: c_int,
+    tot_frames: usize,
+    progs: &mut ProgsBar,
+) {
+    let mut vf = 0usize;
     loop {
         for f in feeds.iter_mut() {
             if !f.has && !f.done {
@@ -617,7 +625,13 @@ fn mux_streams(octx: *mut AVFormatContext, feeds: &mut [Feed]) {
             .min_by_key(|&(_, f)| f.time)
             .map(|(i, _)| i);
         match pick {
-            Some(i) => feeds[i].write(octx),
+            Some(i) => {
+                feeds[i].write(octx);
+                if feeds[i].oi == vidx {
+                    vf += 1;
+                    progs.up_frames(vf, tot_frames, 0, "MUX");
+                }
+            }
             None => break,
         }
     }
@@ -706,7 +720,10 @@ fn remux(
             if !src_ctx.is_null() && !src_maps.is_empty() {
                 feeds.push(Feed::stream(src_ctx, src_maps, splice));
             }
-            mux_streams(octx, &mut feeds);
+            println!("\n");
+            let mut progs = ProgsBar::new();
+            mux_streams(octx, &mut feeds, vidx, inf.frames, &mut progs);
+            println!();
             unsafe { av_write_trailer(octx) };
             for f in feeds {
                 f.close();

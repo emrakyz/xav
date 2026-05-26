@@ -25,6 +25,7 @@ use crate::{
         pack_4_pix_10b, pack_10b, pack_10b_rem, pack_stride, pack_stride_rem, packed_row_sz,
         shift_p010, shift_p010_rem,
     },
+    progs::ProgsBar,
     util::assume_unreachable,
 };
 
@@ -36,6 +37,7 @@ pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 const AVERROR_EOF: c_int = -541_478_725;
 const AVERROR_EAGAIN: c_int = -11;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
+const AV_DICT_IGNORE_SUFFIX: c_int = 2;
 const AV_FRAME_DATA_MASTERING_DISPLAY_METADATA: c_int = 11;
 const AV_FRAME_DATA_CONTENT_LIGHT_LEVEL: c_int = 14;
 const AV_PIX_FMT_YUV420P10LE: c_int = 62;
@@ -68,7 +70,7 @@ pub struct AVCodecParameters {
     _coded_side_data: *mut c_void,
     _nb_coded_side_data: c_int,
     pub format: c_int,
-    _bit_rate: i64,
+    pub bit_rate: i64,
     _bits_per_coded_sample: c_int,
     bits_per_raw_sample: c_int,
     _profile: c_int,
@@ -829,7 +831,7 @@ fn dec_first_frame(
     }
 }
 
-pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>) -> u64 {
+pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>, tot_frames: usize) -> u64 {
     unsafe {
         let cp = CString::new(path.to_str().unwrap_unchecked()).unwrap_unchecked();
         let mut c: *mut AVFormatContext = null_mut();
@@ -841,19 +843,41 @@ pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>) -> u64 {
         let mut tot = 0u64;
         if idx >= 0 {
             let s = &*(*(*c).streams.add(idx as usize));
-            let mul = i64::from(s.time_base.num) * i64::from(s.avg_frame_rate.num);
-            let div = i64::from(s.time_base.den) * i64::from(s.avg_frame_rate.den);
+            let tb_num = i64::from(s.time_base.num);
+            let tb_den = i64::from(s.time_base.den);
+            if ranges.is_none() {
+                let mut br = (*s.codecpar).bit_rate;
+                if br <= 0 {
+                    let e = av_dict_get(s.metadata, c"BPS".as_ptr(), null(), AV_DICT_IGNORE_SUFFIX);
+                    if !e.is_null() {
+                        br = libc::atoll((*e).value.cast());
+                    }
+                }
+                if br > 0 {
+                    avformat_close_input(addr_of_mut!(c));
+                    return (br * s.duration * tb_num / (tb_den * 8)) as u64;
+                }
+            }
+            let mul = tb_num * i64::from(s.avg_frame_rate.num);
+            let div = tb_den * i64::from(s.avg_frame_rate.den);
             let start = s.start_time.max(0);
             let mut pkt = av_packet_alloc();
 
-            if let Some(rs) = ranges
+            let merged =
+                ranges.map(|rs| merge_ranges(rs.iter().map(|&(a, b)| (a as i64, b as i64))));
+            let total = merged.as_ref().map_or(tot_frames, |m| {
+                m.iter().map(|&(a, b)| (b - a + 1) as usize).sum()
+            });
+            let mut progs = ProgsBar::new();
+            let mut packets = 0usize;
+
+            if let Some(ref merged_ranges) = merged
                 && mul > 0
                 && div > 0
             {
-                let merged = merge_ranges(rs.iter().map(|&(a, b)| (a as i64, b as i64)));
                 let delay = i64::from((*s.codecpar).video_delay);
 
-                for &(a, b) in &merged {
+                for &(a, b) in merged_ranges {
                     let ts = a * div / mul + start;
                     av_seek_frame(c, idx, ts, AVSEEK_FLAG_BACKWARD);
                     let stop_dts_f = b + delay;
@@ -863,6 +887,8 @@ pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>) -> u64 {
                             let f = (((*pkt).pts - start) * mul + div / 2) / div;
                             if f >= a && f <= b {
                                 tot += (*pkt).size.max(0) as u64;
+                                packets += 1;
+                                progs.up_frames(packets, total, 0, "SCAN");
                             }
                             let df = (((*pkt).dts - start) * mul + div / 2) / div;
                             if df > stop_dts_f {
@@ -885,6 +911,8 @@ pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>) -> u64 {
                         }) {
                             tot += (*pkt).size.max(0) as u64;
                         }
+                        packets += 1;
+                        progs.up_frames(packets, total, 0, "SCAN");
                     }
                     av_packet_unref(pkt);
                 }

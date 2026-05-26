@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::{
     error::Xerr,
     ffms::{self, VidDecoder, VidInf},
+    progs::ProgsBar,
 };
 
 #[derive(Debug, Clone)]
@@ -66,6 +67,7 @@ pub fn detect_crop(
     inf: &VidInf,
     conf: &CropConf,
     threads: i32,
+    line: usize,
 ) -> Result<CropResult, Xerr> {
     let mut dec = VidDecoder::new(path, threads)?;
     let frame_indices = calc_samp_frames(inf.frames, conf.sample_cnt);
@@ -77,15 +79,18 @@ pub fn detect_crop(
         right: u32::MAX,
     };
 
-    for &frame_idx in &frame_indices {
+    let mut progs = ProgsBar::new();
+    for (i, &frame_idx) in frame_indices.iter().enumerate() {
         dec.seek_near(frame_idx as usize);
         let frame = dec.frame_ref();
         if let Some(crop) = detect_frame_crop(frame, inf, conf.min_black_pix) {
             up_best(&mut best, crop);
             if best.top <= 1 && best.bottom <= 1 && best.left <= 1 && best.right <= 1 {
+                progs.up_frames(conf.sample_cnt, conf.sample_cnt, line, "CROP");
                 return Ok(CropResult::no_crop());
             }
         }
+        progs.up_frames(i + 1, conf.sample_cnt, line, "CROP");
     }
 
     if best.top == u32::MAX {
