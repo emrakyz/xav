@@ -13,7 +13,8 @@ set -Eeuo pipefail
 install_deps() {
         ((UID != 0)) && { for i in sudo doas; do command -v "${i}" > /dev/null 2>&1 && priv="${i}"; done; }
 
-        for i in pacman dnf emerge brew; do command -v "${i}" > /dev/null 2>&1 && pm="${i}" || pm="unknown"; done
+        pm="unknown"
+        for i in pacman dnf emerge brew; do command -v "${i}" > /dev/null 2>&1 && pm="${i}"; done
 
         case "${pm}" in
                 "pacman")
