@@ -1,8 +1,8 @@
 ## Description
-- **TLDR:** Nothing but brutally hardcore; obsessive amounts of excessive optimizations
-- XAV is a CLI tool to scene-detect, crop, demux, parse, decode, pixel/frame process, encode, metric-test, mux, handle-memory; and a pipeline required for efficient chunked encoding, with optional quality metric targeting
+- **TLDR:** Brutally hardcore & obsessive; excessively-optimized
+- XAV is a CLI tool to scene-detect, crop, demux, parse, decode, pixel procs, encode, metric-test, mux,; and a pipeline for chunk encode, with optional quality metric target
 - Lowest RAM & VRAM
-- Fully automate being opinionated
+- Fully automate & be opinionated
 - **NO** `VapourSynth`/`FFmpeg` or any syscalls
 
 ## Features
@@ -20,7 +20,7 @@
 - Custom, modernized, fully-compliant MKV mux
 - `AV*` - `H26*` encode
 - **Pipe**: `cmd - | xav i.mkv ...` : **Slower** than the native pipeline
-- Encode each scene with different params (zone)
+- Zoning
 
 ## Build
 ```
