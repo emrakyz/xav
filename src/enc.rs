@@ -22,7 +22,10 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
     },
-    thread::{JoinHandle, available_parallelism, spawn},
+    thread::{JoinHandle, spawn},
+};
+#[cfg(feature = "vship")]
+use std::thread::available_parallelism;
 };
 
 use crossbeam_channel::{Receiver, bounded};
