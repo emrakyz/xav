@@ -221,10 +221,9 @@ fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
 fn val_out(out: &Path, encoder: Encoder) -> Result<(), Xerr> {
     let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("");
     match (encoder, ext) {
-        (Avm, "ivf") => Ok(()),
+        (Avm, "ivf") | (SvtAv1, "webm") => Ok(()),
         (Avm, _) => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: ivf").into()),
         (_, "mkv") => Ok(()),
-        (SvtAv1, "webm") => Ok(()),
         (_, "webm") => Err(format!("webm output requires svt-av1, not {encoder:?}").into()),
         _ => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: mkv, webm").into()),
     }

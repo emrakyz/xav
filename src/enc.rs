@@ -1,4 +1,6 @@
 #[cfg(feature = "vship")]
+use std::thread::available_parallelism;
+#[cfg(feature = "vship")]
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
@@ -24,8 +26,6 @@ use std::{
     },
     thread::{JoinHandle, spawn},
 };
-#[cfg(feature = "vship")]
-use std::thread::available_parallelism;
 
 use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]

@@ -1,7 +1,7 @@
 use std::{
     arch::x86_64::_mm_sfence,
     ffi::CString,
-    fs::{File, OpenOptions, read_link},
+    fs::{File, OpenOptions},
     mem::zeroed,
     os::unix::{ffi::OsStrExt as _, io::AsRawFd as _},
     path::Path,
@@ -11,7 +11,7 @@ use std::{
 
 use libc::{
     MADV_HUGEPAGE, MADV_SEQUENTIAL, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE,
-    madvise, major, minor, mmap, munmap, stat, statfs,
+    madvise, mmap, munmap, statfs,
 };
 
 use crate::{error::Xerr, mkv_mux::Mux, progs::ProgsBar, uring::RingWriter};
@@ -59,45 +59,34 @@ const RAMFS_MAGIC: i64 = 0x8584_58f6;
 
 enum Dev {
     Ram,
-    Nvme,
     Disk,
 }
 
+// Only RAM vs persistent storage changes the write path, and that is decided
+// purely by the filesystem magic. Backing block device is irrelevant here and
+// is unresolvable anyway on anonymous-bdev filesystems (btrfs/zfs/bcachefs map
+// to major 0, which has no /sys/dev/block entry).
 fn classify(path: &Path) -> Result<Dev, Xerr> {
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let c = CString::new(dir.as_os_str().as_bytes())?;
-    let st_dev = unsafe {
+    let ram = unsafe {
         let mut sf: statfs = zeroed();
         if statfs(c.as_ptr(), &raw mut sf) != 0 {
             return Err(format!("statfs failed for {}", dir.display()).into());
         }
-        if matches!(sf.f_type, TMPFS_MAGIC | RAMFS_MAGIC) {
-            return Ok(Dev::Ram);
-        }
-        let mut st: stat = zeroed();
-        if stat(c.as_ptr(), &raw mut st) != 0 {
-            return Err(format!("stat failed for {}", dir.display()).into());
-        }
-        st.st_dev
+        matches!(sf.f_type, TMPFS_MAGIC | RAMFS_MAGIC)
     };
-    let link = format!("/sys/dev/block/{}:{}", major(st_dev), minor(st_dev));
-    let target =
-        read_link(&link).map_err(|e| format!("cannot resolve block device {link}: {e}"))?;
-    Ok(if target.to_str().is_some_and(|s| s.contains("nvme")) {
-        Dev::Nvme
-    } else {
-        Dev::Disk
-    })
+    Ok(if ram { Dev::Ram } else { Dev::Disk })
 }
 
 #[inline]
 pub fn write_mux(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr> {
     match classify(out)? {
         Dev::Ram => mmap_write(out, mux, progs),
-        Dev::Nvme | Dev::Disk => ring_write(out, mux, progs),
+        Dev::Disk => ring_write(out, mux, progs),
     }
 }
 
