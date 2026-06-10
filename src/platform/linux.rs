@@ -62,10 +62,7 @@ enum Dev {
     Disk,
 }
 
-// Only RAM vs persistent storage changes the write path, and that is decided
-// purely by the filesystem magic. Backing block device is irrelevant here and
-// is unresolvable anyway on anonymous-bdev filesystems (btrfs/zfs/bcachefs map
-// to major 0, which has no /sys/dev/block entry).
+// anon-bdev fs has no /sys/dev/block entry
 fn classify(path: &Path) -> Result<Dev, Xerr> {
     let dir = path
         .parent()
