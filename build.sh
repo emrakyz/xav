@@ -790,7 +790,7 @@ setup_toolchain() {
         export OBJCOPY="llvm-objcopy"
         export OBJDUMP="llvm-objdump"
 
-        export COMMON_FLAGS="-O3 -g -ffast-math -march=native -mtune=native \
+        export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native \
 	-fwhole-program-vtables -flto=thin -fno-semantic-interposition \
 	-fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all \
 	-fno-dwarf2-cfi-asm -fno-pic -fno-pie -fno-unwind-tables \
