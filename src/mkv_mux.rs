@@ -878,12 +878,13 @@ impl Mux<'_> {
         pos
     }
 
+    #[cfg(not(windows))]
     pub fn build(&self, dst: &mut [u8], progs: &mut ProgsBar) {
         let pos = self.write_headers(dst);
         let rest = unsafe { dst.get_unchecked_mut(pos..) };
         let n = self.plans.len();
         let progs = Some(progs);
-        match (self.subs.is_empty(), self.is_nal) {
+        match (self.subs_empty(), self.is_nal) {
             (true, false) => self.build_clusters::<false, false>(rest, 0, n, progs),
             (false, false) => self.build_clusters::<true, false>(rest, 0, n, progs),
             (true, true) => self.build_clusters::<false, true>(rest, 0, n, progs),
