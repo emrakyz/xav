@@ -143,11 +143,17 @@ detect_deps() {
         done < <(find /usr/lib/gcc /usr/lib64/gcc -maxdepth 2 -type d 2> /dev/null || true)
 
         CLANG_RT_DIR="$(clang --print-runtime-dir 2> /dev/null || true)"
+        CLANG_RESOURCE_DIR="$(clang -print-resource-dir 2> /dev/null || true)"
         CLANG_LIB_DIRS=()
         [[ -n "${CLANG_RT_DIR}" && -d "${CLANG_RT_DIR}" ]] && CLANG_LIB_DIRS+=("${CLANG_RT_DIR}")
+        [[ -n "${CLANG_RESOURCE_DIR}" ]] && CLANG_LIB_DIRS+=(
+                "${CLANG_RESOURCE_DIR}/lib/linux"
+                "${CLANG_RESOURCE_DIR}/lib/darwin"
+                "${CLANG_RESOURCE_DIR}/lib"
+        )
         while IFS= read -r d; do
                 CLANG_LIB_DIRS+=("${d}")
-        done < <(find /usr/lib/clang /usr/lib64/clang -type d -name "linux" -o -type d -name "lib" 2> /dev/null || true)
+        done < <(find /usr/lib/clang /usr/lib64/clang /usr/lib/llvm /usr/lib64/llvm -type d \( -name "linux" -o -name "darwin" -o -name "lib" \) 2> /dev/null || true)
 
         ALL_STATIC_DIRS=("${SYS_LIB_DIRS[@]}" "${GCC_LIB_DIRS[@]}" "${CLANG_LIB_DIRS[@]}")
 
@@ -174,8 +180,11 @@ detect_deps() {
         LLVM_PATH="$(find_bin llvm-ar || true)"
         [[ -n "${LLVM_PATH}" ]] && HAS_LLVM=true || HAS_LLVM=false
 
-        COMPILERRT_PATH="$(find_lib libclang_rt.builtins.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
-        [[ -z "${COMPILERRT_PATH}" ]] && COMPILERRT_PATH="$(find_lib libclang_rt.builtins-x86_64.a "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+        COMPILERRT_PATH=""
+        for rt_name in libclang_rt.builtins.a libclang_rt.builtins-x86_64.a libclang_rt.builtins-aarch64.a libclang_rt.osx.a; do
+                COMPILERRT_PATH="$(find_lib "${rt_name}" "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
+                [[ -n "${COMPILERRT_PATH}" ]] && break
+        done
         [[ -n "${COMPILERRT_PATH}" ]] && HAS_COMPILERRT=true || HAS_COMPILERRT=false
 
         HAS_HARD_REQS=true
@@ -532,10 +541,6 @@ build_ffmpeg() {
                 --pkg-config-flags="--static" \
                 --disable-programs \
                 --disable-doc \
-                --disable-htmlpages \
-                --disable-manpages \
-                --disable-podpages \
-                --disable-txtpages \
                 --disable-network \
                 --disable-autodetect \
                 --disable-all \
@@ -543,7 +548,6 @@ build_ffmpeg() {
                 --enable-avcodec \
                 --enable-avformat \
                 --enable-avutil \
-                --enable-swscale \
                 --enable-swresample \
                 --enable-protocol=file \
                 --enable-demuxer=matroska \
@@ -633,12 +637,7 @@ build_ffmpeg() {
                 --enable-hwaccel=h264_vulkan \
                 --enable-hwaccel=hevc_vulkan \
                 --enable-hwaccel=av1_vulkan \
-                --enable-muxer=matroska \
-                --enable-muxer=webm \
-                --enable-muxer=mp4 \
-                --enable-muxer=ivf \
                 --enable-bsf=extract_extradata \
-                --enable-bsf=aac_adtstoasc \
                 --enable-demuxer=ogg \
                 --enable-hwaccel=vp9_vulkan >> "${logfile}" 2>&1
 
@@ -730,12 +729,10 @@ build_svtav1() {
 
         pgo_params=(
                 --preset 1 --tune 0 --keyint 0 --scd 0 --scm 0 --tile-rows 0 --tile-columns 0 --rc 0
-                --width 1920 --height 1080 --forced-max-frame-width 1920 --forced-max-frame-height 1080
-                --frames 96 --nb 96 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
-                --color-format 1 --asm max --color-range 0 --color-primaries 1
-                --transfer-characteristics 1 --matrix-coefficients 1 --chroma-sample-position 1
-                --progress 0 --no-progress 1 --lp 5 --enable-qm 1 --enable-variance-boost 1
-                --luminance-qp-bias 0 --sharpness 1 --passes 1 --film-grain 0
+                --width 1920 --height 1080 --frames 96 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
+                --color-format 1 --color-range 0 --color-primaries 1 --transfer-characteristics 1
+                --matrix-coefficients 1 --chroma-sample-position 1 --progress 0 --lp 5 --enable-qm 1
+                --enable-variance-boost 1 --luminance-qp-bias 0 --sharpness 1
         )
 
         cd "${BUILD_DIR}/SVT-AV1"
@@ -750,6 +747,11 @@ build_svtav1() {
         sed -i '/gdwarf/s/^/#/' CMakeLists.txt
         sed -i '/gnull/s/^/#/' CMakeLists.txt
         sed -i 's|"${LLVM_PROFDATA} merge --sparse=true \*.profraw -o default.profdata"|"cd ${SVT_AV1_PGO_DIR} \&\& ${LLVM_PROFDATA} merge --sparse=true *.profraw -o default.profdata"|' CMakeLists.txt
+
+        # 8 MB thread stacks (default 1 MiB overflows with PGO)
+        sed -i 's|0, // default stack size|8 * 1024 * 1024, // default stack size|' Source/Lib/Codec/svt_threads.c
+        sed -i 's|0, // thread active when created|STACK_SIZE_PARAM_IS_A_RESERVATION, // thread active when created|' Source/Lib/Codec/svt_threads.c
+        sed -i 's|const size_t min_stack_size = 1024 \* 1024;|const size_t min_stack_size = 8 * 1024 * 1024;|' Source/Lib/Codec/svt_threads.c
 
         mkdir -p "${pgo_dir}"
         loginf b "Downloading PGO training video"
@@ -788,7 +790,14 @@ setup_toolchain() {
         export OBJCOPY="llvm-objcopy"
         export OBJDUMP="llvm-objdump"
 
-        export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native -flto=thin -pipe -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm -fno-pic -fno-pie -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables"
+        export COMMON_FLAGS="-O3 -g -ffast-math -march=native -mtune=native \
+	-fwhole-program-vtables -flto=thin -fno-semantic-interposition \
+	-fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all \
+	-fno-dwarf2-cfi-asm -fno-pic -fno-pie -fno-unwind-tables \
+	-fno-asynchronous-unwind-tables -fno-plt -fno-stack-check \
+	-fno-threadsafe-statics -mno-vzeroupper -mno-retpoline -mno-lvi-cfi \
+	-mharden-sls=none -mno-lvi-hardening -ftls-model=local-exec \
+	-fno-use-cxa-atexit"
         export CFLAGS="${COMMON_FLAGS}"
         "${IS_MAC}" && export CXXFLAGS="${COMMON_FLAGS} -stdlib=libc++" || export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS

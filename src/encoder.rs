@@ -1,13 +1,17 @@
 use std::{
-    ffi::CString,
+    ffi::{CStr, CString},
+    mem::size_of,
     path::Path,
     process::{Command, Stdio},
 };
 
 use crate::{
     Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
-    ffms::VidInf,
-    svt::{EbSvtAv1EncConfiguration, svt_av1_enc_parse_parameter},
+    ffms::{VidInf, gcd},
+    svt::{
+        ChromaPoints, ContentLightLevel, EbSvtAv1EncConfiguration, MasteringDisplayInfo,
+        svt_av1_enc_parse_parameter, svt_av1_get_version,
+    },
     util::assume_unreachable,
 };
 
@@ -35,10 +39,44 @@ impl Encoder {
 
     pub const fn extension(self) -> &'static str {
         match self {
-            SvtAv1 | Avm => "ivf",
+            SvtAv1 => "obu",
+            Avm => "ivf",
             Vvenc => "266",
             X265 => "265",
             X264 => "264",
+        }
+    }
+
+    pub const fn codec_id(self) -> &'static [u8] {
+        match self {
+            SvtAv1 => b"V_AV1",
+            Avm => b"V_AV2",
+            Vvenc => b"V_MPEGI/ISO/VVC",
+            X265 => b"V_MPEGH/ISO/HEVC",
+            X264 => b"V_MPEG4/ISO/AVC",
+        }
+    }
+
+    pub const fn codec_name(self) -> &'static [u8] {
+        match self {
+            SvtAv1 => b"Alliance for Open Media AV1 Video codec",
+            Avm => b"Alliance for Open Media AV2 Video codec",
+            Vvenc => b"VVC/H.266",
+            X265 => b"HEVC/H.265",
+            X264 => b"AVC/H.264",
+        }
+    }
+
+    pub fn version(self) -> String {
+        match self {
+            SvtAv1 => {
+                let v = unsafe { CStr::from_ptr(svt_av1_get_version()).to_string_lossy() };
+                format!("SVT-AV1 {}", v.trim_end_matches("-dirty"))
+            }
+            Avm => "AVM".into(),
+            X264 => run_version("x264", "x264", None),
+            X265 => run_version("x265", "x265", Some("version ")),
+            Vvenc => run_version("vvencFFapp", "vvenc", Some("version ")),
         }
     }
 
@@ -47,11 +85,37 @@ impl Encoder {
     }
 }
 
+fn run_version(prog: &str, name: &str, marker: Option<&str>) -> String {
+    let Ok(out) = Command::new(prog).arg("--version").output() else {
+        return name.to_owned();
+    };
+    let mut t = String::from_utf8_lossy(&out.stdout).into_owned();
+    t.push_str(&String::from_utf8_lossy(&out.stderr));
+    marker.map_or_else(
+        || {
+            t.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or(name)
+                .to_owned()
+        },
+        |m| {
+            t.lines()
+                .find_map(|l| l.split_once(m))
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .map_or_else(|| name.to_owned(), |v| format!("{name} {v}"))
+        },
+    )
+}
+
+pub const SVT_CONF_SIZE: usize = size_of::<EbSvtAv1EncConfiguration>();
+
 pub struct EncConfig<'a> {
     pub inf: &'a VidInf,
+    pub template: Option<&'a [u8]>,
     pub params: &'a str,
     pub zone_params: Option<&'a str>,
-    pub crf: f32,
+    pub crf: Option<f32>,
     pub out: &'a Path,
     pub chnk_idx: u16,
     pub width: u32,
@@ -110,8 +174,8 @@ fn make_avm_cmd(cfg: &EncConfig) -> Command {
 
     colorize_avm(&mut cmd, cfg.inf);
 
-    if cfg.crf >= 0.0 {
-        cmd.arg(format!("--qp={}", cfg.crf as u32));
+    if let Some(crf) = cfg.crf {
+        cmd.arg(format!("--qp={}", crf as u32));
     }
 
     cmd.args(cfg.params.split_whitespace());
@@ -152,6 +216,8 @@ fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
         "1",
         "--Passes",
         "1",
+        "--Threads",
+        "1",
         "--Profile",
         "main_10",
         "--Tier",
@@ -169,8 +235,8 @@ fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
     cmd.arg("--fps").arg(&fps_str);
     cmd.arg("--FramesToBeEncoded").arg(&frames_str);
 
-    if cfg.crf >= 0.0 {
-        cmd.arg("--QP").arg(format!("{}", cfg.crf as i32));
+    if let Some(crf) = cfg.crf {
+        cmd.arg("--QP").arg(format!("{}", crf as i32));
     }
 
     colorize_vvenc(&mut cmd, cfg.inf);
@@ -203,7 +269,6 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         "main10",
         "--gop-lookahead",
         "0",
-        "--open-gop",
         "--keyint",
         "-1",
         "--min-keyint",
@@ -229,8 +294,11 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         .arg(format!("{}x{}", cfg.width, cfg.height));
     cmd.arg("--frames").arg(cfg.frames.to_string());
 
-    if cfg.crf >= 0.0 {
-        cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
+    let (sar_n, sar_d) = h26x_sar(cfg.inf);
+    cmd.arg("--sar").arg(format!("{sar_n}:{sar_d}"));
+
+    if let Some(crf) = cfg.crf {
+        cmd.arg("--crf").arg(format!("{crf:.2}"));
     }
 
     if let Some(preset) = x265_signal_preset(cfg.inf) {
@@ -293,7 +361,6 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
         "--min-keyint",
         "9999",
         "--no-scenecut",
-        "--open-gop",
         "--b-adapt",
         "2",
         "--muxer",
@@ -304,6 +371,10 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
         "1",
         "--lookahead-threads",
         "1",
+        "--force-cfr",
+        "--non-deterministic",
+        "--nal-hrd",
+        "none",
         "--fps",
     ]);
 
@@ -312,8 +383,11 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
         .arg(format!("{}x{}", cfg.width, cfg.height));
     cmd.arg("--frames").arg(cfg.frames.to_string());
 
-    if cfg.crf >= 0.0 {
-        cmd.arg("--crf").arg(format!("{:.2}", cfg.crf));
+    let (sar_n, sar_d) = h26x_sar(cfg.inf);
+    cmd.arg("--sar").arg(format!("{sar_n}:{sar_d}"));
+
+    if let Some(crf) = cfg.crf {
+        cmd.arg("--crf").arg(format!("{crf:.2}"));
     }
 
     let cr = cfg.inf.color_range;
@@ -330,6 +404,18 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
     cmd.stdin(Stdio::piped()).stderr(Stdio::piped());
 
     cmd
+}
+
+fn h26x_sar(inf: &VidInf) -> (u64, u64) {
+    match inf.dar {
+        Some((dw, dh)) => {
+            let n = u64::from(dw) * u64::from(inf.height);
+            let d = u64::from(dh) * u64::from(inf.width);
+            let g = gcd(n, d).max(1);
+            (n / g, d / g)
+        }
+        None => (1, 1),
+    }
 }
 
 fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
@@ -683,64 +769,56 @@ fn parse_svt_params(conf: *mut EbSvtAv1EncConfiguration, params: &str) {
     }
 }
 
-pub fn set_svt_conf(conf: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
-    let w = cfg.width.to_string();
-    let h = cfg.height.to_string();
-
-    for (name, value) in [
-        ("input-depth", "10"),
-        ("color-format", "1"),
-        ("profile", "0"),
-        ("tile-rows", "0"),
-        ("tile-columns", "0"),
-        ("keyint", "0"),
-        ("rc", "0"),
-        ("scd", "0"),
-    ] {
-        parse_svt_param(conf, name, value);
+pub fn set_svt_base(
+    conf: *mut EbSvtAv1EncConfiguration,
+    inf: &VidInf,
+    params: &str,
+    width: u32,
+    height: u32,
+) {
+    unsafe {
+        (*conf).intra_period_length = -1;
+        (*conf).source_width = width;
+        (*conf).source_height = height;
+        (*conf).scene_change_detection = 0;
+        (*conf).encoder_bit_depth = 10;
+        (*conf).encoder_color_format = 1;
+        (*conf).profile = 0;
+        (*conf).rate_control_mode = 0;
+        (*conf).frame_rate_numerator = inf.fps_num;
+        (*conf).frame_rate_denominator = inf.fps_den;
+        (*conf).color_primaries = i32::from(inf.color_primaries);
+        (*conf).transfer_characteristics = i32::from(inf.transfer_characteristics);
+        (*conf).matrix_coefficients = i32::from(inf.matrix_coefficients);
+        (*conf).color_range = i32::from(inf.color_range);
+        (*conf).chroma_sample_position = i32::from(inf.chroma_sample_position);
+        if let Some(m) = inf.mastering {
+            let q = |v: f64| ((v * 65536.0).round().min(65535.0) as u16).to_be();
+            let cp = |(x, y): (f64, f64)| ChromaPoints { x: q(x), y: q(y) };
+            (*conf).mastering_display = MasteringDisplayInfo {
+                r: cp(m.r),
+                g: cp(m.g),
+                b: cp(m.b),
+                white_point: cp(m.wp),
+                max_luma: ((m.lum_max * 256.0).round() as u32).to_be(),
+                min_luma: ((m.lum_min * 16384.0).round() as u32).to_be(),
+            };
+        }
+        if let Some((c, f)) = inf.content_light_level {
+            (*conf).content_light_level = ContentLightLevel {
+                max_cll: c.to_be(),
+                max_fall: f.to_be(),
+            };
+        }
     }
 
-    parse_svt_param(conf, "width", &w);
-    parse_svt_param(conf, "forced-max-frame-width", &w);
-    parse_svt_param(conf, "height", &h);
-    parse_svt_param(conf, "forced-max-frame-height", &h);
-    parse_svt_param(conf, "fps-num", &cfg.inf.fps_num.to_string());
-    parse_svt_param(conf, "fps-denom", &cfg.inf.fps_den.to_string());
+    parse_svt_params(conf, params);
+}
 
-    if cfg.crf >= 0.0 {
-        parse_svt_param(conf, "crf", &format!("{:.2}", cfg.crf));
+pub fn set_svt_chunk(conf: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
+    if let Some(crf) = cfg.crf {
+        parse_svt_param(conf, "crf", &format!("{crf:.2}"));
     }
-
-    parse_svt_param(
-        conf,
-        "color-primaries",
-        &cfg.inf.color_primaries.to_string(),
-    );
-    parse_svt_param(
-        conf,
-        "transfer-characteristics",
-        &cfg.inf.transfer_characteristics.to_string(),
-    );
-    parse_svt_param(
-        conf,
-        "matrix-coefficients",
-        &cfg.inf.matrix_coefficients.to_string(),
-    );
-    parse_svt_param(conf, "color-range", &cfg.inf.color_range.to_string());
-    parse_svt_param(
-        conf,
-        "chroma-sample-position",
-        &cfg.inf.chroma_sample_position.to_string(),
-    );
-    if let Some(ref md) = cfg.inf.mastering_display {
-        parse_svt_param(conf, "mastering-display", md);
-    }
-    if let Some(ref cl) = cfg.inf.content_light {
-        parse_svt_param(conf, "content-light", cl);
-    }
-
-    parse_svt_params(conf, cfg.params);
-
     if let Some(z) = cfg.zone_params {
         parse_svt_params(conf, z);
     }

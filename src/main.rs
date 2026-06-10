@@ -18,13 +18,17 @@ use std::{
 use libc::{_exit, SIGINT, SIGSEGV, atexit, signal};
 
 use crate::{
-    encoder::Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
+    encoder::Encoder::{Avm, SvtAv1},
     error::Xerr::{Help, Msg},
 };
 
 mod audio;
+mod byte_range;
 mod chunk;
+mod copy;
 mod crop;
+#[cfg(feature = "vship")]
+mod dav1d;
 mod dec;
 mod enc;
 mod encoder;
@@ -33,15 +37,26 @@ mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
 mod lavf;
+mod mkv;
+mod mkv_mux;
+mod mux_webm;
+mod nal_config;
+mod nal_parse;
+mod nal_scan;
+mod obu_parse;
+mod ogg;
 mod opus;
 mod pack;
 pub mod pipeline;
+mod platform;
 mod progs;
 mod scd;
 mod svt;
 mod svterr;
 #[cfg(feature = "vship")]
 mod tq;
+#[cfg(target_os = "linux")]
+mod uring;
 mod util;
 #[cfg(feature = "vship")]
 mod vship;
@@ -50,7 +65,8 @@ mod y4m;
 
 use audio::{AuSpec, AuStream, enc_au_streams, frame_samp, parse_au_arg};
 use chunk::{
-    Chunk, chnkify, get_resume, init_elapsed, load_scenes, merge_out, trans_scenes, val_scenes,
+    Chunk, Scene, chnkify, get_resume, init_elapsed, load_scenes, merge_out, trans_scenes,
+    val_scenes,
 };
 use crop::{CropConf, detect_crop};
 use enc::enc_all;
@@ -58,7 +74,8 @@ use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
 use scd::fd_scenes;
-use y4m::{PipeReader, init_pipe};
+use svterr::val;
+use y4m::{PipeReader, init_pipe, is_pipe};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -179,11 +196,7 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
 fn apply_defaults(args: &mut Args) {
     if args.out == PathBuf::new() {
         let stem = unsafe { args.inp.file_stem().unwrap_unchecked() }.to_string_lossy();
-        let ext = match args.encoder {
-            SvtAv1 | X265 | X264 => "mkv",
-            Avm => "ivf",
-            Vvenc => "mp4",
-        };
+        let ext = "mkv";
         args.out = args.inp.with_file_name(format!("{stem}_xav.{ext}"));
     }
 
@@ -207,16 +220,12 @@ fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
 
 fn val_out(out: &Path, encoder: Encoder) -> Result<(), Xerr> {
     let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let containers = match encoder {
-        SvtAv1 => "mkv, mp4, webm",
-        Avm => "ivf",
-        Vvenc => "mp4",
-        X265 | X264 => "mkv, mp4",
-    };
-    if !containers.split(", ").any(|c| c == ext) {
-        return Err(format!("Invalid extension .{ext} for {encoder:?}. Use: {containers}").into());
+    match ext {
+        "mkv" => Ok(()),
+        "webm" if encoder == SvtAv1 => Ok(()),
+        "webm" => Err(format!("webm output requires svt-av1, not {encoder:?}").into()),
+        _ => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: mkv, webm").into()),
     }
-    Ok(())
 }
 
 #[cfg(feature = "vship")]
@@ -385,14 +394,14 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     }
 
     if result.encoder == SvtAv1 {
-        svterr::val(&result.params)?;
+        val(&result.params)?;
         #[cfg(feature = "vship")]
         if let Some(ref pp) = result.alt_param {
-            svterr::val(pp)?;
+            val(pp)?;
         }
     }
 
-    if result.hwdec && y4m::is_pipe() {
+    if result.hwdec && is_pipe() {
         return Err("Hardware accelerated decoding can not be used with a pipe".into());
     }
 
@@ -580,12 +589,12 @@ fn scd_and_au(
     }
 }
 
-fn val_all_scenes(scenes: &[chunk::Scene], enc: Encoder) -> Result<(), Xerr> {
+fn val_all_scenes(scenes: &[Scene], enc: Encoder) -> Result<(), Xerr> {
     val_scenes(scenes)?;
     if enc == SvtAv1 {
         for s in scenes {
             if let Some(ref p) = s.params {
-                svterr::val(p)?;
+                val(p)?;
             }
         }
     }
@@ -676,15 +685,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         Vec::new()
     };
 
-    merge_out(
-        &work_dir.join("encode"),
-        &args.out,
-        &inf,
-        args.encoder,
-        &au_tracks,
-        (args.encoder != Avm).then_some(args.inp.as_path()),
-        args.ranges.as_deref(),
-    )?;
+    merge_out(&args, &work_dir.join("encode"), &inf, &au_tracks, crop)?;
 
     for t in &au_tracks {
         _ = rm_file(&t.1);

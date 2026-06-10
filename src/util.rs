@@ -11,7 +11,6 @@ pub const W: &str = "\x1b[1;97m";
 pub const N: &str = "\x1b[0m";
 
 #[inline(always)]
-#[allow(clippy::inline_always, reason = "thin compiler-elided wrapper")]
 #[allow(
     clippy::panic,
     reason = "debug-only panic for catching logic errors in tests"

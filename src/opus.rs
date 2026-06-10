@@ -47,6 +47,15 @@ unsafe extern "C" {
     fn ope_encoder_destroy(enc: *mut OggOpusEnc);
     fn ope_encoder_ctl(enc: *mut OggOpusEnc, request: c_int, ...) -> c_int;
     fn ope_strerror(error: c_int) -> *const c_char;
+    pub fn ope_get_version_string() -> *const c_char;
+}
+
+pub fn version() -> String {
+    unsafe {
+        CStr::from_ptr(ope_get_version_string())
+            .to_string_lossy()
+            .into_owned()
+    }
 }
 
 fn check(code: c_int) -> Result<(), Xerr> {

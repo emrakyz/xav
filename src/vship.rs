@@ -1,7 +1,9 @@
 use std::{
-    ffi::{CStr, CString},
+    ffi::{CStr, CString, c_void},
     mem::{MaybeUninit, zeroed},
-    ptr::{from_mut, null},
+    ops::{Deref, DerefMut},
+    ptr::{NonNull, from_mut, null, null_mut},
+    slice::{from_raw_parts, from_raw_parts_mut},
 };
 
 use crate::{
@@ -202,6 +204,8 @@ enum VshipException {
 
 unsafe extern "C" {
     fn Vship_SetDevice(gpu_id: i32) -> VshipException;
+    fn Vship_PinnedMalloc(ptr: *mut *mut c_void, size: u64) -> VshipException;
+    fn Vship_PinnedFree(ptr: *mut c_void) -> VshipException;
     fn Vship_SSIMU2Init(
         handler: *mut VshipSSIMU2Handler,
         src_colorspace: VshipColorspace,
@@ -257,6 +261,61 @@ unsafe extern "C" {
         lineSize2: *const i64,
     ) -> VshipException;
     fn Vship_GetDetailedLastError(out_msg: *mut i8, len: i32) -> i32;
+}
+
+pub struct PinnedBuf {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl PinnedBuf {
+    pub fn new(len: usize) -> Result<Self, Xerr> {
+        if len == 0 {
+            return Ok(Self {
+                ptr: NonNull::dangling().as_ptr(),
+                len: 0,
+            });
+        }
+        unsafe {
+            let mut ptr: *mut c_void = null_mut();
+            let ret = Vship_PinnedMalloc(&raw mut ptr, len as u64);
+            if ret as i32 != 0 {
+                let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
+                vship_get_err(&mut errbuf);
+                return Err(vship_err_str(&errbuf));
+            }
+            Ok(Self {
+                ptr: ptr.cast(),
+                len,
+            })
+        }
+    }
+}
+
+impl Deref for PinnedBuf {
+    type Target = [u8];
+
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        unsafe { from_raw_parts(self.ptr, self.len) }
+    }
+}
+
+impl DerefMut for PinnedBuf {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        unsafe { from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+impl Drop for PinnedBuf {
+    fn drop(&mut self) {
+        if self.len != 0 {
+            unsafe {
+                Vship_PinnedFree(self.ptr.cast());
+            }
+        }
+    }
 }
 
 pub struct VshipProcessor {

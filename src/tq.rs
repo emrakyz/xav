@@ -1,6 +1,8 @@
-use std::{path::Path, thread::available_parallelism, time::Instant};
+use std::{fs::metadata, path::Path, time::Instant};
 
 use crate::{
+    dav1d::Dav1dDec,
+    enc::probe_path,
     error::fatal,
     ffms::VidDecoder,
     interp::{fc_spline, lerp, pchip},
@@ -8,6 +10,75 @@ use crate::{
     vship::VshipProcessor,
     worker::WorkPkg,
 };
+
+pub struct ProbeDec {
+    dav1d: Option<Dav1dDec>,
+    vid: Option<VidDecoder>,
+    threads: i32,
+    prepare: fn(&mut Self, &WorkPkg, &Path, u16, f32, &str) -> u64,
+    frame: fn(&mut Self) -> ([*const u8; 3], [i64; 3]),
+}
+
+pub fn make_dav1d(threads: i32) -> ProbeDec {
+    ProbeDec {
+        dav1d: Some(Dav1dDec::new(threads).unwrap_or_else(|e| fatal(e))),
+        vid: None,
+        threads,
+        prepare: prep_dav1d,
+        frame: frame_dav1d,
+    }
+}
+
+pub fn make_ff(threads: i32) -> ProbeDec {
+    ProbeDec {
+        dav1d: None,
+        vid: None,
+        threads,
+        prepare: prep_ff,
+        frame: frame_ff,
+    }
+}
+
+fn prep_dav1d(d: &mut ProbeDec, pkg: &WorkPkg, _: &Path, _: u16, _: f32, _: &str) -> u64 {
+    unsafe { d.dav1d.as_mut().unwrap_unchecked() }.load(&pkg.probe);
+    pkg.probe.len() as u64
+}
+
+fn prep_ff(d: &mut ProbeDec, _: &WorkPkg, dir: &Path, idx: u16, crf: f32, ext: &str) -> u64 {
+    let pp = probe_path(dir, idx, crf, ext);
+    let sz = metadata(&pp).map_or(0, |m| m.len());
+    d.vid = Some(VidDecoder::new(&pp, d.threads).unwrap_or_else(|e| fatal(e)));
+    sz
+}
+
+fn frame_dav1d(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
+    unsafe { d.dav1d.as_mut().unwrap_unchecked() }.dec_next()
+}
+
+fn frame_ff(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
+    let vid = unsafe { d.vid.as_mut().unwrap_unchecked() };
+    let of = unsafe { &*vid.dec_next() };
+    (
+        [
+            of.data[0].cast_const(),
+            of.data[1].cast_const(),
+            of.data[2].cast_const(),
+        ],
+        [
+            i64::from(of.linesize[0]),
+            i64::from(of.linesize[1]),
+            i64::from(of.linesize[2]),
+        ],
+    )
+}
+
+impl ProbeDec {
+    #[inline]
+    pub fn prep(&mut self, pkg: &WorkPkg, dir: &Path, idx: u16, crf: f32, ext: &str) -> u64 {
+        let prepare = self.prepare;
+        prepare(self, pkg, dir, idx, crf, ext)
+    }
+}
 
 pub const JOD_A: f32 = 0.043_956_94;
 pub const JOD_EXP: f32 = 0.930_204_3;
@@ -62,7 +133,7 @@ macro_rules! calc_metric_impl {
     ($name:ident, $is_10b:expr) => {
         pub fn $name(
             pkg: &WorkPkg,
-            probe_path: &Path,
+            dec: &mut ProbeDec,
             pipe: &Pipeline,
             vship: &VshipProcessor,
             metric_mode: &str,
@@ -74,8 +145,7 @@ macro_rules! calc_metric_impl {
                 vship.reset_cvvdp();
             }
 
-            let threads = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
-            let mut dec = VidDecoder::new(probe_path, threads).unwrap_or_else(|e| fatal(e));
+            let frame_fn = dec.frame;
 
             let mut scores = Vec::with_capacity(pkg.frame_cnt);
             let frame_sz = pipe.frame_sz;
@@ -100,7 +170,7 @@ macro_rules! calc_metric_impl {
                     );
 
                     let input_frame = &pkg.yuv[$frame_idx * frame_sz..($frame_idx + 1) * frame_sz];
-                    let of = dec.dec_next();
+                    let (output_planes, output_strides) = frame_fn(dec);
 
                     let input_yuv: &[u8] = if $is_10b {
                         (pipe.unpack)(input_frame, unpacked_buf, pipe);
@@ -113,18 +183,6 @@ macro_rules! calc_metric_impl {
                         input_yuv.as_ptr(),
                         input_yuv[y_sz..].as_ptr(),
                         input_yuv[y_sz + uv_sz..].as_ptr(),
-                    ];
-
-                    let of = unsafe { &*of };
-                    let output_planes = [
-                        of.data[0].cast_const(),
-                        of.data[1].cast_const(),
-                        of.data[2].cast_const(),
-                    ];
-                    let output_strides = [
-                        i64::from(of.linesize[0]),
-                        i64::from(of.linesize[1]),
-                        i64::from(of.linesize[2]),
                     ];
 
                     scores.push((pipe.compute_metric)(

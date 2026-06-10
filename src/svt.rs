@@ -1,4 +1,4 @@
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 
 pub const EB_ERROR_NONE: i32 = 0;
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
@@ -49,25 +49,25 @@ pub struct EbSvtIOFormat {
 }
 
 #[repr(C)]
-struct ChromaPoints {
-    x: u16,
-    y: u16,
+pub struct ChromaPoints {
+    pub x: u16,
+    pub y: u16,
 }
 
 #[repr(C)]
-struct MasteringDisplayInfo {
-    r: ChromaPoints,
-    g: ChromaPoints,
-    b: ChromaPoints,
-    white_point: ChromaPoints,
-    max_luma: u32,
-    min_luma: u32,
+pub struct MasteringDisplayInfo {
+    pub r: ChromaPoints,
+    pub g: ChromaPoints,
+    pub b: ChromaPoints,
+    pub white_point: ChromaPoints,
+    pub max_luma: u32,
+    pub min_luma: u32,
 }
 
 #[repr(C)]
-struct ContentLightLevel {
-    max_cll: u16,
-    max_fall: u16,
+pub struct ContentLightLevel {
+    pub max_cll: u16,
+    pub max_fall: u16,
 }
 
 #[repr(C)]
@@ -97,29 +97,29 @@ struct SFramePositions {
 #[repr(C)]
 pub struct EbSvtAv1EncConfiguration {
     enc_mode: i8,
-    intra_period_length: i32,
+    pub intra_period_length: i32,
     intra_refresh_type: i32,
     hierarchical_levels: u32,
     pred_structure: u8,
-    source_width: u32,
-    source_height: u32,
+    pub source_width: u32,
+    pub source_height: u32,
     forced_max_frame_width: u32,
     forced_max_frame_height: u32,
-    frame_rate_numerator: u32,
-    frame_rate_denominator: u32,
-    encoder_bit_depth: u32,
-    encoder_color_format: i32,
-    profile: i32,
+    pub frame_rate_numerator: u32,
+    pub frame_rate_denominator: u32,
+    pub encoder_bit_depth: u32,
+    pub encoder_color_format: i32,
+    pub profile: i32,
     tier: u32,
     level: u32,
-    color_primaries: i32,
-    transfer_characteristics: i32,
-    matrix_coefficients: i32,
-    color_range: i32,
-    mastering_display: MasteringDisplayInfo,
-    content_light_level: ContentLightLevel,
-    chroma_sample_position: i32,
-    rate_control_mode: u8,
+    pub color_primaries: i32,
+    pub transfer_characteristics: i32,
+    pub matrix_coefficients: i32,
+    pub color_range: i32,
+    pub mastering_display: MasteringDisplayInfo,
+    pub content_light_level: ContentLightLevel,
+    pub chroma_sample_position: i32,
+    pub rate_control_mode: u8,
     qp: u32,
     use_qp_file: bool,
     target_bit_rate: u32,
@@ -152,7 +152,7 @@ pub struct EbSvtAv1EncConfiguration {
     cdef_level: i32,
     enable_restoration_filtering: i32,
     enable_mfmv: i32,
-    scene_change_detection: u32,
+    pub scene_change_detection: u32,
     tile_columns: i32,
     tile_rows: i32,
     look_ahead_distance: u32,
@@ -251,4 +251,5 @@ unsafe extern "C" {
 
     pub fn svt_av1_enc_deinit_handle(svt_enc_component: *mut EbComponentType) -> i32;
 
+    pub fn svt_av1_get_version() -> *const c_char;
 }

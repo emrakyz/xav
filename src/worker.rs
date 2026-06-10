@@ -11,6 +11,8 @@ pub struct WorkPkg {
     pub width: u32,
     pub height: u32,
     #[cfg(feature = "vship")]
+    pub probe: Vec<u8>,
+    #[cfg(feature = "vship")]
     pub tq_state: Option<TQState>,
 }
 
@@ -24,6 +26,8 @@ pub struct TQState {
     pub target: f32,
     pub last_crf: f32,
     pub final_enc: bool,
+    pub best_probe: Vec<u8>,
+    pub best_diff: f32,
 }
 
 impl WorkPkg {
@@ -34,6 +38,8 @@ impl WorkPkg {
             frame_cnt,
             width,
             height,
+            #[cfg(feature = "vship")]
+            probe: Vec::new(),
             #[cfg(feature = "vship")]
             tq_state: None,
         }

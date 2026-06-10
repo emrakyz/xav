@@ -49,6 +49,7 @@ pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 many_single_char_names = "allow"
+similar_names = "allow"
 cast_possible_truncation = "allow"
 cast_possible_wrap = "allow"
 cast_sign_loss = "allow"
@@ -64,7 +65,6 @@ get_unwrap = "deny"
 panic = "deny"
 panic_in_result_fn ="deny"
 unreachable = "deny"
-big_endian_bytes = "deny"
 as_pointer_underscore = "deny"
 absolute_paths = "deny"
 as_underscore = "deny"

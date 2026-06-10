@@ -15,7 +15,7 @@ fn calc_samp_frames(tot_frames: usize, sample_cnt: usize) -> Vec<u32> {
 }
 
 fn detect_frame_crop(
-    frame: *const ffms::VidFrame,
+    frame: *const VidFrame,
     inf: &VidInf,
     min_pix: usize,
 ) -> Option<CropResult> {

@@ -170,6 +170,26 @@ impl ProgsBar {
         print!("{}", l.as_str());
         _ = io_stdout().flush();
     }
+
+    pub fn up_copy(&mut self, current: usize, tot: usize) {
+        if current < tot && self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
+            return;
+        }
+        self.last_update = Instant::now();
+
+        let elapsed = self.start.elapsed().as_secs() as usize;
+        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
+        let perc = (current * 100 / tot.max(1)).min(100);
+
+        let mut l = Line::new();
+        _ = write!(l, "\r\x1b[2K");
+        write_el(&mut l, elapsed / 3600, (elapsed % 3600) / 60);
+        _ = write!(l, "{W}Source AU Read: {C}[");
+        write_bar(&mut l, filled, G_HASH, R_DASH);
+        _ = write!(l, "{C}] {W}{perc}%{N}");
+        print!("{}", l.as_str());
+        _ = io_stdout().flush();
+    }
 }
 
 fn guard(m: &Mutex<Line>) -> MutexGuard<'_, Line> {

@@ -1,5 +1,3 @@
-#[cfg(feature = "vship")]
-use std::path::Path;
 use std::{io::Write as _, process::ChildStdin};
 
 use crate::{
@@ -16,14 +14,14 @@ use crate::{
         VidInf, nv12_10b, nv12_10b_rem,
     },
     pack::{
-        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, conv_10b, unpack_10b,
-        unpack_10b_rem,
+        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, conv_10b, conv_10b_rem,
+        unpack_10b, unpack_10b_rem,
     },
 };
 #[cfg(feature = "vship")]
 use crate::{
     progs::ProgsTrack,
-    tq::{calc_metric_8b, calc_metric_10b},
+    tq::{ProbeDec, calc_metric_8b, calc_metric_10b},
     vship::VshipProcessor,
     worker::WorkPkg,
 };
@@ -44,7 +42,7 @@ pub struct MetricProgs<'a> {
 #[cfg(feature = "vship")]
 pub type CalcMetricFn = fn(
     &WorkPkg,
-    &Path,
+    &mut ProbeDec,
     &Pipeline,
     &VshipProcessor,
     &str,
@@ -103,18 +101,6 @@ pub fn write_frames_8b(
     }
 }
 
-pub fn conv_10b_rem(inp: &[u8], out: &mut [u8]) {
-    let aligned = inp.len() / SHIFT_CHUNK * SHIFT_CHUNK;
-    if aligned > 0 {
-        conv_10b(&inp[..aligned], &mut out[..aligned * 2]);
-    }
-    for i in aligned..inp.len() {
-        let [lo, hi] = (u16::from(inp[i]) << 2).to_le_bytes();
-        out[i * 2] = lo;
-        out[i * 2 + 1] = hi;
-    }
-}
-
 pub fn write_frames_8b_rem(
     stdin: &mut ChildStdin,
     frames: &[u8],
@@ -137,6 +123,8 @@ pub struct Pipeline {
     pub y_sz: usize,
     pub uv_sz: usize,
     pub conv_buf_sz: usize,
+    #[cfg(feature = "vship")]
+    pub unpack_buf_sz: usize,
     pub unpack: UnpackFn,
     pub write_frames: WriteFn,
     #[cfg(feature = "vship")]
@@ -196,6 +184,9 @@ impl Pipeline {
             final_w * final_h * 3 / 2 * 2
         };
 
+        #[cfg(feature = "vship")]
+        let unpack_buf_sz = if is_10b_out { conv_buf_sz } else { 0 };
+
         let has_rem = inf.is_10b
             && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_sz.is_multiple_of(UNPACK_CHUNK));
 
@@ -234,6 +225,8 @@ impl Pipeline {
             y_sz,
             uv_sz,
             conv_buf_sz,
+            #[cfg(feature = "vship")]
+            unpack_buf_sz,
             unpack,
             write_frames,
             #[cfg(feature = "vship")]
@@ -321,21 +314,21 @@ fn comp_cvvdp(
 }
 
 #[cfg(test)]
-pub(crate) mod test_access {
+pub mod test_access {
     use super::*;
 
-    pub const UNPACK_NOOP: UnpackFn = super::unpack_noop;
-    pub const UNPACK_10B: UnpackFn = super::unpack_10b_wrap;
-    pub const UNPACK_10B_REM: UnpackFn = super::unpack_10b_rem_wrap;
-    pub const NV12_10B: UnpackFn = super::nv12_10b_wrap;
-    pub const NV12_10B_REM: UnpackFn = super::nv12_10b_rem_wrap;
+    pub const UNPACK_NOOP: UnpackFn = unpack_noop;
+    pub const UNPACK_10B: UnpackFn = unpack_10b_wrap;
+    pub const UNPACK_10B_REM: UnpackFn = unpack_10b_rem_wrap;
+    pub const NV12_10B: UnpackFn = nv12_10b_wrap;
+    pub const NV12_10B_REM: UnpackFn = nv12_10b_rem_wrap;
 
     #[cfg(feature = "vship")]
     #[allow(dead_code)]
-    pub const COMPUTE_SSIMULACRA2: ComputeMetricFn = super::comp_ssimu2;
+    pub const COMPUTE_SSIMULACRA2: ComputeMetricFn = comp_ssimu2;
     #[cfg(feature = "vship")]
     #[allow(dead_code)]
-    pub const COMPUTE_BUTTERAUGLI: ComputeMetricFn = super::comp_butter;
+    pub const COMPUTE_BUTTERAUGLI: ComputeMetricFn = comp_butter;
     #[cfg(feature = "vship")]
-    pub const COMPUTE_CVVDP: ComputeMetricFn = super::comp_cvvdp;
+    pub const COMPUTE_CVVDP: ComputeMetricFn = comp_cvvdp;
 }

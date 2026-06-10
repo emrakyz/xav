@@ -62,6 +62,7 @@ pub struct AuStream {
     pub index: u8,
     pub channels: u8,
     pub lang: Option<String>,
+    pub bitrate: u16,
 }
 
 fn parse_norm(s: &str) -> Result<NormParams, Xerr> {
@@ -186,6 +187,7 @@ fn get_streams(inp: &Path) -> Result<Vec<AuStream>, Xerr> {
                 index,
                 channels,
                 lang,
+                bitrate: 0,
             })
             .collect()
     })
@@ -445,8 +447,10 @@ pub fn enc_au_streams(
                 },
                 |p| p.brate,
             );
+            let mut stream = (*s).clone();
+            stream.bitrate = brate;
             TrackJob {
-                stream: (*s).clone(),
+                stream,
                 do_norm,
                 brate,
                 path: work_dir.join(format!(

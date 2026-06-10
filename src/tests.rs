@@ -1,7 +1,7 @@
 use std::{
     collections::HashSet,
     env,
-    fs::{self, File},
+    fs::{File, metadata, remove_file},
     io::{BufWriter, Write},
     mem::{size_of, zeroed},
     path::{Path, PathBuf},
@@ -12,7 +12,7 @@ use std::{
         Arc, Once,
         atomic::{AtomicUsize, Ordering::Relaxed},
     },
-    thread,
+    thread::{available_parallelism, scope, spawn},
 };
 
 use crossbeam_channel::bounded;
@@ -23,8 +23,8 @@ use crate::{
     chunk::{chnkify, load_scenes},
     dec::dec_chnks,
     enc::get_frame,
-    encoder::{EncConfig, set_svt_conf},
-    ffms::{self, DecStrat, VidDecoder, VidInf, get_vidinf},
+    encoder::{EncConfig, set_svt_base, set_svt_chunk},
+    ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf},
     pack::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz},
     pipeline::{
         Pipeline, UnpackFn, WriteFn, write_frames_8b, write_frames_8b_rem, write_frames_10b,
@@ -103,7 +103,8 @@ fn svt_init(cfg: &EncConfig) -> *mut EbComponentType {
         unsafe { svt_av1_enc_init_handle(&raw mut handle, &raw mut conf) },
         EB_ERROR_NONE
     );
-    set_svt_conf(&raw mut conf, cfg);
+    set_svt_base(&raw mut conf, cfg.inf, cfg.params, cfg.width, cfg.height);
+    set_svt_chunk(&raw mut conf, cfg);
     assert_eq!(
         unsafe { svt_av1_enc_set_parameter(handle, &raw mut conf) },
         EB_ERROR_NONE
@@ -166,7 +167,7 @@ fn prod_convert(all_yuv: &[u8], pipe: &Pipeline, frame_cnt: usize) -> Vec<u8> {
         .spawn()
         .unwrap();
     let stdin = child.stdin.take().unwrap();
-    thread::scope(|s| {
+    scope(|s| {
         s.spawn(move || {
             let mut stdin = stdin;
             let mut buf = vec![0u8; pipe.conv_buf_sz];
@@ -185,9 +186,10 @@ fn svt_enc(converted: &[u8], pipe: &Pipeline, inf: &VidInf, frame_cnt: usize, ou
 
     let cfg = EncConfig {
         inf,
+        template: None,
         params: "--preset 7 --lp 5 --scm 0",
         zone_params: None,
-        crf: 20.0,
+        crf: Some(20.0),
         out,
         chnk_idx: 0,
         width: w as u32,
@@ -284,7 +286,13 @@ fn verify_pix(reference: &[u8], production: &[u8], pipe: &Pipeline) {
 fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool) {
     use DecStrat::*;
 
-    use crate::{enc::test_access as enc_ta, pipeline::test_access as pipe_ta};
+    use crate::{
+        enc::test_access::{
+            enc_svt_direct_addr, enc_svt_drop_addr, enc_svt_drop_rem_addr, enc_svt_nv12_drop_addr,
+            enc_svt_nv12_drop_rem_addr, resolve_svt_enc_addr,
+        },
+        pipeline::test_access::{NV12_10B, NV12_10B_REM, UNPACK_10B, UNPACK_10B_REM, UNPACK_NOOP},
+    };
 
     let name = format!("{strat:?}");
     let is_nv12_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
@@ -293,24 +301,24 @@ fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool
         let y_ok = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK);
         let uv_ok = (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
         if y_ok && uv_ok {
-            (pipe_ta::NV12_10B, write_frames_10b)
+            (NV12_10B, write_frames_10b)
         } else {
-            (pipe_ta::NV12_10B_REM, write_frames_10b)
+            (NV12_10B_REM, write_frames_10b)
         }
     } else if strat.is_raw() {
-        (pipe_ta::UNPACK_NOOP, write_frames_10b)
+        (UNPACK_NOOP, write_frames_10b)
     } else if !inf.is_10b {
         if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            (pipe_ta::UNPACK_NOOP, write_frames_8b)
+            (UNPACK_NOOP, write_frames_8b)
         } else {
-            (pipe_ta::UNPACK_NOOP, write_frames_8b_rem)
+            (UNPACK_NOOP, write_frames_8b_rem)
         }
     } else if !pipe.final_w.is_multiple_of(PACK_CHUNK)
         || !pipe.frame_sz.is_multiple_of(UNPACK_CHUNK)
     {
-        (pipe_ta::UNPACK_10B_REM, write_frames_10b)
+        (UNPACK_10B_REM, write_frames_10b)
     } else {
-        (pipe_ta::UNPACK_10B, write_frames_10b)
+        (UNPACK_10B, write_frames_10b)
     };
     assert!(
         fn_addr_eq(pipe.unpack, exp_unpack),
@@ -322,21 +330,21 @@ fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool
     );
 
     if !tq_mode {
-        let actual_enc = enc_ta::resolve_svt_enc_addr(strat, is_nv12_10, inf, pipe);
+        let actual_enc = resolve_svt_enc_addr(strat, is_nv12_10, inf, pipe);
         let expected_enc = if strat.is_raw() {
-            enc_ta::enc_svt_direct_addr()
+            enc_svt_direct_addr()
         } else if is_nv12_10 {
             let y_ok = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK);
             let uv_ok = (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
             if y_ok && uv_ok {
-                enc_ta::enc_svt_nv12_drop_addr()
+                enc_svt_nv12_drop_addr()
             } else {
-                enc_ta::enc_svt_nv12_drop_rem_addr()
+                enc_svt_nv12_drop_rem_addr()
             }
         } else if !inf.is_10b && !pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            enc_ta::enc_svt_drop_rem_addr()
+            enc_svt_drop_rem_addr()
         } else {
-            enc_ta::enc_svt_drop_addr()
+            enc_svt_drop_addr()
         };
         assert_eq!(actual_enc, expected_enc, "wrong SVT encode fn for {name}");
     }
@@ -344,12 +352,12 @@ fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool
     #[cfg(feature = "vship")]
     if tq_mode {
         use crate::{
-            pipeline::CalcMetricFn,
+            pipeline::{CalcMetricFn, test_access::COMPUTE_CVVDP},
             tq::{calc_metric_8b, calc_metric_10b},
         };
 
         assert!(
-            fn_addr_eq(pipe.compute_metric, pipe_ta::COMPUTE_CVVDP),
+            fn_addr_eq(pipe.compute_metric, COMPUTE_CVVDP),
             "wrong compute_metric for {name}"
         );
 
@@ -435,7 +443,7 @@ fn val_tq(
     .unwrap();
     vship.reset_cvvdp();
 
-    let threads = thread::available_parallelism().map_or(1, |n| n.get() as i32);
+    let threads = available_parallelism().map_or(1, |n| n.get() as i32);
     let mut probe_dec = VidDecoder::new(ivf, threads).unwrap();
 
     let pix_sz = if inf.is_10b { 2 } else { 1 };
@@ -506,7 +514,7 @@ fn run_test(
         inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };
     }
 
-    let mut strat = ffms::get_dec_strat(&inf, crop, hwdec, tq);
+    let mut strat = get_dec_strat(&inf, crop, hwdec, tq);
     if buffer == 0 {
         strat = strat.to_raw();
     }
@@ -527,7 +535,7 @@ fn run_test(
 
     let (tx, rx) = bounded::<WorkPkg>(1);
     let sem = Arc::new(Semaphore::new(1));
-    let handle = thread::spawn({
+    let handle = spawn({
         let inp = inp.clone();
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
@@ -555,7 +563,7 @@ fn run_test(
 
     let ivf = temp_ivf();
     svt_enc(&converted, &pipe, &inf, tot_frames, &ivf);
-    let ivf_sz = fs::metadata(&ivf).map_or(0, |m| m.len());
+    let ivf_sz = metadata(&ivf).map_or(0, |m| m.len());
     assert!(ivf_sz > 32, "IVF file too small: {ivf_sz}");
 
     #[cfg(feature = "vship")]
@@ -565,7 +573,7 @@ fn run_test(
     #[cfg(not(feature = "vship"))]
     let _ = tq_mode;
 
-    _ = fs::remove_file(&ivf);
+    _ = remove_file(&ivf);
     strat
 }
 

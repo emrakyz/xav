@@ -414,7 +414,7 @@ unsafe fn detect_right<P: Px>(data: *const P, w: usize, h: usize, stride: usize)
 }
 
 fn detect_frame_crop(
-    frame: *const ffms::VidFrame,
+    frame: *const VidFrame,
     inf: &VidInf,
     _min_pix: usize,
 ) -> Option<CropResult> {

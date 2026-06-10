@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::{
     error::Xerr,
-    ffms::{self, VidDecoder, VidInf},
+    ffms::{VidDecoder, VidFrame, VidInf},
     progs::ProgsBar,
 };
 

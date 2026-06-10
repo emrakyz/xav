@@ -7,6 +7,8 @@ use std::{
     thread::available_parallelism,
 };
 
+use libc::atoll;
+
 use crate::{
     Xerr,
     dec::CropCalc,
@@ -21,9 +23,9 @@ use crate::{
         HwP010RawCrop, HwP010RawCropRem, HwP010RawRem, HwP010RawRemStride,
     },
     pack::{
-        PACK_CHUNK, SHIFT_CHUNK, conv_10b, cpy_with_stride, deint_nv12, deint_nv12_10b, deint_p010,
-        pack_4_pix_10b, pack_10b, pack_10b_rem, pack_stride, pack_stride_rem, packed_row_sz,
-        shift_p010, shift_p010_rem,
+        PACK_CHUNK, SHIFT_CHUNK, conv_10b, conv_10b_rem, cpy_with_stride, deint_nv12,
+        deint_nv12_10b, deint_nv12_10b_rem, deint_nv12_rem, deint_p010, deint_p010_rem, pack_10b,
+        pack_10b_rem, pack_stride, pack_stride_rem, packed_row_sz, shift_p010, shift_p010_rem,
     },
     progs::ProgsBar,
     util::assume_unreachable,
@@ -31,8 +33,6 @@ use crate::{
 
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
 pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
-pub const AVIO_FLAG_WRITE: c_int = 2;
-pub const AVFMT_FLAG_BITEXACT: c_int = 0x0400;
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
 const AVERROR_EOF: c_int = -541_478_725;
 const AVERROR_EAGAIN: c_int = -11;
@@ -65,14 +65,14 @@ pub struct AVCodecParameters {
     pub codec_type: c_int,
     pub codec_id: c_int,
     _codec_tag: u32,
-    _extradata: *mut u8,
-    _extradata_size: c_int,
+    pub extradata: *mut u8,
+    pub extradata_size: c_int,
     _coded_side_data: *mut c_void,
     _nb_coded_side_data: c_int,
     pub format: c_int,
     pub bit_rate: i64,
     _bits_per_coded_sample: c_int,
-    bits_per_raw_sample: c_int,
+    pub bits_per_raw_sample: c_int,
     _profile: c_int,
     _level: c_int,
     width: c_int,
@@ -129,6 +129,17 @@ pub struct AVFormatContext {
     _packet_size: c_uint,
     _max_delay: c_int,
     pub flags: c_int,
+    _probesize: i64,
+    _max_analyze_duration: i64,
+    _key: *const u8,
+    _keylen: c_int,
+    _nb_programs: c_uint,
+    _programs: *mut c_void,
+    _video_codec_id: c_int,
+    _audio_codec_id: c_int,
+    _subtitle_codec_id: c_int,
+    _data_codec_id: c_int,
+    pub metadata: *mut c_void,
 }
 
 #[repr(C)]
@@ -197,7 +208,7 @@ pub struct AVPacket {
     _buf: *mut c_void,
     pub pts: i64,
     pub dts: i64,
-    _data: *mut u8,
+    pub data: *mut u8,
     pub size: c_int,
     pub stream_index: c_int,
     pub flags: c_int,
@@ -223,6 +234,7 @@ unsafe extern "C" {
         options: *mut *mut c_void,
     ) -> c_int;
     pub fn avformat_find_stream_info(ic: *mut AVFormatContext, options: *mut *mut c_void) -> c_int;
+    pub fn avcodec_get_name(id: c_int) -> *const c_char;
     pub fn avformat_close_input(ps: *mut *mut AVFormatContext);
     pub fn av_opt_set_int(
         obj: *mut c_void,
@@ -256,38 +268,6 @@ unsafe extern "C" {
     pub fn av_packet_free(pkt: *mut *mut AVPacket);
     pub fn av_packet_unref(pkt: *mut AVPacket);
     pub fn av_read_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
-    pub fn avformat_alloc_output_context2(
-        ctx: *mut *mut AVFormatContext,
-        oformat: *const c_void,
-        format_name: *const c_char,
-        filename: *const c_char,
-    ) -> c_int;
-    pub fn avformat_new_stream(s: *mut AVFormatContext, c: *const c_void) -> *mut AVStream;
-    pub fn avcodec_parameters_copy(
-        dst: *mut AVCodecParameters,
-        src: *const AVCodecParameters,
-    ) -> c_int;
-    pub fn avio_open(s: *mut *mut c_void, url: *const c_char, flags: c_int) -> c_int;
-    pub fn avio_closep(s: *mut *mut c_void) -> c_int;
-    pub fn avformat_write_header(s: *mut AVFormatContext, options: *mut *mut c_void) -> c_int;
-    pub fn av_interleaved_write_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
-    pub fn av_write_trailer(s: *mut AVFormatContext) -> c_int;
-    pub fn avformat_free_context(s: *mut AVFormatContext);
-    pub fn av_dict_set(
-        pm: *mut *mut c_void,
-        key: *const c_char,
-        value: *const c_char,
-        flags: c_int,
-    ) -> c_int;
-    pub fn av_dict_copy(dst: *mut *mut c_void, src: *const c_void, flags: c_int) -> c_int;
-    pub fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
-    pub fn av_mallocz(size: usize) -> *mut c_void;
-    pub fn av_dict_free(m: *mut *mut c_void);
-    pub fn avformat_query_codec(
-        ofmt: *const c_void,
-        codec_id: c_int,
-        std_compliance: c_int,
-    ) -> c_int;
     pub fn av_frame_alloc() -> *mut VidFrame;
     pub fn av_frame_free(frame: *mut *mut VidFrame);
     pub fn av_seek_frame(
@@ -417,6 +397,16 @@ pub const fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
+#[derive(Clone, Copy)]
+pub struct Mastering {
+    pub r: (f64, f64),
+    pub g: (f64, f64),
+    pub b: (f64, f64),
+    pub wp: (f64, f64),
+    pub lum_max: f64,
+    pub lum_min: f64,
+}
+
 #[derive(Clone)]
 pub struct VidInf {
     pub width: u32,
@@ -433,6 +423,8 @@ pub struct VidInf {
     pub chroma_sample_position: i8,
     pub mastering_display: Option<String>,
     pub content_light: Option<String>,
+    pub mastering: Option<Mastering>,
+    pub content_light_level: Option<(u16, u16)>,
     pub y_linesz: usize,
 }
 
@@ -449,6 +441,7 @@ pub struct VidDecoder {
     hw: bool,
     ts_mul: i64,
     ts_div: i64,
+    start_pts: i64,
 }
 
 unsafe impl Send for VidDecoder {}
@@ -492,6 +485,7 @@ impl VidDecoder {
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
             let (ts_mul, ts_div) = ts_factors((*stream).time_base, (*stream).avg_frame_rate);
+            let start_pts = (*stream).start_time.max(0);
 
             let mut codec_ctx = avcodec_alloc_context3(dec);
             if codec_ctx.is_null() {
@@ -521,6 +515,7 @@ impl VidDecoder {
                 hw: false,
                 ts_mul,
                 ts_div,
+                start_pts,
             })
         }
     }
@@ -569,6 +564,7 @@ impl VidDecoder {
             }
 
             let (ts_mul, ts_div) = ts_factors((*stream).time_base, (*stream).avg_frame_rate);
+            let start_pts = (*stream).start_time.max(0);
 
             let mut codec_ctx = avcodec_alloc_context3(dec);
             if codec_ctx.is_null() {
@@ -601,6 +597,7 @@ impl VidDecoder {
                 hw: true,
                 ts_mul,
                 ts_div,
+                start_pts,
             })
         }
     }
@@ -658,12 +655,12 @@ impl VidDecoder {
 
     #[inline]
     const fn pts_frame(&self, pts: i64) -> usize {
-        ((pts * self.ts_div + self.ts_mul / 2) / self.ts_mul) as usize
+        (((pts - self.start_pts) * self.ts_div + self.ts_mul / 2) / self.ts_mul) as usize
     }
 
     pub fn seek_near(&mut self, frame_idx: usize) {
         unsafe {
-            let ts = frame_idx as i64 * self.ts_mul / self.ts_div;
+            let ts = frame_idx as i64 * self.ts_mul / self.ts_div + self.start_pts;
             av_seek_frame(self.fmt_ctx, self.stream_idx, ts, AVSEEK_FLAG_BACKWARD);
             avcodec_flush_buffers(self.codec_ctx);
             self.eof = false;
@@ -678,6 +675,9 @@ impl VidDecoder {
         }
         if frame_idx < self.next_frame || frame_idx - self.next_frame > 150 {
             self.seek_near(frame_idx);
+            if self.next_frame > frame_idx {
+                self.seek_near(frame_idx - 1);
+            }
         }
         while self.next_frame < frame_idx && !self.eof {
             self.dec_next();
@@ -850,12 +850,14 @@ pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>, tot_frames: usi
                 if br <= 0 {
                     let e = av_dict_get(s.metadata, c"BPS".as_ptr(), null(), AV_DICT_IGNORE_SUFFIX);
                     if !e.is_null() {
-                        br = libc::atoll((*e).value.cast());
+                        br = atoll((*e).value.cast());
                     }
                 }
                 if br > 0 {
+                    let afr = s.avg_frame_rate;
                     avformat_close_input(addr_of_mut!(c));
-                    return (br * s.duration * tb_num / (tb_den * 8)) as u64;
+                    return (br * tot_frames as i64 * i64::from(afr.den) / (i64::from(afr.num) * 8))
+                        as u64;
                 }
             }
             let mul = tb_num * i64::from(s.avg_frame_rate.num);
@@ -1024,11 +1026,28 @@ pub fn get_vidinf(path: &Path) -> Result<VidInf, Xerr> {
             is_10b: fmeta.is_10b,
             color_range: fmeta.color_range.map_or(0, |v| v as i8),
             chroma_sample_position: fmeta.chroma_sample_position.map_or(1, |v| v as i8),
-            mastering_display: fmeta.mastering_display,
-            content_light: fmeta.content_light,
+            mastering_display: fmeta.mastering.as_ref().map(fmt_master_disp),
+            content_light: fmeta.content_light_level.map(|(c, f)| format!("{c},{f}")),
+            mastering: fmeta.mastering,
+            content_light_level: fmeta.content_light_level,
             y_linesz: fmeta.y_linesz,
         })
     }
+}
+
+pub unsafe fn dict_get(metadata: *const c_void, key: *const c_char) -> Option<String> {
+    let entry = unsafe { av_dict_get(metadata, key, null(), 0) };
+    if entry.is_null() {
+        return None;
+    }
+    unsafe { CStr::from_ptr((*entry).value) }
+        .to_str()
+        .ok()
+        .map(ToOwned::to_owned)
+}
+
+pub unsafe fn stream_lang(metadata: *const c_void) -> Option<String> {
+    unsafe { dict_get(metadata, c"language".as_ptr()) }
 }
 
 pub fn get_au_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr> {
@@ -1044,7 +1063,6 @@ pub fn get_au_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr
 
         let n = (*fmt_ctx).nb_streams as usize;
         let mut result = Vec::new();
-        let lang_key = CString::new("language").unwrap_unchecked();
 
         for i in 0..n {
             let stream = &*(*(*fmt_ctx).streams.add(i));
@@ -1053,17 +1071,7 @@ pub fn get_au_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr
                 continue;
             }
             let channels = par.ch_layout.nb_channels as u8;
-            let lang = {
-                let entry = av_dict_get(stream.metadata, lang_key.as_ptr(), null(), 0);
-                if entry.is_null() {
-                    None
-                } else {
-                    CStr::from_ptr((*entry).value)
-                        .to_str()
-                        .ok()
-                        .map(ToOwned::to_owned)
-                }
-            };
+            let lang = stream_lang(stream.metadata);
             result.push((stream.index as u8, channels, lang));
         }
 
@@ -1078,8 +1086,8 @@ struct FrameMeta {
     matrix_coefficients: Option<c_int>,
     color_range: Option<c_int>,
     chroma_sample_position: Option<c_int>,
-    mastering_display: Option<String>,
-    content_light: Option<String>,
+    mastering: Option<Mastering>,
+    content_light_level: Option<(u16, u16)>,
     is_10b: bool,
     y_linesz: usize,
 }
@@ -1092,8 +1100,8 @@ impl FrameMeta {
             matrix_coefficients: None,
             color_range: None,
             chroma_sample_position: None,
-            mastering_display: None,
-            content_light: None,
+            mastering: None,
+            content_light_level: None,
             is_10b: false,
             y_linesz: width,
         }
@@ -1131,14 +1139,14 @@ unsafe fn extr_frame_meta(f: &VidFrame, par_color_space: c_int) -> FrameMeta {
             3 => Some(2),
             _ => None,
         },
-        mastering_display: unsafe { extr_master_disp(f) },
-        content_light: unsafe { extr_cont_light(f) },
+        mastering: unsafe { extr_master_disp(f) },
+        content_light_level: unsafe { extr_cont_light(f) },
         is_10b: f.format == AV_PIX_FMT_YUV420P10LE,
         y_linesz: f.linesize[0] as usize,
     }
 }
 
-unsafe fn extr_master_disp(f: &VidFrame) -> Option<String> {
+unsafe fn extr_master_disp(f: &VidFrame) -> Option<Mastering> {
     unsafe {
         let sd = av_frame_get_side_data(f, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
         if sd.is_null() {
@@ -1148,30 +1156,41 @@ unsafe fn extr_master_disp(f: &VidFrame) -> Option<String> {
         if md.has_primaries == 0 || md.has_luminance == 0 {
             return None;
         }
-        Some(format!(
-            "G({:.4},{:.4})B({:.4},{:.4})R({:.4},{:.4})WP({:.4},{:.4})L({:.4},{:.4})",
-            rat_f64(md.display_primaries[1][0]),
-            rat_f64(md.display_primaries[1][1]),
-            rat_f64(md.display_primaries[2][0]),
-            rat_f64(md.display_primaries[2][1]),
-            rat_f64(md.display_primaries[0][0]),
-            rat_f64(md.display_primaries[0][1]),
-            rat_f64(md.white_point[0]),
-            rat_f64(md.white_point[1]),
-            rat_f64(md.max_luminance),
-            rat_f64(md.min_luminance),
-        ))
+        Some(Mastering {
+            r: (
+                rat_f64(md.display_primaries[0][0]),
+                rat_f64(md.display_primaries[0][1]),
+            ),
+            g: (
+                rat_f64(md.display_primaries[1][0]),
+                rat_f64(md.display_primaries[1][1]),
+            ),
+            b: (
+                rat_f64(md.display_primaries[2][0]),
+                rat_f64(md.display_primaries[2][1]),
+            ),
+            wp: (rat_f64(md.white_point[0]), rat_f64(md.white_point[1])),
+            lum_max: rat_f64(md.max_luminance),
+            lum_min: rat_f64(md.min_luminance),
+        })
     }
 }
 
-unsafe fn extr_cont_light(f: &VidFrame) -> Option<String> {
+fn fmt_master_disp(m: &Mastering) -> String {
+    format!(
+        "G({:.4},{:.4})B({:.4},{:.4})R({:.4},{:.4})WP({:.4},{:.4})L({:.4},{:.4})",
+        m.g.0, m.g.1, m.b.0, m.b.1, m.r.0, m.r.1, m.wp.0, m.wp.1, m.lum_max, m.lum_min,
+    )
+}
+
+unsafe fn extr_cont_light(f: &VidFrame) -> Option<(u16, u16)> {
     unsafe {
         let sd = av_frame_get_side_data(f, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL);
         if sd.is_null() {
             return None;
         }
         let cl = &*(((*sd).data as usize) as *const AVContentLightMetadata);
-        Some(format!("{},{}", cl.max_cll, cl.max_fall))
+        Some((cl.max_cll as u16, cl.max_fall as u16))
     }
 }
 
@@ -1750,111 +1769,28 @@ pub fn extr_10b_crop_pack_stride_rem(frame: *const VidFrame, out: &mut [u8], cro
 
         let y_row = packed_row_sz(w);
         let uv_row = packed_row_sz(w / 2);
+        let y_pack = y_row * h;
+        let uv_pack = uv_row * (h / 2);
 
-        let y_simd_in = crop_calc.y_len / PACK_CHUNK * PACK_CHUNK;
-        let y_simd_out = (y_simd_in * 5) / 8;
-        let y_aligned = crop_calc.y_len & !7;
-        let y_pack_aligned = (y_aligned * 5) / 8;
+        let y_off = crop_calc.crop_h as usize * pix_sz + crop_calc.crop_v as usize * y_linesz;
+        pack_stride_rem(f.data[0].add(y_off), y_linesz, w, h, out.as_mut_ptr());
 
-        let uv_simd_in = crop_calc.uv_len / PACK_CHUNK * PACK_CHUNK;
-        let uv_simd_out = (uv_simd_in * 5) / 8;
-        let uv_aligned = crop_calc.uv_len & !7;
-        let uv_pack_aligned = (uv_aligned * 5) / 8;
-
-        let mut dst_pos = 0;
-
-        for row in 0..h {
-            let src_off =
-                (crop_calc.crop_h as usize * pix_sz) + (row + crop_calc.crop_v as usize) * y_linesz;
-            let src_row = from_raw_parts(f.data[0].add(src_off), crop_calc.y_len);
-            let dst_row = from_raw_parts_mut(out.as_mut_ptr().add(dst_pos), y_row);
-
-            pack_10b(&src_row[..y_simd_in], &mut dst_row[..y_simd_out]);
-
-            src_row[y_simd_in..y_aligned]
-                .chunks_exact(8)
-                .zip(dst_row[y_simd_out..y_pack_aligned].chunks_exact_mut(5))
-                .for_each(|(i, o)| {
-                    pack_4_pix_10b(
-                        i.try_into().unwrap_unchecked(),
-                        o.try_into().unwrap_unchecked(),
-                    );
-                });
-
-            let rem = crop_calc.y_len % 8;
-            if rem > 0 {
-                let mut tmp = [0u8; 8];
-                tmp[..rem].copy_from_slice(&src_row[crop_calc.y_len - rem..]);
-                pack_4_pix_10b(
-                    tmp,
-                    (&mut dst_row[y_row - 5..]).try_into().unwrap_unchecked(),
-                );
-            }
-
-            dst_pos += y_row;
-        }
-
-        for row in 0..h / 2 {
-            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
-                + (row + crop_calc.crop_v as usize / 2) * uv_linesz;
-            let src_row = from_raw_parts(f.data[1].add(src_off), crop_calc.uv_len);
-            let dst_row = from_raw_parts_mut(out.as_mut_ptr().add(dst_pos), uv_row);
-
-            pack_10b(&src_row[..uv_simd_in], &mut dst_row[..uv_simd_out]);
-
-            src_row[uv_simd_in..uv_aligned]
-                .chunks_exact(8)
-                .zip(dst_row[uv_simd_out..uv_pack_aligned].chunks_exact_mut(5))
-                .for_each(|(i, o)| {
-                    pack_4_pix_10b(
-                        i.try_into().unwrap_unchecked(),
-                        o.try_into().unwrap_unchecked(),
-                    );
-                });
-
-            let rem = crop_calc.uv_len % 8;
-            if rem > 0 {
-                let mut tmp = [0u8; 8];
-                tmp[..rem].copy_from_slice(&src_row[crop_calc.uv_len - rem..]);
-                pack_4_pix_10b(
-                    tmp,
-                    (&mut dst_row[uv_row - 5..]).try_into().unwrap_unchecked(),
-                );
-            }
-
-            dst_pos += uv_row;
-        }
-
-        for row in 0..h / 2 {
-            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
-                + (row + crop_calc.crop_v as usize / 2) * uv_linesz;
-            let src_row = from_raw_parts(f.data[2].add(src_off), crop_calc.uv_len);
-            let dst_row = from_raw_parts_mut(out.as_mut_ptr().add(dst_pos), uv_row);
-
-            pack_10b(&src_row[..uv_simd_in], &mut dst_row[..uv_simd_out]);
-
-            src_row[uv_simd_in..uv_aligned]
-                .chunks_exact(8)
-                .zip(dst_row[uv_simd_out..uv_pack_aligned].chunks_exact_mut(5))
-                .for_each(|(i, o)| {
-                    pack_4_pix_10b(
-                        i.try_into().unwrap_unchecked(),
-                        o.try_into().unwrap_unchecked(),
-                    );
-                });
-
-            let rem = crop_calc.uv_len % 8;
-            if rem > 0 {
-                let mut tmp = [0u8; 8];
-                tmp[..rem].copy_from_slice(&src_row[crop_calc.uv_len - rem..]);
-                pack_4_pix_10b(
-                    tmp,
-                    (&mut dst_row[uv_row - 5..]).try_into().unwrap_unchecked(),
-                );
-            }
-
-            dst_pos += uv_row;
-        }
+        let uv_off =
+            crop_calc.crop_h as usize / 2 * pix_sz + crop_calc.crop_v as usize / 2 * uv_linesz;
+        pack_stride_rem(
+            f.data[1].add(uv_off),
+            uv_linesz,
+            w / 2,
+            h / 2,
+            out.as_mut_ptr().add(y_pack),
+        );
+        pack_stride_rem(
+            f.data[2].add(uv_off),
+            uv_linesz,
+            w / 2,
+            h / 2,
+            out.as_mut_ptr().add(y_pack + uv_pack),
+        );
     }
 }
 
@@ -2021,56 +1957,6 @@ pub fn nv12_10b(inp: &[u8], out: &mut [u8], w: usize, h: usize) {
 }
 
 #[inline]
-fn deint_nv12_rem(src: &[u8], u_dst: &mut [u8], v_dst: &mut [u8]) {
-    let chnk = SHIFT_CHUNK * 2;
-    let aligned = u_dst.len() / chnk * chnk;
-    if aligned > 0 {
-        deint_nv12(
-            &src[..aligned * 2],
-            &mut u_dst[..aligned],
-            &mut v_dst[..aligned],
-        );
-    }
-    for i in aligned..u_dst.len() {
-        u_dst[i] = src[i * 2];
-        v_dst[i] = src[i * 2 + 1];
-    }
-}
-
-#[inline]
-fn deint_p010_rem(src: &[u16], u_dst: &mut [u16], v_dst: &mut [u16]) {
-    let aligned = u_dst.len() / SHIFT_CHUNK * SHIFT_CHUNK;
-    if aligned > 0 {
-        deint_p010(
-            &src[..aligned * 2],
-            &mut u_dst[..aligned],
-            &mut v_dst[..aligned],
-        );
-    }
-    for i in aligned..u_dst.len() {
-        u_dst[i] = src[i * 2] >> 6;
-        v_dst[i] = src[i * 2 + 1] >> 6;
-    }
-}
-
-#[inline]
-fn deint_nv12_10b_rem(src: &[u8], u_dst: &mut [u16], v_dst: &mut [u16]) {
-    let chnk = SHIFT_CHUNK * 2;
-    let aligned = u_dst.len() / chnk * chnk;
-    if aligned > 0 {
-        deint_nv12_10b(
-            &src[..aligned * 2],
-            &mut u_dst[..aligned],
-            &mut v_dst[..aligned],
-        );
-    }
-    for i in aligned..u_dst.len() {
-        u_dst[i] = u16::from(src[i * 2]) << 2;
-        v_dst[i] = u16::from(src[i * 2 + 1]) << 2;
-    }
-}
-
-#[inline]
 pub fn nv12_10b_rem(inp: &[u8], out: &mut [u8], w: usize, h: usize) {
     let y_in = w * h;
     let y_out = y_in * 2;
@@ -2079,18 +1965,7 @@ pub fn nv12_10b_rem(inp: &[u8], out: &mut [u8], w: usize, h: usize) {
     unsafe {
         let y_src = inp.get_unchecked(..y_in);
         let y_dst = from_raw_parts_mut(out.as_mut_ptr(), y_out);
-        let aligned = y_in / SHIFT_CHUNK * SHIFT_CHUNK;
-        if aligned > 0 {
-            conv_10b(
-                y_src.get_unchecked(..aligned),
-                from_raw_parts_mut(y_dst.as_mut_ptr(), aligned * 2),
-            );
-        }
-        for i in aligned..y_in {
-            let [lo, hi] = (u16::from(y_src[i]) << 2).to_le_bytes();
-            y_dst[i * 2] = lo;
-            y_dst[i * 2 + 1] = hi;
-        }
+        conv_10b_rem(y_src, y_dst);
 
         let chroma = from_raw_parts_mut(out.as_mut_ptr().add(y_out).cast::<u16>(), uv_plane * 2);
         let (u_dst, v_dst) = chroma.split_at_mut(uv_plane);
@@ -2254,7 +2129,7 @@ pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, out: &mut [u8], w: usize, h: 
             out.as_mut_ptr().add(y_sz + uv_sz).cast::<u16>(),
             uv_w * (h / 2),
         );
-        deint_p010_rem(src, u_dst, v_dst);
+        deint_p010(src, u_dst, v_dst);
     }
 }
 

@@ -7,11 +7,12 @@ use std::{
 use crate::{
     error::Xerr,
     ffms::{
-        self, AVFormatContext, AVPacket, AVSEEK_FLAG_BACKWARD, VidFrame, av_find_best_stream,
+        AVFormatContext, AVPacket, AVSEEK_FLAG_BACKWARD, VidFrame, av_find_best_stream,
         av_frame_alloc, av_frame_free, av_packet_alloc, av_packet_free, av_packet_unref,
         av_read_frame, av_seek_frame, avcodec_alloc_context3, avcodec_flush_buffers,
         avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
         avcodec_send_packet, avformat_close_input, avformat_open_input, merge_ranges,
+        probe_streams,
     },
 };
 
@@ -67,7 +68,7 @@ impl AuDecoder {
                 return Err("lavf: open failed".into());
             }
 
-            ffms::probe_streams(fmt_ctx, AVMEDIA_TYPE_AUDIO, 0x40000);
+            probe_streams(fmt_ctx, AVMEDIA_TYPE_AUDIO, 0x40000);
 
             let mut dec: *const c_void = null();
             let idx = av_find_best_stream(
