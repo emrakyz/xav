@@ -1,5 +1,5 @@
+## Description
 - **TLDR:** Nothing but brutally hardcore; obsessive amounts of excessive optimizations
-
 - XAV is a command-line tool all of micro-optimizations and automations for scene change detection, cropping, demuxing, parsing, decoding, pixel/frame processing, encoding, metric testing, muxing, memory flows and the complete pipeline required for efficient chunked video encoding, with the option of quality metric testing/targeting
 - Lowest RAM and VRAM usage
 - Designed for full automation being opinionated
