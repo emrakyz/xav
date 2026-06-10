@@ -906,6 +906,7 @@ main() {
                 done
         }
         svt_fork_name="${SVT_FORK_NAMES[fork_idx]}"
+        [[ "${svt_fork_name}" == "essential" ]] && cargo_features+=" --features svt-essential"
         svt_fork_url="${SVT_FORK_URLS[fork_idx]}"
         loginf g "SVT-AV1 fork: ${svt_fork_name}"
 

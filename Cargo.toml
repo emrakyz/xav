@@ -15,6 +15,7 @@ categories = ["multimedia::video", "command-line-utilities"]
 default = [ "vship" ]
 static = []
 vship = []
+svt-essential = []
 
 [dependencies]
 libc = "0.2.186"

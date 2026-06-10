@@ -98,6 +98,8 @@ struct SFramePositions {
 pub struct EbSvtAv1EncConfiguration {
     enc_mode: i8,
     pub intra_period_length: i32,
+    #[cfg(feature = "svt-essential")]
+    min_intra_period_length: i32,
     intra_refresh_type: i32,
     hierarchical_levels: u32,
     pred_structure: u8,
