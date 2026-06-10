@@ -23,7 +23,7 @@ ebur128 = "0.1.10"
 sonic-rs = "0.5.8"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-av-scenechange = { git = "https://github.com/emrakyz/av-scenechange", rev = "ab0d2747" }
+av-scenechange = { git = "https://github.com/emrakyz/av-scenechange" }
 
 [build-dependencies]
 nasm-rs = { version = "0.3.2", features = ["parallel"] }
