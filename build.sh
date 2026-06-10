@@ -798,6 +798,7 @@ setup_toolchain() {
 	-fno-threadsafe-statics -mno-vzeroupper -mno-retpoline -mno-lvi-cfi \
 	-mharden-sls=none -mno-lvi-hardening -ftls-model=local-exec \
 	-fno-use-cxa-atexit"
+        "${IS_MAC}" && export COMMON_FLAGS="${COMMON_FLAGS//-mno-vzeroupper/}"
         export CFLAGS="${COMMON_FLAGS}"
         "${IS_MAC}" && export CXXFLAGS="${COMMON_FLAGS} -stdlib=libc++" || export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
