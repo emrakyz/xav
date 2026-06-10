@@ -26,7 +26,6 @@ use std::{
 };
 #[cfg(feature = "vship")]
 use std::thread::available_parallelism;
-};
 
 use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
