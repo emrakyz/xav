@@ -28,7 +28,7 @@ const MEM_COMMIT: u32 = 0x0000_1000;
 const MEM_RESERVE: u32 = 0x0000_2000;
 const MEM_RELEASE: u32 = 0x0000_8000;
 
-const IORING_VERSION_3: u32 = 3;
+const IORING_VERSION_4: u32 = 400;
 const IORING_REF_RAW: u32 = 0;
 const INFINITE: u32 = 0xFFFF_FFFF;
 
@@ -248,7 +248,7 @@ impl IoRingWriter {
             advisory: 0,
         };
         let hr =
-            unsafe { CreateIoRing(IORING_VERSION_3, flags, STREAM_QD, STREAM_QD, &raw mut ring) };
+            unsafe { CreateIoRing(IORING_VERSION_4, flags, STREAM_QD, STREAM_QD, &raw mut ring) };
         if hr != 0 {
             return Err(format!("CreateIoRing failed (hr {hr:#x})").into());
         }
