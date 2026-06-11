@@ -24,6 +24,10 @@ const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 const PAGE_READONLY: u32 = 0x02;
 const PAGE_READWRITE: u32 = 0x04;
 const FILE_MAP_READ: u32 = 0x0004;
+const FILE_ALLOCATION_INFO_CLASS: i32 = 5;
+const FSCTL_SET_COMPRESSION: u32 = 0x0009_C040;
+const COMPRESSION_FORMAT_NONE: u16 = 0;
+const ERROR_IO_PENDING: u32 = 997;
 
 const MEM_COMMIT: u32 = 0x0000_1000;
 const MEM_RESERVE: u32 = 0x0000_2000;
@@ -62,6 +66,20 @@ struct IoringCqe {
     information: usize,
 }
 
+#[repr(C)]
+struct FileAllocationInfo {
+    allocation_size: i64,
+}
+
+#[repr(C)]
+struct Overlapped {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    event: Handle,
+}
+
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn CreateFileW(
@@ -94,6 +112,23 @@ unsafe extern "system" {
     fn GetLastError() -> u32;
     fn VirtualAlloc(addr: *mut c_void, size: usize, kind: u32, protect: u32) -> *mut c_void;
     fn VirtualFree(addr: *mut c_void, size: usize, kind: u32) -> i32;
+    fn SetFileInformationByHandle(file: Handle, class: i32, info: *const c_void, size: u32) -> i32;
+    fn DeviceIoControl(
+        device: Handle,
+        code: u32,
+        in_buf: *const c_void,
+        in_size: u32,
+        out_buf: *mut c_void,
+        out_size: u32,
+        returned: *mut u32,
+        overlapped: *mut Overlapped,
+    ) -> i32;
+    fn GetOverlappedResult(
+        file: Handle,
+        overlapped: *mut Overlapped,
+        transferred: *mut u32,
+        wait: i32,
+    ) -> i32;
 }
 
 #[link(name = "onecore")]
@@ -359,12 +394,54 @@ impl Drop for IoRingWriter {
     }
 }
 
+fn clear_compression(file: Handle) {
+    let mode = COMPRESSION_FORMAT_NONE;
+    let mut ov = Overlapped {
+        internal: 0,
+        internal_high: 0,
+        offset: 0,
+        offset_high: 0,
+        event: null_mut(),
+    };
+    let mut returned = 0u32;
+    let ok = unsafe {
+        DeviceIoControl(
+            file,
+            FSCTL_SET_COMPRESSION,
+            (&raw const mode).cast(),
+            size_of::<u16>() as u32,
+            null_mut(),
+            0,
+            &raw mut returned,
+            &raw mut ov,
+        )
+    };
+    if ok == 0 && unsafe { GetLastError() } == ERROR_IO_PENDING {
+        let mut done = 0u32;
+        unsafe { GetOverlappedResult(file, &raw mut ov, &raw mut done, 1) };
+    }
+}
+
+fn preallocate(file: Handle, size: u64) {
+    let info = FileAllocationInfo {
+        allocation_size: size as i64,
+    };
+    unsafe {
+        SetFileInformationByHandle(
+            file,
+            FILE_ALLOCATION_INFO_CLASS,
+            (&raw const info).cast(),
+            size_of::<FileAllocationInfo>() as u32,
+        )
+    };
+}
+
 pub fn write_mux(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr> {
     let w = wide(out);
     let file = unsafe {
         CreateFileW(
             w.as_ptr(),
-            GENERIC_WRITE,
+            GENERIC_READ | GENERIC_WRITE,
             0,
             null_mut(),
             CREATE_ALWAYS,
@@ -376,6 +453,8 @@ pub fn write_mux(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr
         let e = unsafe { GetLastError() };
         return Err(format!("CreateFileW (output) failed (error {e})").into());
     }
+    clear_compression(file);
+    preallocate(file, mux.lay.file_size);
     let res = ring_write(file, mux, progs);
     unsafe { CloseHandle(file) };
     res
