@@ -20,6 +20,7 @@ const FILE_SHARE_DELETE: u32 = 0x0000_0004;
 const CREATE_ALWAYS: u32 = 2;
 const OPEN_EXISTING: u32 = 3;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x0000_0080;
+const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 const PAGE_READONLY: u32 = 0x02;
 const PAGE_READWRITE: u32 = 0x04;
 const FILE_MAP_READ: u32 = 0x0004;
@@ -367,7 +368,7 @@ pub fn write_mux(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr
             0,
             null_mut(),
             CREATE_ALWAYS,
-            FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
             null_mut(),
         )
     };

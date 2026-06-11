@@ -274,13 +274,14 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
                 key,
                 val,
                 1,
-                6,
+                5,
                 format_args!(
-                    "{Y}lp must be between 1 and 6 and it is the level of parallelism (it is not \
+                    "{Y}lp must be between 1 and 5 and it is the level of parallelism (it is not \
                      the number of cores/threads used). It adapts the per-worker CPU usage based \
                      on the input video and your CPU\n{Y}For less workers, higher values are \
                      recommended\nFor many workers, lower values are recommended\nIt is always \
-                     advised to test {C}3{Y}/{C}4{Y}/{C}5 {Y}first"
+                     advised to test {C}5{Y}/{C}4{Y}/{C}3 {Y}first\n lp-6 is harmful and foced \
+                     disabled"
                 ),
             )?;
         }
