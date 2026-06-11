@@ -12,7 +12,12 @@ fsgn:  dd 0x80000000
 SECTION .text
 
 INIT_XMM avx2
-cglobal pchip, 5, 9, 0, x, y, n, s, d
+cglobal pchip, 5, 9, 16, x, y, n, s, d
+%if WIN64
+    vmovaps       xmm0, xmm3          ; win64 args positional
+    mov           sq, r4mp            ; xi takes the r9 slot, so s/d spill to the stack:
+    mov           dq, r5mp            ; real s = arg slot 4, real d = arg slot 5
+%endif
     xor           r5d, r5d
     xor           eax, eax
     mov           r7, nq

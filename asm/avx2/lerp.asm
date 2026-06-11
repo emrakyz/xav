@@ -4,6 +4,9 @@ SECTION .text
 
 INIT_XMM avx2
 cglobal lerp, 2, 2, 0, x, y
+%if WIN64
+    vmovaps       xmm0, xmm2          ; win64 float args positional
+%endif
     vmovss        xmm1, [xq]
     vmovss        xmm2, [xq + 4]
     vsubss        xmm0, xmm0, xmm1

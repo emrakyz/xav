@@ -10,7 +10,10 @@ cm2:  dd 0xc0000000           ; -2.0f
 SECTION .text
 
 INIT_XMM avx2
-cglobal fc_spline, 2, 3, 0, x, y
+cglobal fc_spline, 2, 3, 10, x, y
+%if WIN64
+    vmovaps       xmm0, xmm2          ; win64 args positional
+%endif
     vmovaps       xmm1, xmm0
     vmovsd        xmm0, [yq + 4]
     vmovsd        xmm4, [xq + 4]
@@ -41,12 +44,12 @@ cglobal fc_spline, 2, 3, 0, x, y
     vcmpss        xmm4, xmm1, xmm4, 2
     vandps        xmm4, xmm5, xmm4
     vmovd         eax, xmm4
-    mov           ecx, eax
+    mov           r2d, eax            ; r2 is a scratch GPR; ecx == xq on win64; don't clobber
     and           eax, 1
     shl           eax, 2
     vmovss        xmm4, [xq + rax]
     vmovss        xmm5, [xq + rax + 4]
-    test          cl, 1
+    test          r2b, 1
     jne           .k1a
     vmovaps       xmm0, xmm3
 .k1a:
