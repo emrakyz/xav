@@ -127,49 +127,24 @@ fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
     println!("{C}-e {P}┃ {C}--encoder    {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
-    println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
     println!("{C}-w {P}┃ {C}--worker     {W}Encoder count");
-    println!("{C}-b {P}┃ {C}--buff       {W}Extra chunks to hold in front buffer");
-    println!("{C}-s {P}┃ {C}--sc         {W}Specify SCD file. Auto gen if not specified");
-    println!("{C}-r {P}┃ {C}--range      {W}Trim and splice frame ranges: {G}\"10-20,90-100\"");
-    println!("{C}-a {P}┃ {C}--audio      {W}Encode to Opus: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
-    println!("                  {B}Examples: {Y}-a {G}\"auto all\"{W}, {Y}-a {G}\"norm 1\"{W}, {Y}-a {G}\"128 1,2\"{W}, {Y}-a {G}\"norm(-16,-1.5,16,192) all\"");
-    #[cfg(feature = "vship")]
-    {
-        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2: {Y}-t {G}9.00-9.01");
-        println!("{C}-m {P}┃ {C}--mode       {W}TQ Metric aggregation: {G}mean {W}or mean of worst N%: {G}p0.1");
-        println!("{C}-f {P}┃ {C}--qp         {W}CRF range for TQ: {Y}-f {G}0.25-69.75{W}");
-        println!("{C}-v {P}┃ {C}--vship      {W}Metric worker count");
-        println!("{C}-d {P}┃ {C}--display    {W}Display JSON file for CVVDP. Screen name must be {R}xav{W}");
-        println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probing ({R}NOT RECOMMENDED{W}; expert-only)");
-    }
-    println!("   {P}┃ {C}--hwdec      {W}Use Vulkan hw decoding (perf depends on the input video and hardware)");
+    println!("{C}-b {P}┃ {C}--buff       {W}Extra chunks to pre-decode");
+    println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
+    println!("{C}-s {P}┃ {C}--sc         {W}Specify SCD file");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
-
-    println!();
-    println!("{P}Example:{W}");
-    println!("{Y}xav {P}\\{W}");
-    println!("  {C}-e {G}svt-av1          {P}\\  {B}# {W}Use svt-av1 as the encoder");
-    println!("  {C}-p {G}\"--scm 0 --lp 5\" {P}\\  {B}# {W}Params (after defaults) used by the encoder");
-    println!("  {C}-w {R}5                {P}\\  {B}# {W}Spawn {R}5 {W}encoder instances simultaneously");
-    println!("  {C}-b {R}1                {P}\\  {B}# {W}Decode {R}1 {W}extra chunk in memory for less waiting");
-    println!("  {C}-s {G}scd.txt          {P}\\  {B}# {W}Optionally use a scene file from external SCD tools");
-    println!("  {C}-r {G}\"0-120,240-480\"  {P}\\  {B}# {W}Only encode given frame ranges and combine");
-    println!("  {C}-a {G}\"norm 1,2\"       {P}\\  {B}# {W}Encode {R}2 {W}streams using Opus with stereo downmixing");
+    println!("   {P}┃ {C}--hwdec      {W}Use GPU decode");
+    println!("{C}-r {P}┃ {C}--range      {W}Trim and splice: {G}\"10-20,90-100\"");
+    println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
+    println!("   {P}┃ {C}--guide      {W}Very detailed user guide");
     #[cfg(feature = "vship")]
     {
-        println!("  {C}-t {G}9.444-9.555      {P}\\  {B}# {W}Enable TQ mode with CVVDP using this allowed range");
-        println!("  {C}-m {G}p1.25            {P}\\  {B}# {W}Use the mean of worst {R}1.25% {W}of frames for TQ scoring");
-        println!("  {C}-f {G}4.25-63.75       {P}\\  {B}# {W}Allowed CRF range for target quality mode");
-        println!("  {C}-v {R}3                {P}\\  {B}# {W}Spawn {R}3 {W}vship/metric workers");
-        println!("  {C}-d {G}display.json     {P}\\  {B}# {W}Uses {G}display.json {W}for CVVDP screen specification");
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
+        println!("{C}-m {P}┃ {C}--mode       {W}TQ Metric stat: {G}mean {W}or pN%");
+        println!("{C}-f {P}┃ {C}--qp         {W}CRF range for TQ: {G}crf-crf{W}");
+        println!("{C}-v {P}┃ {C}--vship      {W}Metric worker count");
+        println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file. Set screen name as {R}xav{W}");
+        println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)");
     }
-    println!("  {G}input.mkv           {P}\\  {B}# {W}Name or path of the input file");
-    println!("  {G}output.mkv             {B}# {W}Optional output name");
-    println!();
-    println!("{Y}Worker {P}┃ {Y}Buffer {P}┃ {Y}Metric worker count {W}depend on the OS");
-    println!("hardware, content, parameters and other variables");
-    println!("Experiment and use the sweet spot values for your case");
 }
 
 fn parse_args() -> Result<Args, Xerr> {
