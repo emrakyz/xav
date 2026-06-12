@@ -25,5 +25,5 @@
 ## How
 ```
 ./build.sh
-xav -h guide
+xav --guide
 ```
