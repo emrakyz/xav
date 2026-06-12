@@ -1,5 +1,5 @@
 ## Desc
-- **TLDR:** Brutally hardcore & passionate & obsessive; excessively-optimized
+- Brutally hardcore; obsessive; excessively-optimized
 - A complete framework
 - Lowest (V)RAM
 - Auto & Biased
@@ -8,15 +8,14 @@
 
 ## Feats
 - Zones
-- Stop/Resume
 - Trim/splice
 - Scene-detect
+- Stop/Resume
 - Chunk encode
 - Custom muxer
-- CPU/GPU decode
 - Parse input data
+- CPU/GPU decode
 - `AV*` - `H26*` codec
-- Output summary & TQ JSON logs
 - Instant and multi-AR-safe autocrop
 - **Pipe**: `cmd - | xav i.mkv`: **Slower** than native
 - Target quality metrics: [CVVDP](https://achapiro.github.io/Man24/man24.pdf) & [Butteraugli](https://github.com/google/butteraugli) & [SSIMU2](https://github.com/cloudinary/ssimulacra2)
