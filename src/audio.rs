@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     path::{Path, PathBuf},
     thread::scope,
 };
@@ -61,7 +62,7 @@ pub struct AuSpec {
 pub struct AuStream {
     pub index: u8,
     pub channels: u8,
-    pub lang: Option<String>,
+    pub lang: Option<Cow<'static, str>>,
     pub bitrate: u16,
 }
 
@@ -111,73 +112,6 @@ pub fn parse_au_arg(arg: &str) -> Result<AuSpec, Xerr> {
             )
         },
     })
-}
-
-pub fn lang_name(code: &str) -> &str {
-    match code {
-        "eng" => "English",
-        "rus" => "Russian",
-        "jpn" => "Japanese",
-        "spa" => "Spanish",
-        "fre" | "fra" => "French",
-        "ger" | "deu" => "German",
-        "ita" => "Italian",
-        "por" => "Portuguese",
-        "chi" | "zho" => "Chinese",
-        "kor" => "Korean",
-        "ara" => "Arabic",
-        "hin" => "Hindi",
-        "tur" => "Turkish",
-        "pol" => "Polish",
-        "ukr" => "Ukrainian",
-        "dut" | "nld" => "Dutch",
-        "swe" => "Swedish",
-        "dan" => "Danish",
-        "nor" => "Norwegian",
-        "fin" => "Finnish",
-        "gre" | "ell" => "Greek",
-        "cze" | "ces" => "Czech",
-        "hun" => "Hungarian",
-        "rum" | "ron" => "Romanian",
-        "tha" => "Thai",
-        "vie" => "Vietnamese",
-        "ind" => "Indonesian",
-        "may" | "msa" => "Malay",
-        "heb" => "Hebrew",
-        "per" | "fas" => "Persian",
-        "bul" => "Bulgarian",
-        "srp" => "Serbian",
-        "hrv" => "Croatian",
-        "slk" | "slo" => "Slovak",
-        "slv" => "Slovenian",
-        "bel" => "Belarusian",
-        "ben" => "Bengali",
-        "tam" => "Tamil",
-        "tel" => "Telugu",
-        "mar" => "Marathi",
-        "urd" => "Urdu",
-        "pan" => "Punjabi",
-        "tgl" => "Filipino",
-        "mya" | "bur" => "Burmese",
-        "khm" => "Khmer",
-        "swa" => "Swahili",
-        "zul" => "Zulu",
-        "xho" => "Xhosa",
-        "hau" => "Hausa",
-        "amh" => "Amharic",
-        "isl" | "ice" => "Icelandic",
-        "mlt" => "Maltese",
-        "gle" => "Irish",
-        "lav" => "Latvian",
-        "lit" => "Lithuanian",
-        "est" => "Estonian",
-        "nep" => "Nepali",
-        "sin" => "Sinhala",
-        "pus" | "pbt" => "Pashto",
-        "lao" => "Lao",
-        "mon" => "Mongolian",
-        _ => code,
-    }
 }
 
 fn get_streams(inp: &Path) -> Result<Vec<AuStream>, Xerr> {

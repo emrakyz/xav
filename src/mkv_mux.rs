@@ -1,6 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::_mm_sfence;
 use std::{
+    borrow::Cow,
     num::NonZeroUsize,
     path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
@@ -9,12 +10,13 @@ use std::{
 };
 
 use crate::{
-    audio::{AuStream, lang_name},
+    audio::AuStream,
     byte_range::ByteRange,
     copy::{Chapter, Stream, codec_map},
     encoder::Encoder::{self, Vvenc, X264, X265},
     error::Xerr,
     ffms::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, VidInf},
+    lang::lang_name,
     mkv::{
         block_group::build_block_group,
         chapters::{ChapterEntry, chapters_size, write_chapters},
@@ -491,8 +493,8 @@ struct AudioInfo {
     number: u64,
     uid: u64,
     default: bool,
-    name: String,
-    lang: String,
+    name: Cow<'static, str>,
+    lang: Cow<'static, str>,
     settings: String,
     encoder: String,
     codec_id: &'static [u8],
@@ -540,13 +542,14 @@ fn build_audio_tracks(
         let bps = (u128::from(n_bytes) * 8 * 1_000_000_000)
             .checked_div(u128::from(duration_ns))
             .unwrap_or(0) as u64;
-        let code = entry.0.lang.as_deref().unwrap_or("und");
+        let tag = entry.0.lang.clone().unwrap_or(Cow::Borrowed("und"));
+        let name = lang_name(&tag);
         ainfos.push(AudioInfo {
             number,
             uid: mix(seed),
             default,
-            name: lang_name(code).to_owned(),
-            lang: code.to_owned(),
+            name,
+            lang: tag,
             settings: "vbr=1 vbr-constraint=0 complexity=10 bandwidth=fullband application=audio"
                 .to_owned(),
             encoder: opus_version(),
@@ -632,13 +635,14 @@ fn build_copy_audio(
             .unwrap_or(0) as u64;
         let default_duration_ns =
             (unsafe { packets.get_unchecked(0) }.duration * tb_num * 1_000_000_000 / tb_den) as u64;
-        let code = lang.as_deref().unwrap_or("und");
+        let tag = lang.unwrap_or(Cow::Borrowed("und"));
+        let name = lang_name(&tag);
         ainfos.push(AudioInfo {
             number,
             uid: mix(seed),
             default,
-            name: lang_name(code).to_owned(),
-            lang: code.to_owned(),
+            name,
+            lang: tag,
             settings: String::new(),
             encoder: String::new(),
             codec_id: codec_id.as_bytes(),
@@ -680,8 +684,8 @@ struct SubtitleInfo {
     number: u64,
     uid: u64,
     default: bool,
-    name: String,
-    lang: String,
+    name: Cow<'static, str>,
+    lang: Cow<'static, str>,
     codec_id: &'static [u8],
     codec_name: &'static [u8],
     codec_private: Vec<u8>,
@@ -741,13 +745,14 @@ fn build_copy_subs(
         let bps = (u128::from(n_bytes) * 8 * 1_000_000_000)
             .checked_div(u128::from(duration_ns))
             .unwrap_or(0) as u64;
-        let code = lang.as_deref().unwrap_or("und");
+        let tag = lang.unwrap_or(Cow::Borrowed("und"));
+        let name = lang_name(&tag);
         sinfos.push(SubtitleInfo {
             number,
             uid: mix(seed),
             default: false,
-            name: lang_name(code).to_owned(),
-            lang: code.to_owned(),
+            name,
+            lang: tag,
             codec_id: codec_id.as_bytes(),
             codec_name: codec_name.as_bytes(),
             codec_private: extradata,

@@ -36,6 +36,7 @@ mod error;
 mod ffms;
 #[cfg(feature = "vship")]
 mod interp;
+mod lang;
 mod lavf;
 mod mkv;
 mod mkv_mux;
@@ -138,7 +139,7 @@ fn print_help() {
     println!("   {P}┃ {C}--guide      {W}Very detailed user guide");
     #[cfg(feature = "vship")]
     {
-        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter5pn, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
         println!("{C}-m {P}┃ {C}--mode       {W}TQ Metric stat: {G}mean {W}or pN%");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range for TQ: {G}crf-crf{W}");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric worker count");

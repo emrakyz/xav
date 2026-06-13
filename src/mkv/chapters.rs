@@ -17,7 +17,7 @@ const CHAPTER_FLAG_HIDDEN: u32 = 0x98;
 const CHAPTER_FLAG_ENABLED: u32 = 0x4598;
 const CHAPTER_DISPLAY: u32 = 0x80;
 const CHAP_STRING: u32 = 0x85;
-const CHAP_LANGUAGE: u32 = 0x437C;
+const CHAP_LANG_IETF: u32 = 0x437D;
 
 pub struct ChapterEntry<'a> {
     pub uid: u64,
@@ -104,7 +104,7 @@ fn write_chapter_atom(out: &mut [u8], a: &ChapterEntry<'_>) -> usize {
 }
 
 const fn display_content_size(title: &[u8], lang: &[u8]) -> usize {
-    bytes_elem_size(CHAP_STRING, title.len()) + bytes_elem_size(CHAP_LANGUAGE, lang.len())
+    bytes_elem_size(CHAP_STRING, title.len()) + bytes_elem_size(CHAP_LANG_IETF, lang.len())
 }
 
 fn write_chapter_display(out: &mut [u8], title: &[u8], lang: &[u8]) -> usize {
@@ -115,7 +115,7 @@ fn write_chapter_display(out: &mut [u8], title: &[u8], lang: &[u8]) -> usize {
             out.get_unchecked_mut(n..),
         );
         n += write_bytes(CHAP_STRING, title, out.get_unchecked_mut(n..));
-        n += write_bytes(CHAP_LANGUAGE, lang, out.get_unchecked_mut(n..));
+        n += write_bytes(CHAP_LANG_IETF, lang, out.get_unchecked_mut(n..));
     }
     n
 }

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     ffi::{CStr, CString, c_char, c_int, c_uint, c_void},
     path::Path,
     ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut},
@@ -22,11 +23,14 @@ use crate::{
         HwP010PackPkRem, HwP010PackRem, HwP010PackRemPkRem, HwP010PackRemPkRemStride, HwP010Raw,
         HwP010RawCrop, HwP010RawCropRem, HwP010RawRem, HwP010RawRemStride,
     },
+    lang::to_bcp47,
+    mkv::read::track_langs,
     pack::{
         PACK_CHUNK, SHIFT_CHUNK, conv_10b, conv_10b_rem, cpy_with_stride, deint_nv12,
         deint_nv12_10b, deint_nv12_10b_rem, deint_nv12_rem, deint_p010, deint_p010_rem, pack_10b,
         pack_10b_rem, pack_stride, pack_stride_rem, packed_row_sz, shift_p010, shift_p010_rem,
     },
+    platform::Mmap,
     progs::ProgsBar,
     util::assume_unreachable,
 };
@@ -109,9 +113,14 @@ pub struct AVStream {
 }
 
 #[repr(C)]
+pub struct AVInputFormat {
+    pub name: *const c_char,
+}
+
+#[repr(C)]
 pub struct AVFormatContext {
     _av_class: *const c_void,
-    _iformat: *const c_void,
+    iformat: *const AVInputFormat,
     pub oformat: *const c_void,
     _priv_data: *mut c_void,
     pub pb: *mut c_void,
@@ -1046,11 +1055,33 @@ pub unsafe fn dict_get(metadata: *const c_void, key: *const c_char) -> Option<St
         .map(ToOwned::to_owned)
 }
 
-pub unsafe fn stream_lang(metadata: *const c_void) -> Option<String> {
-    unsafe { dict_get(metadata, c"language".as_ptr()) }
+pub unsafe fn stream_lang(metadata: *const c_void) -> Option<Cow<'static, str>> {
+    let entry = unsafe { av_dict_get(metadata, c"language".as_ptr(), null(), 0) };
+    if entry.is_null() {
+        return None;
+    }
+    unsafe { CStr::from_ptr((*entry).value) }
+        .to_str()
+        .ok()
+        .map(to_bcp47)
 }
 
-pub fn get_au_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr> {
+// only Matroska/WebM carry the IETF language elements; skip the source scan otherwise
+#[must_use]
+pub unsafe fn is_matroska(fmt_ctx: *const AVFormatContext) -> bool {
+    unsafe {
+        let iformat = (*fmt_ctx).iformat;
+        !iformat.is_null()
+            && !(*iformat).name.is_null()
+            && CStr::from_ptr((*iformat).name)
+                .to_bytes()
+                .starts_with(b"matroska")
+    }
+}
+
+type AuStreamMeta = (u8, u8, Option<Cow<'static, str>>);
+
+pub fn get_au_streams(path: &Path) -> Result<Vec<AuStreamMeta>, Xerr> {
     unsafe {
         let cpath = CString::new(path.to_str().unwrap_unchecked()).unwrap_unchecked();
         let mut fmt_ctx: *mut AVFormatContext = null_mut();
@@ -1064,6 +1095,12 @@ pub fn get_au_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr
         let n = (*fmt_ctx).nb_streams as usize;
         let mut result = Vec::new();
 
+        let map = is_matroska(fmt_ctx)
+            .then(|| Mmap::open(path).ok())
+            .flatten();
+        let tags = map
+            .as_ref()
+            .map_or_else(Vec::new, |m| track_langs(m.slice()));
         for i in 0..n {
             let stream = &*(*(*fmt_ctx).streams.add(i));
             let par = &*stream.codecpar;
@@ -1071,7 +1108,11 @@ pub fn get_au_streams(path: &Path) -> Result<Vec<(u8, u8, Option<String>)>, Xerr
                 continue;
             }
             let channels = par.ch_layout.nb_channels as u8;
-            let lang = stream_lang(stream.metadata);
+            let lang = tags
+                .iter()
+                .find(|t| t.0 == i as u64)
+                .map(|t| Cow::Owned(t.1.to_owned()))
+                .or_else(|| stream_lang(stream.metadata));
             result.push((stream.index as u8, channels, lang));
         }
 

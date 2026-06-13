@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     ffi::{CStr, CString, c_int},
     path::Path,
     ptr::{null, null_mut},
@@ -12,8 +13,10 @@ use crate::{
         AV_NOPTS_VALUE, AVCodecParameters, AVFormatContext, AVMEDIA_TYPE_AUDIO,
         AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO, AVStream, av_packet_alloc, av_packet_free,
         av_packet_unref, av_read_frame, avcodec_get_name, avformat_close_input,
-        avformat_find_stream_info, avformat_open_input, dict_get, stream_lang,
+        avformat_find_stream_info, avformat_open_input, dict_get, is_matroska, stream_lang,
     },
+    mkv::read::{chapter_langs, track_langs},
+    platform::Mmap,
     progs::ProgsBar,
 };
 
@@ -35,14 +38,14 @@ pub struct Stream {
     pub tb_den: c_int,
     pub origin: i64,
     pub extradata: Vec<u8>,
-    pub lang: Option<String>,
+    pub lang: Option<Cow<'static, str>>,
 }
 
 pub struct Chapter {
     pub start_ns: i64,
     pub end_ns: i64,
     pub title: Option<String>,
-    pub lang: Option<String>,
+    pub lang: Option<Cow<'static, str>>,
 }
 
 pub fn demux(inp: &Path, want_audio: bool, want_subs: bool) -> Result<Vec<Stream>, Xerr> {
@@ -61,6 +64,10 @@ pub fn demux(inp: &Path, want_audio: bool, want_subs: bool) -> Result<Vec<Stream
         let origin_us = video_origin_us(fmt_ctx);
         let mut routes = vec![None; n];
         let mut streams = Vec::new();
+        let map = is_matroska(fmt_ctx).then(|| Mmap::open(inp).ok()).flatten();
+        let tags = map
+            .as_ref()
+            .map_or_else(Vec::new, |m| track_langs(m.slice()));
         for (i, route) in routes.iter_mut().enumerate() {
             let st = *(*fmt_ctx).streams.add(i);
             let par = &*(*st).codecpar;
@@ -68,7 +75,13 @@ pub fn demux(inp: &Path, want_audio: bool, want_subs: bool) -> Result<Vec<Stream
                 || (par.codec_type == AVMEDIA_TYPE_SUBTITLE && want_subs);
             if want {
                 *route = Some(streams.len());
-                streams.push(describe(st, par, origin_us));
+                let mut s = describe(st, par, origin_us);
+                s.lang = tags
+                    .iter()
+                    .find(|t| t.0 == i as u64)
+                    .map(|t| Cow::Owned(t.1.to_owned()))
+                    .or_else(|| stream_lang((*st).metadata));
+                streams.push(s);
             }
         }
         if !streams.is_empty() {
@@ -92,17 +105,28 @@ pub fn read_chapters(inp: &Path) -> Result<Vec<Chapter>, Xerr> {
         }
         let n = (*fmt_ctx).nb_chapters as usize;
         let mut chapters = Vec::with_capacity(n);
+        let map = (n != 0 && is_matroska(fmt_ctx))
+            .then(|| Mmap::open(inp).ok())
+            .flatten();
+        let ctags = map
+            .as_ref()
+            .map_or_else(Vec::new, |m| chapter_langs(m.slice()));
         for i in 0..n {
             let ch = *(*fmt_ctx).chapters.add(i);
             let tb = (*ch).time_base;
             let ns = |t: i64| {
                 (i128::from(t) * i128::from(tb.num) * 1_000_000_000 / i128::from(tb.den)) as i64
             };
+            let lang = ctags
+                .iter()
+                .find(|t| t.0 == i as u64)
+                .map(|t| Cow::Owned(t.1.to_owned()))
+                .or_else(|| stream_lang((*ch).metadata));
             chapters.push(Chapter {
                 start_ns: ns((*ch).start),
                 end_ns: ns((*ch).end),
                 title: dict_get((*ch).metadata, c"title".as_ptr()),
-                lang: dict_get((*ch).metadata, c"language".as_ptr()),
+                lang,
             });
         }
         avformat_close_input(&raw mut fmt_ctx);
@@ -151,7 +175,7 @@ unsafe fn describe(st: *mut AVStream, par: &AVCodecParameters, origin_us: i64) -
             origin: (i128::from(origin_us) * i128::from(tb.den) / (i128::from(tb.num) * 1_000_000))
                 as i64,
             extradata,
-            lang: stream_lang((*st).metadata),
+            lang: None,
         }
     }
 }

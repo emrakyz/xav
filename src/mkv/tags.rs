@@ -12,7 +12,7 @@ const TARGET_TYPE: u32 = 0x63CA;
 const TAG_TRACK_UID: u32 = 0x63C5;
 const SIMPLE_TAG: u32 = 0x67C8;
 const TAG_NAME: u32 = 0x45A3;
-const TAG_LANGUAGE: u32 = 0x447A;
+const TAG_LANG_IETF: u32 = 0x447B;
 const TAG_STRING: u32 = 0x4487;
 
 const APP: &str = concat!("xav ", env!("CARGO_PKG_VERSION"));
@@ -114,7 +114,7 @@ const fn entry_size(name: &str, value_len: usize) -> usize {
     master_size(
         SIMPLE_TAG,
         bytes_elem_size(TAG_NAME, name.len())
-            + bytes_elem_size(TAG_LANGUAGE, 3)
+            + bytes_elem_size(TAG_LANG_IETF, 3)
             + bytes_elem_size(TAG_STRING, value_len),
     )
 }
@@ -200,13 +200,13 @@ fn write_targets(out: &mut [u8], track_uid: u64) -> usize {
 
 fn entry_head(out: &mut [u8], name: &str, value_len: usize) -> usize {
     let content = bytes_elem_size(TAG_NAME, name.len())
-        + bytes_elem_size(TAG_LANGUAGE, 3)
+        + bytes_elem_size(TAG_LANG_IETF, 3)
         + bytes_elem_size(TAG_STRING, value_len);
     let mut n = write_id(SIMPLE_TAG, out);
     unsafe {
         n += vint_encode(content as u64, out.get_unchecked_mut(n..));
         n += write_bytes(TAG_NAME, name.as_bytes(), out.get_unchecked_mut(n..));
-        n += write_bytes(TAG_LANGUAGE, b"und", out.get_unchecked_mut(n..));
+        n += write_bytes(TAG_LANG_IETF, b"und", out.get_unchecked_mut(n..));
     }
     n
 }
