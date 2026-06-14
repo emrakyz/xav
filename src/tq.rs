@@ -40,7 +40,7 @@ pub fn make_ff(threads: i32) -> ProbeDec {
 }
 
 fn prep_dav1d(d: &mut ProbeDec, pkg: &WorkPkg, _: &Path, _: u16, _: f32, _: &str) -> u64 {
-    unsafe { d.dav1d.as_mut().unwrap_unchecked() }.load(&pkg.probe);
+    unsafe { d.dav1d.as_mut().unwrap_unchecked() }.load(&pkg.probe, pkg.frame_cnt);
     pkg.probe.len() as u64
 }
 
