@@ -228,6 +228,8 @@ fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
         "10",
         "--OutputBitDepth",
         "10",
+        "--LookAhead",
+        "1",
     ]);
 
     cmd.arg("--SourceWidth").arg(&width_str);
@@ -269,6 +271,8 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         "main10",
         "--gop-lookahead",
         "0",
+        "--rc-lookahead",
+        "250",
         "--keyint",
         "-1",
         "--min-keyint",
@@ -281,6 +285,8 @@ fn make_x265_cmd(cfg: &EncConfig) -> Command {
         "--frame-threads",
         "1",
         "--slices",
+        "1",
+        "--pools",
         "1",
         "--no-wpp",
         "--no-info",
@@ -375,6 +381,8 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
         "--non-deterministic",
         "--nal-hrd",
         "none",
+        "--rc-lookahead",
+        "250",
         "--fps",
     ]);
 
@@ -781,6 +789,7 @@ pub fn set_svt_base(
         (*conf).source_width = width;
         (*conf).source_height = height;
         (*conf).scene_change_detection = 0;
+        (*conf).screen_content_mode = 0;
         (*conf).encoder_bit_depth = 10;
         (*conf).encoder_color_format = 1;
         (*conf).profile = 0;

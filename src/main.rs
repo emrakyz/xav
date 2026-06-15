@@ -76,6 +76,8 @@ use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
 use scd::fd_scenes;
 use svterr::val;
+#[cfg(target_os = "linux")]
+use y4m::vspipe_resume;
 use y4m::{PipeReader, init_pipe, is_pipe};
 
 #[cfg(test)]
@@ -294,7 +296,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             #[cfg(feature = "vship")]
             "-d" | "--display" => arg!(opt args, i, cvvdp_conf),
             #[cfg(feature = "vship")]
-            "-P" | "--probe-param" => arg!(opt args, i, alt_param),
+            "-P" | "--alt-param" => arg!(opt args, i, alt_param),
             "--hwdec" => hwdec = true,
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
@@ -468,8 +470,12 @@ const fn scale_crop(
     (scaled_v, scaled_h)
 }
 
-fn init_pipe_crop(inf: VidInf, crop: (u32, u32)) -> (VidInf, (u32, u32), Option<PipeReader>) {
-    let pipe_init = init_pipe();
+fn init_pipe_crop(
+    inf: VidInf,
+    crop: (u32, u32),
+    pipe_start: usize,
+) -> (VidInf, (u32, u32), Option<PipeReader>) {
+    let pipe_init = init_pipe(pipe_start);
 
     if let Some((y, reader)) = pipe_init {
         let (cv, ch) = crop;
@@ -634,7 +640,14 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     create_dir_all(work_dir.join("split"))?;
     create_dir_all(work_dir.join("encode"))?;
 
-    let (mut inf, crop, pipe_reader) = init_pipe_crop(inf, crop);
+    let chnks = chnkify(&scenes);
+
+    #[cfg(target_os = "linux")]
+    let pipe_start = vspipe_resume(&chnks, &work_dir).unwrap_or(0);
+    #[cfg(not(target_os = "linux"))]
+    let pipe_start = 0usize;
+
+    let (mut inf, crop, pipe_reader) = init_pipe_crop(inf, crop, pipe_start);
 
     #[cfg(feature = "vship")]
     let tq = args.tq.is_some();
@@ -645,8 +658,6 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };
     }
     args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwdec, tq));
-
-    let chnks = chnkify(&scenes);
 
     let prior_secs = get_resume(&work_dir).map_or(0, |r| r.prior_secs);
     init_elapsed(prior_secs);

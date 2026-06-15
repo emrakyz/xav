@@ -159,7 +159,7 @@ pub struct EbSvtAv1EncConfiguration {
     tile_rows: i32,
     look_ahead_distance: u32,
     recode_loop: u32,
-    screen_content_mode: u32,
+    pub screen_content_mode: u32,
     aq_mode: u8,
     enable_tf: u8,
     enable_overlays: bool,

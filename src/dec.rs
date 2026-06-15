@@ -744,6 +744,7 @@ pub fn dec_pipe(
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
+    let chnks = chnks.get(reader.start_idx..).unwrap_or(chnks);
     let cc = match strat {
         B10Crop { cc }
         | B10CropRem { cc }
