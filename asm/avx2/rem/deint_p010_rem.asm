@@ -19,8 +19,10 @@ cglobal deint_p010_rem, 4, 6, 16, src, ud, vd, n, idx, lim
 %rep 4
     %assign a 1+k*3
     %assign b 2+k*3
-    vpsrlw        m %+ a, [srcq + idxq*4 + k*64], 6
-    vpsrlw        m %+ b, [srcq + idxq*4 + k*64 + 32], 6
+    vmovdqu       m %+ a, [srcq + idxq*4 + k*64]
+    vmovdqu       m %+ b, [srcq + idxq*4 + k*64 + 32]
+    vpsrlw        m %+ a, m %+ a, 6
+    vpsrlw        m %+ b, m %+ b, 6
 %assign k k+1
 %endrep
 %assign k 0
@@ -51,8 +53,10 @@ cglobal deint_p010_rem, 4, 6, 16, src, ud, vd, n, idx, lim
     lea           rax, [idxq + 16]
     cmp           rax, nq
     ja            .tail
-    vpsrlw        m1, [srcq + idxq*4], 6
-    vpsrlw        m2, [srcq + idxq*4 + 32], 6
+    vmovdqu       m1, [srcq + idxq*4]
+    vmovdqu       m2, [srcq + idxq*4 + 32]
+    vpsrlw        m1, m1, 6
+    vpsrlw        m2, m2, 6
     vpshufb       m1, m1, m0
     vpshufb       m2, m2, m0
     vpunpcklqdq   m3, m1, m2

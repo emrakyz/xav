@@ -12,7 +12,8 @@ cglobal shift_p010_rem, 3, 5, 16, src, dst, n, idx, lim
 .chunk:
 %assign g 0
 %rep 16
-    vpsrlw        m %+ g, [srcq + idxq + g*32], 6
+    vmovdqu       m %+ g, [srcq + idxq + g*32]
+    vpsrlw        m %+ g, m %+ g, 6
 %assign g g+1
 %endrep
 %assign g 0
@@ -27,7 +28,8 @@ cglobal shift_p010_rem, 3, 5, 16, src, dst, n, idx, lim
     lea           rax, [idxq + 32]
     cmp           rax, limq
     ja            .tail
-    vpsrlw        m0, [srcq + idxq], 6
+    vmovdqu       m0, [srcq + idxq]
+    vpsrlw        m0, m0, 6
     vmovdqu       [dstq + idxq], m0
     add           idxq, 32
     jmp           .blocks
