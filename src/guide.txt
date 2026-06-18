@@ -1,0 +1,1252 @@
+{P}╭━ {Y}CONTENTS {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━━━╮
+{P}┃                                                                                                                          {P}┃
+{P}┃   {C}1   {Y}Important Info                                                                                                     {P}┃
+{P}┃       {C}1.1   {W}Critical                                                                                                     {P}┃
+{P}┃       {C}1.2   {W}Why?                                                                                                         {P}┃
+{P}┃       {C}1.3   {W}Misconceptions                                                                                               {P}┃
+{P}┃       {C}1.4   {W}Input Parse                                                                                                  {P}┃
+{P}┃       {C}1.5   {W}Strict Encoding Modes                                                                                        {P}┃
+{P}┃       {C}1.6   {W}Init & Resume                                                                                                {P}┃
+{P}┃       {C}1.7   {W}Crop                                                                                                         {P}┃
+{P}┃       {C}1.8   {W}Why No Manual Crop                                                                                           {P}┃
+{P}┃       {C}1.9   {W}Scene Detect                                                                                                 {P}┃
+{P}┃       {C}1.10  {W}Muxing                                                                                                       {P}┃
+{P}┃       {C}1.11  {W}Zoning                                                                                                       {P}┃
+{P}┃       {C}1.12  {W}Target Quality                                                                                               {P}┃
+{P}┃                                                                                                                          {P}┃
+{P}┃   {C}2   {Y}Params                                                                                                             {P}┃
+{P}┃       {C}2.1   {W}Input/Output                                                                                                 {P}┃
+{P}┃       {C}2.2   {C}-e {P}┃ {C}--encoder                                                                                               {P}┃
+{P}┃       {C}2.3   {C}-w {P}┃ {C}--worker                                                                                                {P}┃
+{P}┃       {C}2.4   {C}-b {P}┃ {C}--buff                                                                                                  {P}┃
+{P}┃       {C}2.5   {C}-p {P}┃ {C}--param                                                                                                 {P}┃
+{P}┃       {C}2.6   {C}-s {P}┃ {C}--sc                                                                                                    {P}┃
+{P}┃       {C}2.7      {P}┃ {C}--sc-only                                                                                               {P}┃
+{P}┃       {C}2.8      {P}┃ {C}--hwdec                                                                                                 {P}┃
+{P}┃       {C}2.9   {C}-r {P}┃ {C}--range                                                                                                 {P}┃
+{P}┃       {C}2.10  {C}-a {P}┃ {C}--audio                                                                                                 {P}┃
+{P}┃       {C}2.11  {C}-t {P}┃ {C}--tq                                                                                                    {P}┃
+{P}┃       {C}2.12  {C}-m {P}┃ {C}--mode                                                                                                  {P}┃
+{P}┃       {C}2.13  {C}-f {P}┃ {C}--qp                                                                                                    {P}┃
+{P}┃       {C}2.14  {C}-v {P}┃ {C}--vship                                                                                                 {P}┃
+{P}┃       {C}2.15  {C}-d {P}┃ {C}--display                                                                                               {P}┃
+{P}┃       {C}2.16  {C}-P {P}┃ {C}--alt-param                                                                                             {P}┃
+{P}┃                                                                                                                          {P}┃
+{P}┃   {C}3   {Y}Encoder Defaults                                                                                                   {P}┃
+{P}┃       {C}3.1   {W}SVT-AV1                                                                                                      {P}┃
+{P}┃       {C}3.2   {W}AVM                                                                                                          {P}┃
+{P}┃       {C}3.3   {W}VVENC                                                                                                        {P}┃
+{P}┃       {C}3.4   {W}X265                                                                                                         {P}┃
+{P}┃       {C}3.5   {W}X264                                                                                                         {P}┃
+{P}┃                                                                                                                          {P}┃
+{P}┃   {C}4   {Y}Pipe Into XAV                                                                                                      {P}┃
+{P}┃                                                                                                                          {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}┃   {Y}󰥼 1 󰥭   IMPORTANT INFO                                                                                                 {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╯
+
+{P}▌ {C}1.1  {Y}Critical
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {G} {W}Accepts {B}yuv420p {W}({B}8bit{W}) or {B}yuv420p10le {W}({B}10bit{W}) vids
+  {R} {W}No RGB/YUV444/YUV422 or {B}12bit {W}input (pre-convert if needed)
+  {C} {W}Only encodes {B}yuv420p10le {W}& with full high bit depth mode decisions
+  {G} {W}Converts {B}8bit {W}videos to {B}10bit
+
+
+{P}▌ {C}1.2  {Y}Why?
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {B}10bit {W}provides more levels per channel which greatly reduces banding
+  {P} {W}Modern codecs compress {B}10bit {W}better
+  {P} {W}Internal calcs have more precision; fine details survive better
+  {P} {W}Less artifacts due to increased precision
+  {P} {B}yuv420p10le {W}({B}10bit{W}) is supported by almost all hardware decoders
+  {P} {W}Motion estimation, transforms, & rate control work with higher precision
+  {P} {W}Better to micro-optimize, internally defaulting to {B}10bit
+  {P} {B}8b {W}accumulates rounding error across every forward/inverse transform round trip
+  {P} {W}Banding lives in dark, slow gradients (skies, fades, shadows), where lower range runs out
+  {P} {W}HDR needs {B}10bit {W}anyway
+  {P} {W}No benefit in encoding in low bit depth mode decisions or {B}yuv420p
+  {P} {W}Encoder math runs {B}16bit {W}for high bit depth; feeding it {B}10bit {W}keeps whole
+    {W}pipeline in its precise path instead of legacy {B}8bit {W}one
+  {P} {W}If you have to use {B}8b, {R}do not use XAV
+
+
+{P}▌ {C}1.3  {Y}Misconceptions
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {C}"10bit means HDR"
+    {P}󰘍 {R}NO{W}, SDR uses any depth
+  {C}"10bit = bigger file"
+    {P}󰘍 {R}NO{W}, smaller at same perceptual quality
+  {C}"10bit encodes slower"
+    {P}󰘍 {R}NO{W}, speed can always be determined by encoder config
+  {C}"10bit decodes slower"
+    {P}󰘍 {R}NO{W}, tiles, higher presets, fast-decode mode & some settings improve decode speed greatly
+  {C}"Hardware AV1 decoder doesn't support 10bit"
+    {P}󰘍 {R}NO{W}, {B}10bit {W}is main profile; mandated by spec
+  {C}"Display is 8bit; it's pointless"
+    {P}󰘍 {R}NO{W}, bitstream always wins
+  {C}"8->10 is fake"
+    {P}󰘍 {R}NO{W}, bit shift, lossless, reversible, no data made up
+
+
+{P}▌ {C}1.4  {Y}Input Parse
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Analyzes input/output container, frame/pixel & bitstream info
+  {P} {W}Manual flags are how encodes {R}silently go wrong{W}: Reads absolute truth instead
+  {P} {W}User doesn't have to know anything
+  {P} {W}Info is used to decode, manage RAM, pixel process, encode & mux:
+      {C} {W}Sample aspect ratio ({B}1:1{W})
+      {C} {W}Display aspect ratio ({B}16:9{W})
+      {C} {W}Input bit-depth ({B}8bit{W}/{B}10bit{W})
+      {C} {W}Resolution ({B}3840x2160{W})
+      {C} {W}Framerate numerator & denominator ({B}24000/1001 {W}for {B}23.976FPS{W})
+      {C} {W}Timestamps, cues, segments, indexes, metadata
+      {C} {W}Primaries, matrix coefficients, color-range, transfer characteristics, chroma sample position
+      {C} {W}Duration, bitrate, size
+      {C} {W}Total frame count
+      {C} {W}Codec/container
+      {C} {W}Reorder/decoder delay
+      {C} {W}HDR metadata: Mastering display & content light, {B}MaxCLL{W}, {B}MaxFALL
+
+
+{P}▌ {C}1.5  {Y}Strict Encoding Modes
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{R}╭━  {R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╮
+{R}┃ {R}You SHOULD NOT {W}touch any of linked params on encoders except overridable                                                 {R}┃
+{R}┃ {W}These are auto; XAV will error out otherwise                                                                             {R}┃
+{R}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╯
+
+  {P} {C}Input/Output Bit-Depth: {B}YUV420P10LE
+  {P} {C}I/O color format: {B}YUV 4:2:0
+  {P} {C}Full high-bit-depth mode decisions: {G}Forced ON
+  {P} {C}Framerate: {B}CFR {W}(Constant Frame Rate); no support for {B}VFR {W}(Variable Frame Rate)
+  {P} {C}Rate Control: {B}CRF {W}(Constant Rate Factor); no support for bitrate modes (worse for XAV)
+  {P} {C}Passes: {W}Single pass: 2-pass is used for non-CRF modes
+  {P} {C}Open/Closed-GOP: {W}Every scene/chunk self-contained; they don't affect each other
+  {P} {C}Keyint/intra-refresh: {W}Infinite = scene detect inserts keyframes
+    {W}All chunks/scenes have single keyframe (I-frame); rest inter-frames
+  {P} {C}Prediction: {W}Random Access as XAV = offline + high quality + high-efficiency
+    {W}Other modes used in Low Delay & RTC which XAV doesn't support
+  {P} {W}Adaptive Quantization with TPL Beta Adjustments for AV1 (best aq-mode)
+  {P} {C}SVT-AV1 threading: {G}ON {W}(determined by {C}--lp {B}[1-5] {W}param)
+  {P} {C}Other enc threading: {R}OFF {W}(reduces efficiency); use Workers instead ({G}OVERRIDABLE)
+  {P} {W}Harmful concepts as overlay frames are disabled
+  {P} {C}Keyframes: {B}IDR {W}(Instantaneous Decoder Refresh)
+      {C} {W}Shouldn't be confused with {B}CRA {W}(Clean Random Access) or Intra-Only Frame
+      {C} {B}IDR {W}is stricter I-frame
+      {C} {W}Lets decoder (for XAV, also encoder) start cleanly from IDR frame
+      {C} {W}Invalidates references to prev frames (every chunk self-contained)
+      {C} {W}Prevents error propagation from prev corrupted frames
+      {C} {W}Prevents referencing errors from prev frames
+      {C} {B}IDR {W}I-frame is encoded as a still-image independently; all other frames in same
+      {W}scene/chunk/GOP will use it as reference for encode & decode side
+      {C} {B}IDR {W}frames provide perfect & fast seek
+      {C} {W}If vid gets corrupted; will glitch. Since standard frames rely on prev frames,
+      {W} glitch will carry forward (error propagation)
+        {B}IDR {W}frames stop this. Decoder hits {B}IDR{W}; image instantly refreshed
+  {P} {C}Self contained chunks:
+      {C} {B}IDR {W}forbids looking back, XAV can safely slice vid into chunks at scene boundaries
+        {W}Each chunk is {G}100% independent{W}. Allows XAV to encode chunks in parallel using "Workers"
+	{W}without worry about chunk B needing data {W}from A & target quality to optimize per-scene
+
+
+{P}▌ {C}1.6  {Y}Init & Resume
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}XAV will hash input & create a tmp dir with a dot & hash
+    {W}E.g: {B}.53a4f94 {W}will be placed next to input vid
+  {P} {W}Tmp dir is linked with input file's full path so XAV can associate
+  {P} {W}Scene file (if {C}-s {W}param is not used) name is derived from input name:
+    {B}input.mkv {P} {B}input_scd.txt {W}; located next to input vid
+  {P} {W}Everything located next to input vid; no matter where you call XAV
+    {W}you can resume if left unfinished, using tmp files
+    {W}even if you forget which file needed to resume
+  {P} {W}Inside tmp dir:
+      {C} {B}encode {W}dir: Has per-chunk encoded bitstreams ({B}.obu{W}/{B}.264{W}/{B}.265{W}/{B}.266 {W}files)
+      {C} {B}cmd.txt{W}: Saves your cmd inside & if you need to stop/continue on same vid
+        {W}no need to remember prev cmd. Will always use same cmd
+        {W}until either encode is finished successfully or tmp dir is deleted
+      {C} {B}done.txt{W}: Has amounts of chunks finished completely, total chunks, per-chunk bitrate
+      {C} {B}chunks.json {W}(for TQ mode): Has chunk IDs, bitrate of TQ trials; CRFs associated with trials,
+        {W}final selected CRF, final size (everything related to TQ encoding)
+      {C} {W}Encoded opus audio named with lang: {B}eng.opus
+  {P} {W}With TQ; new file next to video is created: {B}vidname.json
+    {W}Will have statistics related to TQ run
+    {W}Per-scene tested Q levels, bitrate/size, final CRF each scene & extras
+  {P} {C}Resume = skip-whats-done: {W}On restart xav reads tmp dir, treats finished chunks as immutable
+    {W}only encodes missing ones
+  {P} {W}Partial/in-flight chunks aren't trusted: Chunks interrupted mid-write is detected & re-encoded
+    {W}from scratch (only fully-flushed & book-kept chunks count as done)
+  {P} {W}Existing {B}_scd.txt {W}is reused; scene detect does not re-run
+  {P} {W}Hash binds folder to content: If input file changes, hash changes {P} {W}fresh tmp folder
+    {W}so you never resume against wrong source
+  {P} {W}If you change path of vid or rename input; all will be invalidated
+  {P} {W}On completion per-chunk bitstreams (+ encoded/source audio + subs/chapters from input) are
+    {W}concatenated in order & muxed into output mkv
+  {P} {W}If run is unfinished & user tries to resume; prev cmd is used as is
+    {W}Even if you change your new command; old one will be used: {G}xav i.mkv {W}is enough
+  {P} {W}{B}.hash {W}temp folder is removed once mux succeeds; persists only on failure/interrupt
+    {W}its presence = unfinished
+
+
+{P}▌ {C}1.7  {Y}Crop
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Detects crop (consistent dark pixels, also called letter/pillar-boxing)
+  {P} {W}Crop makes scene-detect, memory flow, filter, process, encode faster & raises efficiency
+  {P} {W}It is instant & very robust
+  {P} {C}Content-safe by construct: {W}One bright frame's one side exposing true edge overrides
+    {W}every dark frame/sides; sampling spread exists to catch that frame
+  {P} {C}Variance tolerance:{W} Analog & mosquito noise, not-quite-black bars are absorbed by variance check
+  {P} {W}When bar size varies by scene, safest (least) crop is chosen so widest content anywhere is preserved
+  {P} {C}Skips intro/outro: {W}Channel branding, fade-ins, & all-black credit frames are common {W}false-positives
+  {P} {W}Post-crop width/height remain legal, so nothing downstream has to re-pad
+  {P} {W}Safety cautions:
+      {C} {W}Respects multi aspect ratio videos
+      {C} {W}Factors in variance instead of checking pure blacks
+      {C} {R}Never {W}cuts content
+      {C} {W}Always crops evenly for format constraints & optimizations: Either left/right or top/bottom
+  {P} {W}Samples {B}13 {W}frames through vid & analyzes them skipping intro, outro
+  {P} {W}For a {B}42000-frame {W}video ({B}~29 minutes {W}at {B}23.976FPS{W}), it is:
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {P}[ {R}skipped  {B}3000 6000 9000 12000 15000 18000 21000 24000 27000 30000 33000 36000 39000  {R}skipped {P}]                     {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {P} {W}Lowest-detected crop (out of {B}4 {W}sides) & out of all frames is selected for safety
+  {P} {W}If result is odd; reduced by one ({B}YUV 4:2:0 {W}constraint). Reducing instead of increasing
+    {W}allows us to not delete a row of pixels which has content: If {B}241 {W}is lowest detected value
+    {W}out of all frames & is top side; will crop {B}240 {W}from top, {B}240 {W}from bottom
+
+
+{P}▌ {C}1.8  {Y}Why No Manual Crop
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}XAV focuses on determinism & knowing details explicitly beforehand
+  {P} {W}Focuses on minimalism & simplicity
+  {P} {W}Automating crop: Optimize/improve freely without user error possibility
+  {P} {W}Less user-configurable params: One of XAV goals
+  {P} {W}If it can't handle a scenario; it should be fixed instead of a workaround
+  {P} {W}Worst case scenario or rare cases; user can externally do crop themselves;
+    {W}or some scenarios, they can prefer not using XAV for that video
+  {P} {C}Manual crop is one of botched-encode causes. {W}Off-by-one offsets, wrong parity,
+    {W}mismatched AR; all eliminated
+  {P} {C}Deterministic = reproducible. {W}Same input {P} {W}identical crop every run, every machine
+  {P} {C}Batch consistency for episodic content. {W}Everything crops by one rule
+  {P} {C}Auto-crop is a forcing function: {W}A failure becomes a bug fixed for everyone, instead of each user
+    {W}creating a workaround
+  {P} {C}Frees internal pipeline: {W}Nothing downstream has to respect arbitrary user geometry
+    {W}memory/SIMD/stride assumptions stay perfect
+  {P} {W}One less footgun = one less support question = fewer knobs = fewer ways to {R}ruin {W}an encode
+
+
+{P}▌ {C}1.9  {Y}Scene Detect
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Improves quality/efficiency
+  {P} {W}Crop happens before SCD; cuts are computed on cropped frames
+  {P} {W}Detailed & complex scene detection with rules:
+      {C} {W}Detects based on encode heuristics (not human understanding of scenes)
+      {C} {C}Min allowed length {W}can be anything: Allows refreshing references when needed
+      {C} {C}Max allowed length {W}is {B}300 {W}frames ({B}12.5 seconds {W}for {B}23.976 FPS {W}and {B}5-sec {W}for {B}60 FPS{W})
+          {P}· {W}Over {B}300 {W}frames, encoders do not gain significant efficiency
+          {P}· {W}Decoders may have problems decoding {B}300+
+          {P}· {W}Seeking becomes harder with {B}300+
+          {P}· {W}XAV tries to use RAM/VRAM very efficiently; longer GOPs will kill your memory
+          {P}· {B}300-max: {W} Evidently absolute sweet spot
+  {P} {W}End of SCD; redistributes scenes (called {C}enhanced-split{W}):
+      {C} {C}Enhanced-split {W}is global (whole source), not greedy/local
+      {C} {W}During SCD, frames get scores (such as calculated inter, intra costs)
+        {W}Instead of cutting from boundaries, all scores are re-evaluated
+        {W}to pick best possible combination of cuts
+      {C} {W}a long static/slow shot that never triggers a content cut still gets split
+        {W}at {B}300 {W}(or redistributed to be cut before) but it will never exceed {B}300
+  {P} {C}Cuts can be back-to-back. {W}Because min length is unconstrained, hard cuts in fast
+    {W}action (flashes, rapid intercuts) each get their own keyframe instead of being smeared into one GOP
+  {P} {C}Cost model is decider. {W}A cut is placed when a fresh intra frame is cheaper than continuing to predict
+    {W}frame intra cost vs inter cost; not pixel-difference thresholds
+  {P} {W}Frame 0 (first frame) of each chunk is always a keyframe
+  {P} {C}Handles gradual transitions. {W}Fades/dissolves/crossfades are caught by cost model
+  {P} {W}If audio is encoded, all selected audio streams are encoded at same time along with SCD
+    {W}This makes whole process faster. If scene file already present, audio encodes in end
+  {P} {C}SCD defines parallel work units. {W}Scene boundaries are chunk boundaries, so this stage
+    {W}directly sets what workers encode, not just where keyframes go
+  {P} {C}Deterministic: {W}Same input {P} {W}identical scene file, every run/machine
+  {P} {C}File is inspectable & editable: {W}0-indexed, one keyframe per line, last scene runs implicitly to EOF
+    {W}You can hand-tweak a boundary & re-run
+  {P} {W}It is a simple text file with keyframe locations each line:
+
+{P}    ╭━ {B}scenes.txt {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {G}0                                                                                                                    {P}┃
+{P}    ┃ {G}192                                                                                                                  {P}┃
+{P}    ┃ {G}288                                                                                                                  {P}┃
+{P}    ┃ {G}300                                                                                                                  {P}┃
+{P}    ┃ {G}600                                                                                                                  {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {P} {C}Example: {W}First scene uses all frames between frame {B}0 {W}(first frame of input vid) & frame {B}191
+  {P} {W}Frame {B}192 {W}is start of an independent scene continuing towards frame {B}287
+  {P} {W}External SCD, such as TransNetV2 can be used too. You can just create
+    {W}scene file with output from external tool & let XAV use that file instead with
+    {C}-s custom_scd.txt {W}(filename can be anything)
+
+
+{P}▌ {C}1.10  {Y}Muxing
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}XAV has {B}2 {W}containers: {B}mkv{W}/{B}webm
+  {P} {W}It is hand-written EBML: No libmatroska/libebml/ffmpeg-libs: so every byte is controlled and
+    {W}output is byte-deterministic
+  {P} {C}Why custom: {W}Full byte-control, smallest overhead, zero dependency, more features, much faster
+  {P} {B}MKV {W}is recommended mode for everything. It's a customized muxing which is:
+      {C} {G}Fully compliant
+      {C} {W}Has all additional features implemented to make it robust:
+          {P}· {W}Streamable/seekable directly through download
+          {P}· {W}Per-frame, per-level {C}CRC32 {W}error detection (corrupted frames can be detected)
+          {P}· {W}Embedded metadata as muxer/encoder libraries, encoding params, date, etc
+          {P}· {W}XAV stamps itself + versions so file is self-identifying
+          {P}· {W}With all timing related information in-place (proper seeking, reverse-playback, etc)
+  {P} {W}Audio/subtitle streams are muxed in with language/title tags & default/forced flags
+  {P} {W}Colorimetry written at container level too; not just bitstream
+  {P} {C}SAR/DAR {W}written so anamorphic content displays correctly without re-deriving from pixels
+  {P} {C}Cues / SeekHead: {W}Explicit index so seeking is {B}O(1) {W}(constant time complexity), not a linear scan
+  {P} {C}Minimal overhead: {W}No wasted lacing/padding; container bloat is measured against bitstream
+  {P} {W}Timestamps derived from parsed information & derived from how XAV encodes videos deterministically
+    {W}Exact CFR timing, no rounding drift across a long file
+  {P} {W}Final assembly produces same container bytes regardless of chunk encode order
+  {P} {W}Every player/parser/editor resolves timestamps identically, no exotic-tick edge cases
+  {P} {C}Total Duration & number of frames written up front {W}(in Info): players know full length when
+    {W}they open header. Scrubber, end-time, & remaining-time are correct before a single cluster is read,
+    {W}not estimated by scanning to EOF
+  {P} {C}Cluster-per-scene = every seek target is a keyframe {W}; clusters are aligned to scene/GOP boundaries
+    {W}a seek can only ever land on a clean random-access point; never mid-GOP, never decoding from a
+    {W}non-keyframe into garbage
+  {P} {C}Has complete Cues, not simple ones. {W}Each {C}CuePoint {W}carries full set:
+      {C} {C}CueTime{W}: exact timestamp of seek point
+      {C} {C}CueClusterPosition{W}: Segment-relative byte offset of cluster (jump straight there, zero scan)
+      {C} {C}CueRelativePosition{W}: Offset of block within cluster, so demuxer lands on exact frame,
+        {W}not just cluster start
+      {C} {C}CueDuration{W}: How long cue point covers
+      {C} {C}CueBlockNumber / CueTrack{W}: Deliberate block + track identity
+  {P} {W}Many muxers omit {C}CueRelativePosition {W}and {C}CueDuration{W}; without them a seek resolves to "somewhere in
+    {W}this cluster" & player re-parses to find frame. XAV's cues resolve to exact block in one jump
+  {P} {W}Inherits explicit per-frame {C}BlockDuration {W}(via {C}BlockGroup{W}). Every frame states its own duration instead of
+    {W}being inferred from next frame's timestamp. Last frame of a file, or a frame before a gap still has a correct,
+    non-mistakable duration
+  {P} {C}ReferenceBlock {W}reference structure where p-frames declare what they reference; keyframes declare none
+    {W}so a demuxer knows exact GOP dependency graph & can drop cleanly to nearest keyframe on seek
+    {W}without speculative decoding
+  {P} {C}Backward PrevSize chain {W}allows every non-first cluster records its predecessor's size to form
+    {W}a doubly-linked cluster list. This is what makes smooth reverse playback & resync after a damaged
+    {W}cluster possible; a parser that loses its place can walk backward to a known boundary instead of giving up
+  {P} {C}Self-locating clusters {W}store their own Segment-relative Position; file can be
+    {W}re-indexed from any point even if Cues element is lost or truncated
+  {P} {W}File carries a unique segment identity;external tools can reference it reliably across renames/moves
+  {P} {W}Secondly, {B}webm {W}can be used as an experimental minimal muxer which has almost nothing
+      {C} {W}It does not aim for full compliance & it is barely playable
+      {C} {W}It can be handy for {B}<1MB {W}challenges
+      {C} {W}Will still work on Discord/Browsers/Apps. It just does not have advanced features
+  {P} {W}A future projection to allow more flexibility for muxing, exists (adding attachments, etc)
+
+
+{P}▌ {C}1.11  {Y}Zoning
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}User can do a scene-detect-only run to create SCD file
+  {P} {W}Then use this file to force per-scene flags/params
+  {P} {W}This way, every scene can be encoded independently with different flags
+  {P} {W}This mode can be used for different purposes:
+      {C} {C}Important & short content {W}can be completely hand tuned using a specific set of params for dark
+        {W}scenes; params to improve shadows; spending more bits into more important parts; less bits into less
+        {W}important parts
+      {C} {W}An external logic/algorithm/script can be used to determine params or per-chunk CRF beforehand
+        {W}doing a type of analysis (motion/picture/content analysis; multi-pass runs, etc)
+      {C} {C}Boosting {W}(a method similar to target quality encoding aiming to improve consistency) is one of most
+        {W}common use-cases for zoning
+  {P} {W}You only need to indicate varying params here. You don't have to re-state XAV defaults, encoder defaults,
+    {W}and/or params you already indicated for yourself
+  {P} {W}Target-quality writes a per-scene CRF into {B}chunks.json{W}; that output is itself a zone map you can lift,
+    {W}inspect, or hand-edit & re-feed (it has tons of information already)
+  {P} {W}Scene+params file is plain text to ship it next to source & anyone reproduces your exact zoned
+    {W}encode, bit-for-bit
+  {P} {C}External workflows completely respected: {W}One tool writes cut points (TransNetV2), a second analysis pass
+    {W}annotates each line with params. XAV just consumes final file, agnostic to how it was produced
+  {P} {C}Deterministic regardless of worker order: {W}Zones are bound to frame ranges, not encode order, so
+    {W}parallel workers produce same result every run
+
+{P}    ╭━ {Y}Example {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {G}0                                                                                                                    {P}┃
+{P}    ┃ {G}192 {C}--crf {B}22 {C}--film-grain {B}8     {P}# {B}grainy scene: own CRF + grain synth                                                {P}┃
+{P}    ┃ {G}300                                                                                                                  {P}┃
+{P}    ┃ {G}600 {C}--crf {B}40                    {P}# {B}low-importance, starve it                                                          {P}┃
+{P}    ┃ {G}900 {C}--preset {B}0                  {P}# {B}hard scene: slower preset                                                          {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}1.12  {Y}Target Quality
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}TQ is peak of encoding with a known drawback: {R}Time Spent
+  {P} {W}Uses psychovisually improved video quality metrics that are perceptually relevant to us
+    {W}compared to ancient metrics like {B}PSNR/SSIM/VMAF {W}or variants
+  {P} {C}Psychovisual Metric {W}is a video quality metric that models human neurosensory features and
+    {W}display capabilities, viewing room characteristics & viewing distance; a metric that aligns with
+    {W}human subjective evaluations as to what image/video quality means
+  {P} {C}SSIMULACRA2 {W}& {C}Butteraugli {W}do this through construction; however {C}CVVDP {W}is more flexible
+    {W}in how you define viewer & display characteristics
+  {P} {W}TQ defines a target {Y}RANGE {W}(not a single value):
+      {C} {W}"I want every scene to be between {B}N-N {W}objective quality" (where {B}N {W}is a quality number/score)
+      {C} {W}"It can be higher than THIS quality & lower than THAT quality" (you accept anything between)
+  {P} {W}Scenes are individually analyzed & improved until they are exactly in your target range
+  {P} {W}Metrics used are {C}CVVDP {W}or {C}Butteraugli 5pNorm {W}or {C}SSIMULACRA2
+  {P} {W}CRF search is not done naively. There are many intelligent mechanisms providing faster convergence,
+    {W}and many early exist capabilities
+  {P} {W}Scene is encoded {P} {W}then quality-tested {P} {W}If in range; {G}saved{W}, if not; gets re-encoded
+  {P} {W}This process continues until requested range is reached for that scene
+  {P} {W}TQ encoding takes {B}2.0x {W}to {B}3.5x {W}total encoding time (depending on your config)
+  {P} {W}Main usecases:
+      {C} {C}Testing purposes: {W}You can compare params and/or encoders on certain scenes or full content by
+        {W}normalizing on an objective quality level. Based on output bitrate; you can determine winners on your
+        {W}quality range/target
+      {C} {C}Automation: {W}You don't have to know what CRF to use; system will pick correct one each scene
+      {C} {C}Normalizing/Consistency: {W}Plain CRF is naive. Every scene will have different quality
+        {W}creating inconsistencies. TQ improves consistency greatly
+        {W}Internal encoder metrics are too simple, that no known encoder can create consistent/robust quality
+        {W}throughout a whole movie without relying on external pipelines
+      {C} {W}You don't want to visually analyze every content you encode; OR you don't trust your eyes as sole
+        {W}determiner. A metric score is generalizable
+      {C} {C}To create advertisable encodes: {W}You can show that your video has a {C}CVVDP {W}score of {B}9.9
+        {W}which will make your video objectively relevant even before viewing it
+      {C} {C}To save bitrate: {W}Some people want very high quality but using a safe-enough CRF will bloat many
+        {W}scenes' bitrate when those scenes don't need that high of a bitrate. TQ will clamp them
+        {W}where it will also boost scenes that still sit in lower quality side even with that safe-enough CRF
+  {P} {W}Plain CRF fixes effort & lets quality float. TQ fixes quality & lets bitrate float
+  {P} {C}TQ is Encoder/Param agnostic. {W}Target is output quality, not encoder settings. Change presets,
+    {W}upgrade encoder, or even change codecs; delivered "objective" quality stays
+  {P} {C}Provides reproducible quality. {W}Same source + same target = same result on any machine, by any operator
+    {W}Quality becomes a documented number you can defend, reproduce months later, or hand to
+    {W}someone else; instead of "trust me, it looked fine on my screen to my eyes"
+  {P} {W}Despite all; you should not "worship" TQ as ground truth; try to understand it better
+    {W}through experience & research if you want to get a better feel of it
+  {P} {W}Actual related params will be explained later in params section
+
+
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}┃   {Y}󰥼 2 󰥭   Params                                                                                                         {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.1  {C}input {P}┃ {C}output
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}A simple command works: {G}xav i.mkv
+  {P} {W}Input vid can be a real or a relapath
+  {P} {W}Input is container/codec-agnostic via demuxer
+  {P} {W}Better to indicate path in quotes: {G}"/path/to/i.mkv"
+      {C} {W}This will eliminate shell splitting errors
+      {C} {W}You won't have to add escape characters for filenames with spaces
+      {C} {W}If you ever use {G}xav {W}in external scripts; you will have less issues & more robust filename handling
+  {P} {W}You can also indicate an output path: {G}xav i.mkv o.mkv
+    {W}If not given, output name is auto-derived from input: {B}i_xav.mkv
+  {P} {W}Default output lands next to input, named {B}{input}_xav.mkv
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example:                                                                                                             {P}┃
+{P}    ┃ {G}󰥭 {G}xav "/home/username/downloads/test_file.mkv"                                                                       {P}┃
+{P}    ┃ {G}󰥭 {G}xav "i.mkv" "o.mkv"                                                                                                {P}┃
+{P}    ┃ {G}󰥭 {G}xav "test_folder/i.mkv"                                                                                            {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.2  {C}-e {P}┃ {C}--encoder    {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Select encoder to use
+  {P} {W}Currently SVT-AV1 relies on library & is more optimized
+  {P} {W}Other encoders (for now) will rely on encoder binary in your PATH
+  {P} {W}SVT-AV1 is {G}default
+  {P} {W}AV2 is an ongoing research {P} {W}Currently can not be muxed into mkv {P} {W}Can not be combined with audio
+  {P} {W}Encoder mappings (codec_id bitstream_extension):
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {C}SVT-AV1 {P} {B}AV1 {W}({B}V_AV1{W}, {B}.obu {W}chunks)                                                                                   {P}┃
+{P}    ┃ {C}AVM {P} {B}AV2 {W}({B}V_AV2{W}, {B}.ivf {W}chunks): next-gen, research/experimental (extremely slow)                                     {P}┃
+{P}    ┃ {C}VVENC {P} {B}VVC / H.266 {W}({B}.266{W})                                                                                           {P}┃
+{P}    ┃ {C}x265 {P} {B}HEVC / H.265 {W}({B}.265{W})                                                                                           {P}┃
+{P}    ┃ {C}x264 {P} {B}AVC / H.264 {W}({B}.264{W})                                                                                            {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-e svt-av1                                                                                                  {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.3  {C}-w {P}┃ {C}--worker     {W}Encoder count
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}How many worker units we run in parallel
+  {P} {W}Worker units are encoder instances
+  {P} {W}Workers: Separate encoders running on input video chunks
+  {P} {W}BEST worker count is determined by {Y}MANY {W}different variables:
+      {C} {C}Input resolution: {W}You can't run many workers on {B}8K {W}vids
+        {W}Every worker is extra RAM usage; you will run out of memory
+      {C} {C}System memory: {W}A system with {B}8GB {W}RAM can not run as many workers as a system with {B}64G {W}RAM
+      {C} {C}Bit-depth: {W}Input vid being {B}8bit {W}or {B}10bit {W}affects buffered RAM usage (if ${G}-b {W}is used)
+        {W}XAV applies some tricks to lower {B}10bit {W}RAM usage but it is still heavier than {B}8b
+      {C} {C}Encoder params: {W}Some can increase memory usage due to extra internal buffers
+      {C} {C}Encoder used: {W}Many encoders until SVT-AV1 had threading models with penalties
+        {W}You lost efficiency with increased parallelism. Additionally, parallelism was always under-performing
+	{W}For H26* encoders; XAV forces internal threading {R}OFF{W}; use XAV workers to make them run faster
+        {W}For SVT-AV1, things are different. Internal parallelism is completely free,
+        {W}encoder is deterministic & is quite good & fast already. Chunking still helps, but
+        {W}we combine internal encoder parallelism with external chunking
+        {W}A lower ({B}3 to 8{W}) worker count is used with high internal parallelism. However, systems with
+        {W}enough memory (or people encoding low resolution content) can experiment with high workers
+        {W}Encoders can also create different buffers (avm/vvenc can use more RAM than others)
+      {C} {C}Input codec: {W}A complex HEVC file will require more RAM to decode compared to simple AVC
+  {P} {W}Most important part of memory usage is determined by input frames. Since we have
+    {W}2 different input types ({B}yuv420p {W}and {B}yuv420p10le{W}), we can calculate them
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {W}For {B}YUV420P {W}per-frame it is = {B}1.5 x Width x Height                                                                   {P}┃
+{P}    ┃ {W}For {B}YUV420P10LE {W}per-frame = {B}3 x Width x Height                                                                       {P}┃
+{P}    ┃ {W}XAV can have up to {B}300 {W}frames per chunk, so max-per-chunk = {B}(1.5 x Width x Height) x 300                             {P}┃
+{P}    ┃ {W}For {B}1080p{W}, {B}8bit {W}({B}1080p {W}blu-rays) input, it is = {B}(1.5 x 1920 x 1080) x 300 = 933120000 {W}({B}933 MB{W})                       {P}┃
+{P}    ┃ {W}For {B}4K{W}, {B}10bit {W}input ({B}4K {W}blu-rays), it is = {B}(3 x 3840 x 2160) x 300 = 7464960000 {W}({B}7465 MB{W})                            {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {P} {W}For {B}4K/10bit {W}blu-rays; even in best, most optimized scenario (ignoring all other RAM usage),
+    {W}you can't run {B}5 {W}workers in parallel having {B}32GB {W}memory ({B}5 x 7465 {W}= {R}out-of-memory{W})
+  {P} {W}Even if RAM is eliminated (let's say you run as many workers as you want):
+      {C} {W}More workers doesn't always mean more perf
+      {C} {W}Especially for SVT-AV1; different combinations of {C}--worker{W}, {C}--buff {W}, and
+        {C}--lp {W}will be optimal on different systems depending on input content, resolution,
+	{W}bit-depth, cpu/gpu decode, memory speed, CPU used, params, and other variables
+	{W}Experimentation needed to find sweet spot
+  {P} {W}Default value is {B}1 {W}to indicate: {G}"You should change this yourself"
+  {P} {W}If not changed, xav will act like a simple encoder with a single instance but it will
+    {W}still encode scene-by-scene similarly
+  {P} {W}All above info was given for educational purposes. You don't have to min-max every
+    {W}aspect; if you want to do it, above info will help you understand
+    {W}Otherwise even starting with {B}2 {W}workers & using {C}--lp 4 {W}(or {B}5{W}) in encoder params will behave
+    {W}quite well. For H26* encoders, memory management is more important (because more workers = better)
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-w 3 -p {G}"--lp 5"   {P}# {B}using 3 XAV workers & maximum svt-av1 internal paralellism                             {P}┃
+{P}    ┃ {Y}Example: {G}-w 32 -p {G}"--lp 1"  {P}# {B}using max XAV workers (for 32-thread CPUs) & single-threaded SVT-AV1                   {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {P} {W}Any other combination can also be valid: Needs to be thoroughly tested to know
+  {P} {W}For H26* encoders; you should only change worker: More workers = better -> always
+    {W}as long as you have RAM
+
+
+{P}▌ {C}2.4  {C}-b {P}┃ {C}--buff       {W}Extra chunks to pre-decode
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Useful when you have extra memory (sometimes trading with a worker might help too)
+  {P} {W}Lets decoder run ahead of encoders, pre-decoding next chunk into RAM; workers never stalls waiting on decode
+  {P} {W}Additive on top of workers (will cause to keep one extra decoded chunk in memory)
+  {P} {W}Default {C}-b 0 {W}enables a zero-copy path / less-compute path ONLY when:
+      {C} {C}-b 0 {W}is used
+      {C} {W}Input video is {B}yuv420p10le {W}(with {B}8bit{W}, this is not possible; conversion needed)
+      {C} {W}TQ mode is not used (because we need another operation to reduce memory there)
+  {P} {W}Additional chunks require extra processing but can be beneficial for perf
+  {P} {W}You need to test: Additional buffers may or may not help
+  {P} {W}For some setups, waiting on decoder creates a significant dead waiting sequence. {C}-b {W}eliminates that
+  {P} {W}If I encode {B}1080p/8bit {W}input content (trivial), I use many buffers ({B}64GB {W}memory) since using {B}0 {W}doesn't
+    {W}have any benefits & encoder workers never wait for decoder to process; there is always a chunk ready to process
+  {P} {W}Fastest setting depends on input vid, encoder, params, hardware & other variables
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-b 1                                                                                                        {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.5  {C}-p {P}┃ {C}--param      {W}Encoder params
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Indicate encoder params next to encoder + XAV defaults
+  {P} {W}Write them in double quotes
+  {P} {W}Params are indicated with {C}-- {W}prefixes on SVT-AV1. Other encoders accept single dash {C}-key
+  {P} {W}Every param is a {C}--key {Y}value {W}pair; no bare flags
+    {W}Even on/off switches take an explicit value for SVT: {C}--enable-qm {Y}1
+  {P} {W}It is space-separated only; {C}--key={Y}value {W}/ {C}key={Y}value {W}/ {C}key:{Y}value {W}are not supported
+  {P} {W}Values in {C}-p {W}can override encoder defaults; they can't override XAV defaults
+    {W}XAV only applies structural defaults (input metadata, encoding modes, etc)
+    {W}What XAV applies ensures proper chunked encoding behavior & high quality, high efficiency
+    {W}Actual encoder coding tools; modifiable by user ({C}--tf-strength{W})
+  {P} {W}Users are advised to not duplicate params already indicated by XAV (will error out)
+  {P} {W}Also advised to not duplicate params used as a default on encoders
+  {P} {W}Params used are added in output container metadata; you may want
+    {W}to keep what's relevant there by only keeping varying options on your end instead of
+    {W}duplication (Eg. {C}--enable-cdef 1 {W}is already a default; you should not add)
+  {P} {W}Novice users should only indicate {C}--preset {W}(param showing encode complexity/speed) here
+    {W}and if TQ is not used, they can also indicate {C}--crf
+  {P} {W}In TQ mode CRF should not be indicated in {C}-p {W}because it is AUTO; can cause errors
+  {P} {W}Params are saved to {B}cmd.txt {W}in tmp folder; resume reuses exact params without retyping
+  {P} {W}If you use encoder forks such as svt-av1-Essential; you may not even need this
+    {W}Both xav & -Essential modify defaults with tested tuned params
+    {W}Reach for {C}-p {W}only to change preset/lp/crf or an expert knob you understand
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-p {G}"--preset 0 --qm-min 8 --lp 5"                                                                           {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.6  {C}-s {P}┃ {C}--sc         {W}Specify SCD file
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Instead of using default name derivation ({B}input.mkv {W}produces {B}input_scd.txt{W}), you can
+    {W}name scenes file; scene-list will be in that file
+  {P} {W}OR you have a scenes txt file & you want to use that instead of re-computing
+  {P} {W}OR you produced scenes using external utility: TransNetV2
+  {P} {W}OR you created scenes file for zoning purposes & you want to use that zones list
+  {P} {R}Rule: {W}every scene must be {B}1 to 300 {W}frames or XAV rejects
+  {P} {W}File is 0-indexed (starts from first frame as frame 0)
+  {P} {W}Lines are auto-sorted by frame number. Order in file doesn't matter, you can append out of order
+  {P} {W}Non-numeric lines are silently skipped. A line whose first token isn't a number is dropped,
+    {W}stray blank lines won't break parsing
+  {P} {W}If you did not use this param & if there is a file named {B}{inputname}_scd.txt {W},
+    {W}SCD is skipped. Instead file is re-used. If file absent, then SCD runs
+  {P} {W}Resume auto-reuses it
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-s my_scenes.txt                                                                                            {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.7  {P}┃ {C}--sc-only    {W}Exit after SCD
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}You can scene detect with XAV then exit
+  {P} {W}Create scenes file & do nothing else
+  {P} {W}You can use it with {C}-s | --sc {W}param or alone
+  {P} {W}If you use it alone, scenes file will be named being derived from input as explained above
+  {P} {W}Useful when you want to:
+      {C} {W}Use scenes list for external reasons
+      {C} {W}Investigate scene cuts
+      {C} {W}Modify / hand-tune scenes list
+      {C} {W}Create a zones file to encode each scene differently
+      {C} {W}Create scenes file before & then re-use many times
+  {P} {W}Another very popular use is Hardware Decode (GPU decode)
+    {W}Sometimes you want to decode video with CPU since that specific codec decodes faster with CPU
+    {W}However offloading decode to GPU during encoding might still be beneficial
+    {W}In that case, you can create scenes file without GPU decoding & then re-enter an XAV command with
+    {W}GPU decode enabled later: Do scene detection (CPU) {P} {W}Exit {P} {W}Encode (GPU)
+  {P} {W}Cuts are stable across decode paths
+
+{R}╭━  {R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╮
+{R}┃ {R}IMPORTANT: {W}It refuses to overwrite an existing scene file. If corresponding SCD file exist, it will exit                 {R}┃
+{R}┃ {W}To re-create, either delete it first or use a different name with {C}-s                                                     {R}┃
+{R}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.8  {P}┃ {C}--hwdec      {W}Use GPU decode
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Enables GPU Decoding
+  {P} {W}Valid when input files have codecs: {B}AVC (H.264){W}, {B}HEVC (H.265){W}, {B}VC-1{W}, {B}VP9 {W}& {B}AV1
+  {P} {B}VC-1 {W}is only supported by Nvidia GPUs through CUDA. You need:
+      {C} {W}Nvidia GPU
+      {C} {W}Build with TQ (because we link CUDA for TQ)
+  {P} {W}However codec list is GPU + driver dependent (some won't support AV1 for example)
+  {P} {R}No CPU fallback. {W}If {C}--hwdec {W}is used & it fails, run errors out
+  {P} {W}HWDEC is preferable because GPU generally decodes much faster, especially when:
+      {C} {W}Input is {B}VC-1 {W}(on CPU, it is single threaded due to format constraints)
+      {C} {W}Input is a complex HEVC (many relatively modern GPUs decode HEVC quite efficiently)
+  {P} {W}Other times it can still be beneficial because CPU gets completely free from decoding
+    {W}The whole CPU resources are used for encoding instead
+  {P} {W}However real benefit is hardware parallelism, not just freeing CPU
+    {W}Decode runs on GPU while CPU encodes; you use a hardware that otherwise sleeps
+  {P} {W}GPU decode is also much more power efficient
+  {P} {W}Can not be combined with pipe mode because decoding happens on
+    {W}sender tool (command you pipe into xav)
+
+
+{P}▌ {C}2.9  {C}-r {P}┃ {C}--range      {W}Trim & splice
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Cut different parts of input, encode & combine/mux in end
+  {P} {W}Several use cases:
+      {C} {W}Work on a specific scene (for testing purposes)
+      {C} {W}Quickly encode a part of video
+      {C} {W}Implement an external script for mpv to quickly cut videos with keypresses
+      {C} {W}Remove some parts from movie such as Intro / Outro / Credits / Intermissions
+  {P} {W}You can include any number of segments
+  {P} {W}Will still respect same SCD. Exception: Your exact cutting points will be keyframes
+  {P} {W}Audio stream copy mode can not be used with this. We need to re-encode audio in order for this to work
+    {W}If you use this without {C}-a|--audio {W}; encoding will still work but you won't have any audio streams
+  {P} {W}Subtitles & chapters dropped because trim/splice desync timestamps (SRT syncing is considered)
+  {P} {W}However with {C}-a|--audio {W}; audio is cut sample-accurately to match kept frames
+  {P} {W}Range endpoints are inclusive on both ends: {B}3000-39999 {W}keeps frames {B}3000 {W}and {B}39999
+    {W}(internally end+1 becomes exclusive cut)
+  {P} {W}Can be used & compatible with zoning, piping, target quality, resuming
+  {P} {W}Segments concatenate continuously. Kept ranges are spliced end-to-end with rebuilt timestamps
+    {W}There will be no gaps, no black, output plays as one piece
+
+{R}╭━  {R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╮
+{R}┃ {R}IMPORTANT: {W}Ranges should be ascending & non-overlapping. They are not sorted or deduplicated,                            {R}┃
+{R}┃ {W}out-of-order/overlapping ranges will {R}FAIL                                                                                {R}┃
+{R}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╯
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-r 3000-39999,45000-59999                                                                                   {P}┃
+{P}    ┃                                                                                                                      {P}┃
+{P}    ┃ {P}// {B}Above command will remove first 3000 frames (from frame 0 to frame 2999)                                          {P}┃
+{P}    ┃ {P}// {B}then it will also remove from 40000 to 44999                                                                      {P}┃
+{P}    ┃ {P}// {B}will also remove from 60000 to end (if your last frame is not end of input vid)                                   {P}┃
+{P}    ┃ {P}// {B}It will only encode segments between frames 3000-39999 & 45000-59999                                              {P}┃
+{P}    ┃ {P}// {B}Then it will combine them as a single segment                                                                     {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.10  {C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}"
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Encode {C}SELECTED {W}audio streams with {C}OPUS
+  {P} {W}XAV allows many configurations under a single param so it can look complex at first look
+  {P} {W}Two different space separated segments:
+      {C} {C}First segment {W}indicates if you want to use:
+          {P}· {W}Auto calculated bitrate
+          {P}· {W}OR your own bitrate
+          {P}· {W}OR want to use stereo downmixing + loudness normalization where bitrate is AUTO
+            {W}However norm allows more flexibility which will be explained later
+      {C} {C}Second segment {W}is audio streams you want to encode to OPUS (the others are REMOVED):
+          {P}· {W}If {G}all {W}is selected then all audio streams will be encoded to OPUS
+          {P}· {W}If a number is selected (check input audio numbers on mediainfo/ffprobe)
+            {W}numbered audio streams are encoded & others are discarded
+          {P}· {W}The IDs can be comma separated to encode more audios: {B}1,3,5
+  {P} {W}Put these two segments in double quotes
+  {P} {W}Auto bitrate calc is channel based. Results of formula used:
+      {P} {B} 76 {W}for mono {B}(1.0)
+      {P} {B}128 {W}for stereo {B}(2.0)
+      {P} {B}132 {W}for {B}2.1
+      {P} {B}177 {W}for {B}3.1
+      {P} {B}219 {W}for {B}4.1
+      {P} {B}258 {W}for {B}5.1
+      {P} {B}295 {W}for {B}6.1
+      {P} {B}331 {W}for {B}7.1
+  {P} {W}However we also enable non-constrained VBR (variable bitrate). So audio streams WILL NOT
+    {W}exactly use these values as ground truth
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Examples:                                                                                                            {P}┃
+{P}    ┃ {G}-a "auto all"  {P}# {B}Calc channel based bitrate (auto) & encode all audio streams (all)                                  {P}┃
+{P}    ┃ {G}-a "auto 1,5"  {P}# {B}Calc channel based bitrate (auto) & encode Streams 1 & 5 discarding others                          {P}┃
+{P}    ┃ {G}-a "96 3"      {P}# {B}Use 96kbs for bitrate value & encode Stream #3 & discard others                                     {P}┃
+{P}    ┃ {G}-a "norm all"  {P}# {B}Use 128kbs for bitrate (because stereo) & encode/normalize all audio streams                        {P}┃
+{P}    ┃ {G}-a "norm 1,2"  {P}# {B}Use 128kbs for bitrate & encode Audio Stream #1 & #2 & discard others                               {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {Y}▍ How Do Stereo Downmixing & Loudness Normalization Work?
+
+  {P} {W}Stereo downmixing is based on {B}AC4 {W}standards: {B}ETSI TS 103 190-1{W}, Section {B}6.2.17
+  {P} {B}5.1 (6ch){W}: {B}Lt = L + 0.707*C + 0.707*Ls{W}, {B}Rt = R + 0.707*C + 0.707*Rs {W}; surrounds at {B}−3 dB{W}, LFE discarded
+  {P} {B}6.1 (7ch){W}: back-center folded in at {B}0.5 (−6 dB) {W}to each side; surrounds {B}−3 dB
+  {P} {W}For {B}7.1{W}, it's cascaded; side surrounds are pre-scaled by {B}0.707{W}, then {B}5.1->2.0 {W}stage applies another {B}0.707
+      {C} {W}computed as a single fused coefficient matrix per sample; not two sequential passes
+        {W}(no intermediate buffer or double rounding)
+  {P} {W}There is also channel reordering that happens before all of these due to OPUS format
+    {W}constraints (Vorbis layout)
+  {P} {W}Mono/Stereo sources are passed through untouched even if you use norm option
+
+  {Y}▍ Then Loudness Normalization is Applied:
+
+  {P} {W}XAV uses {B}EBU R128 {W}/ {B}ITU-R BS.1770 {W}model
+  {P} {W}Enabled via {C}norm {W}or {C}norm(I,TP,LRA[,BITRATE])
+  {P} {W}Plain {C}norm {W}option uses defaults
+  {P} {W}Three values are standard R128 triplet, plus Opus bitrate
+  {P} {C}Pass 1: {W}Track is downmixed to stereo first, then measured with EBU R128
+    {W}(integrated loudness + true-peak + loudness range). Normalizes what you'll actually hear,
+    {W}not original surround
+  {P} {C}Pass 2: {W}One constant gain is computed & applied to every sample, then peaks are clamped
+    {W}to true-peak ceiling
+  {P} {C}Internal dynamics are preserved. {W}LRA is a coarse global pull down, not a compressor; and
+    {W}true-peak stage is a brickwall clamp, not a lookahead limiter
+
+  {Y}▍ Values & Their Defaults
+
+  {P} {C}I {W}(default is {B}-16.0{W}) {P}: {W}Target integrated (overall) loudness whole track is shifted to
+    {W}More negative = quieter. Uses {B}LUFS {W}unit
+  {P} {C}TP {W}(default is {B}-1.5{W}) {P}: {W}True-peak ceiling. Post-gain samples are clamped here; leaves headroom below {B}0 dBFS
+    {W}Uses {B}dBTP {W}unit
+  {P} {C}LRA {W}(default is {B}16.0{W}) {P}: {W}Loudness-range target. If source exceeds it, overall gain is pulled down toward it
+    {W}narrower sources are left alone. Uses {B}LU {W}unit
+  {P} {C}BITRATE {P}: {W}Output Opus bitrate for normalized stereo track. Uses {B}kb/s {W}unit
+
+  {Y}▍ Why These Defaults
+
+  {P} {C}I = -16 LUFS {P}: {W}Middle ground value used by Apple Music. Spotify/YouTube uses {B}-14
+      {C} {W}Within Audio Engineering Society recommended range ({B}-16..-20{W})
+  {P} {C}TP = −1.5 dBTP {P}: {W}Leaves {B}1.5 dB {W}of headroom for inter-sample overshoot & lossy-codec ringing
+    {W}Value is smallest value that could reliably prevented clipping in default scenario. Not randomly picked
+  {P} {C}LRA = 16 LU {P}: {W}Intentionally permissive. {B}16 {W}preserves natural film/music dynamics & only engages for pathologically
+    {W}wide sources. Goal: "don't squash too much". Otherwise it would feel too flat
+  {P} {C}BITRATE = 128 kbps {P}: {W}Perceptually transparent-grade Opus for stereo
+  {P} {C}Output always stereo: {W}Normalization runs on downmixed 2-channels & encodes stereo Opus, regardless of channel count
+  {P} {C}Higher level overview: {W}In summary Normalization helps with some of issues we can have:
+      {C} {W}We can use much lower bitrates (instead of {B}330{W}, we can use {B}128 {W}or below)
+      {C} {W}Opus already doesn't support some exotic channel types or audio features. However it is golden for stereo
+      {C} {W}Many people don't have proper setups to play surround audio properly:
+          {P}· {W}Extremely expensive
+          {P}· {W}No space to place audio systems
+          {P}· {W}No environment to play sound loud enough that it would matter
+      {C} {W}Surround audio has a range that is too wide; & it doesn't play well on standard systems or headphones
+      {C} {W}Especially dialogue (most important aspect in a movie) suffers
+      {C} {W}Default values preserve original sound while suppressing wideness a little while improving dialogue loudness
+      {C} {W}Generally downmixing + normalization creates a "louder" feeling which people commonly like
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}FULL EXAMPLE: {G}-a "norm(-16,-1.5,16,128) 1,3"    {P}# {B}Normalization + Encoding audio #1 & #3                             {P}┃
+{P}    ┃             {Y}OR: {G}-a "norm 1,3"                   {P}# {B}Uses default values (you do not have to enter)                     {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {P} {W}If you don't know what you are doing, you are advised not to touch these. However if you want to experiment,
+    {W}it is fine to play around
+
+
+{P}▌ {C}2.11  {C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Only for Target Quality; not plain chunk-encoding
+  {P} {W}Only exists for builds compiled with Vship (TQ) support
+  {P} {W}Value you use for key is a range; not a single number: {B}78-82
+  {P} {W}Middle range {B}80 {W}becomes your target; however you accept any score
+    {W}for each scene if they sit between {B}78 {W}and {B}82
+  {P} {W}You can use floating point numbers too; {B}9.0000-9.0001
+  {P} {W}Single param can activate one of {B}3 {W}available TQ Metrics. If your target is:
+      {C} {W}Below {B}8{W}; {C}Butteraugli 5p-Norm {W}is used as metric: lower score = better quality
+      {C} {W}Between {B}8 {W}and {B}10{W}; {C}CVVDP {W}used; higher = better
+      {C} {W}Above {B}10{W}, {C}SSIMULACRA2 {W}metric used; higher = better
+  {P} {W}Reason behind this is to combine all of them under a single param in a simple way
+    {W}If you don't know anything about these metrics yet; it may feel less intuitive & more complex
+  {P} {W}However these scores are full relevant ranges for given metrics:
+      {C} {W}Below {B}10{W}, {C}SSIMULACRA2 {W}doesn't mean anything: Too low to be useful
+      {C} {W}Above {B}8{W}; {C}Butter-5pn {W}doesn't mean anything: Too high to be useful
+      {C} {C}CVVDP {W}only relevant between {B}8 {W}and {B}10 {W}(maybe even {B}9 {W}and {B}10{W})
+  {P} {C}SSIMULACRA2 {W}scores can have wider range because it internally uses scores from {B}-infinite {W}to {B}+100
+  {P} {W}For {C}Butteraugli {W}small score changes in fractional side will matter more than {C}SSIMU2
+  {P} {W}For {C}CVVDP {W}it's even more granular. {B}9.50 {W}can look good while {B}9.48 {W}can look bad
+    {W}(Example scores are completely random; don't put value on them)
+  {P} {C}CVVDP {W} will REQUIRE a display profile in JSON that will be explained later
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Examples:                                                                                                            {P}┃
+{P}    ┃ {G}-t 9.9000-9.9001 {P}# {B}very strict range for CVVDP                                                                       {P}┃
+{P}    ┃ {G}-t 78.00-82.00   {P}# {B}relaxed range for SSIMULACRA2                                                                     {P}┃
+{P}    ┃ {G}-t 1.000-1.080   {P}# {B}random range for Butteraugli-5pNorm                                                               {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.12  {C}-m {P}┃ {C}--mode       {W}TQ Metric stat: {G}mean {W}or pN%
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Assess how you aggregate per-scene scores for TQ runs
+  {P} {W}Don't use if you are not sure what you are doing
+  {P} {W}Default is {G}mean{W}: Average score of each scene is used
+  {P} {W}Other option is to use a percentage value such as {B}p25
+  {P} {W}Perc option takes mean score of worst values under given percentile value
+    {W}For {B}p25{W}, worst {B}25th {W}percentile is found. That value & all values under that
+    {W}will be averaged. Best {B}75% {W}of scores are eliminated/discarded from calculation
+  {P} {W}Perc mode: To increase lowest possible quality in videos where you
+    {W}are extremely careful about quality drops even if they are very short-durat segments
+  {P} {W}Perc mode is less useful with {C}CVVDP {W}and requires knowledge & experience regarding
+    {W}how metric works at lower level. CVVDP has internal weighted score management +
+    {W}temporal feature modeling human vision for motion-specific changes. Using a percentage
+    {W}value & picking an intuitive target score is less intuitive for CVVDP; however it is
+    {W}still possible if you are expert enough & trust yourself
+  {P} {G}"mean" {W}is not same operation for all three metrics
+      {C} {C}SSIMULACRA2 {W}& {C}Butteraugli {W}are image metrics. Every single frame is compared against
+        {W}source individually & independently. So with mean, it's literally average of per-frame scores
+      {C} {C}CVVDP {W}also tests each frame but it weights scores internally & has a temporal component
+        {W}CVVDP mean: own internal pooled score, not a frame average. CVVDP pools all frames itself
+        {W}(temporally + weighted) & emits one number. With perc mode; be extra careful
+      {C} {W}Perc mode forces per-frame scoring & to get per-frame CVVDP numbers, it is reset every frame
+        {W}Still keeps temporal component up to that frame's point; but weighted calculation removed
+      {C} {W}CVVDP pN also pools in linear perceptual space, not on JOD numbers where each frame's score is un-mapped
+        {W}from JOD, worst N% are averaged, then re-mapped to JOD. A CVVDP pN value is not directly comparable
+        {W}to CVVDP mean scores
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Examples:                                                                                                            {P}┃
+{P}    ┃ {G}-m mean  {P}# {B}OR do not indicate & take default                                                                         {P}┃
+{P}    ┃ {G}-m p100  {P}# {B}same as mean: p100 = mean (worst 100% = everything)                                                       {P}┃
+{P}    ┃ {G}-m p1    {P}# {B}worst 1% scores of each scene                                                                             {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.13  {C}-f {P}┃ {C}--qp         {W}CRF range for TQ: {G}crf-crf
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Assess allowed CRF range for TQ
+  {P} {W}TQ search will never go below or above range if indicated
+  {P} {W}Have zero experience? -> Use whole range in beginning:
+      {C} {G}-f 0.00-70.00 {W}for SVT-AV1
+      {C} {G}-f 0.00-51.00 {W}for X26*
+      {C} {G}-f 0-63 {W}integers for VVENC
+  {P} {W}Used to partially speed up CRF search in some types of runs
+  {P} {W}OR to eliminate some CRF levels from being usable
+  {P} {W}If a scene's target needs a CRF outside [min,max], it can't go there & it pins to nearest edge
+    {W}& ships closest achievable quality
+  {P} {C}Search granularity is per-encoder: {W}SVT-AV1 & X26* encoders can go by {B}0.25 {W}CRF increments
+    {W}VVENC only supports integer CRF jumps from {B}0 {W}to {B}63{W}; can never use fractions: {B}25.75
+  {P} {W}{C}-f {W}is global, not per-scene: Every scene searches same [min,max] but each converges to its own CRF
+  {P} {W}If doing a scientific experiment; should always use widest CRF range possible
+    {W}& set a very narrow target range with {C}-t{W}; so maximum precision is provided
+  {P} {W}Default value is {B}12-48
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-f 12-48  {P}# {B}Below CRF 12 & above CRF 48 will never be used                                                  {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.14  {C}-v {P}┃ {C}--vship      {W}Metric worker count
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Only relevant under TQ runs
+  {P} {W}Used to indicate VSHIP workers (parallel workers running metric computation at same time)
+  {P} {W}Used to limit VRAM usage and/or optimize overall perf
+  {P} {W}Depends on CPU/GPU/RAM/VRAM, content you encode, resolution & some other variables
+  {P} {W}Default is {B}1 {W}(only single metric calculation instance)
+  {P} {W}Is provided to separate encoding workers from metric workers
+  {P} {W}Very high values will almost never help; you should experiment with it
+  {P} {W}Each {C}-v {W}worker spins up its own GPU metric context plus its own probe decoder
+    {W}So it scales two things at once: Concurrent GPU scoring & concurrent probe decoding
+  {P} {C}-v {W}and {C}-w {W}are separate pools that form a feedback pipeline:
+    {W}encode workers ({C}-w{W}) produce probe encodes {P} {W}metric workers ({C}-v{W}) decode + score them {P} {W}next CRF is fed back
+  {P} {W}They run concurrently, so tuning is balance, not "more is better"
+  {P} {W}Separation exists so GPU keeps scoring while CPU keeps encoding
+  {P} {W}All {C}-v {W}workers share one GPU device & every metric worker contends for same GPU and same VRAM pool
+  {P} {W}Per-worker VRAM scales with resolution (no issue for SSIMU2/Butter but CVVDP will use more VRAM)
+
+
+{P}▌ {C}2.15  {C}-d {P}┃ {C}--display    {W}CVVDP display file. Set screen name as {R}xav
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}It is mandatory for CVVDP & ignored otherwise
+  {P} {W}CVVDP is a very sophisticated video quality metric. It requires you to create a display file
+  {P} {W}So target scoring will be completely determined by features you indicate in that file
+  {P} {W}An example file can be seen below
+  {P} {W}JSON files can not have in-line comments; I will indicate them for educational purposes
+  {P} {W}Show PATH of file through this parameter:
+      {C} {G}-d display.json
+      {C} {G}-d "/path/to/the.json"
+
+{P}    ╭━ {B}display.json {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {W}{                                                                                                                    {P}┃
+{P}    ┃ {W}    {C}"xav"{W}: {                               {P}# {B}Key name must be {G}xav                                                    {P}┃
+{P}    ┃ {W}        {C}"resolution"{W}: {B}[3840, 2160]{W},        {P}# {B}Resolution of your screen                                               {P}┃
+{P}    ┃ {W}        {C}"viewing_distance_meters"{W}: {B}1.86{W},   {P}# {B}Your distance from screen in meters                                     {P}┃
+{P}    ┃ {W}        {C}"diagonal_size_inches"{W}: {B}97{W},        {P}# {B}Your screen size like 55 inches                                         {P}┃
+{P}    ┃ {W}        {C}"max_luminance"{W}: {B}300{W},              {P}# {B}Max brightness in NITS (different for SDR/HDR)                          {P}┃
+{P}    ┃ {W}        {C}"E_ambient"{W}: {B}10{W},                   {P}# {B}Ambient lighting in LUX                                                 {P}┃
+{P}    ┃ {W}        {C}"k_refl"{W}: {B}0.001{W},                   {P}# {B}Screen reflectivity factor                                              {P}┃
+{P}    ┃ {W}        {C}"contrast"{W}: {B}1000000{W},               {P}# {B}Contrast value (it's too high here because OLED has infinite)           {P}┃
+{P}    ┃ {W}        {C}"colorspace"{W}: {G}"SDR"{W}                {P}# {B}Change according to your content if it's SDR or HDR                     {P}┃
+{P}    ┃ {W}    }                                                                                                                {P}┃
+{P}    ┃ {W}}                                                                                                                    {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+  {P} {W}Set ${G}resolution according to input video (preferably after crop is calculated such as {B}1920x800{W})
+  {P} {W}Target displays WILL ALWAYS have vastly different max luminance for SDR & HDR
+    {W}Eg. LG C5 OLED can reach {B}~300 {W}nits on SDR mode but over {B}~1100 {W}NITS on HDR mode
+  {P} {W}If your {R}content {W}is HDR, set colorspace to {G}HDR {W}& if SDR, set your profile to {G}SDR
+  {P} {W}It is advised to create multiple display files for 1080/4K and/or SDR/HDR
+  {P} {W}Values don't do anything by themselves. Distance/Size only corresponds to a
+    {W}single value which is Viewing Degree. On above example, it is {B}60 {W}degree
+  {P} {W}So, if screen size is {B}15.6 {W}inches & distance is {B}0.30 {W}meters; you get same degree
+    {W} as the above extreme example
+    {W}A screen with {B}97 {W}inches doesn't mean anything without corresponding distance value
+    {W}So, screen size alone = useless. It can be {B}6 {W}inches or {B}100 {W}while you get
+    {W}same score; due to distance/resolution being different
+  {P} {W}Similarly, {G}max_luminance{W}, {G}E_ambient{W}, {G}k_refl {W}don't do anything alone. They are combined
+  {P} {W}In CVVDP, {G}k_refl {W}is display reflectivity factor used to model ambient light reflected off
+    {W}display toward viewer
+  {P} {W}Represents fraction of incident ambient illumination that is reflected by front surface of display
+  {P} {W}This reflected light adds to displayed luminance & it reduces perceived contrast
+    {W}(so it says: display luminance is low enough & it's very reflective & environment
+    {W}is very bright; so viewer can not see contrast differences as well; so they can not identify
+    {W}quality differences well -> score higher at actually lower quality)
+  {P} {G}K_refl {W}is used to estimate black level elevation under ambient light
+  {P} {W}So we are harmonizing three values here:
+      {C} {W}Luminance from display
+      {C} {W}Ambient illuminance (lux)
+      {C} {W}Reflectivity coefficient
+  {P} {W}If it's dark room, reflectivity doesn't matter & only light source becomes luminance from display;
+    {W}Two other values don't affect anything
+  {P} {W}I generally use values as above (regardless of target display, or audience) & modify
+    {W}my target score instead. However you can use "more forgiving" values if you are not as sensitive
+    {W}to minor quality changes. I only change resolution (based on content) & colorspace (based on content)
+  {P} {B}(size, distance, resolution) {P} {W}pixels-per-degree; none of them matters alone
+  {P} {B}(max_luminance, E_ambient, k_refl) {P} {W}effective black level / contrast for tonal sensitivity
+
+
+{P}▌ {C}2.16  {C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {R}ONLY {W}for TQ encoding
+  {P} {C}OPTIONAL: {W}If used, a separate set of "encoder" params will be used for TQ probes
+  {P} {W}Extremely easy to create a completely useless/unwanted encode with this
+  {P} {W}If you don't COMPLETELY know & understand what you are doing, be extremely careful
+  {P} {G}Potential benefits:
+      {C} {W}Encode test probes faster by using a higher preset
+      {C} {W}Disable some psychovisual features that affect metrics badly (such as film-grain, ac-bias, psy-rd)
+        {W}but you can keep them on your actual final encode
+      {C} {W}Do various scientific experiments with proper reasoning
+  {P} {R}Potential harms:
+      {C} {W}Different presets have different CRF/Quality/Size relationship scales. You can not reliably probe with preset 7
+        {W}and use preset 0 as your final encode
+      {C} {W}Different presets can encode different scenes, very differently because presets have different coding tools
+        {W}enabled/disabled & even same coding tools will have more/less exhaustion/complexity depending on preset
+        {W}Some scenes will require higher CRF than your alternative params; some will require lower CRF to reach target
+        {W}There is NO linear correlation which you can reliably calculate & apply offsets accordingly
+      {C} {W}CRF scale will NEVER be same when you change even a SINGLE parameter; so CRF found by TQ search
+        {W}can produce unexpected results in end (that is why we do BD-Rate graphs instead of encoding with same CRF)
+      {C} {W}You can't rely on final direct-copy mechanism: When we find correct score/CRF relationship; already
+        {W}encoded probe is directly written to disk. With this parameter; you need to re-encode your final probe again
+        {W}because your actual params are different than alt-parameters
+  {P} {W}If you want to test your output encode externally later & you want to see EXACT SAME target you use
+    {W}for TQ run; then you should not use this parameter. Because no matter how careful you are; actual metric score
+    {W}will be different on final target due to normal params & probe-params being different
+  {P} {W}If you understand & weighted benefits/harms yourself; then this is a POWERFUL parameter
+  {P} {W}Usage is exact same with {C}-p {P}┃ {C}--param
+
+
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}┃   {Y}󰥼 3 󰥭   ENCODER DEFAULTS                                                                                               {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}3.1  {Y}SVT-AV1
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}┃ {C}--keyint {G}-1                 {P}# {B}Explained further in 1.5 above. Disables keyframes                                         {P}┃
+{P}┃ {C}--scd {G}0                     {P}# {B}XAV already has external, more complex SCD; it is useless                                  {P}┃
+{P}┃ {C}--scm {G}0                     {P}# {B}Screen Content mode is disabled. If you encode vids like PP presentations; enable manually {P}┃
+{P}┃ {C}--input-depth {G}10            {P}# {B}Input bit-depth must be set to 10                                                          {P}┃
+{P}┃ {C}--color-format {G}1            {P}# {B}Color format must be set to YUV 4:2:0                                                      {P}┃
+{P}┃ {C}--profile {G}0                 {P}# {B}Encoding profile must be set to Main Profile                                               {P}┃
+{P}┃ {C}--rc {G}0                      {P}# {B}Rate control mode must be set to CRF                                                       {P}┃
+{P}┃ {C}--width {B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--height {B}<>                 {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--fps-num                   {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--fps-denom                 {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--color-primaries           {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--transfer-characteristics  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--matrix-coefficients       {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--color-range               {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--chroma-sample-position    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--mastering-display         {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--content-light             {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--frames                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}3.2  {Y}AVM
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}┃ {C}--threads={G}1                 {P}# {B}Internal threading disabled by default; overridable by user but not recommended            {P}┃
+{P}┃ {C}--codec={G}av2                 {P}# {B}AV2 encoding enabled                                                                       {P}┃
+{P}┃ {C}--profile={G}0                 {P}# {B}Main profile                                                                               {P}┃
+{P}┃ {C}--usage={G}0                   {P}# {B}High quality / High efficiency encoding mode                                               {P}┃
+{P}┃ {C}--passes={G}1                  {P}# {B}Single pass encoding                                                                       {P}┃
+{P}┃ {C}--i420                      {P}# {B}YUV 4:2:0 color format                                                                     {P}┃
+{P}┃ {C}--bit-depth={G}10              {P}# {B}Output bit depth as YUV420P10LE                                                            {P}┃
+{P}┃ {C}--input-bit-depth={G}10        {P}# {B}Input bit depth as YUV420P10LE                                                             {P}┃
+{P}┃ {C}--good                      {P}# {B}Offline encoding mode (non-RTC, non-LD)                                                    {P}┃
+{P}┃ {C}--end-usage={G}q               {P}# {B}CRF equivalent                                                                             {P}┃
+{P}┃ {C}--psnr={G}0                    {P}# {B}No reason to compute internal PSNR                                                         {P}┃
+{P}┃ {C}--disable-warnings          {P}# {B}No use in XAV                                                                              {P}┃
+{P}┃ {C}--disable-warning-prompt    {P}# {B}No use in XAV                                                                              {P}┃
+{P}┃ {C}--test-decode={G}off           {P}# {B}No use in XAV                                                                              {P}┃
+{P}┃ {C}--enable-fwd-kf={G}0           {P}# {B}Counter-productive with SCD & chunking                                                     {P}┃
+{P}┃ {C}--disable-kf                {P}# {B}Disable keyframe insertion; explained in 1.5 above                                         {P}┃
+{P}┃ {C}--width={B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--height={B}<>                 {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--forced_max_frame_width    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--forced_max_frame_height   {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--fps={G}N/N                   {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--limit={B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--color-primaries={B}<>        {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--transfer-characteristics  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--matrix-coefficients       {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--chroma-sample-position    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}3.3  {Y}VVENC
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}┃ {C}--stats {G}0                   {P}# {B}No use in XAV                                                                              {P}┃
+{P}┃ {C}--InputBitDepth {G}10          {P}# {B}Input bit depth as YUV420P10LE                                                             {P}┃
+{P}┃ {C}--InputChromaFormat {G}420     {P}# {B}YUV 4:2:0 color format                                                                     {P}┃
+{P}┃ {C}--IntraPeriod {G}-1            {P}# {B}Keyframe insertion disabled                                                                {P}┃
+{P}┃ {C}--RefreshSec {G}0              {P}# {B}No internal refreshes other than keyframes                                                 {P}┃
+{P}┃ {C}--DecodingRefreshType {G}IDR   {P}# {B}We strictly use IDR keyframes                                                              {P}┃
+{P}┃ {C}--POC0IDR {G}1                 {P}# {B}First frame of each chunk will be IDR keyframe                                             {P}┃
+{P}┃ {C}--NumPasses {G}1               {P}# {B}Single-pass encoding                                                                       {P}┃
+{P}┃ {C}--Passes {G}1                  {P}# {B}Single-pass encoding                                                                       {P}┃
+{P}┃ {C}--Threads {G}1                 {P}# {B}Internal threading disabled; overridable but not recommended                               {P}┃
+{P}┃ {C}--Profile {G}main10            {P}# {B}Main profile with YUV420P10LE support                                                      {P}┃
+{P}┃ {C}--Tier {G}main                 {P}# {B}Main profile                                                                               {P}┃
+{P}┃ {C}--MaxBitDepthConstraint {G}10  {P}# {B}10bit only                                                                                 {P}┃
+{P}┃ {C}--InternalBitDepth {G}10       {P}# {B}10bit internal precision only                                                              {P}┃
+{P}┃ {C}--OutputBitDepth {G}10         {P}# {B}10bit output only                                                                          {P}┃
+{P}┃ {C}--LookAhead {G}1               {P}# {B}lookahead enabled                                                                          {P}┃
+{P}┃ {C}--SourceWidth {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--SourceHeight {B}<>           {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--fps {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--FramesToBeEncoded {B}<>      {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--Hdr {B}HDRMODE               {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--Sdr {B}SDRMODE               {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--ColourPrimaries           {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--TransferCharacteristics   {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--MatrixCoefficients        {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--Range                     {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--ChromaSampleLocType       {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--MasteringDisplayColourVolume {P}# {B}Auto-parsed                                                                             {P}┃
+{P}┃ {C}--MaxContentLightLevel      {P}# {B}Auto-parsed                                                                                {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}3.4  {Y}X265
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}┃ {C}--input-csp {G}1               {P}# {B}YUV 4:2:0 color format                                                                     {P}┃
+{P}┃ {C}--input-depth {G}10            {P}# {B}10bit input                                                                                {P}┃
+{P}┃ {C}--output-depth {G}10           {P}# {B}10bit output                                                                               {P}┃
+{P}┃ {C}--profile {G}main10            {P}# {B}Main profile with 10b support                                                              {P}┃
+{P}┃ {C}--gop-lookahead {G}0           {P}# {B}Useless for XAV                                                                            {P}┃
+{P}┃ {C}--rc-lookahead {G}250          {P}# {B}Max lookahead; partially free for XAV due to having full chunk ready                       {P}┃
+{P}┃ {C}--keyint {G}-1                 {P}# {B}Keyframe insertion disabled                                                                {P}┃
+{P}┃ {C}--min-keyint {G}9999           {P}# {B}Keyframe insertion disabled                                                                {P}┃
+{P}┃ {C}--no-scenecut               {P}# {B}Internal SCD disabled                                                                      {P}┃
+{P}┃ {C}--lookahead-slices {G}1        {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--lookahead-threads {G}1       {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--frame-threads {G}1           {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--slices {G}1                  {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--no-wpp                    {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--pools {G}1                   {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--no-info                   {P}# {B}Useless for XAV                                                                            {P}┃
+{P}┃ {C}--no-vui-hrd-info           {P}# {B}Useless for XAV                                                                            {P}┃
+{P}┃ {C}--no-vui-timing-info        {P}# {B}Useless for XAV                                                                            {P}┃
+{P}┃ {C}--fps                       {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--input-res                 {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--frames                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--sar                       {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--video-signal-type-preset  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--asm {G}avx512                {P}# {B}Auto-parsed if you have it available                                                       {P}┃
+{P}┃ {C}--colorprim {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--transfer {B}<>               {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--colormatrix {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--range {B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--chromaloc {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--master-display {B}<>         {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--max-cll {B}<>                {P}# {B}Auto-parsed                                                                                {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}3.5  {Y}X264
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}┃ {C}--input-csp {G}i420            {P}# {B}YUV 4:2:0 input                                                                            {P}┃
+{P}┃ {C}--output-csp {G}i420           {P}# {B}YUV 4:2:0 output                                                                           {P}┃
+{P}┃ {C}--input-depth {G}10            {P}# {B}10bit input                                                                                {P}┃
+{P}┃ {C}--output-depth {G}10           {P}# {B}10bit output                                                                               {P}┃
+{P}┃ {C}--profile {G}high10            {P}# {B}10bit profile                                                                              {P}┃
+{P}┃ {C}--keyint {G}infinite           {P}# {B}Keyframe insertion disabled                                                                {P}┃
+{P}┃ {C}--min-keyint {G}9999           {P}# {B}Keyframe insertion disabled                                                                {P}┃
+{P}┃ {C}--no-scenecut               {P}# {B}Keyframe insertion disabled                                                                {P}┃
+{P}┃ {C}--b-adapt {G}2                 {P}# {B}Adaptive b-frame decisions set to optimal                                                  {P}┃
+{P}┃ {C}--muxer {G}raw                 {P}# {B}We process raw i/o                                                                         {P}┃
+{P}┃ {C}--demuxer {G}raw               {P}# {B}We process raw i/o                                                                         {P}┃
+{P}┃ {C}--threads {G}1                 {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--lookahead-threads {G}1       {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
+{P}┃ {C}--non-deterministic         {P}# {B}With internal threading disabled; it's always deterministic anyways                        {P}┃
+{P}┃ {C}--nal-hrd {G}none              {P}# {B}Useless for XAV                                                                            {P}┃
+{P}┃ {C}--force-cfr                 {P}# {B}We strictly encode CFR (constant frame rate)                                               {P}┃
+{P}┃ {C}--rc-lookahead {G}250          {P}# {B}Max lookahead; partially free for XAV due to having full chunk ready                       {P}┃
+{P}┃ {C}--fps {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--input-res {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--frames {B}<>                 {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--sar {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--input-range {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--asm {G}avx512                {P}# {B}Auto-parsed if you have it available                                                       {P}┃
+{P}┃ {C}--colorprim {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--transfer {B}<>               {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--colormatrix {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--range {B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--chromaloc {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--mastering-display {B}<>      {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--cll {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+
+{P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}┃   {Y}󰥼 4 󰥭   Pipe into XAV                                                                                                  {P}┃
+{P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╯
+
+  {P} {W}You can pipe any command that produces {B}YUV420P {W}({B}8bit{W}) or {B}YUV420P10LE {W}({B}10bit{W}) frames with a
+    {B}Y4M {W}(yuv4mpegpipe) header
+  {P} {W}Common Examples: {B}FFmpeg CLI {W}and {B}VapourSynth {W}({B}vspipe{W})
+  {P} {W}Biggest use case is: Complex filtering scripts/chains WITHOUT lossless intermediate files
+  {P} {W}Piping mode, especially with TQ encoding is very efficient for XAV compared to similar frameworks
+  {P} {W}You can not use pipe with {C}--hwdec {W}(because tool receives decoded frames already; there is no use)
+  {P} {W}You still need to indicate input video because XAV will analyze that for tons of information
+    {W}and scene change detection is also based on original file
+  {P} {W}Stop/Resume support is limited with a pipe. We can only skip encoding part; pipe needs to
+    {W}send all frames again; if you need to resume
+  {P} {W}Unlike native resume; in pipe mode; you need to enter same pipe command again to make it correct
+    {W}Native resume (normal mode without pipe), does not need you to remember command you entered
+    {W}However this is only valid for pipe part; XAV command is still remembered
+  {P} {W}However {G}RESUMING {C}VapourSynth {W}scripts is an exception:
+      {C} {W}On Linux; pipe can be analyzed; & re-decoding, re-filtering can be eliminated & XAV can
+        {W}jump to resume point immediately
+      {C} {W}On Windows/MAC, you need to create a workaround in your VapourSynth script as below:
+        {W}Let's say we need to continue from frame ID 40001, in your script:
+
+{P}    ╭━ {B}VapourSynth {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {C}START_FRAME {W}= {B}40001                                                                                                  {P}┃
+{P}    ┃ {C}head {W}= {C}clip{W}[:{C}START_FRAME{W}]                                                                                            {P}┃
+{P}    ┃ {C}tail {W}= {C}clip{W}[{C}START_FRAME{W}:]                                                                                            {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+      {C} {W}And you will only filter tail. First 40000 frames will be plain-decoded
+        {W}Closest "resume" workaround is this
+  {P} {R}NEVER {W}pass {C}-s|--start {W}flag with vspipe however you can trim/splice and/or crop in your script:
+      {C} {W}If you trim/splice in your script; add {C}-r|--range {W}to XAV command similarly so your progress
+        {W}monitor would show correct information
+      {C} {W}If you downscale in your pipe; XAV can adapt to this; & accept new resolution & it can
+        {W}adapt crop detection considering new downscaled resolution
+      {C} {W}If you, yourself cropped; XAV can also adapt to this: If it's not enough crop; XAV can fix it
+        {W}If it's cropped weirdly for some reason; XAV won't touch anything about crop
+        {W}If it's just normally downscaled; XAV scales crop resolutions
+  {P} {R}What you can not do:
+      {C} {C}Changing framerate: {W}In order to change framerate; you need to create a lossless intermediate
+        {W}Do not forget that VFR (variable frame rate) is not supported
+      {C} {C}Changing colors (like tonemapping): {W}Again, creating a lossless intermediate is needed
+      {C} {C}Frame decimation
+  {P} {G}What you can do:
+      {C} {W}Almost any filtering and/or down/upscaling
+      {C} {W}Spatiotemporal denoising, debanding, dehaloing, downscaling, or any similar filters
+
+{R}╭━  {R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╮
+{R}┃ {R}Windows {W}users need to scroll back to top manually                                                                        {R}┃
+{R}┃ {W}There is no built-in pager to view properly                                                                              {R}┃
+{R}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╯

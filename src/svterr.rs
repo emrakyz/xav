@@ -328,9 +328,21 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
             chk_range(key, name, val, 0, 2)?;
         }
 
+        "scm" => {
+            if chk_range(key, name, val, 0, 3)? == 0 {
+                return Err(err(
+                    key,
+                    format_args!(
+                        "{Y}XAV already disables SCM by default; duplication not needed\nEnable \
+                         it with {C}--scm 1 {Y}(forced enabled) or {C}--scm 3 {Y}(advanced \
+                         detection) if needed"
+                    ),
+                ));
+            }
+        }
+
         "enable-dlf"
         | "enable-tf"
-        | "scm"
         | "variance-boost-curve"
         | "enable-alt-cdef"
         | "enable-alt-dlf"

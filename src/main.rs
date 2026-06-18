@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::process::{Command, Stdio};
 use std::{
     collections::hash_map::DefaultHasher,
     env::args as env_args,
@@ -138,7 +140,7 @@ fn print_help() {
     println!("   {P}┃ {C}--hwdec      {W}Use GPU decode");
     println!("{C}-r {P}┃ {C}--range      {W}Trim and splice: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
-    println!("   {P}┃ {C}--guide      {W}Very detailed user guide");
+    println!("   {P}┃ {C}--guide      {W}Fullscreen and Nerd Fonts recommended");
     #[cfg(feature = "vship")]
     {
         println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
@@ -148,6 +150,34 @@ fn print_help() {
         println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file. Set screen name as {R}xav{W}");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)");
     }
+}
+
+fn print_guide() {
+    let guide = include_str!("guide.txt")
+        .replace("{G}", G)
+        .replace("{R}", R)
+        .replace("{B}", B)
+        .replace("{P}", P)
+        .replace("{Y}", Y)
+        .replace("{C}", C)
+        .replace("{W}", W);
+
+    #[cfg(unix)]
+    if let Ok(mut pager) = Command::new("less")
+        .args(["-R", "-F", "-n"])
+        .env("LESSUTFCHARDEF", "E000-F8FF:p,F0000-FFFFD:p")
+        .stdin(Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut si) = pager.stdin.take() {
+            _ = si.write_all(guide.as_bytes());
+        }
+        _ = pager.wait();
+        return;
+    }
+
+    print!("{guide}");
+    _ = stdout().flush();
 }
 
 fn parse_args() -> Result<Args, Xerr> {
@@ -301,6 +331,10 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "--sc-only" => sc_only = true,
             "-h" | "--help" => {
                 print_help();
+                return Err(Help);
+            }
+            "--guide" => {
+                print_guide();
                 return Err(Help);
             }
             arg if !arg.starts_with('-') => {
@@ -722,7 +756,7 @@ fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_t
 
     println!(
     "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
-{P}┃ {G}✅ {Y}DONE   {P}┃ {R}{:<30.30} {G}󰛂 {G}{:<30.30} {P}┃\n\
+{P}┃ {G} {Y}DONE   {P}┃ {R}{:<30.30} {G} {G}{:<30.30} {P}┃\n\
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
 {P}┃ {Y}Size      {P}┃ {R}{:<98} {P}┃\n\
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
@@ -732,7 +766,7 @@ fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_t
 {P}┗━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{N}",
     unsafe { args.inp.file_name().unwrap_unchecked() }.to_string_lossy(),
     unsafe { args.out.file_name().unwrap_unchecked() }.to_string_lossy(),
-    format!("{} {C}({:.0} kb/s) {G}󰛂 {G}{} {C}({:.0} kb/s) {}{} {:.2}%",
+    format!("{} {C}({:.0} kb/s) {G} {G}{} {C}({:.0} kb/s) {}{} {:.2}%",
         fmt_sz(inp_sz), inp_br, fmt_sz(out_sz), out_br, change_color, arrow, change.abs()),
     final_width, final_height, fps_rate, dh, dm, ds, "",
     eh, em, es, enc_spd, ""
