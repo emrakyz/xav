@@ -1105,7 +1105,6 @@
 {P}┃ {C}--MaxBitDepthConstraint {G}10  {P}# {B}10bit only                                                                                 {P}┃
 {P}┃ {C}--InternalBitDepth {G}10       {P}# {B}10bit internal precision only                                                              {P}┃
 {P}┃ {C}--OutputBitDepth {G}10         {P}# {B}10bit output only                                                                          {P}┃
-{P}┃ {C}--LookAhead {G}1               {P}# {B}lookahead enabled                                                                          {P}┃
 {P}┃ {C}--SourceWidth {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
 {P}┃ {C}--SourceHeight {B}<>           {P}# {B}Auto-parsed                                                                                {P}┃
 {P}┃ {C}--fps {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃

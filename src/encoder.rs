@@ -228,8 +228,6 @@ fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
         "10",
         "--OutputBitDepth",
         "10",
-        "--LookAhead",
-        "1",
     ]);
 
     cmd.arg("--SourceWidth").arg(&width_str);
