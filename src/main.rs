@@ -447,7 +447,7 @@ fn save_args(work_dir: &Path) -> Result<(), Xerr> {
 fn get_saved_args(inp: &Path) -> Result<Args, Xerr> {
     let canon = inp.canonicalize()?;
     let hash = hash_inp(&canon);
-    let work_dir = canon.with_file_name(format!(".{}", &hash[..7]));
+    let work_dir = inp.with_file_name(format!(".{}", &hash[..7]));
     let cmd_path = work_dir.join("cmd.txt");
 
     if cmd_path.exists() && get_resume(&work_dir).is_some_and(|r| !r.chnks_done.is_empty()) {
@@ -625,7 +625,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let canon_inp = args.inp.canonicalize()?;
     let hash = hash_inp(&canon_inp);
-    let work_dir = canon_inp.with_file_name(format!(".{}", &hash[..7]));
+    let work_dir = args.inp.with_file_name(format!(".{}", &hash[..7]));
 
     create_dir_all(&work_dir)?;
 
