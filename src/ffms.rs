@@ -279,6 +279,7 @@ unsafe extern "C" {
     pub fn av_read_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
     pub fn av_frame_alloc() -> *mut VidFrame;
     pub fn av_frame_free(frame: *mut *mut VidFrame);
+    pub fn av_frame_move_ref(dst: *mut VidFrame, src: *mut VidFrame);
     pub fn av_seek_frame(
         s: *mut AVFormatContext,
         stream_index: c_int,

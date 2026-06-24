@@ -24,7 +24,6 @@ ebur128 = "0.1.10"
 sonic-rs = "0.5.8"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-av-scenechange = { git = "https://github.com/emrakyz/av-scenechange" }
 
 [build-dependencies]
 nasm-rs = { version = "0.3.2", features = ["parallel"] }
@@ -57,6 +56,7 @@ cast_sign_loss = "allow"
 cast_precision_loss = "allow"
 cast_ptr_alignment = "allow"
 inline_always = "allow"
+too_many_lines = "allow"
 
 # RESTRICTION LINTS can not be enabled as a group
 unwrap_used = "deny"

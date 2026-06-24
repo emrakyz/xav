@@ -74,6 +74,16 @@ fn main() {
             ] {
                 b.file(format!("asm/{set}/{k}.asm"));
             }
+            for k in [
+                "satd",
+                "satd16",
+                "satd_dc",
+                "satd16_dc",
+                "importance",
+                "importance16",
+            ] {
+                b.file(format!("asm/{set}/scd/{k}.asm"));
+            }
             for k in ["pchip", "fc_spline", "lerp", "bs"] {
                 b.file(format!("asm/avx2/{k}.asm"));
             }
