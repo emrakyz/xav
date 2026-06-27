@@ -1,4 +1,4 @@
-use std::{env, path::Path, process};
+use std::{env, error::Error, path::Path};
 
 const SYS_PATHS: [&str; 7] = [
     "/usr/lib64",
@@ -23,12 +23,7 @@ fn fd_static_libs(primary_paths: &[String], lib_name: &str) {
     }
 }
 
-fn main() {
-    let home = env::var("HOME").unwrap_or_else(|_| {
-        println!("cargo:warning=HOME environment variable not set");
-        process::exit(1);
-    });
-
+fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
         let feats = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
         let has = |f: &str| feats.split(',').any(|x| x == f);
@@ -84,8 +79,11 @@ fn main() {
             ] {
                 b.file(format!("asm/{set}/scd/{k}.asm"));
             }
+            for k in ["atou", "atof", "atof2", "scan"] {
+                b.file(format!("asm/{set}/atofu/{k}.asm"));
+            }
             for k in ["pchip", "fc_spline", "lerp", "bs"] {
-                b.file(format!("asm/avx2/{k}.asm"));
+                b.file(format!("asm/avx2/interp/{k}.asm"));
             }
             if set == "avx512" {
                 b.file("asm/avx512/crc32.asm");
@@ -97,14 +95,18 @@ fn main() {
                 b.file("asm/avx2/crc32_pclmul.asm");
                 b.file("asm/avx2/crc32_combine.asm");
             }
-            b.compile("xavasm").unwrap_or_else(|e| {
-                println!("cargo:warning=nasm: {e}");
-                process::exit(1);
-            });
+            b.compile("xavasm")?;
             println!("cargo:rustc-link-lib=static=xavasm");
         }
         println!("cargo:rerun-if-changed=asm");
     }
+    Ok(())
+}
+
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let home = env::var("HOME")?;
+
+    build_asm()?;
 
     println!("cargo:rustc-link-search=native={home}/.local/src/FFmpeg/install/lib");
     println!("cargo:rustc-link-search=native={home}/.local/src/dav1d/build/src");
@@ -142,11 +144,12 @@ fn main() {
             println!("cargo:rustc-link-lib=static=vship");
         } else {
             println!("cargo:rustc-link-lib=dylib=vship");
-            return;
+            return Ok(());
         }
         println!("cargo:rustc-link-lib=static=stdc++");
         println!("cargo:rustc-link-lib=static=cudart_static");
         println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
         println!("cargo:rustc-link-lib=dylib=cuda");
     }
+    Ok(())
 }

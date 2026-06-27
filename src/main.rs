@@ -24,6 +24,8 @@ use crate::{
     error::Xerr::{Help, Msg},
 };
 
+#[cfg(feature = "vship")]
+mod atofu;
 mod audio;
 mod byte_range;
 mod chunk;

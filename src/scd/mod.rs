@@ -119,6 +119,8 @@ const fn dc_val<T: Pixel>() -> i32 {
     if size_of::<T>() == 1 { 128 } else { 512 }
 }
 
+const _: [(); 0] = [(); IMP_BATCH % SATD_BATCH];
+
 fn cost_sums<T: Pixel, const S: bool>(
     cur: *const T,
     rf: *const T,
@@ -126,7 +128,6 @@ fn cost_sums<T: Pixel, const S: bool>(
     wb: usize,
     hb: usize,
 ) -> (u64, u64, u64) {
-    const { assert!(IMP_BATCH % SATD_BATCH == 0) };
     const K: usize = IMP_BATCH / SATD_BATCH;
     let full = wb / IMP_BATCH;
     let dc = dc_val::<T>();

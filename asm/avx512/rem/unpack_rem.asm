@@ -146,4 +146,4 @@ cglobal unpack_10b_rem, 4, 15, 8, src, dst, w, h, sb, db, pw, ph, prow, urow, fu
     inc           rowq
     jmp           .pl_row
 .pl_done:
-    ret
+    RET

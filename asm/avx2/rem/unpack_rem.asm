@@ -236,4 +236,4 @@ cglobal unpack_10b_rem, 4, 15, 15, src, dst, w, h, sb, db, pw, ph, prow, urow, f
     pop           wq
     pop           dstq
     pop           srcq
-    ret
+    RET

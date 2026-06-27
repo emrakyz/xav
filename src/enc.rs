@@ -4,8 +4,7 @@ use std::thread::available_parallelism;
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
-    fs::{OpenOptions, copy, write},
-    io::{BufRead as _, BufReader as StdBufReader},
+    fs::{OpenOptions, copy, read, write},
     mem::swap,
     path::PathBuf,
 };
@@ -29,11 +28,7 @@ use std::{
 
 use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
-use {
-    crossbeam_channel::{Sender, select},
-    serde::Deserialize,
-    sonic_rs::from_str,
-};
+use crossbeam_channel::{Sender, select};
 
 #[cfg(feature = "vship")]
 use crate::interp::bisect;
@@ -63,6 +58,7 @@ use crate::{
 };
 #[cfg(feature = "vship")]
 use crate::{
+    atofu::{TqChunkLine, parse_chunks},
     pipeline::MetricProgs,
     tq::{Probe, ProbeDec, ProbeLog, interpolate_crf, make_dav1d, make_ff},
     vship::{PinnedBuf, VshipProcessor, init_device},
@@ -1323,13 +1319,14 @@ pub fn write_chnk_log(chnk_log: &ProbeLog, work_dir: &Path) {
 #[cfg(feature = "vship")]
 fn form_tq_json(
     all_logs: &[TqChunkLine],
+    tri: &[(f32, f32, u64)],
     metric_name: &str,
     fps: f32,
     round_cnts: &BTreeMap<usize, usize>,
     crf_cnts: &BTreeMap<u64, usize>,
 ) -> String {
     let tot = all_logs.len();
-    let avg_probes = all_logs.iter().map(|l| l.p.len()).sum::<usize>() as f32 / tot as f32;
+    let avg_probes = all_logs.iter().map(|l| l.pn).sum::<usize>() as f32 / tot as f32;
     let in_range = all_logs.iter().filter(|l| l.r <= 6).count();
 
     let calc_kbs = |size: u64, frames: usize| -> f32 {
@@ -1346,7 +1343,7 @@ fn form_tq_json(
     _ = writeln!(out, "  \"chunks_{metric_name}\": [");
 
     for (i, l) in all_logs.iter().enumerate() {
-        let mut sp: Vec<_> = l.p.iter().collect();
+        let mut sp: Vec<_> = tri[l.po..l.po + l.pn].iter().collect();
         sp.sort_by(|&&(a, ..), &&(b, ..)| a.total_cmp(&b));
         _ = writeln!(out, "    {{");
         _ = writeln!(out, "      \"id\": {},", l.id);
@@ -1415,31 +1412,16 @@ fn form_tq_json(
 }
 
 #[cfg(feature = "vship")]
-#[derive(Deserialize)]
-struct TqChunkLine {
-    id: usize,
-    r: usize,
-    f: usize,
-    p: Vec<(f32, f32, u64)>,
-    fc: f32,
-    fs: f32,
-    fz: u64,
-}
-
-#[cfg(feature = "vship")]
 fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
     let log_path = inp.with_extension("json");
     let chnks_path = work_dir.join("chunks.json");
     let fps = inf.fps_num as f32 / inf.fps_den as f32;
 
-    let mut all_logs: Vec<TqChunkLine> = Vec::new();
-    if let Ok(file) = File::open(&chnks_path) {
-        for line in StdBufReader::new(file).lines().map_while(Result::ok) {
-            if let Ok(cl) = from_str::<TqChunkLine>(&line) {
-                all_logs.push(cl);
-            }
-        }
-    }
+    let Ok(mut buf) = read(&chnks_path) else {
+        return;
+    };
+    buf.extend_from_slice(&[0u8; 16]);
+    let (mut all_logs, tri) = parse_chunks(&buf);
     if all_logs.is_empty() {
         return;
     }
@@ -1447,12 +1429,12 @@ fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
     let mut round_cnts: BTreeMap<usize, usize> = BTreeMap::new();
     let mut crf_cnts: BTreeMap<u64, usize> = BTreeMap::new();
     for l in &all_logs {
-        *round_cnts.entry(l.p.len()).or_insert(0) += 1;
+        *round_cnts.entry(l.pn).or_insert(0) += 1;
         *crf_cnts.entry((l.fc * 100.0).round() as u64).or_insert(0) += 1;
     }
     all_logs.sort_by_key(|l| l.id);
 
-    let out = form_tq_json(&all_logs, metric_name, fps, &round_cnts, &crf_cnts);
+    let out = form_tq_json(&all_logs, &tri, metric_name, fps, &round_cnts, &crf_cnts);
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .write(true)

@@ -69,7 +69,7 @@ cglobal importance16_x4, 4, 8, 8, org, os, ref, rs, org4, ref4, os3, rs3
     vpaddw  ymm2, ymm2, [ref4q+rs3q*2]
     vpaddw  ymm3, ymm3, [ref4q+rs3q*2+32]
     IMP16_TAIL
-    ret
+    RET
 
 ALIGN 64
 cglobal importance16_s_x4, 4, 8, 8, org, os, ref, rs, org4, ref4, os3, rs3
@@ -167,4 +167,4 @@ cglobal importance16_s_x4, 4, 8, 8, org, os, ref, rs, org4, ref4, os3, rs3
     vpsrlw ymm5, ymm5, 6
     vpaddw  ymm3, ymm3, ymm5
     IMP16_TAIL
-    ret
+    RET

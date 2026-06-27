@@ -1,0 +1,49 @@
+%include "dav1d_x86inc.asm"
+
+SECTION_RODATA 32
+
+c_pidx:    dd 3, 7, 0, 0, 0, 0, 0, 0
+c_shuf5:   db 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 0, 1, 3, 4
+c_shuf4:   db 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 0, 2, 3
+c_m10_16:  db 10,1,10,1,10,1,10,1,10,1,10,1,10,1,10,1
+c_m100_16: dw 100,1,100,1,100,1,100,1
+c_one:     db 1
+c_dotb:    db '.'
+c_n30b:    db 0xD0
+c_1e2d:    dd 0x3C23_D70A
+
+SECTION .text
+
+INIT_YMM avx2
+cglobal atof2, 4, 6, 13
+    vmovdqa         m4, [c_pidx]
+    vbroadcasti128  m5, [c_shuf5]
+    vbroadcasti128  m6, [c_shuf4]
+    vpbroadcastb    m7, [c_one]
+    vpbroadcastb    m8, [c_dotb]
+    vpbroadcastb    m9, [c_n30b]
+    vbroadcasti128  m10, [c_m10_16]
+    vbroadcasti128  m11, [c_m100_16]
+    vpbroadcastd    m12, [c_1e2d]
+    lea             r2, [r1+r2*2]
+.loop:
+    movzx           r4d, word [r1+0]
+    movzx           r5d, word [r1+2]
+    vmovdqu         xm0, [r0+r4]
+    vinserti128     m0, m0, [r0+r5], 1
+    vpshufb         m1, m0, m7
+    vpcmpeqb        m1, m1, m8
+    vpaddb          m0, m0, m9
+    vpblendvb       m1, m5, m6, m1
+    vpshufb         m0, m0, m1
+    vpmaddubsw      m0, m0, m10
+    vpmaddwd        m0, m0, m11
+    vpermd          m0, m4, m0
+    vcvtdq2ps       m0, m0
+    vmulps          m0, m0, m12
+    vmovq           [r3], xm0
+    add             r3, 8
+    add             r1, 4
+    cmp             r1, r2
+    jb              .loop
+    RET

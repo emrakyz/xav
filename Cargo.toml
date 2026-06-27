@@ -21,8 +21,6 @@ svt-essential = []
 libc = "0.2.186"
 crossbeam-channel = "0.5.15"
 ebur128 = "0.1.10"
-sonic-rs = "0.5.8"
-serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 
 [build-dependencies]

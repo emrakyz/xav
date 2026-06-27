@@ -54,4 +54,4 @@ cglobal importance_x4, 4, 8, 10, org, os, ref, rs, org4, ref4, os3, rs3
     vextracti128 xmm2, ymm1, 1
     vpaddd  xmm1, xmm1, xmm2
     vmovd   eax, xmm1
-    ret
+    RET
