@@ -26,7 +26,7 @@ c_shuf:
 SECTION .text
 
 INIT_ZMM avx512
-cglobal atou, 4, 9, 14
+cglobal atou, 4, 9+WIN64, 14
     vpbroadcastb    m8, [c_n30b]
     vpbroadcastb    m9, [c_9b]
     vbroadcasti32x4 m10, [c_m10]
@@ -37,6 +37,12 @@ cglobal atou, 4, 9, 14
     mov             eax, 0x55
     kmovb           k2, eax
     lea             r2, [r1+r2*2]
+%if WIN64
+    lea             r9, [c_shuf]
+    %define SHUF r9
+%else
+    %define SHUF c_shuf
+%endif
 .loop:
     movzx           r4d, word [r1+0]
     movzx           r5d, word [r1+2]
@@ -60,10 +66,10 @@ cglobal atou, 4, 9, 14
     shl             r5, 4
     shl             r7, 4
     shl             r8, 4
-    vmovdqu         xm1, [c_shuf+r4]
-    vinserti32x4    m1, m1, [c_shuf+r5], 1
-    vinserti32x4    m1, m1, [c_shuf+r7], 2
-    vinserti32x4    m1, m1, [c_shuf+r8], 3
+    vmovdqu         xm1, [SHUF+r4]
+    vinserti32x4    m1, m1, [SHUF+r5], 1
+    vinserti32x4    m1, m1, [SHUF+r7], 2
+    vinserti32x4    m1, m1, [SHUF+r8], 3
     vpshufb         m0, m0, m1
     vpmaddubsw      m0, m0, m10
     vpmaddwd        m0, m0, m11

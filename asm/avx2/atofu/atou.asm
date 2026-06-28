@@ -26,7 +26,7 @@ c_shuf:
 SECTION .text
 
 INIT_YMM avx2
-cglobal atou, 4, 7, 11
+cglobal atou, 4, 7+WIN64, 11
     vpbroadcastb    m4, [c_n30b]
     vpbroadcastb    m5, [c_9b]
     vbroadcasti128  m6, [c_m10]
@@ -35,6 +35,12 @@ cglobal atou, 4, 7, 11
     vpbroadcastq    m9, [c_1e8q]
     vpxor           m10, m10, m10
     lea             r2, [r1+r2*2]
+%if WIN64
+    lea             r7, [c_shuf]
+    %define SHUF r7
+%else
+    %define SHUF c_shuf
+%endif
 .loop:
     movzx           r4d, word [r1+0]
     movzx           r5d, word [r1+2]
@@ -51,8 +57,8 @@ cglobal atou, 4, 7, 11
     tzcnt           r4d, r4d
     shl             eax, 4
     shl             r4d, 4
-    vmovdqu         xm1, [c_shuf+rax]
-    vinserti128     m1, m1, [c_shuf+r4], 1
+    vmovdqu         xm1, [SHUF+rax]
+    vinserti128     m1, m1, [SHUF+r4], 1
     vpshufb         m0, m0, m1
     vpmaddubsw      m0, m0, m6
     vpmaddwd        m0, m0, m7

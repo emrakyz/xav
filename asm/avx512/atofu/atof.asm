@@ -34,10 +34,16 @@ shuf3:
 SECTION .text
 
 INIT_ZMM avx512
-cglobal atof, 4, 9, 5
+cglobal atof, 4, 9+WIN64, 5
     vpxorq          m2, m2, m2
     vmovdqa32       m4, [c_pidx]
     lea             r2, [r1+r2*2]
+%if WIN64
+    lea             r9, [shuf3]
+    %define SHUF r9
+%else
+    %define SHUF shuf3
+%endif
 .loop:
     movzx           r4d, word [r1+0]
     movzx           r5d, word [r1+2]
@@ -66,10 +72,10 @@ cglobal atof, 4, 9, 5
     shl             r5, 4
     shl             r7, 4
     shl             r8, 4
-    vmovdqu         xm1, [shuf3+r4]
-    vinserti32x4    m1, m1, [shuf3+r5], 1
-    vinserti32x4    m1, m1, [shuf3+r7], 2
-    vinserti32x4    m1, m1, [shuf3+r8], 3
+    vmovdqu         xm1, [SHUF+r4]
+    vinserti32x4    m1, m1, [SHUF+r5], 1
+    vinserti32x4    m1, m1, [SHUF+r7], 2
+    vinserti32x4    m1, m1, [SHUF+r8], 3
     vpshufb         m0, m0, m1
     vpmaddubsw      m0, m0, [c_m10]
     vpmaddwd        m0, m0, [c_m100]

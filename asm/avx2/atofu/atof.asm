@@ -38,10 +38,19 @@ shuf3:
 SECTION .text
 
 INIT_YMM avx2
-cglobal atof, 4, 8, 7
+cglobal atof, 4, 8+2*WIN64, 7
     vpxor           m2, m2, m2
     vmovdqu         m4, [c_pidx]
     lea             r2, [r1+r2*2]
+%if WIN64
+    lea             r8, [shuf3]
+    lea             r9, [c_scaletab]
+    %define SHUF r8
+    %define SCALE r9
+%else
+    %define SHUF shuf3
+    %define SCALE c_scaletab
+%endif
 .loop:
     movzx           r4d, word [r1+0]
     movzx           r5d, word [r1+2]
@@ -60,8 +69,8 @@ cglobal atof, 4, 8, 7
     shl             r5d, 4
     pext            r6, r6, [c_sbits]
     shl             r6d, 5
-    vmovdqu         xm1, [shuf3+r4]
-    vinserti128     m1, m1, [shuf3+r5], 1
+    vmovdqu         xm1, [SHUF+r4]
+    vinserti128     m1, m1, [SHUF+r5], 1
     vpshufb         m0, m0, m1
     vpmaddubsw      m0, m0, [c_m10]
     vpmaddwd        m0, m0, [c_m100]
@@ -69,7 +78,7 @@ cglobal atof, 4, 8, 7
     vpmaddwd        m0, m0, [c_m1e4]
     vpermd          m0, m4, m0
     vcvtdq2ps       m0, m0
-    vmulps          m0, m0, [c_scaletab+r6]
+    vmulps          m0, m0, [SCALE+r6]
     vmovq           [r3], xm0
     add             r3, 8
     add             r1, 4
