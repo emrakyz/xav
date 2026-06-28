@@ -15,11 +15,10 @@ use std::{
     thread::{available_parallelism, scope, spawn},
 };
 
-use crossbeam_channel::bounded;
-
 #[cfg(feature = "vship")]
 use crate::vship::{VshipProcessor, init_device};
 use crate::{
+    chan::{Semaphore, SpscRing, sem_release, spsc_close, spsc_recv, spsc_send},
     chunk::{chnkify, load_scenes},
     dec::dec_chnks,
     enc::get_frame,
@@ -35,7 +34,7 @@ use crate::{
         svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
         svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
     },
-    worker::{Semaphore, WorkPkg},
+    worker::WorkPkg,
 };
 
 static TEST_ID: AtomicUsize = AtomicUsize::new(0);
@@ -533,23 +532,34 @@ fn run_test(
     let scenes = load_scenes(&scenes_path, inf.frames).unwrap();
     let chnks = chnkify(&scenes);
 
-    let (tx, rx) = bounded::<WorkPkg>(1);
+    let ring = Arc::new(SpscRing::new());
+    let ring2 = Arc::clone(&ring);
     let sem = Arc::new(Semaphore::new(1));
     let handle = spawn({
         let inp = inp.clone();
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
         move || {
-            dec_chnks(&chnks, &inp, &inf, &tx, &HashSet::new(), strat, &sem);
+            let rp = Arc::as_ptr(&ring);
+            let send = move |p: WorkPkg| unsafe {
+                spsc_send(rp, Box::into_raw(Box::new(p)) as u64);
+            };
+            dec_chnks(&chnks, &inp, &inf, &send, &HashSet::new(), strat, &sem);
+            unsafe { spsc_close(rp) };
         }
     });
 
     let mut all_yuv = Vec::new();
     let mut tot_frames = 0usize;
-    while let Ok(pkg) = rx.recv() {
+    loop {
+        let m = unsafe { spsc_recv(Arc::as_ptr(&ring2)) };
+        if m == 0 {
+            break;
+        }
+        let pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
         tot_frames += pkg.frame_cnt;
         all_yuv.extend_from_slice(&pkg.yuv);
-        sem.release();
+        sem_release(&sem);
     }
     handle.join().unwrap();
 

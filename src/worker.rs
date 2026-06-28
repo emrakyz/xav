@@ -1,5 +1,3 @@
-use std::sync::{Condvar, Mutex};
-
 use crate::chunk::Chunk;
 #[cfg(feature = "vship")]
 use crate::tq::Probe;
@@ -43,32 +41,5 @@ impl WorkPkg {
             #[cfg(feature = "vship")]
             tq_state: None,
         }
-    }
-}
-
-pub struct Semaphore {
-    state: Mutex<usize>,
-    cvar: Condvar,
-}
-
-impl Semaphore {
-    pub const fn new(permits: usize) -> Self {
-        Self {
-            state: Mutex::new(permits),
-            cvar: Condvar::new(),
-        }
-    }
-
-    pub fn acq(&self) {
-        let mut cnt = unsafe { self.state.lock().unwrap_unchecked() };
-        while *cnt == 0 {
-            cnt = unsafe { self.cvar.wait(cnt).unwrap_unchecked() };
-        }
-        *cnt -= 1;
-    }
-
-    pub fn release(&self) {
-        *unsafe { self.state.lock().unwrap_unchecked() } += 1;
-        self.cvar.notify_one();
     }
 }

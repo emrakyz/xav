@@ -26,14 +26,13 @@ use std::{
     thread::{JoinHandle, spawn},
 };
 
-use crossbeam_channel::{Receiver, bounded};
 #[cfg(feature = "vship")]
-use crossbeam_channel::{Sender, select};
-
+use crate::chan::{mpmc_close, mpmc_recv, mpmc_send, mpsc_recv, mpsc_send};
 #[cfg(feature = "vship")]
 use crate::interp::bisect;
 use crate::{
     Args,
+    chan::{Semaphore, SeqRing, sem_release, spmc_close, spmc_recv, spmc_send},
     chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
     dec::{dec_chnks, dec_pipe},
     encoder::{
@@ -53,7 +52,7 @@ use crate::{
         svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
     },
     util::assume_unreachable,
-    worker::{Semaphore, WorkPkg},
+    worker::WorkPkg,
     y4m::PipeReader,
 };
 #[cfg(feature = "vship")]
@@ -216,7 +215,7 @@ struct TQWorkerCtx<'a> {
     work_dir: &'a Path,
     metric_mode: &'a str,
     prog: &'a Arc<ProgsTrack>,
-    done_tx: &'a Sender<u16>,
+    done_tx: &'a SeqRing,
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     stats: Option<&'a Arc<WorkerStats>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
@@ -301,8 +300,7 @@ pub fn enc_all(
     #[cfg(feature = "vship")]
     let probe_fn = resolve_probe_fn(args.encoder);
 
-    let (tx, rx) = bounded::<WorkPkg>(args.chnk_buff);
-    let rx = Arc::new(rx);
+    let ring = Arc::new(SeqRing::new());
     let sem = Arc::new(Semaphore::new(args.chnk_buff));
 
     let decoder = {
@@ -310,12 +308,18 @@ pub fn enc_all(
         let path = path.to_path_buf();
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
+        let ring = Arc::clone(&ring);
         spawn(move || {
+            let rp = Arc::as_ptr(&ring);
+            let send = move |p: WorkPkg| unsafe {
+                spmc_send(rp, Box::into_raw(Box::new(p)) as u64);
+            };
             if let Some(mut reader) = pipe_reader {
-                dec_pipe(&chnks, &mut reader, &inf, &tx, &skip_indices, strat, &sem);
+                dec_pipe(&chnks, &mut reader, &inf, &send, &skip_indices, strat, &sem);
             } else {
-                dec_chnks(&chnks, &path, &inf, &tx, &skip_indices, strat, &sem);
+                dec_chnks(&chnks, &path, &inf, &send, &skip_indices, strat, &sem);
             }
+            unsafe { spmc_close(rp) };
         })
     };
 
@@ -324,7 +328,7 @@ pub fn enc_all(
 
     let mut workers = Vec::new();
     for worker_id in 0..args.worker {
-        let rx_clone = Arc::clone(&rx);
+        let rx_clone = Arc::clone(&ring);
         let inf = inf.clone();
         let pipe = pipe.clone();
         let params = args.params.clone();
@@ -448,7 +452,7 @@ fn complete_chnk(
         .join("encode")
         .join(format!("{chnk_idx:04}.{}", ctx.ext));
     (ctx.output)(&dst, tq_state, probe_path);
-    _ = ctx.done_tx.send(chnk_idx);
+    unsafe { mpsc_send(ctx.done_tx, 1) };
 
     let file_sz = metadata(&dst).map_or(0, |m| m.len());
     let comp = ChunkComp {
@@ -543,17 +547,18 @@ fn resolve_output(svt: bool, use_alt: bool) -> fn(&Path, &TQState, &Path) {
 }
 
 #[cfg(feature = "vship")]
-fn run_metric_worker(
-    rx: &Arc<Receiver<WorkPkg>>,
-    work_tx: &Sender<WorkPkg>,
-    ctx: &TQWorkerCtx,
-    worker_id: usize,
-) {
+fn run_metric_worker(rx: &SeqRing, work_tx: &SeqRing, ctx: &TQWorkerCtx, worker_id: usize) {
     let mut vship: Option<VshipProcessor> = None;
     let mut dec: Option<ProbeDec> = None;
     let mut unpacked_buf = PinnedBuf::new(ctx.pipe.unpack_buf_sz).unwrap_or_else(|e| fatal(e));
 
-    while let Ok(mut pkg) = rx.recv() {
+    loop {
+        let m = unsafe { mpmc_recv(rx) };
+        if m == 0 {
+            cold_path();
+            break;
+        }
+        let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
         let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
         if tq_st.final_enc {
             let best = ctx.tq_ctx.best_probe(&tq_st.probes);
@@ -628,13 +633,13 @@ fn run_metric_worker(
             if ctx.use_alt_param {
                 tq_state.final_enc = true;
                 tq_state.last_crf = best.crf;
-                _ = work_tx.send(pkg);
+                unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
             } else {
                 let bp = probe_path(ctx.work_dir, pkg.chnk.idx, best.crf, ctx.ext);
                 complete_chnk(pkg.chnk.idx, pkg.frame_cnt, &bp, ctx, tq_state, best);
             }
         } else {
-            _ = work_tx.send(pkg);
+            unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
         }
     }
 }
@@ -662,20 +667,18 @@ fn parse_tq_ctx(args: &Args) -> TQCtx {
 }
 
 #[cfg(feature = "vship")]
-fn tq_coord(
-    work_rx: &Receiver<WorkPkg>,
-    done_rx: &Receiver<u16>,
-    enc_tx: &Sender<WorkPkg>,
-    tot_chnks: usize,
-    permits: &Semaphore,
-) {
+fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphore) {
     let mut completed = 0;
     while completed < tot_chnks {
-        select! {
-            recv(work_rx) -> pkg => { if let Ok(pkg) = pkg { _ = enc_tx.send(pkg); } }
-            recv(done_rx) -> result => { if result.is_ok() { permits.release(); completed += 1; } }
+        let m = unsafe { mpsc_recv(coord) };
+        if m == 1 {
+            sem_release(permits);
+            completed += 1;
+        } else {
+            unsafe { spmc_send(enc, m) };
         }
     }
+    unsafe { spmc_close(enc) };
 }
 
 #[cfg(feature = "vship")]
@@ -702,8 +705,8 @@ struct TqEncParams<'a> {
 
 #[cfg(feature = "vship")]
 fn tq_enc_loop(
-    rx: &Receiver<WorkPkg>,
-    tx: &Sender<WorkPkg>,
+    rx: &SeqRing,
+    tx: &SeqRing,
     ctx: &EncWorkerCtx,
     enc: &TqEncParams,
     tq_ctx: &TQCtx,
@@ -715,7 +718,13 @@ fn tq_enc_loop(
         alt_param,
     } = enc;
     let mut conv_buf = vec![0u8; ctx.pipe.conv_buf_sz];
-    while let Ok(mut pkg) = rx.recv() {
+    loop {
+        let m = unsafe { spmc_recv(rx) };
+        if m == 0 {
+            cold_path();
+            break;
+        }
+        let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
         let tq = pkg.tq_state.get_or_insert_with(|| TQState {
             probes: Vec::new(),
             probe_szs: Vec::new(),
@@ -766,16 +775,14 @@ fn tq_enc_loop(
             worker_id,
             out.as_deref(),
         );
-        _ = tx.send(pkg);
+        unsafe { mpmc_send(tx, Box::into_raw(pkg) as u64) };
     }
 }
 
 #[cfg(feature = "vship")]
 struct TQDecodeResult {
-    enc_tx: Sender<WorkPkg>,
-    enc_rx: Receiver<WorkPkg>,
-    work_tx: Sender<WorkPkg>,
-    done_tx: Sender<u16>,
+    enc: Arc<SeqRing>,
+    coord: Arc<SeqRing>,
     handle: JoinHandle<()>,
 }
 
@@ -790,52 +797,34 @@ fn spawn_tq_dec(
     pipe_reader: Option<PipeReader>,
 ) -> TQDecodeResult {
     let tot = chnks.iter().filter(|c| !skip.contains(&c.idx)).count();
-    let (enc_tx, enc_rx) = bounded::<WorkPkg>(2);
-    let (work_tx, work_rx) = bounded::<WorkPkg>(4);
-    let (done_tx, done_rx) = bounded::<u16>(4);
+    let enc = Arc::new(SeqRing::new());
+    let coord = Arc::new(SeqRing::new());
 
     let chnks = chnks.to_vec();
     let path = path.to_path_buf();
     let inf = inf.clone();
-    let enc_tx2 = enc_tx.clone();
-    let work_tx_dec = work_tx.clone();
+    let enc2 = Arc::clone(&enc);
+    let coord2 = Arc::clone(&coord);
+    let coord_dec = Arc::clone(&coord);
     let permits_dec = Arc::clone(permits);
     let permits_done = Arc::clone(permits);
     let handle = spawn(move || {
         let inf2 = inf.clone();
         let dec = spawn(move || {
+            let rp = Arc::as_ptr(&coord_dec);
+            let send = move |p: WorkPkg| unsafe {
+                mpsc_send(rp, Box::into_raw(Box::new(p)) as u64);
+            };
             if let Some(mut r) = pipe_reader {
-                dec_pipe(
-                    &chnks,
-                    &mut r,
-                    &inf2,
-                    &work_tx_dec,
-                    &skip,
-                    strat,
-                    &permits_dec,
-                );
+                dec_pipe(&chnks, &mut r, &inf2, &send, &skip, strat, &permits_dec);
             } else {
-                dec_chnks(
-                    &chnks,
-                    &path,
-                    &inf2,
-                    &work_tx_dec,
-                    &skip,
-                    strat,
-                    &permits_dec,
-                );
+                dec_chnks(&chnks, &path, &inf2, &send, &skip, strat, &permits_dec);
             }
         });
-        tq_coord(&work_rx, &done_rx, &enc_tx2, tot, &permits_done);
+        tq_coord(&coord2, &enc2, tot, &permits_done);
         join_one(dec);
     });
-    TQDecodeResult {
-        enc_tx,
-        enc_rx,
-        work_tx,
-        done_tx,
-        handle,
-    }
+    TQDecodeResult { enc, coord, handle }
 }
 
 #[cfg(feature = "vship")]
@@ -855,8 +844,7 @@ fn enc_tq(
     let permits = Arc::new(Semaphore::new(args.chnk_buff));
 
     let dec = spawn_tq_dec(chnks, path, inf, skip_indices, strat, &permits, pipe_reader);
-    let (met_tx, met_rx) = bounded::<WorkPkg>(2);
-    let (enc_rx, met_rx) = (Arc::new(dec.enc_rx), Arc::new(met_rx));
+    let met = Arc::new(SeqRing::new());
 
     let resume_state = Arc::new(Mutex::new(resume_data.clone()));
     let tq_logger = Arc::new(Mutex::new(Vec::new()));
@@ -889,16 +877,13 @@ fn enc_tq(
 
     init_device().unwrap_or_else(|e| fatal(e));
 
-    let metric_workers =
-        spawn_tq_metric(args.metric_worker, &met_rx, &dec.work_tx, &dec.done_tx, &sc);
+    let metric_workers = spawn_tq_metric(args.metric_worker, &met, &dec.coord, &sc);
 
-    let workers = spawn_tq_encoders(&enc_rx, &met_tx, &sc);
+    let workers = spawn_tq_encoders(&dec.enc, &met, &sc);
 
     join_one(dec.handle);
-    drop(dec.enc_tx);
     join_all(workers);
-    drop(dec.work_tx);
-    drop(met_tx);
+    unsafe { mpmc_close(Arc::as_ptr(&met)) };
     join_all(metric_workers);
 
     write_tq_log(&args.inp, work_dir, inf, sc.tq_ctx.metric_name());
@@ -925,9 +910,8 @@ struct TQSpawnCtx<'a> {
 #[cfg(feature = "vship")]
 fn spawn_tq_metric(
     metric_worker: usize,
-    met_rx: &Arc<Receiver<WorkPkg>>,
-    work_tx: &Sender<WorkPkg>,
-    done_tx: &Sender<u16>,
+    met: &Arc<SeqRing>,
+    coord: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<JoinHandle<()>> {
     let svt = sc.encoder == SvtAv1;
@@ -942,8 +926,8 @@ fn spawn_tq_metric(
     let ext = sc.encoder.extension();
     let mut metric_workers = Vec::new();
     for worker_id in 0..metric_worker {
-        let (rx, work_tx) = (Arc::clone(met_rx), work_tx.clone());
-        let done_tx = done_tx.clone();
+        let rx = Arc::clone(met);
+        let coord = Arc::clone(coord);
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
         let (metric_mode, st) = (sc.args.metric_mode.clone(), sc.stats.clone());
         let (resume_state, tq_logger, prog_clone) = (
@@ -959,7 +943,7 @@ fn spawn_tq_metric(
                 work_dir: &wd,
                 metric_mode: &metric_mode,
                 prog: &prog_clone,
-                done_tx: &done_tx,
+                done_tx: &coord,
                 resume_state: &resume_state,
                 stats: st.as_ref(),
                 tq_logger: &tq_logger,
@@ -972,7 +956,7 @@ fn spawn_tq_metric(
                 threads,
                 ext,
             };
-            run_metric_worker(&rx, &work_tx, &ctx, worker_id);
+            run_metric_worker(&rx, &coord, &ctx, worker_id);
         }));
     }
     metric_workers
@@ -987,8 +971,8 @@ struct TqTmpls {
 
 #[cfg(feature = "vship")]
 fn spawn_tq_encoders(
-    enc_rx: &Arc<Receiver<WorkPkg>>,
-    met_tx: &Sender<WorkPkg>,
+    enc: &Arc<SeqRing>,
+    met: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<JoinHandle<()>> {
     let tmpls = resolve_build_tmpl(sc.encoder).map(|build| {
@@ -1006,7 +990,7 @@ fn spawn_tq_encoders(
     let chnk_fn = resolve_chnk_fn(sc.encoder);
     let probe_fn = resolve_probe_fn(sc.encoder);
     for worker_id in 0..sc.worker_cnt {
-        let (rx, tx) = (Arc::clone(enc_rx), met_tx.clone());
+        let (rx, tx) = (Arc::clone(enc), Arc::clone(met));
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
         let (params, alt_param) = (sc.args.params.clone(), sc.args.alt_param.clone());
         let prog_clone = Arc::clone(sc.prog);
@@ -1156,7 +1140,7 @@ fn enc_tq_probe_sub(
 }
 
 fn run_enc_worker(
-    rx: &Arc<Receiver<WorkPkg>>,
+    rx: &SeqRing,
     params: &str,
     ctx: &EncWorkerCtx,
     template: Option<&[u8]>,
@@ -1166,7 +1150,13 @@ fn run_enc_worker(
 ) {
     let mut conv_buf = vec![0u8; ctx.pipe.conv_buf_sz];
 
-    while let Ok(mut pkg) = rx.recv() {
+    loop {
+        let m = unsafe { spmc_recv(rx) };
+        if m == 0 {
+            cold_path();
+            break;
+        }
+        let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
         (ctx.chnk_fn)(&mut pkg, params, ctx, template, &mut conv_buf, worker_id);
 
         if let Some(s) = stats {
@@ -1185,7 +1175,7 @@ fn run_enc_worker(
             s.add_completion(comp, ctx.work_dir);
         }
 
-        sem.release();
+        sem_release(sem);
     }
 }
 

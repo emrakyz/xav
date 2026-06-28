@@ -95,6 +95,22 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
                 b.file("asm/avx2/crc32_pclmul.asm");
                 b.file("asm/avx2/crc32_combine.asm");
             }
+            if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+                b.file("asm/sync/sem_win.asm");
+                b.file("asm/sync/ring_spsc_win.asm");
+                b.file("asm/sync/ring_spmc_win.asm");
+                b.file("asm/sync/ring_mpmc_win.asm");
+                b.file("asm/sync/ring_mpsc_win.asm");
+                println!("cargo:rustc-link-lib=dylib=synchronization");
+            } else {
+                b.file("asm/sync/sem.asm");
+                if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+                    b.file("asm/sync/ring_spsc.asm");
+                    b.file("asm/sync/ring_spmc.asm");
+                    b.file("asm/sync/ring_mpmc.asm");
+                    b.file("asm/sync/ring_mpsc.asm");
+                }
+            }
             b.compile("xavasm")?;
             println!("cargo:rustc-link-lib=static=xavasm");
         }

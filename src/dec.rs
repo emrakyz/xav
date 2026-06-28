@@ -2,9 +2,8 @@ use std::{
     collections::HashSet, hint::cold_path, path::Path, sync::Arc, thread::available_parallelism,
 };
 
-use crossbeam_channel::Sender;
-
 use crate::{
+    chan::{Semaphore, sem_acq},
     chunk::Chunk,
     error::fatal,
     ffms::{
@@ -30,7 +29,7 @@ use crate::{
     },
     pack::{PACK_CHUNK, calc_8b_sz, calc_packed_sz, pack_10b, pack_10b_rem, packed_row_sz},
     util::assume_unreachable,
-    worker::{Semaphore, WorkPkg},
+    worker::WorkPkg,
     y4m::PipeReader,
 };
 
@@ -111,7 +110,7 @@ pub fn dec_chnks(
     chnks: &[Chunk],
     path: &Path,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     skip: &HashSet<u16>,
     strat: DecStrat,
     sem: &Arc<Semaphore>,
@@ -171,7 +170,7 @@ fn disp_10b(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -183,64 +182,64 @@ fn disp_10b(
         B10Fast => {
             let f = calc_packed_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_fast(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_10_fast(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B10FastRem => {
             let f = calc_packed_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_fast_rem(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_10_fast_rem(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B10StrideRem => {
             let f = calc_packed_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_stride_rem(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_10_stride_rem(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B10CropFast { cc } => {
             let f = calc_packed_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10CropFastRem { cc } => {
             let f = calc_packed_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_crop_fast_rem(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_crop_fast_rem(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10Crop { cc } => {
             let f = calc_packed_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10CropRem { cc } => {
             let f = calc_packed_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_crop_rem(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_crop_rem(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10CropStride { cc } => {
             let f = calc_packed_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10CropStrideRem { cc } => {
             let f = calc_packed_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_crop_stride_rem(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_crop_stride_rem(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         _ => assume_unreachable(),
@@ -251,7 +250,7 @@ fn disp_10b_raw(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -259,36 +258,36 @@ fn disp_10b_raw(
         B10Raw => {
             let f = (inf.width as usize * inf.height as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_raw(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_10_raw(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B10RawStride => {
             let f = (inf.width as usize * inf.height as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_raw_stride(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_10_raw_stride(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B10RawCropFast { cc } => {
             let f = (cc.new_w as usize * cc.new_h as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_raw_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_raw_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10RawCrop { cc } => {
             let f = (cc.new_w as usize * cc.new_h as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B10RawCropStride { cc } => {
             let f = (cc.new_w as usize * cc.new_h as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_10_raw_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_10_raw_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         _ => assume_unreachable(),
@@ -299,7 +298,7 @@ fn disp_8b(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -307,72 +306,72 @@ fn disp_8b(
         B8Fast => {
             let f = calc_8b_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_8_fast(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_8_fast(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B8Stride => {
             let f = calc_8b_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_8_stride(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_8_stride(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         B8CropFast { cc } => {
             let f = calc_8b_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_8_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_8_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B8Crop { cc } => {
             let f = calc_8b_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_8_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_8_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         B8CropStride { cc } => {
             let f = calc_8b_sz(cc.new_w, cc.new_h);
             let mut buf = vec![0u8; calc_8b_sz(inf.width, inf.height)];
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_8_crop_stride(ch, dec, inf, &cc, f, &mut buf));
+                sem_acq(sem);
+                tx(dec_8_crop_stride(ch, dec, inf, &cc, f, &mut buf));
             }
         }
         HwNv12 => {
             let f = calc_8b_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_nv12(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_hw_nv12(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwNv12Stride => {
             let f = calc_8b_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_nv12_stride(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_hw_nv12_stride(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwNv12Crop { cc } => {
             let f = calc_8b_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_nv12_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_hw_nv12_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         HwNv12To10 => {
             let f = calc_8b_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_nv12_to10(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_hw_nv12_to10(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwNv12To10Stride => {
             let f = calc_8b_sz(inf.width, inf.height);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_nv12_to10_stride(
+                sem_acq(sem);
+                tx(dec_hw_nv12_to10_stride(
                     ch, dec, inf, inf.width, inf.height, f,
                 ));
             }
@@ -380,8 +379,8 @@ fn disp_8b(
         HwNv12CropTo10 { cc } => {
             let f = calc_8b_sz(cc.new_w, cc.new_h);
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_nv12_crop_to10(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_hw_nv12_crop_to10(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         _ => assume_unreachable(),
@@ -392,7 +391,7 @@ fn disp_hw_10b_raw(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -400,22 +399,22 @@ fn disp_hw_10b_raw(
         HwP010Raw => {
             let f = (inf.width as usize * inf.height as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_p010_raw(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_hw_p010_raw(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwP010RawRem => {
             let f = (inf.width as usize * inf.height as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_p010_raw_rem(ch, dec, inf, inf.width, inf.height, f));
+                sem_acq(sem);
+                tx(dec_hw_p010_raw_rem(ch, dec, inf, inf.width, inf.height, f));
             }
         }
         HwP010RawRemStride => {
             let f = (inf.width as usize * inf.height as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_p010_raw_rem_stride(
+                sem_acq(sem);
+                tx(dec_hw_p010_raw_rem_stride(
                     ch, dec, inf, inf.width, inf.height, f,
                 ));
             }
@@ -423,15 +422,15 @@ fn disp_hw_10b_raw(
         HwP010RawCrop { cc } => {
             let f = (cc.new_w as usize * cc.new_h as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_p010_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
+                sem_acq(sem);
+                tx(dec_hw_p010_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f));
             }
         }
         HwP010RawCropRem { cc } => {
             let f = (cc.new_w as usize * cc.new_h as usize) * 3;
             for ch in filtered {
-                sem.acq();
-                _ = tx.send(dec_hw_p010_raw_crop_rem(
+                sem_acq(sem);
+                tx(dec_hw_p010_raw_crop_rem(
                     ch, dec, &cc, cc.new_w, cc.new_h, f,
                 ));
             }
@@ -444,7 +443,7 @@ fn disp_hw_10b_pack(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -462,8 +461,8 @@ fn disp_hw_10b_pack(
     macro_rules! run {
         ($dec_fn:ident, $ctx:expr) => {
             for ch in filtered {
-                sem.acq();
-                _ = tx.send($dec_fn(ch, dec, $ctx, w, h, fsz, &mut raw_buf));
+                sem_acq(sem);
+                tx($dec_fn(ch, dec, $ctx, w, h, fsz, &mut raw_buf));
             }
         };
     }
@@ -739,7 +738,7 @@ pub fn dec_pipe(
     chnks: &[Chunk],
     reader: &mut PipeReader,
     inf: &VidInf,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     skip: &HashSet<u16>,
     strat: DecStrat,
     sem: &Arc<Semaphore>,
@@ -835,7 +834,7 @@ fn pipe_loop<F>(
     reader: &mut PipeReader,
     skip: &HashSet<u16>,
     sem: &Arc<Semaphore>,
-    tx: &Sender<WorkPkg>,
+    tx: &dyn Fn(WorkPkg),
     raw_fsz: usize,
     mut dec: F,
 ) where
@@ -849,7 +848,7 @@ fn pipe_loop<F>(
             continue;
         }
 
-        sem.acq();
+        sem_acq(sem);
 
         let mut raw = vec![0u8; len * raw_fsz];
         for i in 0..len {
@@ -858,7 +857,7 @@ fn pipe_loop<F>(
             }
         }
 
-        _ = tx.send(dec(ch, &raw));
+        tx(dec(ch, &raw));
     }
 }
 

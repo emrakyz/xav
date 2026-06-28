@@ -28,6 +28,7 @@ use crate::{
 mod atofu;
 mod audio;
 mod byte_range;
+mod chan;
 mod chunk;
 mod copy;
 mod crop;

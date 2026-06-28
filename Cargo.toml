@@ -19,7 +19,6 @@ svt-essential = []
 
 [dependencies]
 libc = "0.2.186"
-crossbeam-channel = "0.5.15"
 ebur128 = "0.1.10"
 thiserror = "2.0.18"
 

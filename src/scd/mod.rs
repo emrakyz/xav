@@ -10,15 +10,15 @@ use std::{
     collections::VecDeque,
     fmt::Write as _,
     fs::write as fs_write,
+    hint::cold_path,
     mem::size_of,
     path::Path,
     sync::Arc,
     thread::{available_parallelism, spawn},
 };
 
-use crossbeam_channel::{Receiver, bounded};
-
 use crate::{
+    chan::{SpscRing, spsc_close, spsc_recv, spsc_send},
     error::Xerr,
     ffms::{VidDecoder, VidFrame, VidInf, av_frame_alloc, av_frame_free, av_frame_move_ref},
     progs::ProgsBar,
@@ -29,7 +29,6 @@ const BIAS: f64 = 0.7;
 const IMP_BLOCK_DIFF_THRESHOLD: f64 = 7.0;
 const MAX_DIST: usize = 300;
 const BLK: usize = 8;
-const PREFETCH: usize = 8;
 
 type Weights = Vec<Option<(f32, f32)>>;
 
@@ -169,6 +168,7 @@ struct ScenecutResult {
     forward_adjusted_cost: f64,
 }
 
+#[derive(Clone, Copy)]
 struct Dims {
     w: usize,
     h: usize,
@@ -192,10 +192,8 @@ impl Drop for Fr {
     }
 }
 
-unsafe fn make_fr<T: Pixel>(vf: *mut VidFrame, dims: &Dims) -> Fr {
+unsafe fn make_fr<T: Pixel>(av: *mut VidFrame, dims: &Dims) -> Fr {
     unsafe {
-        let av = av_frame_alloc();
-        av_frame_move_ref(av, vf);
         let lb = (*av).linesize[0] as usize;
         let data = (*av).data[0].add(dims.cv * lb + dims.ch * size_of::<T>());
         Fr {
@@ -229,8 +227,8 @@ impl Detector {
 
     fn run_comparison<T: Pixel, const S: bool>(
         &mut self,
-        prev: &Arc<Fr>,
-        cur: &Arc<Fr>,
+        prev: &Fr,
+        cur: &Fr,
         input_frameno: usize,
     ) {
         let cp = cur.data.cast::<T>();
@@ -330,7 +328,7 @@ impl Detector {
 
     fn analyze_next_frame<T: Pixel, const S: bool>(
         &mut self,
-        window: &VecDeque<Arc<Fr>>,
+        window: &VecDeque<Fr>,
         set_len: usize,
         frameno: usize,
     ) -> (bool, Option<ScenecutResult>) {
@@ -366,28 +364,29 @@ impl Detector {
 }
 
 fn run_detection<T: Pixel, const S: bool>(
-    frame_rx: &Receiver<Arc<Fr>>,
-    wb: usize,
-    hb: usize,
+    ring: &SpscRing,
+    dims: Dims,
     bit_depth: usize,
     tot_frames: usize,
 ) -> (Vec<usize>, Weights) {
+    let wb = dims.w / BLK;
+    let hb = dims.h / BLK;
     let mut detector = Detector::new(bit_depth, wb, hb);
     let mut keyframes = vec![0usize];
     let mut weights: Weights = vec![None; tot_frames];
-    let mut window: VecDeque<Arc<Fr>> = VecDeque::new();
+    let mut window: VecDeque<Fr> = VecDeque::new();
     let mut frameno = 0usize;
     let mut next_in = 0usize;
     loop {
         let max_needed = (frameno + LOOKAHEAD + 1).min(tot_frames);
         while next_in < max_needed {
-            match frame_rx.recv() {
-                Ok(f) => {
-                    window.push_back(f);
-                    next_in += 1;
-                }
-                Err(_) => break,
+            let p = unsafe { spsc_recv(ring) };
+            if p == 0 {
+                cold_path();
+                break;
             }
+            window.push_back(unsafe { make_fr::<T>(p as *mut VidFrame, &dims) });
+            next_in += 1;
         }
         let set_len = window.len().min(LOOKAHEAD + 2);
         if set_len < 2 {
@@ -415,10 +414,11 @@ fn detect<T: Pixel, const S: bool>(
     bit_depth: usize,
     line: usize,
 ) -> (Vec<usize>, Weights) {
-    let wb = dims.w / BLK;
-    let hb = dims.h / BLK;
-    let (frame_tx, frame_rx) = bounded::<Arc<Fr>>(PREFETCH);
-    let det = spawn(move || run_detection::<T, S>(&frame_rx, wb, hb, bit_depth, tot_frames));
+    let dims = *dims;
+    let ring = Arc::new(SpscRing::new());
+    let ring2 = Arc::clone(&ring);
+    let det = spawn(move || run_detection::<T, S>(&ring2, dims, bit_depth, tot_frames));
+    let rp = Arc::as_ptr(&ring);
     let mut pb = ProgsBar::new();
     let mut i = 0usize;
     while i < tot_frames {
@@ -426,14 +426,13 @@ fn detect<T: Pixel, const S: bool>(
         if dec.is_eof() {
             break;
         }
-        let fr = unsafe { make_fr::<T>(vf.cast_mut(), dims) };
-        if frame_tx.send(Arc::new(fr)).is_err() {
-            break;
-        }
+        let av = unsafe { av_frame_alloc() };
+        unsafe { av_frame_move_ref(av, vf.cast_mut()) };
+        unsafe { spsc_send(rp, av as u64) };
         i += 1;
         pb.up_frames(i, tot_frames, line, "SCD");
     }
-    drop(frame_tx);
+    unsafe { spsc_close(rp) };
     pb.up_frames(tot_frames, tot_frames, line, "SCD");
     unsafe { det.join().unwrap_unchecked() }
 }
