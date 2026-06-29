@@ -131,24 +131,29 @@ pub unsafe fn spmc_close(r: *const SeqRing) {
     unsafe { seq_close(r) };
 }
 
+#[cfg(feature = "vship")]
 #[inline(always)]
 pub unsafe fn mpmc_send(r: *const SeqRing, x: u64) {
     unsafe { seq_send(r, x) };
 }
+#[cfg(feature = "vship")]
 #[inline(always)]
 pub unsafe fn mpmc_recv(r: *const SeqRing) -> u64 {
     unsafe { seq_recv(r) }
 }
+#[cfg(feature = "vship")]
 #[cold]
 #[inline(never)]
 pub unsafe fn mpmc_close(r: *const SeqRing) {
     unsafe { seq_close(r) };
 }
 
+#[cfg(feature = "vship")]
 #[inline(always)]
 pub unsafe fn mpsc_send(r: *const SeqRing, x: u64) {
     unsafe { seq_send(r, x) };
 }
+#[cfg(feature = "vship")]
 #[inline(always)]
 pub unsafe fn mpsc_recv(r: *const SeqRing) -> u64 {
     unsafe { seq_recv(r) }
