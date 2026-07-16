@@ -16,10 +16,6 @@ default = [ "vship" ]
 vship = []
 svt-essential = []
 
-[dependencies]
-libc = "0.2.186"
-thiserror = "2.0.18"
-
 [build-dependencies]
 nasm-rs = { version = "0.3.2", features = ["parallel"] }
 

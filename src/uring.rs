@@ -1,7 +1,8 @@
+use core::ffi::c_void;
 use std::{
     iter::repeat_with,
     mem::zeroed,
-    ptr::{from_mut, null_mut},
+    ptr::{from_mut, null, null_mut},
     slice::from_raw_parts_mut,
     sync::atomic::{
         AtomicU32,
@@ -9,13 +10,13 @@ use std::{
     },
 };
 
-use libc::{
-    MADV_NOHUGEPAGE, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE,
-    SYS_io_uring_enter, SYS_io_uring_register, SYS_io_uring_setup, c_void, close, madvise, mmap,
-    munmap, syscall,
+use crate::{
+    error::Xerr,
+    sys::{
+        MADV_NOHUGEPAGE, MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE, close,
+        io_uring_enter, io_uring_register, io_uring_setup, madvise, mmap, munmap,
+    },
 };
-
-use crate::error::Xerr;
 
 const IORING_SETUP_SQPOLL: u32 = 1 << 1;
 const IORING_FEAT_SINGLE_MMAP: u32 = 1 << 0;
@@ -110,35 +111,17 @@ const _: [(); 120] = [(); size_of::<Params>()];
 
 #[inline]
 unsafe fn setup(entries: u32, p: &mut Params) -> i64 {
-    unsafe { syscall(SYS_io_uring_setup, i64::from(entries), from_mut(p)) }
+    unsafe { io_uring_setup(entries, from_mut(p).cast()) }
 }
 
 #[inline]
 unsafe fn enter(fd: i32, to_submit: u32, min_complete: u32, flags: u32) -> i64 {
-    unsafe {
-        syscall(
-            SYS_io_uring_enter,
-            i64::from(fd),
-            i64::from(to_submit),
-            i64::from(min_complete),
-            i64::from(flags),
-            null_mut::<c_void>(),
-            0i64,
-        )
-    }
+    unsafe { io_uring_enter(fd, to_submit, min_complete, flags, null(), 0) }
 }
 
 #[inline]
 unsafe fn register(fd: i32, opcode: u32, arg: *const c_void, nr: u32) -> i64 {
-    unsafe {
-        syscall(
-            SYS_io_uring_register,
-            i64::from(fd),
-            i64::from(opcode),
-            arg,
-            i64::from(nr),
-        )
-    }
+    unsafe { io_uring_register(fd, opcode, arg, nr) }
 }
 
 pub struct Ring {
@@ -189,7 +172,7 @@ impl Ring {
             mmap(null_mut(), len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off)
         };
         let sq_map = map(sq_sz, IORING_OFF_SQ_RING);
-        if sq_map == MAP_FAILED {
+        if (sq_map as isize) < 0 {
             unsafe { close(fd) };
             return Err("io_uring SQ ring mmap failed".into());
         }
@@ -197,7 +180,7 @@ impl Ring {
             sq_map
         } else {
             let v = map(cq_sz, IORING_OFF_CQ_RING);
-            if v == MAP_FAILED {
+            if (v as isize) < 0 {
                 unsafe {
                     munmap(sq_map, sq_sz);
                     close(fd);
@@ -207,7 +190,7 @@ impl Ring {
             v
         };
         let sqe_map = map(sqes_sz, IORING_OFF_SQES);
-        if sqe_map == MAP_FAILED {
+        if (sqe_map as isize) < 0 {
             unsafe {
                 if !single {
                     munmap(cq_map, cq_sz);
@@ -322,7 +305,7 @@ impl AlignedBuf {
                 0,
             )
         };
-        if ptr == MAP_FAILED {
+        if (ptr as isize) < 0 {
             return Err("anonymous mmap (write buffer) failed".into());
         }
         unsafe { madvise(ptr, len, MADV_NOHUGEPAGE) };

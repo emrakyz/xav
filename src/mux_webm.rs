@@ -423,9 +423,7 @@ fn write_file(out: &Path, size: usize, build: impl FnOnce(&mut [u8])) -> Result<
         fs::OpenOptions, os::unix::io::AsRawFd as _, ptr::null_mut, slice::from_raw_parts_mut,
     };
 
-    use libc::{
-        MADV_HUGEPAGE, MAP_FAILED, MAP_SHARED, PROT_READ, PROT_WRITE, madvise, mmap, munmap,
-    };
+    use crate::sys::{MADV_HUGEPAGE, MAP_SHARED, PROT_READ, PROT_WRITE, madvise, mmap, munmap};
 
     let f = OpenOptions::new()
         .read(true)
@@ -444,7 +442,7 @@ fn write_file(out: &Path, size: usize, build: impl FnOnce(&mut [u8])) -> Result<
             0,
         )
     };
-    if ptr == MAP_FAILED {
+    if (ptr as isize) < 0 {
         return Err("webm: output mmap failed".into());
     }
     unsafe { madvise(ptr, size, MADV_HUGEPAGE) };

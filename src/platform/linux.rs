@@ -9,12 +9,16 @@ use std::{
     slice::{from_raw_parts, from_raw_parts_mut},
 };
 
-use libc::{
-    MADV_HUGEPAGE, MADV_SEQUENTIAL, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE,
-    madvise, mmap, munmap, statfs,
+use crate::{
+    error::Xerr,
+    mkv_mux::Mux,
+    progs::ProgsBar,
+    sys::{
+        MADV_HUGEPAGE, MADV_SEQUENTIAL, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE, Statfs,
+        madvise, mmap, munmap, statfs,
+    },
+    uring::RingWriter,
 };
-
-use crate::{error::Xerr, mkv_mux::Mux, progs::ProgsBar, uring::RingWriter};
 
 pub struct Mmap {
     ptr: *const u8,
@@ -26,7 +30,7 @@ impl Mmap {
         let f = File::open(path)?;
         let len = f.metadata()?.len() as usize;
         let ptr = unsafe { mmap(null_mut(), len, PROT_READ, MAP_PRIVATE, f.as_raw_fd(), 0) };
-        if ptr == MAP_FAILED {
+        if (ptr as isize) < 0 {
             return Err("mmap (input chunk) failed".into());
         }
         Ok(Self {
@@ -70,7 +74,7 @@ fn classify(path: &Path) -> Result<Dev, Xerr> {
         .unwrap_or_else(|| Path::new("."));
     let c = CString::new(dir.as_os_str().as_bytes())?;
     let ram = unsafe {
-        let mut sf: statfs = zeroed();
+        let mut sf: Statfs = zeroed();
         if statfs(c.as_ptr(), &raw mut sf) != 0 {
             return Err(format!("statfs failed for {}", dir.display()).into());
         }
@@ -187,7 +191,7 @@ fn mmap_write(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr> {
     let fd = f.as_raw_fd();
     let size = file_size as usize;
     let mptr = unsafe { mmap(null_mut(), size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) };
-    if mptr == MAP_FAILED {
+    if (mptr as isize) < 0 {
         return Err("mmap (output) failed".into());
     }
     unsafe { madvise(mptr, size, MADV_HUGEPAGE) };

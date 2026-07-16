@@ -17,8 +17,6 @@ use std::{
     time::{Duration as Durat, Instant},
 };
 
-use libc::{_exit, SIGINT, SIGSEGV, atexit, signal};
-
 use crate::{
     encoder::Encoder::{Avm, SvtAv1},
     error::Xerr::Help,
@@ -59,6 +57,8 @@ mod progs;
 mod scd;
 mod svt;
 mod svterr;
+#[cfg(target_os = "linux")]
+mod sys;
 #[cfg(feature = "vship")]
 mod tq;
 #[cfg(target_os = "linux")]
@@ -77,7 +77,7 @@ use chunk::{
 use crop::{CropConf, detect_crop};
 use enc::enc_all;
 use encoder::Encoder;
-use error::{IN_ALT_SCREEN, Xerr, eprint, fatal};
+use error::{IN_ALT_SCREEN, SIGINT, SIGSEGV, Xerr, eprint, exit, fatal, signal};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
 use scd::fd_scenes;
 use svterr::val;
@@ -127,7 +127,7 @@ extern "C" fn restore() {
 }
 extern "C" fn exit_restore(_: i32) {
     restore();
-    unsafe { _exit(130) };
+    exit(130)
 }
 
 #[rustfmt::skip]
@@ -739,13 +739,9 @@ fn main() -> Result<(), Xerr> {
         eprint(format_args!("{}, FAIL", out.display()));
     }));
 
-    unsafe {
-        atexit(restore);
-
-        let h: usize = transmute_copy(&(exit_restore as extern "C" fn(i32)));
-        signal(SIGINT, h);
-        signal(SIGSEGV, h);
-    }
+    let h: usize = unsafe { transmute_copy(&(exit_restore as extern "C" fn(i32))) };
+    signal(SIGINT, h);
+    signal(SIGSEGV, h);
 
     if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");
@@ -753,5 +749,6 @@ fn main() -> Result<(), Xerr> {
         fatal(format_args!("{e}\n{}, FAIL", args.out.display()));
     }
 
+    restore();
     Ok(())
 }

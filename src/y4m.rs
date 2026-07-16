@@ -8,10 +8,9 @@ use std::{
 };
 
 #[cfg(target_os = "linux")]
-use libc::dup2;
-
-#[cfg(target_os = "linux")]
 use crate::chunk::{Chunk, get_resume};
+#[cfg(target_os = "linux")]
+use crate::sys::dup2;
 
 pub fn is_pipe() -> bool {
     !stdin().is_terminal()

@@ -8,8 +8,6 @@ use std::{
     thread::available_parallelism,
 };
 
-use libc::atoll;
-
 use crate::{
     Xerr,
     dec::CropCalc,
@@ -839,6 +837,17 @@ fn dec_first_frame(
         avcodec_free_context(addr_of_mut!(codec_ctx));
         fmeta
     }
+}
+
+unsafe fn atoll(mut p: *const u8) -> i64 {
+    let mut n = 0i64;
+    unsafe {
+        while (*p).is_ascii_digit() {
+            n = n * 10 + i64::from(*p - b'0');
+            p = p.add(1);
+        }
+    }
+    n
 }
 
 pub fn vid_bytes(path: &Path, ranges: Option<&[(usize, usize)]>, tot_frames: usize) -> u64 {

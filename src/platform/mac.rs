@@ -1,3 +1,4 @@
+use core::ffi::c_void;
 use std::{
     fs::{File, OpenOptions},
     os::unix::io::AsRawFd as _,
@@ -6,12 +7,19 @@ use std::{
     slice::{from_raw_parts, from_raw_parts_mut},
 };
 
-use libc::{
-    MADV_SEQUENTIAL, MAP_FAILED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE, madvise, mmap,
-    munmap,
-};
-
 use crate::{error::Xerr, mkv_mux::Mux, progs::ProgsBar};
+
+const PROT_READ: i32 = 1;
+const PROT_WRITE: i32 = 2;
+const MAP_SHARED: i32 = 1;
+const MAP_PRIVATE: i32 = 2;
+const MADV_SEQUENTIAL: i32 = 2;
+
+unsafe extern "C" {
+    fn mmap(addr: *mut c_void, len: usize, prot: i32, flags: i32, fd: i32, off: i64) -> *mut c_void;
+    fn munmap(addr: *mut c_void, len: usize) -> i32;
+    fn madvise(addr: *mut c_void, len: usize, advice: i32) -> i32;
+}
 
 pub struct Mmap {
     ptr: *const u8,
@@ -23,7 +31,7 @@ impl Mmap {
         let f = File::open(path)?;
         let len = f.metadata()?.len() as usize;
         let ptr = unsafe { mmap(null_mut(), len, PROT_READ, MAP_PRIVATE, f.as_raw_fd(), 0) };
-        if ptr == MAP_FAILED {
+        if (ptr as isize) < 0 {
             return Err("mmap (input chunk) failed".into());
         }
         Ok(Self {
@@ -72,7 +80,7 @@ pub fn write_mux(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr
             0,
         )
     };
-    if mptr == MAP_FAILED {
+    if (mptr as isize) < 0 {
         return Err("mmap (output) failed".into());
     }
     for m in mux.maps {
