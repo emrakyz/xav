@@ -70,6 +70,8 @@ mod worker;
 mod y4m;
 
 use audio::{AuSpec, AuStream, enc_au_streams, frame_samp, parse_au_arg};
+#[cfg(feature = "vship")]
+use chunk::has_rc;
 use chunk::{
     Chunk, Scene, chnkify, get_resume, init_elapsed, load_scenes, merge_out, trans_scenes,
     val_scenes,
@@ -407,6 +409,12 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
             unsafe { result.qp_range.as_ref().unwrap_unchecked() },
             "-f/--qp",
         )?;
+        if has_rc(&result.params) || result.alt_param.as_deref().is_some_and(has_rc) {
+            return Err(
+                "-p and -P must not set CRF/QP in target-quality mode: CRF is chosen automatically"
+                    .into(),
+            );
+        }
     }
 
     if result.encoder == SvtAv1 {
@@ -609,7 +617,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let mut args = args.clone();
 
-    let scenes = load_scenes(&args.sc_file, inf.frames)?;
+    #[cfg(feature = "vship")]
+    let tq = args.tq.is_some();
+    #[cfg(not(feature = "vship"))]
+    let tq = false;
+
+    let scenes = load_scenes(&args.sc_file, inf.frames, tq)?;
 
     let scenes = if let Some(ref r) = args.ranges {
         trans_scenes(&scenes, r)
@@ -634,10 +647,6 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let (mut inf, crop, pipe_reader) = init_pipe_crop(inf, crop, pipe_start);
 
-    #[cfg(feature = "vship")]
-    let tq = args.tq.is_some();
-    #[cfg(not(feature = "vship"))]
-    let tq = false;
     if args.hwdec {
         let mut dec = VidDecoder::new_hw(&args.inp, 1)?;
         inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };

@@ -3,12 +3,12 @@ name = "xav"
 version = "0.1.0"
 authors = ["Emre Akyüz emreakyuz_2@hotmail.com"]
 edition = "2024"
-description = "Fastest, Most Efficient, Minimal, Chunked & Target Quality Video Encoding"
+description = "Fastest, Extremist Encoding & Target Quality"
 readme = "README.md"
 homepage = "https://github.com/emrakyz/xav"
 repository = "https://github.com/emrakyz/xav"
-license = "MIT"
-keywords = ["av1", "video", "multimedia", "encoding", "quality", "chunking"]
+license = "MIT NON-AI"
+keywords = ["av1", "av2", "vvc", "cvvdp", "video", "multimedia", "encoding", "quality", "chunking"]
 categories = ["multimedia::video", "command-line-utilities"]
 
 [features]

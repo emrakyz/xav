@@ -56,8 +56,18 @@ pub struct ResumeInf {
     pub prior_secs: u64,
 }
 
-pub fn load_scenes(path: &Path, t_frames: usize) -> Result<Vec<Scene>, Xerr> {
+pub fn has_rc(s: &str) -> bool {
+    s.contains("crf") || s.contains("qp") || s.contains("QP") || s.contains("-q")
+}
+
+pub fn load_scenes(path: &Path, t_frames: usize, tq: bool) -> Result<Vec<Scene>, Xerr> {
     let content = read_to_str(path)?;
+    if tq && has_rc(&content) {
+        return Err(
+            "zones file must not set CRF/QP in target-quality mode: CRF is chosen automatically"
+                .into(),
+        );
+    }
     let mut parsed: Vec<_> = content
         .lines()
         .filter_map(|line| {

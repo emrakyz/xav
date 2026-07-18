@@ -529,7 +529,7 @@ fn run_test(
     verify_pipeline(&pipe, &inf, crop, strat);
 
     let scenes_path = test_path("scenes.txt");
-    let scenes = load_scenes(&scenes_path, inf.frames).unwrap();
+    let scenes = load_scenes(&scenes_path, inf.frames, false).unwrap();
     let chnks = chnkify(&scenes);
 
     let ring = Arc::new(SpscRing::new());
