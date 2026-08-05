@@ -3,11 +3,13 @@ include!("avx512.rs");
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 include!("avx2.rs");
 
-use std::path::Path;
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
 
 use crate::{
     error::Xerr,
     ffms::{VidDecoder, VidFrame, VidInf},
+    path::Path,
     progs::ProgsBar,
 };
 

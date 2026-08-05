@@ -1,13 +1,18 @@
 // Maximally minimal (barely playable) / not spec-compliant
 
-use std::{
-    path::{Path, PathBuf},
-    ptr::copy_nonoverlapping,
-};
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use core::ptr::copy_nonoverlapping;
 
 use crate::{
-    audio::AuStream, byte_range::ByteRange, error::Xerr, ffms::VidInf, obu_parse::parse,
-    opus::read, platform::Mmap,
+    audio::AuStream,
+    byte_range::ByteRange,
+    error::Xerr,
+    ffms::VidInf,
+    obu_parse::parse,
+    opus::read,
+    path::{Path, PathBuf},
+    platform::Mmap,
 };
 
 const ID_SEGMENT: u32 = 0x1853_8067;
@@ -418,12 +423,12 @@ pub fn mux_webm(
 
 #[cfg(target_os = "linux")]
 fn write_file(out: &Path, size: usize, build: impl FnOnce(&mut [u8])) -> Result<(), Xerr> {
-    use core::arch::x86_64::_mm_sfence;
-    use std::{
-        fs::OpenOptions, os::unix::io::AsRawFd as _, ptr::null_mut, slice::from_raw_parts_mut,
-    };
+    use core::{arch::x86_64::_mm_sfence, ptr::null_mut, slice::from_raw_parts_mut};
 
-    use crate::sys::{MADV_HUGEPAGE, MAP_SHARED, PROT_READ, PROT_WRITE, madvise, mmap, munmap};
+    use crate::{
+        fs::OpenOptions,
+        sys::{MADV_HUGEPAGE, MAP_SHARED, PROT_READ, PROT_WRITE, madvise, mmap, munmap},
+    };
 
     let f = OpenOptions::new()
         .read(true)
@@ -456,7 +461,7 @@ fn write_file(out: &Path, size: usize, build: impl FnOnce(&mut [u8])) -> Result<
 
 #[cfg(not(target_os = "linux"))]
 fn write_file(out: &Path, size: usize, build: impl FnOnce(&mut [u8])) -> Result<(), Xerr> {
-    use std::fs::write;
+    use crate::fs::write;
     let mut buf = vec![0u8; size];
     build(&mut buf);
     write(out, &buf)?;

@@ -1,6 +1,8 @@
-use std::{
-    ffi::{CString, c_int, c_void},
-    path::Path,
+use alloc::ffi::CString;
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use core::{
+    ffi::{c_int, c_void},
     ptr::{from_ref, null, null_mut},
 };
 
@@ -13,6 +15,7 @@ use crate::{
         avcodec_free_context, avcodec_open2, avcodec_parameters_to_context, avcodec_receive_frame,
         avcodec_send_packet, avformat_close_input, avformat_open_input, probe_streams,
     },
+    path::Path,
 };
 
 const AVMEDIA_TYPE_AUDIO: c_int = 1;

@@ -274,9 +274,7 @@
     {W}frame intra cost vs inter cost; not pixel-difference thresholds
   {P} {W}Frame 0 (first frame) of each chunk is always a keyframe
   {P} {C}Handles gradual transitions. {W}Fades/dissolves/crossfades are caught by cost model
-  {P} {W}If audio is encoded, all selected audio streams are encoded at same time along with SCD
-    {W}This makes whole process faster. If scene file already present, audio encodes in end
-  {P} {C}SCD defines parallel work units. {W}Scene boundaries are chunk boundaries, so this stage
+    {P} {C}SCD defines parallel work units. {W}Scene boundaries are chunk boundaries, so this stage
     {W}directly sets what workers encode, not just where keyframes go
   {P} {C}Deterministic: {W}Same input {P} {W}identical scene file, every run/machine
   {P} {C}File is inspectable & editable: {W}0-indexed, one keyframe per line, last scene runs implicitly to EOF

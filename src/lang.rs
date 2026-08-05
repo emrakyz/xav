@@ -1,4 +1,6 @@
-use std::borrow::Cow;
+use alloc::borrow::Cow;
+#[cfg(target_os = "linux")]
+use alloc::{borrow::ToOwned as _, string::String};
 
 #[must_use]
 pub fn to_bcp47(code: &str) -> Cow<'static, str> {

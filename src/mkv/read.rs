@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
 use core::str::from_utf8;
 
 const EBML_MAGIC: u32 = 0x1A45_DFA3;

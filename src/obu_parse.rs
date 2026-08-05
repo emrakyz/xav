@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+
 use crate::byte_range::ByteRange;
 
 const OBU_SEQUENCE_HEADER: u8 = 1;

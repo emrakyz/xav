@@ -1,14 +1,20 @@
-use std::{
-    ffi::NulError,
+use alloc::ffi::NulError;
+#[cfg(target_os = "linux")]
+use alloc::string::String;
+#[cfg(all(target_os = "linux", not(test)))]
+use core::panic::PanicInfo;
+use core::{
     fmt::{self, Arguments, Display, Formatter},
-    io::{Error, Write as _, stderr, stdout},
     num::{ParseFloatError, ParseIntError},
     sync::atomic::{AtomicBool, Ordering::Relaxed},
 };
 
-use crate::error::Xerr::Msg;
 #[cfg(target_os = "linux")]
 use crate::sys::{exit_group, sigaction};
+use crate::{
+    error::Xerr::Msg,
+    io::{Error, Write as _, print_fmt, stderr, stdout},
+};
 
 pub static IN_ALT_SCREEN: AtomicBool = AtomicBool::new(false);
 
@@ -135,3 +141,18 @@ pub fn eprint(args: Arguments<'_>) {
     }
     _ = writeln!(stderr(), "{args}");
 }
+
+#[cfg(all(target_os = "linux", not(test)))]
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    if IN_ALT_SCREEN.load(Relaxed) {
+        print!("\x1b[?25h\x1b[?1049l");
+        _ = stdout().flush();
+    }
+    eprint(format_args!("{info}"));
+    exit(1)
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+#[unsafe(no_mangle)]
+const extern "C" fn rust_eh_personality() {}

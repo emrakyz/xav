@@ -1,11 +1,10 @@
-use std::{
-    borrow::Cow,
-    ffi::{CStr, CString, c_char, c_int, c_uint, c_void},
-    path::Path,
+use alloc::{borrow::Cow, ffi::CString};
+#[cfg(target_os = "linux")]
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
+use core::{
+    ffi::{CStr, c_char, c_int, c_uint, c_void},
     ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut},
     slice::{from_raw_parts, from_raw_parts_mut},
-    sync::Mutex,
-    thread::available_parallelism,
 };
 
 use crate::{
@@ -28,23 +27,35 @@ use crate::{
         deint_nv12_10b, deint_nv12_10b_rem, deint_nv12_rem, deint_p010, deint_p010_rem, pack_10b,
         pack_10b_rem, pack_stride, pack_stride_rem, packed_row_sz, shift_p010, shift_p010_rem,
     },
+    path::Path,
     platform::Mmap,
     progs::ProgsBar,
+    sync::Mutex,
+    thread::available_parallelism,
     util::assume_unreachable,
 };
 
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
 pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
 pub const AV_NOPTS_VALUE: i64 = i64::MIN;
-const AVERROR_EOF: c_int = -541_478_725;
-const AVERROR_EAGAIN: c_int = -11;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 const AV_DICT_IGNORE_SUFFIX: c_int = 2;
 const AV_FRAME_DATA_MASTERING_DISPLAY_METADATA: c_int = 11;
 const AV_FRAME_DATA_CONTENT_LIGHT_LEVEL: c_int = 14;
 const AV_PIX_FMT_YUV420P10LE: c_int = 62;
-const AV_HWDEVICE_TYPE_VULKAN: c_int = 11;
-const AV_CODEC_ID_AV1: c_int = 225;
+#[cfg(not(feature = "cuda"))]
+const AV_HWDEVICE_TYPE_HW: c_int = 11;
+#[cfg(feature = "cuda")]
+const AV_HWDEVICE_TYPE_HW: c_int = 2;
+#[cfg(feature = "cuda")]
+const AV_CODEC_ID_H264: c_int = 27;
+#[cfg(feature = "cuda")]
+const AV_CODEC_ID_VC1: c_int = 70;
+#[cfg(feature = "cuda")]
+const AV_CODEC_ID_VP9: c_int = 166;
+#[cfg(feature = "cuda")]
+const AV_CODEC_ID_HEVC: c_int = 172;
+const AV_CODEC_ID_AV1: c_int = 222;
 const HW_DEVICE_CTX_OFFSET: usize = 560;
 
 #[repr(C)]
@@ -234,6 +245,8 @@ pub struct AVChapter {
 }
 
 unsafe extern "C" {
+    fn xav_dec_next(d: *mut VidDecoder) -> *const VidFrame;
+    fn xav_dec_next_hw(d: *mut VidDecoder) -> *const VidFrame;
     pub fn avformat_open_input(
         ps: *mut *mut AVFormatContext,
         url: *const i8,
@@ -277,7 +290,6 @@ unsafe extern "C" {
     pub fn av_read_frame(s: *mut AVFormatContext, pkt: *mut AVPacket) -> c_int;
     pub fn av_frame_alloc() -> *mut VidFrame;
     pub fn av_frame_free(frame: *mut *mut VidFrame);
-    pub fn av_frame_move_ref(dst: *mut VidFrame, src: *mut VidFrame);
     pub fn av_seek_frame(
         s: *mut AVFormatContext,
         stream_index: c_int,
@@ -311,7 +323,6 @@ unsafe extern "C" {
         opts: *mut c_void,
         flags: c_int,
     ) -> c_int;
-    fn av_hwframe_transfer_data(dst: *mut VidFrame, src: *const VidFrame, flags: c_int) -> c_int;
     fn av_buffer_ref(buf: *mut c_void) -> *mut c_void;
     fn av_buffer_unref(buf: *mut *mut c_void);
     fn avcodec_find_decoder_by_name(name: *const c_char) -> *const c_void;
@@ -345,9 +356,8 @@ unsafe extern "C" fn ff_log_callback(
         );
     }
     let msg = unsafe { CStr::from_ptr(buf.as_ptr().cast::<c_char>()) };
-    if let Ok(s) = msg.to_str()
-        && let Ok(mut last) = LAST_FF_LOG.lock()
-    {
+    if let Ok(s) = msg.to_str() {
+        let mut last = LAST_FF_LOG.lock();
         last.clear();
         last.push_str(s.trim());
     }
@@ -356,15 +366,16 @@ unsafe extern "C" fn ff_log_callback(
 #[cold]
 #[inline(never)]
 fn ff_err(context: &str) -> Xerr {
-    let detail = LAST_FF_LOG
-        .lock()
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|mut s| {
+    let detail = {
+        let mut s = LAST_FF_LOG.lock();
+        if s.is_empty() {
+            None
+        } else {
             let out = s.clone();
             s.clear();
-            out
-        });
+            Some(out)
+        }
+    };
     detail.map_or_else(|| Msg(context.into()), |d| Msg(format!("{context}: {d}")))
 }
 
@@ -436,6 +447,7 @@ pub struct VidInf {
     pub y_linesz: usize,
 }
 
+#[repr(C)]
 pub struct VidDecoder {
     fmt_ctx: *mut AVFormatContext,
     codec_ctx: *mut c_void,
@@ -446,7 +458,6 @@ pub struct VidDecoder {
     stream_idx: c_int,
     next_frame: usize,
     eof: bool,
-    hw: bool,
     ts_mul: i64,
     ts_div: i64,
     start_pts: i64,
@@ -520,7 +531,6 @@ impl VidDecoder {
                 stream_idx: idx,
                 next_frame: 0,
                 eof: false,
-                hw: false,
                 ts_mul,
                 ts_div,
                 start_pts,
@@ -533,13 +543,13 @@ impl VidDecoder {
             let mut hw_device_ctx: *mut c_void = null_mut();
             if av_hwdevice_ctx_create(
                 addr_of_mut!(hw_device_ctx),
-                AV_HWDEVICE_TYPE_VULKAN,
+                AV_HWDEVICE_TYPE_HW,
                 null(),
                 null_mut(),
                 0,
             ) < 0
             {
-                return Err(ff_err("hwdec: vulkan device creation failed"));
+                return Err(ff_err("hwdec: device creation failed"));
             }
 
             let cpath = CString::new(path.to_str().unwrap_unchecked()).unwrap_unchecked();
@@ -564,8 +574,23 @@ impl VidDecoder {
             let stream = *(*fmt_ctx).streams.add(idx as usize);
             let par = &*(*stream).codecpar;
 
-            if par.codec_id == AV_CODEC_ID_AV1 {
-                let native = avcodec_find_decoder_by_name(c"av1".as_ptr());
+            #[cfg(feature = "cuda")]
+            let native_name = match par.codec_id {
+                AV_CODEC_ID_H264 => c"h264_cuvid".as_ptr(),
+                AV_CODEC_ID_VC1 => c"vc1_cuvid".as_ptr(),
+                AV_CODEC_ID_VP9 => c"vp9_cuvid".as_ptr(),
+                AV_CODEC_ID_HEVC => c"hevc_cuvid".as_ptr(),
+                AV_CODEC_ID_AV1 => c"av1_cuvid".as_ptr(),
+                _ => null(),
+            };
+            #[cfg(not(feature = "cuda"))]
+            let native_name = if par.codec_id == AV_CODEC_ID_AV1 {
+                c"av1".as_ptr()
+            } else {
+                null()
+            };
+            if !native_name.is_null() {
+                let native = avcodec_find_decoder_by_name(native_name);
                 if !native.is_null() {
                     dec = native;
                 }
@@ -602,7 +627,6 @@ impl VidDecoder {
                 stream_idx: idx,
                 next_frame: 0,
                 eof: false,
-                hw: true,
                 ts_mul,
                 ts_div,
                 start_pts,
@@ -615,50 +639,13 @@ impl VidDecoder {
     }
 
     #[inline]
-    fn got_frame(&mut self) -> *const VidFrame {
-        self.next_frame += 1;
-        if self.hw {
-            unsafe { av_hwframe_transfer_data(self.sw_frame, self.frame, 0) };
-            self.sw_frame
-        } else {
-            self.frame
-        }
+    pub fn dec_next_hw(&mut self) -> *const VidFrame {
+        unsafe { xav_dec_next_hw(&raw mut *self) }
     }
 
+    #[inline]
     pub fn dec_next(&mut self) -> *const VidFrame {
-        unsafe {
-            loop {
-                let ret = avcodec_receive_frame(self.codec_ctx, self.frame);
-                if ret == 0 {
-                    return self.got_frame();
-                }
-                if ret == AVERROR_EOF {
-                    self.eof = true;
-                    return self.frame.cast();
-                }
-
-                loop {
-                    let r = av_read_frame(self.fmt_ctx, self.pkt);
-                    if r < 0 {
-                        avcodec_send_packet(self.codec_ctx, null());
-                        break;
-                    }
-                    if (*self.pkt).stream_index != self.stream_idx {
-                        av_packet_unref(self.pkt);
-                        continue;
-                    }
-                    let s = avcodec_send_packet(self.codec_ctx, self.pkt);
-                    av_packet_unref(self.pkt);
-                    if s != AVERROR_EAGAIN {
-                        break;
-                    }
-                    let r2 = avcodec_receive_frame(self.codec_ctx, self.frame);
-                    if r2 == 0 {
-                        return self.got_frame();
-                    }
-                }
-            }
-        }
+        unsafe { xav_dec_next(&raw mut *self) }
     }
 
     #[inline]
@@ -801,7 +788,7 @@ fn dec_first_frame(
     unsafe {
         let mut codec_ctx = avcodec_alloc_context3(dec);
         avcodec_parameters_to_context(codec_ctx, par);
-        let thr = available_parallelism().unwrap_unchecked().get() as c_int;
+        let thr = available_parallelism() as c_int;
         set_thread_cnt(codec_ctx, thr);
         avcodec_open2(codec_ctx, dec, null_mut());
 

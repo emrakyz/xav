@@ -1,40 +1,45 @@
-use std::{
+use alloc::sync::Arc;
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use core::{
     fmt::{self, Write as _},
-    io::{Read, Write as _, stdout as io_stdout},
     iter::repeat_with,
-    str::{from_utf8, from_utf8_unchecked},
-    sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering::Relaxed},
+    mem::MaybeUninit,
+    str::from_utf8,
+    sync::atomic::{
+        AtomicBool, AtomicU32, AtomicU64, AtomicUsize,
+        Ordering::{Relaxed, Release},
     },
-    thread::{JoinHandle, park_timeout, sleep, spawn},
-    time::{Duration as Durat, Instant},
+    time::Duration as Durat,
 };
 
 use crate::{
     chunk::{Chunk, PRIOR_SECS},
+    clk::Mono,
     encoder::{
         Encoder,
         Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
     },
     error::eprint,
     ffms::VidInf,
+    io::{Read, Write as _, print_fmt, stdout as io_stdout},
+    sync::{Guard, Mutex},
+    thread::{JoinHandle, park_state, sleep, spawn},
 };
 
 const BAR_WIDTH: usize = 20;
-pub const INTERVAL_MS: u64 = 500;
+pub const INTERVAL_MS: u64 = 512;
 const READ_CAP: usize = 8192;
 
-use crate::util::{B, C, G, N, P, R, W, Y, assume_unreachable};
+use crate::util::{C, G, P, R, W, Y, assume_unreachable};
 
-const G_HASH: &str = "\x1b[1;92m#";
-const R_DASH: &str = "\x1b[1;91m-";
 const B_HASH: &str = "\x1b[1;94m#";
 const Y_DASH: &str = "\x1b[1;93m-";
 
 const LINE_CAP: usize = 512;
 
 #[derive(Clone)]
+#[repr(C)]
 struct Line {
     buf: [u8; LINE_CAP],
     len: usize,
@@ -46,10 +51,6 @@ impl Line {
             buf: [0; LINE_CAP],
             len: 0,
         }
-    }
-
-    fn as_str(&self) -> &str {
-        unsafe { from_utf8_unchecked(self.buf.get_unchecked(..self.len)) }
     }
 }
 
@@ -67,12 +68,43 @@ impl fmt::Write for Line {
     }
 }
 
-fn write_el(w: &mut impl fmt::Write, h: usize, m: usize) {
-    _ = write!(w, "{W}{h:02}{P}:{W}{m:02} ");
+const TAG_EMPTY: u32 = 0;
+const TAG_LIB: u32 = 1;
+#[cfg(feature = "vship")]
+const TAG_MET: u32 = 2;
+const TAG_TXT: u32 = 3;
+
+#[repr(C, align(64))]
+struct Slot {
+    tag: AtomicU32,
+    cnt: u32,
+    enced: AtomicUsize,
+    flu: AtomicUsize,
+    tot: usize,
+    idx: usize,
+    fl: usize,
+    start: u64,
+    c: f32,
+    s: f32,
+    txt: Mutex<Line>,
 }
 
-fn write_eta(w: &mut impl fmt::Write, h: usize, m: usize) {
-    _ = write!(w, "{C}, {W}-{h:02}{P}:{W}{m:02}");
+impl Slot {
+    const fn new() -> Self {
+        Self {
+            tag: AtomicU32::new(TAG_EMPTY),
+            cnt: 0,
+            enced: AtomicUsize::new(0),
+            flu: AtomicUsize::new(0),
+            tot: 0,
+            idx: 0,
+            fl: 0,
+            start: 0,
+            c: 0.0,
+            s: 0.0,
+            txt: Mutex::new(Line::new()),
+        }
+    }
 }
 
 fn write_tag(w: &mut impl fmt::Write, idx: u16, cs: Option<(f32, Option<f32>)>) {
@@ -92,93 +124,65 @@ fn write_bar(w: &mut impl fmt::Write, filled: usize, hash: &str, dash: &str) {
     }
 }
 
+unsafe extern "C" {
+    fn xav_pb_init(p: *mut ProgsBar);
+    fn xav_pb_copy(p: *mut ProgsBar, cur: usize, tot: usize);
+    fn xav_pb_au(p: *mut ProgsBar, cur: usize, tot: usize, ln: usize, ps: usize, ti: usize);
+    fn xav_pb_mon(dn: *const u8, st: *const u8, pk: *const u8, tot: usize, ln: usize, pi: usize);
+    fn xav_pb_frames(p: *mut ProgsBar, cur: usize, tot: usize, ln: usize, lb: *const u8, ll: usize);
+    fn xav_pb_fin(sl: *mut u8, prc: *mut u8);
+    fn xav_pb_draw(dw: *const Draw);
+}
+
+#[repr(C)]
 pub struct ProgsBar {
-    start: Instant,
-    last_update: Instant,
+    start_ns: u64,
+    last_ns: u64,
+    tsc_next: u64,
+    tsc_last: u64,
+    tsc_ival: u64,
+    cnt: i32,
+    stride: i32,
+    checks: u32,
 }
 
 impl ProgsBar {
     pub fn new() -> Self {
-        let now = Instant::now();
-        Self {
-            start: now,
-            last_update: now,
+        let mut s = MaybeUninit::<Self>::uninit();
+        unsafe {
+            xav_pb_init(s.as_mut_ptr());
+            s.assume_init()
         }
     }
 
     pub fn up_frames(&mut self, current: usize, tot: usize, line: usize, label: &str) {
-        if current < tot && self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
-            return;
+        unsafe {
+            xav_pb_frames(
+                &raw mut *self,
+                current,
+                tot,
+                line,
+                label.as_ptr(),
+                label.len(),
+            );
         }
-        self.last_update = Instant::now();
-
-        let elapsed = self.start.elapsed().as_secs() as usize;
-        let fps = current / elapsed.max(1);
-        let remaining = tot.saturating_sub(current);
-        let eta_secs = remaining * elapsed / current.max(1);
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-        let perc = (current * 100 / tot.max(1)).min(100);
-
-        let mut l = Line::new();
-        if line > 0 {
-            _ = write!(l, "\x1b[{line};1H\x1b[2K");
-        } else {
-            _ = write!(l, "\r\x1b[2K");
-        }
-        write_el(&mut l, elapsed / 3600, (elapsed % 3600) / 60);
-        _ = write!(l, "{W}{label}: {C}[");
-        write_bar(&mut l, filled, G_HASH, R_DASH);
-        _ = write!(l, "{C}] {W}{perc}%{C}, {Y}{fps} FPS");
-        write_eta(&mut l, eta_secs / 3600, (eta_secs % 3600) / 60);
-        _ = write!(l, "{C}, {G}{current}{C}/{R}{tot}{N}");
-        print!("{}", l.as_str());
-        _ = io_stdout().flush();
     }
 
     pub fn up_au(&mut self, current: usize, tot: usize, line: usize, pass: u8, track_id: u8) {
-        if current < tot && self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
-            return;
+        unsafe {
+            xav_pb_au(
+                &raw mut *self,
+                current,
+                tot,
+                line,
+                pass as usize,
+                track_id as usize,
+            );
         }
-        self.last_update = Instant::now();
-
-        let elapsed = self.start.elapsed().as_secs() as usize;
-        let spd = current as f32 / elapsed.max(1) as f32 / 48000.0;
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-        let perc = (current * 100 / tot.max(1)).min(100);
-        let dur = tot / 48000;
-        let (dh, dm, ds) = (dur / 3600, (dur % 3600) / 60, dur % 60);
-
-        let mut l = Line::new();
-        if line > 0 {
-            _ = write!(l, "\x1b[{line};1H\x1b[2K");
-        } else {
-            _ = write!(l, "\r\x1b[2K");
-        }
-        _ = write!(l, "{C}[{W}{track_id:02}{C}] {W}AU P{pass}: {C}[");
-        write_bar(&mut l, filled, G_HASH, R_DASH);
-        _ = write!(
-            l,
-            "{C}] {W}{perc}%{C}, {Y}{spd:.1}x{C}, {G}{dh:02}{P}:{G}{dm:02}{P}:{G}{ds:02}{N}"
-        );
-        print!("{}", l.as_str());
-        _ = io_stdout().flush();
     }
 
     pub fn up_copy(&mut self, current: usize, tot: usize) {
-        if current < tot && self.last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
-            return;
-        }
-        self.last_update = Instant::now();
-
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-        let perc = (current * 100 / tot.max(1)).min(100);
-
-        let mut l = Line::new();
-        _ = write!(l, "\r\x1b[2K{W}Source AU/Subs Read: {C}[");
-        write_bar(&mut l, filled, G_HASH, R_DASH);
-        _ = write!(l, "{C}] {W}{perc}%{N}");
-        print!("{}", l.as_str());
-        _ = io_stdout().flush();
+        unsafe { xav_pb_copy(&raw mut *self, current, tot) }
     }
 }
 
@@ -190,23 +194,27 @@ pub fn monitor_au(
     pass: u8,
     tid: u8,
 ) {
-    let mut progs = ProgsBar::new();
-    while !stop.load(Relaxed) {
-        progs.up_au(done.load(Relaxed).min(tot), tot, line, pass, tid);
-        park_timeout(Durat::from_millis(INTERVAL_MS));
+    unsafe {
+        xav_pb_mon(
+            (&raw const *done).cast(),
+            (&raw const *stop).cast(),
+            park_state(),
+            tot,
+            line,
+            usize::from(pass) | (usize::from(tid) << 8),
+        );
     }
-    progs.up_au(tot, tot, line, pass, tid);
 }
 
-fn guard(m: &Mutex<Line>) -> MutexGuard<'_, Line> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+fn guard(m: &Mutex<Line>) -> Guard<'_, Line> {
+    m.lock()
 }
 
 struct Shared {
-    boards: Vec<Mutex<Line>>,
+    boards: Vec<Slot>,
     processed: AtomicUsize,
     stop: AtomicBool,
-    start: Instant,
+    start: Mono,
     tot_chnks: usize,
     tot_frames: usize,
     fps_num: u32,
@@ -219,14 +227,19 @@ struct Shared {
 
 impl Shared {
     fn put(&self, id: usize, line: Line) {
-        if let Some(m) = self.boards.get(id) {
-            *guard(m) = line;
+        if let Some(s) = self.boards.get(id) {
+            *guard(&s.txt) = line;
+            s.tag.store(TAG_TXT, Release);
         }
     }
 
+    fn board(&self, id: usize) -> *mut Slot {
+        unsafe { (&raw const *self.boards.get_unchecked(id)).cast_mut() }
+    }
+
     fn clear(&self, id: usize) {
-        if let Some(m) = self.boards.get(id) {
-            *guard(m) = Line::new();
+        if let Some(s) = self.boards.get(id) {
+            s.tag.store(TAG_EMPTY, Release);
         }
     }
 }
@@ -266,12 +279,10 @@ impl ProgsTrack {
         let tot_frames = chnks.iter().map(|c| c.end - c.start).sum();
 
         let inner = Arc::new(Shared {
-            boards: repeat_with(|| Mutex::new(Line::new()))
-                .take(worker_cnt)
-                .collect(),
+            boards: repeat_with(Slot::new).take(worker_cnt).collect(),
             processed: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
-            start: Instant::now(),
+            start: Mono::now(),
             tot_chnks: chnks.len(),
             tot_frames,
             fps_num: inf.fps_num,
@@ -298,111 +309,102 @@ impl ProgsTrack {
             Vvenc => watch_vvenc(&inner, stderr, w),
         });
     }
+}
 
-    #[cfg(feature = "vship")]
-    pub fn show_metric_progs(
-        &self,
+#[repr(C)]
+struct Draw {
+    boards: *const u8,
+    nb: usize,
+    buf: *mut u8,
+    cmp: *const u8,
+    cfr: *const u8,
+    tsz: *const u8,
+    prc: *const u8,
+    pri: *const u8,
+    start_ns: u64,
+    tot_chnks: usize,
+    tot_frames: usize,
+    init_frames: usize,
+    fps_num: u32,
+    fps_den: u32,
+}
+
+pub struct Tracker {
+    slot: *mut Slot,
+    prc: *mut u8,
+}
+
+impl Tracker {
+    fn mk(
+        prog: &ProgsTrack,
         worker_id: usize,
         chnk_idx: u16,
-        progs: (usize, usize),
-        fps: f32,
-        crf_score: (f32, Option<f32>),
-    ) {
-        let (current, tot) = progs;
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-        let perc = (current * 100 / tot.max(1)).min(100);
-
-        let mut line = Line::new();
-        write_tag(&mut line, chnk_idx, Some(crf_score));
-        _ = write!(line, " [");
-        write_bar(&mut line, filled, G_HASH, R_DASH);
-        _ = write!(
-            line,
-            "{C}] {W}{perc:3}%{C}, {Y}{fps:6.2}{C}, {G}{current:3}{C}/{R}{tot:3}"
-        );
-
-        self.inner.put(worker_id, line);
-    }
-
-    pub fn up_lib_enc(
-        &self,
-        worker_id: usize,
-        chnk_idx: u16,
-        progs: (usize, usize),
-        fps: f32,
-        frames_delta: Option<usize>,
+        tot: usize,
+        track_frames: bool,
         crf_score: Option<(f32, Option<f32>)>,
-    ) {
-        let (current, tot) = progs;
-        let filled = (BAR_WIDTH * current / tot.max(1)).min(BAR_WIDTH);
-        let perc = (current * 100 / tot.max(1)).min(100);
-
-        let mut line = Line::new();
-        write_tag(&mut line, chnk_idx, crf_score);
-        _ = write!(line, " {P}[");
-        write_bar(&mut line, filled, B_HASH, Y_DASH);
-        _ = write!(
-            line,
-            "{P}] {W}{perc:3}%{C}, {Y}{fps:6.2}{C}, {G}{current:3}{C}/{R}{tot:3}"
-        );
-
-        if let Some(d) = frames_delta {
-            self.inner.processed.fetch_add(d, Relaxed);
+        tag: u32,
+    ) -> Self {
+        let (c, s, fl) = match crf_score {
+            Some((c, Some(s))) => (c, s, 3),
+            Some((c, None)) => (c, 0.0, 1),
+            None => (0.0, 0.0, 0),
+        };
+        let slot = prog.inner.board(worker_id);
+        unsafe {
+            (*slot).cnt = u32::from(track_frames);
+            (*slot).enced.store(0, Relaxed);
+            (*slot).flu.store(0, Relaxed);
+            (*slot).tot = tot;
+            (*slot).idx = usize::from(chnk_idx);
+            (*slot).fl = fl;
+            (*slot).start = Mono::now().raw();
+            (*slot).c = c;
+            (*slot).s = s;
+            (*slot).tag.store(tag, Release);
         }
-        self.inner.put(worker_id, line);
+        Self {
+            slot,
+            prc: (&raw const prog.inner.processed).cast_mut().cast(),
+        }
     }
 
-    pub fn clear_lib_enc(&self, worker_id: usize) {
-        self.inner.clear(worker_id);
-    }
-}
-
-pub struct LibEncTracker {
-    start: Instant,
-    pub enced: usize,
-    last_reported: usize,
-    pub worker_id: usize,
-    chnk_idx: u16,
-    tot: usize,
-    track_frames: bool,
-    crf_score: Option<(f32, Option<f32>)>,
-}
-
-impl LibEncTracker {
     pub fn new(
+        prog: &ProgsTrack,
         worker_id: usize,
         chnk_idx: u16,
         tot: usize,
         track_frames: bool,
         crf_score: Option<(f32, Option<f32>)>,
     ) -> Self {
-        Self {
-            start: Instant::now(),
-            enced: 0,
-            last_reported: 0,
+        Self::mk(
+            prog,
             worker_id,
             chnk_idx,
             tot,
             track_frames,
             crf_score,
-        }
+            TAG_LIB,
+        )
     }
 
-    pub fn report(&mut self, prog: &ProgsTrack) {
-        if self.enced == self.last_reported {
-            return;
-        }
-        let fps = self.enced as f32 / self.start.elapsed().as_secs_f32().max(0.001);
-        let delta = self.enced - self.last_reported;
-        self.last_reported = self.enced;
-        prog.up_lib_enc(
-            self.worker_id,
-            self.chnk_idx,
-            (self.enced, self.tot),
-            fps,
-            self.track_frames.then_some(delta),
-            self.crf_score,
-        );
+    #[cfg(feature = "vship")]
+    pub fn new_met(
+        prog: &ProgsTrack,
+        worker_id: usize,
+        chnk_idx: u16,
+        tot: usize,
+        crf_score: Option<(f32, Option<f32>)>,
+    ) -> Self {
+        Self::mk(prog, worker_id, chnk_idx, tot, false, crf_score, TAG_MET)
+    }
+
+    #[inline]
+    pub fn set(&self, n: usize) {
+        unsafe { (*self.slot).enced.store(n, Relaxed) }
+    }
+
+    pub fn finish(&self) {
+        unsafe { xav_pb_fin(self.slot.cast(), self.prc) }
     }
 }
 
@@ -414,11 +416,11 @@ fn watch_avm(inner: &Shared, rd: impl Read, w: Watch) {
         track_frames,
         crf_score,
     } = w;
-    let started = Instant::now();
+    let started = Mono::now();
     let mut lr = LineReader::new(rd, b'\n');
     let mut poc_cnt = 0;
     let mut last_poc = 0;
-    let mut last_update = Instant::now();
+    let mut last_update = Mono::now();
 
     loop {
         if !lr.fill() {
@@ -439,7 +441,7 @@ fn watch_avm(inner: &Shared, rd: impl Read, w: Watch) {
         }
 
         if last_update.elapsed() >= Durat::from_millis(INTERVAL_MS) {
-            last_update = Instant::now();
+            last_update = Mono::now();
 
             let tot = frames.max(poc_cnt);
             let fps = poc_cnt as f32 / started.elapsed().as_secs_f32().max(0.001);
@@ -521,11 +523,11 @@ fn watch_vvenc(inner: &Shared, rd: impl Read, w: Watch) {
         track_frames,
         crf_score,
     } = w;
-    let started = Instant::now();
+    let started = Mono::now();
     let mut lr = LineReader::new(rd, b'\n');
     let mut poc_cnt = 0;
     let mut last_poc = 0;
-    let mut last_update = Instant::now();
+    let mut last_update = Mono::now();
 
     loop {
         if !lr.fill() {
@@ -546,7 +548,7 @@ fn watch_vvenc(inner: &Shared, rd: impl Read, w: Watch) {
         }
 
         if last_update.elapsed() >= Durat::from_millis(INTERVAL_MS) {
-            last_update = Instant::now();
+            last_update = Mono::now();
 
             let tot = frames.max(poc_cnt);
             let fps = poc_cnt as f32 / started.elapsed().as_secs_f32().max(0.001);
@@ -584,7 +586,7 @@ fn watch_x265(inner: &Shared, rd: impl Read, w: Watch) {
     } = w;
     let mut lr = LineReader::new(rd, b'\r');
     let mut last_frames = 0;
-    let mut last_update = Instant::now();
+    let mut last_update = Mono::now();
 
     loop {
         if !lr.fill() {
@@ -611,7 +613,7 @@ fn watch_x265(inner: &Shared, rd: impl Read, w: Watch) {
             if last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
                 continue;
             }
-            last_update = Instant::now();
+            last_update = Mono::now();
 
             let Some((cur, fps, kbps)) = parse_x265(text) else {
                 continue;
@@ -660,76 +662,30 @@ fn parse_x265(s: &str) -> Option<(usize, f32, f32)> {
 }
 
 fn display_loop(s: &Shared) {
+    let nb = s.boards.len();
+    let mut buf: Vec<u8> = Vec::with_capacity(nb * (LINE_CAP + 64) + 1024);
+    let dw = Draw {
+        boards: s.boards.as_ptr().cast(),
+        nb,
+        buf: buf.as_mut_ptr(),
+        cmp: (&raw const *s.completed).cast(),
+        cfr: (&raw const *s.completed_frames).cast(),
+        tsz: (&raw const *s.tot_sz).cast(),
+        prc: (&raw const s.processed).cast(),
+        pri: (&raw const PRIOR_SECS).cast(),
+        start_ns: s.start.raw(),
+        tot_chnks: s.tot_chnks,
+        tot_frames: s.tot_frames,
+        init_frames: s.init_frames,
+        fps_num: s.fps_num,
+        fps_den: s.fps_den,
+    };
     loop {
         sleep(Durat::from_millis(INTERVAL_MS));
         if s.stop.load(Relaxed) {
             break;
         }
-        draw_screen(s);
+        unsafe { xav_pb_draw(&raw const dw) }
     }
-    draw_screen(s);
-}
-
-fn draw_screen(s: &Shared) {
-    print!("\x1b[u");
-
-    for m in &s.boards {
-        let snap = guard(m).clone();
-        if snap.len == 0 {
-            print!("\r\x1b[2K\n");
-        } else {
-            print!("\r\x1b[2K{}\n", snap.as_str());
-        }
-    }
-
-    print!("\r\x1b[2K\n");
-
-    let completed_frames = s.completed_frames.load(Relaxed);
-    let tot_sz = s.tot_sz.load(Relaxed);
-
-    let processed_frames = s.processed.load(Relaxed);
-    let frames_done = completed_frames.max(s.init_frames + processed_frames);
-
-    let elapsed_secs = PRIOR_SECS.load(Relaxed) as usize + s.start.elapsed().as_secs() as usize;
-    let fps = frames_done as f32 / elapsed_secs.max(1) as f32;
-    let remaining = s.tot_frames.saturating_sub(frames_done);
-    let eta_secs = remaining * elapsed_secs / frames_done.max(1);
-    let chnks_done = s.completed.load(Relaxed);
-
-    let progs = (frames_done * BAR_WIDTH / s.tot_frames.max(1)).min(BAR_WIDTH);
-    let perc = (frames_done * 100 / s.tot_frames.max(1)).min(100);
-
-    let mut agg = Line::new();
-    _ = write!(agg, "\r\x1b[2K");
-    write_el(&mut agg, elapsed_secs / 3600, (elapsed_secs % 3600) / 60);
-    _ = write!(agg, "{C}[{G}{chnks_done}{C}/{R}{}{C}] [", s.tot_chnks);
-    write_bar(&mut agg, progs, G_HASH, R_DASH);
-    _ = write!(
-        agg,
-        "{C}] {W}{perc}% {G}{frames_done}{C}/{R}{} {C}({Y}{fps:.2}",
-        s.tot_frames
-    );
-    if eta_secs >= 99 * 3600 {
-        _ = write!(agg, "{C}, {W}-99:99");
-    } else {
-        write_eta(&mut agg, eta_secs / 3600, (eta_secs % 3600) / 60);
-    }
-    _ = write!(agg, "{C}, ");
-    if completed_frames > 0 {
-        let dur = completed_frames as f32 * s.fps_den as f32 / s.fps_num as f32;
-        let kbps = tot_sz as f32 * 8.0 / dur / 1000.0;
-        let tot_dur = s.tot_frames as f32 * s.fps_den as f32 / s.fps_num as f32;
-        let est_sz = kbps * tot_dur * 1000.0 / 8.0;
-        _ = write!(agg, "{B}{kbps:.0}k{C}, ");
-        if est_sz > 1_000_000_000.0 {
-            _ = write!(agg, "{R}{:.1}g", est_sz / 1_000_000_000.0);
-        } else {
-            _ = write!(agg, "{R}{:.1}m", est_sz / 1_000_000.0);
-        }
-    } else {
-        _ = write!(agg, "{B}0k{C}, {R}0m");
-    }
-    _ = writeln!(agg, "{C}{N})");
-    print!("{}", agg.as_str());
-    _ = io_stdout().flush();
+    unsafe { xav_pb_draw(&raw const dw) }
 }

@@ -1,12 +1,18 @@
-use std::{fs::metadata, path::Path, time::Instant};
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
 
+#[cfg(all(target_os = "linux", not(test)))]
+use crate::fmath::{FloatExt as _, Powf as _};
 use crate::{
     dav1d::Dav1dDec,
     enc::probe_path,
     error::fatal,
     ffms::VidDecoder,
+    fs::metadata,
     interp::{fc_spline, lerp, pchip},
+    path::Path,
     pipeline::{MetricProgs, Pipeline},
+    progs::Tracker,
     vship::VshipProcessor,
     worker::WorkPkg,
 };
@@ -46,7 +52,7 @@ fn prep_dav1d(d: &mut ProbeDec, pkg: &WorkPkg, _: &Path, _: u16, _: f32, _: &str
 
 fn prep_ff(d: &mut ProbeDec, _: &WorkPkg, dir: &Path, idx: u16, crf: f32, ext: &str) -> u64 {
     let pp = probe_path(dir, idx, crf, ext);
-    let sz = metadata(&pp).map_or(0, |m| m.len());
+    let sz = metadata(&pp).unwrap_or(0);
     d.vid = Some(VidDecoder::new(&pp, d.threads).unwrap_or_else(|e| fatal(e)));
     sz
 }
@@ -149,7 +155,13 @@ macro_rules! calc_metric_impl {
 
             let mut scores = Vec::with_capacity(pkg.frame_cnt);
             let frame_sz = pipe.frame_sz;
-            let start = Instant::now();
+            let tk = Tracker::new_met(
+                mp.prog,
+                mp.slot,
+                pkg.chnk.idx,
+                pkg.frame_cnt,
+                Some((mp.crf, mp.last_score)),
+            );
 
             let pix_sz = if $is_10b { 2 } else { 1 };
             let y_sz = pipe.final_w * pipe.final_h * pix_sz;
@@ -159,15 +171,7 @@ macro_rules! calc_metric_impl {
 
             macro_rules! process_frame {
                 ($frame_idx: expr) => {{
-                    let elapsed = start.elapsed().as_secs_f32().max(0.001);
-                    let fps = ($frame_idx + 1) as f32 / elapsed;
-                    mp.prog.show_metric_progs(
-                        mp.slot,
-                        pkg.chnk.idx,
-                        ($frame_idx + 1, pkg.frame_cnt),
-                        fps,
-                        (mp.crf, mp.last_score),
-                    );
+                    tk.set($frame_idx + 1);
 
                     let input_frame = &pkg.yuv[$frame_idx * frame_sz..($frame_idx + 1) * frame_sz];
                     let (output_planes, output_strides) = frame_fn(dec);

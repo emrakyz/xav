@@ -1,21 +1,24 @@
+use alloc::borrow::Cow;
+#[cfg(target_os = "linux")]
+use alloc::{borrow::ToOwned as _, string::String, vec::Vec};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::_mm_sfence;
-use std::{
-    borrow::Cow,
-    num::NonZeroUsize,
-    path::{Path, PathBuf},
+use core::{
     sync::atomic::{AtomicUsize, Ordering},
-    thread::{available_parallelism, scope, sleep},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
+#[cfg(all(target_os = "linux", not(test)))]
+use crate::fmath::FloatExt as _;
 use crate::{
     audio::AuStream,
     byte_range::ByteRange,
+    clk::realtime,
     copy::{Chapter, Stream, codec_map},
     encoder::Encoder::{self, Vvenc, X264, X265},
     error::Xerr,
     ffms::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, VidInf},
+    io::print_fmt,
     lang::lang_name,
     mkv::{
         block_group::build_block_group,
@@ -36,8 +39,10 @@ use crate::{
     nal_parse::{NalSink, ParamSets, parse_h264, parse_h265, parse_h266},
     obu_parse::parse,
     opus::{read, version as opus_version},
+    path::{Path, PathBuf},
     platform::{Mmap, write_mux},
     progs::ProgsBar,
+    thread::{available_parallelism, scope, sleep},
 };
 
 #[inline]
@@ -102,11 +107,8 @@ const fn mix(state: &mut u64) -> u64 {
 }
 
 fn now_utc() -> (i64, String) {
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = d.as_secs();
-    let date_ns = (secs as i64 - 978_307_200) * 1_000_000_000 + i64::from(d.subsec_nanos());
+    let (secs, nsec) = realtime();
+    let date_ns = (secs as i64 - 978_307_200) * 1_000_000_000 + i64::from(nsec);
 
     let (rem, days) = (secs % 86_400, (secs / 86_400) as i64);
     let (hh, mm, ss) = (rem / 3600, (rem / 60) % 60, rem % 60);
@@ -922,7 +924,6 @@ impl Mux<'_> {
             .map(|c| c.len())
             .sum();
         let nthr = available_parallelism()
-            .map_or(1, NonZeroUsize::get)
             .min(c1 - c0)
             .min((bytes / MIN_PAR).max(1));
 

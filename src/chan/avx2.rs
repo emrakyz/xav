@@ -1,6 +1,9 @@
 unsafe extern "C" {
+    #[cfg(test)]
     fn xav_spsc_send(r: *const SpscRing, x: u64);
+    #[cfg(test)]
     fn xav_spsc_recv(r: *const SpscRing) -> u64;
+    #[cfg(test)]
     fn xav_spsc_close(r: *const SpscRing);
     fn xav_spmc_send(r: *const SeqRing, x: u64);
     fn xav_spmc_recv(r: *const SeqRing) -> u64;
@@ -19,14 +22,17 @@ unsafe extern "C" {
     fn xav_sem_release(s: *const Semaphore);
 }
 
+#[cfg(test)]
 #[inline(always)]
 pub unsafe fn spsc_send(r: *const SpscRing, x: u64) {
     unsafe { xav_spsc_send(r, x) };
 }
+#[cfg(test)]
 #[inline(always)]
 pub unsafe fn spsc_recv(r: *const SpscRing) -> u64 {
     unsafe { xav_spsc_recv(r) }
 }
+#[cfg(test)]
 #[cold]
 #[inline(never)]
 pub unsafe fn spsc_close(r: *const SpscRing) {

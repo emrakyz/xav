@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_void};
+use core::ffi::{c_char, c_void};
 
 pub const EB_ERROR_NONE: i32 = 0;
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;

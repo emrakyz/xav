@@ -1,4 +1,5 @@
-use std::{io::Write as _, process::ChildStdin};
+#[cfg(all(target_os = "linux", feature = "vship"))]
+use alloc::vec::Vec;
 
 use crate::{
     enc::get_frame,
@@ -13,10 +14,12 @@ use crate::{
         },
         VidInf, nv12_10b, nv12_10b_rem,
     },
+    io::Write as _,
     pack::{
         PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, conv_10b, conv_10b_rem,
         unpack_10b, unpack_10b_rem,
     },
+    process::ChildStdin,
 };
 #[cfg(feature = "vship")]
 use crate::{

@@ -1,4 +1,4 @@
-use std::{
+use core::{
     ffi::{c_int, c_void},
     hint::cold_path,
     mem::zeroed,

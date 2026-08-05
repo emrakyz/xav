@@ -1,7 +1,8 @@
-use std::{
-    borrow::Cow,
-    ffi::{CStr, CString, c_int},
-    path::Path,
+use alloc::{borrow::Cow, ffi::CString};
+#[cfg(target_os = "linux")]
+use alloc::{borrow::ToOwned as _, string::String, vec::Vec};
+use core::{
+    ffi::{CStr, c_int},
     ptr::{null, null_mut},
     slice::from_raw_parts,
 };
@@ -16,6 +17,7 @@ use crate::{
         avformat_find_stream_info, avformat_open_input, dict_get, is_matroska, stream_lang,
     },
     mkv::read::{chapter_langs, track_langs},
+    path::Path,
     platform::Mmap,
     progs::ProgsBar,
 };

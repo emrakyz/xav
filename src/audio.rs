@@ -1,30 +1,34 @@
-use std::{
-    borrow::Cow,
-    fs::{File, write},
+use alloc::borrow::Cow;
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use core::{
     hint::cold_path,
-    io::{BufWriter, Write as _},
     iter::repeat_with,
     mem::take,
-    path::{Path, PathBuf},
     sync::atomic::{
         AtomicBool, AtomicUsize,
         Ordering::{Acquire, Relaxed, Release},
     },
-    thread::{available_parallelism, scope, sleep},
     time::Duration,
 };
 
+#[cfg(all(target_os = "linux", not(test)))]
+use crate::fmath::Powf as _;
 use crate::{
     audio::{
         AuBrate::{Auto, Fixed, Norm},
         AuStreams::{All, Specific},
     },
-    error::{Xerr, Xerr::Msg},
+    error::Xerr,
     ffms::get_au_streams,
+    fs::{File, write},
+    io::{BufWriter, Write as _},
     lavf::AuDecoder,
     norm::{downmix, measure},
     opus::{Encoder, FRAME},
+    path::{Path, PathBuf},
     progs::{ProgsBar, monitor_au},
+    thread::{ScopedJoinHandle, available_parallelism, scope, sleep},
 };
 
 #[derive(Clone, Copy)]
@@ -208,7 +212,7 @@ fn par_decode(
     let out_ch = 2;
     let tid = stream.index;
     let total: usize = ranges.iter().map(|&(s, e)| (e - s) as usize).sum();
-    let nproc = unsafe { available_parallelism().unwrap_unchecked().get() };
+    let nproc = available_parallelism();
 
     let mut regions: Vec<(i64, i64, bool, bool)> = Vec::new();
     let mut rmeta: Vec<(usize, usize, i64, i64)> = Vec::new();
@@ -269,9 +273,7 @@ fn par_decode(
             }));
         }
         let mon = s.spawn(|| monitor_au(&done, &fin, total, progs_line, 1, tid));
-        let res = handles
-            .into_iter()
-            .try_for_each(|h| h.join().map_err(|_e| Msg("Audio thread panicked".into()))?);
+        let res = handles.into_iter().try_for_each(ScopedJoinHandle::join);
         fin.store(true, Relaxed);
         mon.thread().unpark();
         res
@@ -312,7 +314,7 @@ fn fused_encode(
     let ch = usize::from(stream.channels);
     let tid = stream.index;
     let total: usize = ranges.iter().map(|&(s, e)| (e - s) as usize).sum();
-    let nproc = unsafe { available_parallelism().unwrap_unchecked().get() };
+    let nproc = available_parallelism();
 
     let mut units: Vec<(i64, i64, bool, usize)> = Vec::new();
     for &(rs, re) in ranges {
@@ -439,9 +441,7 @@ fn fused_encode(
         if enc_res.is_err() {
             failed.store(true, Relaxed);
         }
-        handles
-            .into_iter()
-            .try_for_each(|h| h.join().map_err(|_e| Msg("Audio thread panicked".into()))?)?;
+        handles.into_iter().try_for_each(ScopedJoinHandle::join)?;
         enc_res
     })
 }
@@ -470,7 +470,7 @@ fn chunk_encode(
     let failed = AtomicBool::new(false);
     let fin = AtomicBool::new(false);
     let samples = nframes * FRAME;
-    let nthreads = unsafe { available_parallelism().unwrap_unchecked().get() }.min(k);
+    let nthreads = available_parallelism().min(k);
     let seg = Seg {
         keep_off: 0,
         nkeep: nframes,
@@ -502,9 +502,7 @@ fn chunk_encode(
             }));
         }
         let mon = s.spawn(|| monitor_au(&done, &fin, samples, progs_line, 2, tid));
-        let res = handles
-            .into_iter()
-            .try_for_each(|h| h.join().map_err(|_e| Msg("Audio thread panicked".into()))?);
+        let res = handles.into_iter().try_for_each(ScopedJoinHandle::join);
         fin.store(true, Relaxed);
         mon.thread().unpark();
         res
@@ -576,7 +574,7 @@ fn par_encode_seg(
     let base = results.as_mut_ptr() as usize;
     let counter = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
-    let nthreads = unsafe { available_parallelism().unwrap_unchecked().get() }.min(k);
+    let nthreads = available_parallelism().min(k);
     let seg = Seg {
         keep_off,
         nkeep,
@@ -606,9 +604,7 @@ fn par_encode_seg(
                 Ok::<(), Xerr>(())
             }));
         }
-        handles
-            .into_iter()
-            .try_for_each(|h| h.join().map_err(|_e| Msg("Audio thread panicked".into()))?)
+        handles.into_iter().try_for_each(ScopedJoinHandle::join)
     })?;
 
     let mut out = Vec::with_capacity(results.iter().map(Vec::len).sum());

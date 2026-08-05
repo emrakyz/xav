@@ -1,5 +1,6 @@
-use std::{
-    ffi::{CStr, CString, c_void},
+use alloc::ffi::CString;
+use core::{
+    ffi::{CStr, c_void},
     mem::{MaybeUninit, zeroed},
     ops::{Deref, DerefMut},
     ptr::{NonNull, from_mut, null, null_mut},

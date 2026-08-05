@@ -3,7 +3,12 @@ include!("avx512.rs");
 #[cfg(all(target_feature = "avx2", not(target_feature = "avx512bw")))]
 include!("avx2.rs");
 
-use std::hint::cold_path;
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use core::hint::cold_path;
+
+#[cfg(all(target_os = "linux", not(test)))]
+use crate::fmath::{FloatExt as _, Log10 as _};
 
 #[inline(always)]
 pub fn downmix(src: &[f32], dst: &mut [f32], ch: usize, n: usize) {

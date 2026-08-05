@@ -10,4 +10,5 @@
 !Cargo.toml
 !LICENSE
 !README.md
+!vship.mk
 !.gitignore

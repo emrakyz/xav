@@ -1,26 +1,52 @@
+#![feature(thread_local)]
+#![cfg_attr(all(target_os = "linux", not(test)), no_std)]
+#![cfg_attr(all(target_os = "linux", not(test)), no_main)]
+
+#[macro_use]
+extern crate alloc;
+
+#[cfg(all(target_os = "linux", not(test), feature = "vship"))]
+use alloc::borrow::ToOwned as _;
+#[cfg(all(target_os = "linux", not(test)))]
+use alloc::{
+    string::{String, ToString as _},
+    vec::Vec,
+};
+#[cfg(all(target_os = "linux", not(test)))]
+use core::ffi::CStr;
+use core::{
+    hash::{Hash as _, Hasher as _},
+    mem::transmute_copy,
+    sync::atomic::Ordering::Relaxed,
+    time::Duration as Durat,
+};
+#[cfg(any(not(target_os = "linux"), test))]
+use std::{env::args as env_args, panic::set_hook};
+
 #[cfg(unix)]
-use std::process::{Command, Stdio};
-use std::{
-    collections::hash_map::DefaultHasher,
-    env::args as env_args,
+use crate::process::{Command, Stdio};
+#[cfg(all(target_os = "linux", not(test)))]
+use crate::sync::OnceLock;
+use crate::{
+    clk::Mono,
+    encoder::Encoder::{Avm, SvtAv1},
+    error::Xerr::Help,
     fs::{
         create_dir_all, read_to_string as read_to_str, remove_dir_all as rm_dir_all,
         remove_file as rm_file, write as write_to,
     },
-    hash::{Hash as _, Hasher as _},
-    io::{Write as _, stdout},
-    mem::transmute_copy,
-    panic::set_hook,
+    io::{Write as _, print_fmt, println_fmt, stdout},
     path::{Path, PathBuf},
-    sync::atomic::Ordering::Relaxed,
     thread::available_parallelism,
-    time::{Duration as Durat, Instant},
 };
 
-use crate::{
-    encoder::Encoder::{Avm, SvtAv1},
-    error::Xerr::Help,
-};
+macro_rules! print {
+    ($($arg:tt)*) => { print_fmt(format_args!($($arg)*)) };
+}
+macro_rules! println {
+    () => { print_fmt(format_args!("\n")) };
+    ($($arg:tt)*) => { println_fmt(format_args!($($arg)*)) };
+}
 
 #[cfg(feature = "vship")]
 mod atofu;
@@ -28,6 +54,7 @@ mod audio;
 mod byte_range;
 mod chan;
 mod chunk;
+mod clk;
 mod copy;
 mod crop;
 #[cfg(feature = "vship")]
@@ -37,8 +64,14 @@ mod enc;
 mod encoder;
 mod error;
 mod ffms;
+#[cfg(all(target_os = "linux", not(test)))]
+mod fmath;
+mod fs;
+#[cfg(target_os = "linux")]
+mod galloc;
 #[cfg(feature = "vship")]
 mod interp;
+mod io;
 mod lang;
 mod lavf;
 mod mkv;
@@ -51,14 +84,19 @@ mod norm;
 mod obu_parse;
 mod opus;
 mod pack;
+mod path;
 pub mod pipeline;
+mod plat;
 mod platform;
+mod process;
 mod progs;
 mod scd;
 mod svt;
 mod svterr;
+mod sync;
 #[cfg(target_os = "linux")]
 mod sys;
+mod thread;
 #[cfg(feature = "vship")]
 mod tq;
 #[cfg(target_os = "linux")]
@@ -91,7 +129,7 @@ use y4m::{PipeReader, init_pipe, is_pipe};
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
-use util::{B, C, G, N, P, R, W, Y};
+use util::{B, C, Fnv, G, N, P, R, W, Y};
 
 #[derive(Clone)]
 pub struct Args {
@@ -136,25 +174,26 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-e {P}┃ {C}--encoder    {W}Encoder used: {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
-    println!("{C}-w {P}┃ {C}--worker     {W}Encoder count");
-    println!("{C}-b {P}┃ {C}--buff       {W}Extra chunks to pre-decode");
+    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
+    println!("{C}-w {P}┃ {C}--worker     {W}Parallelism");
+    println!("{C}-b {P}┃ {C}--buff       {W}Chunks to buffer");
     println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
-    println!("{C}-s {P}┃ {C}--sc         {W}Specify SCD file");
+    println!("{C}-s {P}┃ {C}--sc         {W}SCD file");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
-    println!("   {P}┃ {C}--hwdec      {W}Use GPU decode");
-    println!("{C}-r {P}┃ {C}--range      {W}Trim and splice: {G}\"10-20,90-100\"");
+    println!("   {P}┃ {C}--hwdec      {W}GPU decode");
+    println!("{C}-r {P}┃ {C}--range      {W}Trim/splice: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
-    println!("   {P}┃ {C}--guide      {W}Fullscreen and Nerd Fonts recommended");
     #[cfg(feature = "vship")]
     {
         println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
-        println!("{C}-m {P}┃ {C}--mode       {W}TQ Metric stat: {G}mean {W}or pN%");
-        println!("{C}-f {P}┃ {C}--qp         {W}CRF range for TQ: {G}crf-crf{W}");
-        println!("{C}-v {P}┃ {C}--vship      {W}Metric worker count");
-        println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file. Set screen name as {R}xav{W}");
-        println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)");
+        println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}or pN%");
+        println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
+        println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
+        println!("{C}-d {P}┃ {C}--display    {W}CVVDP JSON. Set screen name as {R}xav{W}");
+        println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for probes ({R}NOT RECOMMENDED{W}; expert-only)");
     }
+    println!("");
+    println!("   {P}┃ {C}--guide      {W}Use fullscreen & Nerd Fonts");
 }
 
 fn print_guide() {
@@ -434,7 +473,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
 
 fn hash_inp(path: &Path) -> String {
     let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut hasher = DefaultHasher::new();
+    let mut hasher = Fnv::new();
     canon.hash(&mut hasher);
     format!("{:x}", hasher.finish())
 }
@@ -600,7 +639,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let inf = get_vidinf(&args.inp)?;
 
-    let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
+    let thr = available_parallelism() as i32;
     let conf = CropConf {
         sample_cnt: 13,
         min_black_pix: 2,
@@ -649,13 +688,13 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     if args.hwdec {
         let mut dec = VidDecoder::new_hw(&args.inp, 1)?;
-        inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };
+        inf.y_linesz = unsafe { (*dec.dec_next_hw()).linesize[0] as usize };
     }
     args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwdec, tq));
 
     let prior_secs = get_resume(&work_dir).map_or(0, |r| r.prior_secs);
     init_elapsed(prior_secs);
-    let enc_start = Instant::now();
+    let enc_start = Mono::now();
     enc_all(&chnks, &inf, &args, &args.inp, &work_dir, pipe_reader);
     let enc_time = enc_start.elapsed() + Durat::from_secs(prior_secs);
 
@@ -715,7 +754,7 @@ fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_t
     let (final_width, final_height) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
 
     println!(
-    "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
+        "\n{P}┏━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n\
 {P}┃ {G}  {Y}DONE   {P}┃ {R}{:<30.30} {G} {G}{:<30.30} {P}┃\n\
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
 {P}┃ {Y}Size      {P}┃ {R}{:<98} {P}┃\n\
@@ -724,29 +763,50 @@ fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_t
 {P}┣━━━━━━━━━━━╋━━━━━━━━━━━┻━━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫\n\
 {P}┃ {Y}Time      {P}┃ {W}{:02}{C}:{W}{:02}{C}:{W}{:02} {B}@ {:>6.2} fps{:<42} {P}┃\n\
 {P}┗━━━━━━━━━━━┻━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛{N}",
-    unsafe { args.inp.file_name().unwrap_unchecked() }.to_string_lossy(),
-    unsafe { args.out.file_name().unwrap_unchecked() }.to_string_lossy(),
-    format!("{} {C}({:.0} kb/s) {G} {G}{} {C}({:.0} kb/s) {}{} {:.2}%",
-        fmt_sz(inp_sz), inp_br, fmt_sz(out_sz), out_br, change_color, arrow, change.abs()),
-    final_width, final_height, fps_rate, dh, dm, ds, "",
-    eh, em, es, enc_spd, ""
-);
+        unsafe { args.inp.file_name().unwrap_unchecked() }.to_string_lossy(),
+        unsafe { args.out.file_name().unwrap_unchecked() }.to_string_lossy(),
+        format!(
+            "{} {C}({:.0} kb/s) {G} {G}{} {C}({:.0} kb/s) {}{} {:.2}%",
+            fmt_sz(inp_sz),
+            inp_br,
+            fmt_sz(out_sz),
+            out_br,
+            change_color,
+            arrow,
+            change.abs()
+        ),
+        final_width,
+        final_height,
+        fps_rate,
+        dh,
+        dm,
+        ds,
+        "",
+        eh,
+        em,
+        es,
+        enc_spd,
+        ""
+    );
 }
 
-fn main() -> Result<(), Xerr> {
+fn run() -> Result<(), Xerr> {
     let args = match parse_args() {
         Ok(a) => a,
         Err(Help) => return Ok(()),
         Err(e) => return Err(e),
     };
-    let out = args.out.clone();
 
-    set_hook(Box::new(move |panic_info| {
-        print!("\x1b[?25h\x1b[?1049l");
-        _ = stdout().flush();
-        eprint(format_args!("{panic_info}"));
-        eprint(format_args!("{}, FAIL", out.display()));
-    }));
+    #[cfg(any(not(target_os = "linux"), test))]
+    {
+        let out = args.out.clone();
+        set_hook(Box::new(move |panic_info| {
+            print!("\x1b[?25h\x1b[?1049l");
+            _ = stdout().flush();
+            eprint(format_args!("{panic_info}"));
+            eprint(format_args!("{}, FAIL", out.display()));
+        }));
+    }
 
     let h: usize = unsafe { transmute_copy(&(exit_restore as extern "C" fn(i32))) };
     signal(SIGINT, h);
@@ -760,4 +820,38 @@ fn main() -> Result<(), Xerr> {
 
     restore();
     Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+static ARGS: OnceLock<Vec<String>> = OnceLock::new();
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn env_args() -> impl Iterator<Item = String> {
+    unsafe { ARGS.get().unwrap_unchecked() }.iter().cloned()
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+#[unsafe(no_mangle)]
+extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
+    let mut v = Vec::with_capacity(argc as usize);
+    for i in 0..argc as usize {
+        v.push(
+            unsafe { CStr::from_ptr((*argv.add(i)).cast()) }
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    _ = ARGS.set(v);
+    match run() {
+        Ok(()) => 0,
+        Err(e) => {
+            eprint(format_args!("{e}"));
+            1
+        }
+    }
+}
+
+#[cfg(any(not(target_os = "linux"), test))]
+fn main() -> Result<(), Xerr> {
+    run()
 }

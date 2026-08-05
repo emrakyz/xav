@@ -1,4 +1,6 @@
-use std::ffi::{CStr, c_char, c_int};
+#[cfg(target_os = "linux")]
+use alloc::{string::String, vec::Vec};
+use core::ffi::{CStr, c_char, c_int};
 
 use crate::{byte_range::ByteRange, error::Xerr};
 

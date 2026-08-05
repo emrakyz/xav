@@ -1,4 +1,4 @@
-use std::{
+use core::{
     ptr::copy_nonoverlapping,
     slice::{from_raw_parts, from_raw_parts_mut},
 };

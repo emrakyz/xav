@@ -37,6 +37,9 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
         if let Some(set) = set {
             let mut b = nasm_rs::Build::new();
             b.include("asm");
+            b.file("asm/dec.asm");
+            b.file("asm/pb.asm");
+            b.file("asm/pbf.asm");
             for k in [
                 "pack",
                 "unpack",
@@ -46,6 +49,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
                 "deint_nv12_10b",
                 "shift_p010",
                 "nal_scan",
+                "fmath",
             ] {
                 b.file(format!("asm/{set}/{k}.asm"));
             }
@@ -69,14 +73,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
             ] {
                 b.file(format!("asm/{set}/{k}.asm"));
             }
-            for k in [
-                "satd",
-                "satd16",
-                "satd_dc",
-                "satd16_dc",
-                "importance",
-                "importance16",
-            ] {
+            for k in ["cost", "split", "deque", "refine", "step", "run", "feed"] {
                 b.file(format!("asm/{set}/scd/{k}.asm"));
             }
             for k in ["atou", "atof", "atof2", "scan"] {
@@ -108,10 +105,12 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
             } else {
                 b.file("asm/sync/sem.asm");
                 if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+                    b.file("asm/vdso.asm");
                     b.file("asm/sync/ring_spsc.asm");
                     b.file("asm/sync/ring_spmc.asm");
                     b.file("asm/sync/ring_mpmc.asm");
                     b.file("asm/sync/ring_mpsc.asm");
+                    b.file("asm/sync/thread.asm");
                 }
             }
             b.compile("xavasm")?;
@@ -129,14 +128,18 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     println!("cargo:rustc-link-search=native={home}/.local/src/FFmpeg/install/lib");
     println!("cargo:rustc-link-search=native={home}/.local/src/dav1d/build/src");
-    println!("cargo:rustc-link-search=native={home}/.local/src/vulkan/install/lib");
 
     println!("cargo:rustc-link-lib=static=swresample");
     println!("cargo:rustc-link-lib=static=avformat");
     println!("cargo:rustc-link-lib=static=avcodec");
     println!("cargo:rustc-link-lib=static=avutil");
-    println!("cargo:rustc-link-lib=static=vulkan");
     println!("cargo:rustc-link-lib=static=dav1d");
+
+    #[cfg(not(feature = "cuda"))]
+    {
+        println!("cargo:rustc-link-search=native={home}/.local/src/vulkan/install/lib");
+        println!("cargo:rustc-link-lib=static=vulkan");
+    }
 
     fd_static_libs(
         &[format!("{home}/.local/src/opus/install/lib")],
@@ -153,17 +156,35 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     #[cfg(feature = "vship")]
     {
         let vship_dir = format!("{home}/.local/src/Vship");
-        if Path::new(&format!("{vship_dir}/libvship.a")).exists() {
-            println!("cargo:rustc-link-search=native={vship_dir}");
-            println!("cargo:rustc-link-lib=static=vship");
-        } else {
-            println!("cargo:rustc-link-lib=dylib=vship");
-            return Ok(());
+        if !Path::new(&format!("{vship_dir}/libvship.a")).exists() {
+            return Err(format!("{vship_dir}/libvship.a not found").into());
         }
-        println!("cargo:rustc-link-lib=static=stdc++");
-        println!("cargo:rustc-link-lib=static=cudart_static");
-        println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
-        println!("cargo:rustc-link-lib=dylib=cuda");
+        println!("cargo:rustc-link-search=native={vship_dir}");
+        println!("cargo:rustc-link-lib=static=vship");
+
+        #[cfg(feature = "cuda")]
+        {
+            fd_static_libs(
+                &[
+                    "/opt/cuda/lib64".to_owned(),
+                    "/usr/local/cuda/lib64".to_owned(),
+                ],
+                "libcudart_static.a",
+            );
+            println!("cargo:rustc-link-lib=static=cudart_static");
+            println!("cargo:rustc-link-lib=dylib=cuda");
+        }
+
+        println!("cargo:rustc-link-arg=-l:libstdc++.a");
+    }
+
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        let stat = env::var("CARGO_CFG_TARGET_FEATURE")
+            .is_ok_and(|f| f.split(',').any(|x| x == "crt-static"));
+        println!(
+            "cargo:rustc-link-lib={}=m",
+            if stat { "static" } else { "dylib" }
+        );
     }
     Ok(())
 }

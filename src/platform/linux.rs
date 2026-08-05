@@ -1,12 +1,14 @@
-use std::{
+use core::{
     arch::x86_64::_mm_sfence,
-    ffi::CString,
-    fs::{File, OpenOptions},
     mem::zeroed,
-    os::unix::{ffi::OsStrExt as _, io::AsRawFd as _},
-    path::Path,
     ptr::null_mut,
     slice::{from_raw_parts, from_raw_parts_mut},
+};
+use alloc::{ffi::CString, vec::Vec};
+
+use crate::{
+    fs::{File, OpenOptions},
+    path::Path,
 };
 
 use crate::{
@@ -28,7 +30,7 @@ pub struct Mmap {
 impl Mmap {
     pub fn open(path: &Path) -> Result<Self, Xerr> {
         let f = File::open(path)?;
-        let len = f.metadata()?.len() as usize;
+        let len = f.size()? as usize;
         let ptr = unsafe { mmap(null_mut(), len, PROT_READ, MAP_PRIVATE, f.as_raw_fd(), 0) };
         if (ptr as isize) < 0 {
             return Err("mmap (input chunk) failed".into());
@@ -70,9 +72,9 @@ enum Dev {
 fn classify(path: &Path) -> Result<Dev, Xerr> {
     let dir = path
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())
+        .filter(|p| !p.as_bytes().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let c = CString::new(dir.as_os_str().as_bytes())?;
+    let c = CString::new(dir.as_bytes())?;
     let ram = unsafe {
         let mut sf: Statfs = zeroed();
         if statfs(c.as_ptr(), &raw mut sf) != 0 {

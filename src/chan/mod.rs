@@ -4,7 +4,7 @@
 ))]
 include!("avx2.rs");
 
-use std::{array::from_fn, cell::UnsafeCell, sync::atomic::AtomicU32};
+use core::{array::from_fn, cell::UnsafeCell, sync::atomic::AtomicU32};
 
 const CAP: u32 = 128;
 

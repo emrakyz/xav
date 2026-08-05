@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+
 use super::{
     block_group::block_group_size,
     cluster::cluster_size,

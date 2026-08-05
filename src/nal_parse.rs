@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+
 use crate::{byte_range::ByteRange, nal_scan::find_start_code};
 
 #[derive(Default)]

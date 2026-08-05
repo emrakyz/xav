@@ -1,4 +1,4 @@
-use std::fmt::Arguments;
+use core::fmt::Arguments;
 
 use crate::{
     error::Xerr,
@@ -260,7 +260,7 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
                 key,
                 val,
                 0,
-                7,
+                10,
                 format_args!(
                     "{Y}--preset should be between {C}0 {Y}and {C}7\n{Y}presets 8+ are intended \
                      for real-time usage and inconsistent\npresets below 0 are intended for \

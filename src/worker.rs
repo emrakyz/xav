@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+
 use crate::chunk::Chunk;
 #[cfg(feature = "vship")]
 use crate::tq::Probe;

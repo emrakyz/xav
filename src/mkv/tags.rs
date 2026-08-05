@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use alloc::string::String;
+
 use super::{
     crc32::{CRC_ELEMENT_LEN, Crc32, patch_crc, write_crc_placeholder},
     ebml::vint_encode,

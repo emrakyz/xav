@@ -1,6 +1,7 @@
-use std::{
-    collections::HashSet, hint::cold_path, path::Path, sync::Arc, thread::available_parallelism,
-};
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use alloc::{collections::BTreeSet, sync::Arc};
+use core::hint::cold_path;
 
 use crate::{
     chan::{Semaphore, sem_acq},
@@ -28,6 +29,8 @@ use crate::{
         extr_hw_p010_raw_rem_stride,
     },
     pack::{PACK_CHUNK, calc_8b_sz, calc_packed_sz, pack_10b, pack_10b_rem, packed_row_sz},
+    path::Path,
+    thread::available_parallelism,
     util::assume_unreachable,
     worker::WorkPkg,
     y4m::PipeReader,
@@ -111,11 +114,11 @@ pub fn dec_chnks(
     path: &Path,
     inf: &VidInf,
     tx: &dyn Fn(WorkPkg),
-    skip: &HashSet<u16>,
+    skip: &BTreeSet<u16>,
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
-    let thr = unsafe { available_parallelism().unwrap_unchecked().get() as i32 };
+    let thr = available_parallelism() as i32;
     let dec = if strat.is_hw() {
         VidDecoder::new_hw(path, thr)
     } else {
@@ -534,7 +537,7 @@ macro_rules! dec_hw_pack {
             let mut dat = vec![0u8; len * fsz];
             let mut actual = len;
             for i in 0..len {
-                let frame = dec.dec_next();
+                let frame = dec.dec_next_hw();
                 if dec.is_eof() {
                     cold_path();
                     actual = eof_truncate(&mut dat, i, fsz);
@@ -626,6 +629,9 @@ fn eof_truncate(dat: &mut Vec<u8>, i: usize, fsz: usize) -> usize {
 
 macro_rules! dec_linear {
     ($name:ident, $extr_fn:ident, $ctx_ty:ty, $ctx_arg:ident) => {
+        dec_linear!($name, $extr_fn, $ctx_ty, $ctx_arg, dec_next);
+    };
+    ($name:ident, $extr_fn:ident, $ctx_ty:ty, $ctx_arg:ident, $next:ident) => {
         #[inline]
         fn $name(
             ch: &Chunk,
@@ -640,7 +646,7 @@ macro_rules! dec_linear {
             let mut dat = vec![0u8; len * fsz];
             let mut actual = len;
             for i in 0..len {
-                let frame = dec.dec_next();
+                let frame = dec.$next();
                 if dec.is_eof() {
                     cold_path();
                     actual = eof_truncate(&mut dat, i, fsz);
@@ -681,31 +687,70 @@ dec_linear!(dec_8_fast, extr_8b_fast, &VidInf, inf);
 dec_linear!(dec_8_stride, extr_8b_stride, &VidInf, inf);
 dec_linear!(dec_8_crop_fast, extr_8b_crop_fast, &CropCalc, cc);
 dec_linear!(dec_8_crop, extr_8b_crop, &CropCalc, cc);
-dec_linear!(dec_hw_nv12, extr_hw_nv12, &VidInf, inf);
-dec_linear!(dec_hw_nv12_stride, extr_hw_nv12_stride, &VidInf, inf);
-dec_linear!(dec_hw_nv12_crop, extr_hw_nv12_crop, &CropCalc, cc);
-dec_linear!(dec_hw_nv12_to10, extr_hw_nv12_to10, &VidInf, inf);
+dec_linear!(dec_hw_nv12, extr_hw_nv12, &VidInf, inf, dec_next_hw);
+dec_linear!(
+    dec_hw_nv12_stride,
+    extr_hw_nv12_stride,
+    &VidInf,
+    inf,
+    dec_next_hw
+);
+dec_linear!(
+    dec_hw_nv12_crop,
+    extr_hw_nv12_crop,
+    &CropCalc,
+    cc,
+    dec_next_hw
+);
+dec_linear!(
+    dec_hw_nv12_to10,
+    extr_hw_nv12_to10,
+    &VidInf,
+    inf,
+    dec_next_hw
+);
 dec_linear!(
     dec_hw_nv12_to10_stride,
     extr_hw_nv12_to10_stride,
     &VidInf,
-    inf
+    inf,
+    dec_next_hw
 );
-dec_linear!(dec_hw_nv12_crop_to10, extr_hw_nv12_crop_to10, &CropCalc, cc);
-dec_linear!(dec_hw_p010_raw, extr_hw_p010_raw, &VidInf, inf);
-dec_linear!(dec_hw_p010_raw_crop, extr_hw_p010_raw_crop, &CropCalc, cc);
-dec_linear!(dec_hw_p010_raw_rem, extr_hw_p010_raw_rem, &VidInf, inf);
+dec_linear!(
+    dec_hw_nv12_crop_to10,
+    extr_hw_nv12_crop_to10,
+    &CropCalc,
+    cc,
+    dec_next_hw
+);
+dec_linear!(dec_hw_p010_raw, extr_hw_p010_raw, &VidInf, inf, dec_next_hw);
+dec_linear!(
+    dec_hw_p010_raw_crop,
+    extr_hw_p010_raw_crop,
+    &CropCalc,
+    cc,
+    dec_next_hw
+);
+dec_linear!(
+    dec_hw_p010_raw_rem,
+    extr_hw_p010_raw_rem,
+    &VidInf,
+    inf,
+    dec_next_hw
+);
 dec_linear!(
     dec_hw_p010_raw_rem_stride,
     extr_hw_p010_raw_rem_stride,
     &VidInf,
-    inf
+    inf,
+    dec_next_hw
 );
 dec_linear!(
     dec_hw_p010_raw_crop_rem,
     extr_hw_p010_raw_crop_rem,
     &CropCalc,
-    cc
+    cc,
+    dec_next_hw
 );
 
 #[inline]
@@ -739,7 +784,7 @@ pub fn dec_pipe(
     reader: &mut PipeReader,
     inf: &VidInf,
     tx: &dyn Fn(WorkPkg),
-    skip: &HashSet<u16>,
+    skip: &BTreeSet<u16>,
     strat: DecStrat,
     sem: &Arc<Semaphore>,
 ) {
@@ -832,7 +877,7 @@ pub fn dec_pipe(
 fn pipe_loop<F>(
     chnks: &[Chunk],
     reader: &mut PipeReader,
-    skip: &HashSet<u16>,
+    skip: &BTreeSet<u16>,
     sem: &Arc<Semaphore>,
     tx: &dyn Fn(WorkPkg),
     raw_fsz: usize,

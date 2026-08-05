@@ -1,10 +1,13 @@
-use core::ffi::c_void;
-use std::{
-    fs::{File, OpenOptions},
-    os::unix::io::AsRawFd as _,
-    path::Path,
+use core::{
+    ffi::c_void,
     ptr::null_mut,
     slice::{from_raw_parts, from_raw_parts_mut},
+};
+use std::os::unix::io::AsRawFd as _;
+
+use crate::{
+    fs::{File, OpenOptions},
+    path::Path,
 };
 
 use crate::{error::Xerr, mkv_mux::Mux, progs::ProgsBar};

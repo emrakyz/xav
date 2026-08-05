@@ -1,13 +1,18 @@
-use std::{
-    ffi::{CStr, CString},
-    mem::size_of,
-    path::Path,
-    process::{Command, Stdio},
+use alloc::ffi::CString;
+#[cfg(target_os = "linux")]
+use alloc::{
+    borrow::ToOwned as _,
+    string::{String, ToString as _},
 };
+use core::{ffi::CStr, mem::size_of};
 
+#[cfg(all(target_os = "linux", not(test)))]
+use crate::fmath::FloatExt as _;
 use crate::{
     Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
     ffms::{VidInf, gcd},
+    path::Path,
+    process::{Command, Stdio},
     svt::{
         ChromaPoints, ContentLightLevel, EbSvtAv1EncConfiguration, MasteringDisplayInfo,
         svt_av1_enc_parse_parameter, svt_av1_get_version,

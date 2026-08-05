@@ -1,31 +1,31 @@
-use std::{
+#[cfg(target_os = "linux")]
+use alloc::{boxed::Box, string::String, vec::Vec};
+use core::{
     fmt::Write as _,
-    fs::{DirEntry, File, read_dir, read_to_string as read_to_str, write},
-    io::{Read as _, Seek as _, SeekFrom, Write as _, stdout},
-    path::{Path, PathBuf},
-    sync::{
-        OnceLock,
-        atomic::{AtomicU64, Ordering::Relaxed},
-    },
-    time::Instant,
+    sync::atomic::{AtomicU64, Ordering::Relaxed},
 };
 
 use crate::{
     Args,
     audio::AuStream,
+    clk::Mono,
     copy::{demux, read_chapters},
     encoder::Encoder::Avm,
     error::Xerr,
     ffms::{AVMEDIA_TYPE_AUDIO, VidInf},
+    fs::{DirEntry, File, read_dir, read_to_string as read_to_str, write},
+    io::{Read as _, Seek as _, SeekFrom::Start, Write as _, print_fmt, stdout},
     mkv_mux::{AudioSrc, Aux, mux_mkv},
     mux_webm::mux_webm,
+    path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 pub static PRIOR_SECS: AtomicU64 = AtomicU64::new(0);
-static ENC_START: OnceLock<Instant> = OnceLock::new();
+static ENC_START: OnceLock<Mono> = OnceLock::new();
 pub fn init_elapsed(prior: u64) {
     PRIOR_SECS.store(prior, Relaxed);
-    _ = ENC_START.set(Instant::now());
+    _ = ENC_START.set(Mono::now());
 }
 
 #[derive(Clone)]
@@ -57,7 +57,7 @@ pub struct ResumeInf {
 }
 
 pub fn has_rc(s: &str) -> bool {
-    s.contains("crf") || s.contains("qp") || s.contains("QP") || s.contains("-q")
+    s.contains("crf ") || s.contains("qp ") || s.contains("QP ") || s.contains("-q ")
 }
 
 pub fn load_scenes(path: &Path, t_frames: usize, tq: bool) -> Result<Vec<Scene>, Xerr> {
@@ -211,7 +211,7 @@ fn concat_ivf(files: &[PathBuf], out: &Path, tot_frames: u32) -> Result<(), Xerr
         pts_off = chunk_max + 1;
     }
 
-    writer.seek(SeekFrom::Start(24))?;
+    writer.seek(Start(24))?;
     writer.write_all(&tot_frames.to_le_bytes())?;
 
     Ok(())

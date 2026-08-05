@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+
 use crate::{
     encoder::Encoder::{self, Avm, SvtAv1, Vvenc, X264, X265},
     nal_parse::{Bits, ParamSets, avc_high, rbsp, skip_hevc_ptl, skip_vvc_ptl},

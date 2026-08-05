@@ -1,12 +1,13 @@
-use std::{
+use core::{
     arch::x86_64::_mm_sfence,
     ffi::c_void,
     iter::once,
-    os::windows::ffi::OsStrExt as _,
-    path::Path,
     ptr::{null, null_mut},
     slice::{from_raw_parts, from_raw_parts_mut},
 };
+use std::os::windows::ffi::OsStrExt as _;
+
+use crate::path::Path;
 
 use crate::{error::Xerr, mkv_mux::Mux, progs::ProgsBar};
 

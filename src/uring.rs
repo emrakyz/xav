@@ -1,5 +1,7 @@
-use core::ffi::c_void;
-use std::{
+#[cfg(target_os = "linux")]
+use alloc::vec::Vec;
+use core::{
+    ffi::c_void,
     iter::repeat_with,
     mem::zeroed,
     ptr::{from_mut, null, null_mut},

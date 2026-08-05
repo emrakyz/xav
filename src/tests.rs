@@ -1,18 +1,13 @@
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     env,
-    fs::{File, metadata, remove_file},
-    io::{BufWriter, Write},
     mem::{size_of, zeroed},
-    path::{Path, PathBuf},
-    process::{self, Command, Stdio},
     ptr::{fn_addr_eq, null_mut},
     slice::from_raw_parts,
     sync::{
-        Arc, Once,
+        Arc,
         atomic::{AtomicUsize, Ordering::Relaxed},
     },
-    thread::{available_parallelism, scope, spawn},
 };
 
 #[cfg(feature = "vship")]
@@ -24,16 +19,22 @@ use crate::{
     enc::get_frame,
     encoder::{EncConfig, set_svt_base, set_svt_chunk},
     ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf},
+    fs::{File, metadata, remove_file},
+    io::{BufWriter, Write},
     pack::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz},
+    path::{Path, PathBuf},
     pipeline::{
         Pipeline, UnpackFn, WriteFn, write_frames_8b, write_frames_8b_rem, write_frames_10b,
     },
+    process::{self, Command, Stdio},
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
         EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
         svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
         svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
     },
+    sync::Once,
+    thread::{available_parallelism, pspawn, scope},
     worker::WorkPkg,
 };
 
@@ -80,7 +81,9 @@ fn test_path(filename: &str) -> PathBuf {
 
 fn temp_ivf() -> PathBuf {
     let id = TEST_ID.fetch_add(1, Relaxed);
-    env::temp_dir().join(format!("xav_test_{}_{id}.ivf", process::id()))
+    let mut p = PathBuf::from(env::temp_dir().to_string_lossy().into_owned());
+    p.push(format!("xav_test_{}_{id}.ivf", process::id()));
+    p
 }
 
 fn write_ivf_header(out: &mut impl Write, w: u32, h: u32, fps_num: u32, fps_den: u32) {
@@ -442,7 +445,7 @@ fn val_tq(
     .unwrap();
     vship.reset_cvvdp();
 
-    let threads = available_parallelism().map_or(1, |n| n.get() as i32);
+    let threads = available_parallelism() as i32;
     let mut probe_dec = VidDecoder::new(ivf, threads).unwrap();
 
     let pix_sz = if inf.is_10b { 2 } else { 1 };
@@ -510,7 +513,7 @@ fn run_test(
     let mut inf = get_vidinf(&inp).unwrap();
     if hwdec {
         let mut dec = VidDecoder::new_hw(&inp, 1).unwrap();
-        inf.y_linesz = unsafe { (*dec.dec_next()).linesize[0] as usize };
+        inf.y_linesz = unsafe { (*dec.dec_next_hw()).linesize[0] as usize };
     }
 
     let mut strat = get_dec_strat(&inf, crop, hwdec, tq);
@@ -535,7 +538,7 @@ fn run_test(
     let ring = Arc::new(SpscRing::new());
     let ring2 = Arc::clone(&ring);
     let sem = Arc::new(Semaphore::new(1));
-    let handle = spawn({
+    let handle = pspawn({
         let inp = inp.clone();
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
@@ -544,7 +547,7 @@ fn run_test(
             let send = move |p: WorkPkg| unsafe {
                 spsc_send(rp, Box::into_raw(Box::new(p)) as u64);
             };
-            dec_chnks(&chnks, &inp, &inf, &send, &HashSet::new(), strat, &sem);
+            dec_chnks(&chnks, &inp, &inf, &send, &BTreeSet::new(), strat, &sem);
             unsafe { spsc_close(rp) };
         }
     });
@@ -561,7 +564,7 @@ fn run_test(
         all_yuv.extend_from_slice(&pkg.yuv);
         sem_release(&sem);
     }
-    handle.join().unwrap();
+    handle.join();
 
     assert!(tot_frames > 0);
     assert_eq!(all_yuv.len(), tot_frames * pipe.frame_sz);
@@ -573,7 +576,7 @@ fn run_test(
 
     let ivf = temp_ivf();
     svt_enc(&converted, &pipe, &inf, tot_frames, &ivf);
-    let ivf_sz = metadata(&ivf).map_or(0, |m| m.len());
+    let ivf_sz = metadata(&ivf).unwrap_or(0);
     assert!(ivf_sz > 32, "IVF file too small: {ivf_sz}");
 
     #[cfg(feature = "vship")]

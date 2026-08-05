@@ -13,6 +13,8 @@ set -Eeuo pipefail
 } || IS_MAC=false
 "${IS_MAC}" && LLVM_PREFIX="$(brew --prefix llvm)" && export PATH="${LLVM_PREFIX}/bin:${PATH}"
 
+has_nvidia() { grep -qx 0x10de /sys/bus/pci/devices/*/vendor 2> /dev/null; }
+
 install_deps() {
         ((UID != 0)) && { for i in sudo doas; do command -v "${i}" > /dev/null 2>&1 && priv="${i}"; done; }
 
@@ -21,15 +23,17 @@ install_deps() {
 
         case "${pm}" in
                 "pacman")
-                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson ffmpeg curl)
+                        pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson ffmpeg curl gcc)
+                        has_nvidia && pkgs+=(cuda)
                         ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
                         ;;
                 "dnf")
                         pkgs=(
                                 glibc-static libstdc++-static nasm rustup clang clang-libs
                                 llvm lld compiler-rt llvm-libunwind-static autoconf automake
-                                libtool cmake ninja-build pkgconf meson ffmpeg curl
+                                libtool cmake ninja-build pkgconf meson ffmpeg curl gcc
                         )
+                        has_nvidia && pkgs+=(cuda-toolkit)
                         ${priv:-} dnf install -y "${pkgs[@]}"
                         ;;
                 "emerge")
@@ -59,6 +63,7 @@ install_deps() {
 BUILD_DIR="${HOME}/.local/src"
 mkdir -p "${BUILD_DIR}"
 XAV_DIR="$(pwd)"
+export PATH="/opt/cuda/bin:/usr/local/cuda/bin:${PATH}"
 
 R='\e[1;91m' B='\e[1;94m' P='\e[1;95m' Y='\e[1;93m'
 N='\033[0m' C='\e[1;96m' G='\e[1;92m' W='\e[1;97m'
@@ -173,27 +178,9 @@ detect_deps() {
                 -n "$(find_bin nasm)" && -n "$(find_bin ld.lld)" &&
                 -n "$(find_bin clang)" && -n "$(find_bin llvm-ar)" ]] || HAS_HARD_REQS=false
 
-        VSHIP_SEARCH_DIRS=(
-                "${HOME}/.local/src/Vship"
-                "/usr/lib64"
-                "/usr/lib"
-                "/usr/local/lib64"
-                "/usr/local/lib"
-                "/lib64"
-                "/lib"
-        )
-        VSHIP_STATIC_PATH="$(find_lib libvship.a "${VSHIP_SEARCH_DIRS[@]}" || true)"
-        [[ -n "${VSHIP_STATIC_PATH}" ]] && HAS_VSHIP_STATIC=true || HAS_VSHIP_STATIC=false
+        has_nvidia && HW=cuda || HW=vulkan
 
-        VSHIP_PATH="$(find_lib libvship.so "${SYS_LIB_DIRS[@]}" || true)"
-        [[ -n "${VSHIP_PATH}" ]] && HAS_VSHIP=true || HAS_VSHIP=false
-
-        ELIGIBLE=()
-        [[ "${HAS_HARD_REQS}" == true ]] && {
-                [[ "${HAS_VSHIP_STATIC}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                [[ "${HAS_VSHIP}" == true ]] && ELIGIBLE+=(true) || ELIGIBLE+=(false)
-                ELIGIBLE+=(true)
-        } || ELIGIBLE=(false false false)
+        ELIGIBLE=("${HAS_HARD_REQS}" "${HAS_HARD_REQS}")
 }
 
 show_build_menu() {
@@ -229,12 +216,17 @@ cleanup_existing() {
                 [opus]="install/lib/libopus.a"
                 ["SVT-AV1"]="Bin/Release/libSvtAv1Enc.a"
                 [vulkan]="install/lib/pkgconfig/vulkan.pc"
+                ["nv-codec-headers"]="install/lib/pkgconfig/ffnvcodec.pc"
+                [Vship]="src/VshipLib.cpp"
         )
 
         local successful=() incomplete=()
-        local dir
+        local dir dirs=(dav1d FFmpeg opus SVT-AV1)
 
-        for dir in dav1d FFmpeg opus SVT-AV1 vulkan; do
+        [[ "${HW}" == cuda ]] && dirs+=(nv-codec-headers) || dirs+=(vulkan)
+        ((mode_choice == 1)) && dirs+=(Vship)
+
+        for dir in "${dirs[@]}"; do
                 [[ -d "${BUILD_DIR}/${dir}" ]] || continue
                 [[ -f "${BUILD_DIR}/${dir}/${artifacts[${dir}]}" ]] && successful+=("${dir}") || incomplete+=("${dir}")
         done
@@ -283,14 +275,18 @@ clone_phase() {
 
         local pids=()
 
-        mkdir -p "${BUILD_DIR}/vulkan"
-
         clone_async "${BUILD_DIR}/opus" "https://gitlab.xiph.org/xiph/opus.git"
         clone_async "${BUILD_DIR}/SVT-AV1" "${svt_fork_url}"
         clone_async "${BUILD_DIR}/dav1d" "https://code.videolan.org/videolan/dav1d.git"
-        clone_async "${BUILD_DIR}/vulkan/Vulkan-Headers" "https://github.com/KhronosGroup/Vulkan-Headers.git" "--depth 1"
-        clone_async "${BUILD_DIR}/vulkan/Vulkan-Loader" "https://github.com/KhronosGroup/Vulkan-Loader.git" "--depth 1"
         clone_async "${BUILD_DIR}/FFmpeg" "https://github.com/FFmpeg/FFmpeg"
+
+        [[ "${HW}" == cuda ]] && clone_async "${BUILD_DIR}/nv-codec-headers" "https://github.com/FFmpeg/nv-codec-headers" "--depth 1" || {
+                mkdir -p "${BUILD_DIR}/vulkan"
+                clone_async "${BUILD_DIR}/vulkan/Vulkan-Headers" "https://github.com/KhronosGroup/Vulkan-Headers.git" "--depth 1"
+                clone_async "${BUILD_DIR}/vulkan/Vulkan-Loader" "https://github.com/KhronosGroup/Vulkan-Loader.git" "--depth 1"
+        }
+
+        ((mode_choice == 1)) && clone_async "${BUILD_DIR}/Vship" "https://codeberg.org/Line-fr/Vship" "--depth 1"
 
         local pid rc=0
         for pid in "${pids[@]}"; do
@@ -395,20 +391,83 @@ build_vulkan() {
         }
 }
 
+build_nvheaders() {
+        [[ -f "${BUILD_DIR}/nv-codec-headers/install/lib/pkgconfig/ffnvcodec.pc" ]] && return
+
+        loginf b "Installing nv-codec-headers"
+
+        local logfile="/tmp/build_nvheaders_$.log"
+        : > "${logfile}"
+
+        make -C "${BUILD_DIR}/nv-codec-headers" PREFIX="${BUILD_DIR}/nv-codec-headers/install" install >> "${logfile}" 2>&1 && {
+                rm -f "${logfile}"
+                loginf g "nv-codec-headers installed"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
+build_vship() {
+        loginf b "Building Vship (${HW})"
+
+        local logfile="/tmp/build_vship_$.log"
+        : > "${logfile}"
+
+        cp -f "${XAV_DIR}/vship.mk" "${BUILD_DIR}/Vship/xav.mk"
+
+        make -C "${BUILD_DIR}/Vship" -f xav.mk "build${HW}" >> "${logfile}" 2>&1 && {
+                rm -f "${logfile}"
+                loginf g "Vship built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
 build_ffmpeg() {
         [[ -f "${BUILD_DIR}/FFmpeg/install/lib/libavcodec.a" ]] && return
 
         loginf b "Building FFmpeg"
 
-        export PKG_CONFIG_PATH="${BUILD_DIR}/dav1d/lib/pkgconfig:${BUILD_DIR}/vulkan/install/lib/pkgconfig:${BUILD_DIR}/FFmpeg/install/lib/pkgconfig"
+        export PKG_CONFIG_PATH="${BUILD_DIR}/dav1d/lib/pkgconfig:${BUILD_DIR}/FFmpeg/install/lib/pkgconfig"
 
         local logfile="/tmp/build_ffmpeg_$.log"
         : > "${logfile}"
 
         cd "${BUILD_DIR}/FFmpeg"
 
-        local vk_inc="${BUILD_DIR}/vulkan/install/include"
-        local vk_lib="${BUILD_DIR}/vulkan/install/lib"
+        local hw_args=() hw_cflags="" hw_ldflags=""
+
+        [[ "${HW}" == cuda ]] && {
+                PKG_CONFIG_PATH+=":${BUILD_DIR}/nv-codec-headers/install/lib/pkgconfig"
+                hw_args=(
+                        --enable-ffnvcodec
+                        --enable-nvdec
+                        --enable-cuvid
+                        --enable-decoder=h264_cuvid
+                        --enable-decoder=hevc_cuvid
+                        --enable-decoder=av1_cuvid
+                        --enable-decoder=vp9_cuvid
+                        --enable-decoder=vc1_cuvid
+                )
+        } || {
+                PKG_CONFIG_PATH+=":${BUILD_DIR}/vulkan/install/lib/pkgconfig"
+                hw_cflags=" -I${BUILD_DIR}/vulkan/install/include"
+                hw_ldflags=" -L${BUILD_DIR}/vulkan/install/lib"
+                hw_args=(
+                        --enable-vulkan
+                        --enable-vulkan-static
+                        --enable-hwaccel=h264_vulkan
+                        --enable-hwaccel=hevc_vulkan
+                        --enable-hwaccel=av1_vulkan
+                        --enable-hwaccel=vp9_vulkan
+                )
+        }
 
         ./configure \
                 --cc="${CC}" \
@@ -417,9 +476,9 @@ build_ffmpeg() {
                 --nm="${NM}" \
                 --ranlib="${RANLIB}" \
                 --strip="${STRIP}" \
-                --extra-cflags="${CFLAGS} -I${vk_inc}" \
-                --extra-cxxflags="${CXXFLAGS} -I${vk_inc}" \
-                --extra-ldflags="-fuse-ld=lld -flto=thin -L${vk_lib}" \
+                --extra-cflags="${CFLAGS}${hw_cflags}" \
+                --extra-cxxflags="${CXXFLAGS}${hw_cflags}" \
+                --extra-ldflags="-fuse-ld=lld -flto=thin${hw_ldflags}" \
                 --disable-shared \
                 --enable-static \
                 --pkg-config-flags="--static" \
@@ -513,14 +572,9 @@ build_ffmpeg() {
                 --enable-parser=opus \
                 --enable-parser=vorbis \
                 --enable-parser=flac \
-                --enable-vulkan \
-                --enable-vulkan-static \
-                --enable-hwaccel=h264_vulkan \
-                --enable-hwaccel=hevc_vulkan \
-                --enable-hwaccel=av1_vulkan \
                 --enable-bsf=extract_extradata \
                 --enable-demuxer=ogg \
-                --enable-hwaccel=vp9_vulkan >> "${logfile}" 2>&1
+                "${hw_args[@]}" >> "${logfile}" 2>&1
 
         make -j"$(nproc)" >> "${logfile}" 2>&1
         make install DESTDIR="${BUILD_DIR}/FFmpeg/install" prefix="" >> "${logfile}" 2>&1 && {
@@ -638,6 +692,7 @@ setup_toolchain() {
         export STRIP="llvm-strip"
         export OBJCOPY="llvm-objcopy"
         export OBJDUMP="llvm-objdump"
+        export VULKAN_SDK="${BUILD_DIR}/vulkan/install"
 
         export COMMON_FLAGS="-O3 -ffast-math -march=native -mtune=native \
 	-fwhole-program-vtables -flto=thin -fno-semantic-interposition \
@@ -646,7 +701,7 @@ setup_toolchain() {
 	-fno-asynchronous-unwind-tables -fno-plt -fno-stack-check \
 	-fno-threadsafe-statics -mno-vzeroupper -mno-retpoline -mno-lvi-cfi \
 	-mharden-sls=none -mno-lvi-hardening -ftls-model=local-exec \
-	-fno-use-cxa-atexit"
+	-fno-use-cxa-atexit -D_FORTIFY_SOURCE=0"
         "${IS_MAC}" && export COMMON_FLAGS="${COMMON_FLAGS//-mno-vzeroupper/}"
         export CFLAGS="${COMMON_FLAGS}"
         "${IS_MAC}" && export CXXFLAGS="${COMMON_FLAGS} -stdlib=libc++" || export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
@@ -666,23 +721,20 @@ main() {
 
         case "$preset" in
                 static_tq) mode_choice=1 ;;
-                dynamic_tq) mode_choice=2 ;;
-                static_notq) mode_choice=3 ;;
+                static_notq) mode_choice=2 ;;
                 "") ;;
                 *)
                         echo -e "Unknown preset: $preset"
                         echo "Valid presets:"
                         echo "  static_tq"
-                        echo "  dynamic_tq"
                         echo "  static_notq"
                         exit 1
                         ;;
         esac
 
         BUILD_MODES=(
-                "Build statically with TQ"
-                "Build dynamically with TQ"
-                "Build statically without TQ"
+                "With TQ"
+                "Without TQ"
         )
 
         [[ "${preset}" ]] && detect_deps || {
@@ -691,7 +743,7 @@ main() {
                 while true; do
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
-                        [[ "${mode_choice}" =~ ^[1-4]$ ]] && {
+                        [[ "${mode_choice}" =~ ^[1-2]$ ]] && {
                                 [[ "${ELIGIBLE[mode_choice - 1]}" == false ]] && {
                                         echo -e "${R}Mode ${mode_choice} is not eligible on this system.${N}"
                                         continue
@@ -702,20 +754,22 @@ main() {
                 done
         }
 
+        config_file=".cargo/config.toml.static"
+
         case "${mode_choice}" in
                 1)
-                        config_file=".cargo/config.toml.static"
-                        cargo_features="--no-default-features --features vship"
+                        [[ "${HW}" == cuda ]] && feats="vship,cuda" || feats="vship"
+                        cargo_features="--no-default-features --features ${feats}"
                         ;;
                 2)
-                        config_file=".cargo/config.toml.static"
-                        cargo_features="--no-default-features --features vship"
-                        ;;
-                3)
-                        config_file=".cargo/config.toml.static"
                         cargo_features="--no-default-features"
+                        HW=vulkan
                         ;;
         esac
+
+        ((mode_choice == 1)) && [[ "${HW}" == cuda && -z "$(find_bin nvcc)" ]] && install_deps
+
+        loginf g "Hardware backend: ${HW}"
 
         "${IS_MAC}" && config_file=".cargo/config.toml.mac"
 
@@ -763,16 +817,28 @@ main() {
         PID_OPUS="${!}"
         build_dav1d &
         PID_DAV1D="${!}"
-        build_vulkan &
-        PID_VULKAN="${!}"
         build_svtav1 &
         PID_SVTAV1="${!}"
 
-        wait "${PID_DAV1D}" && wait "${PID_VULKAN}" || exit 1
+        [[ "${HW}" == cuda ]] && {
+                build_nvheaders &
+                PID_HW="${!}"
+        } || {
+                build_vulkan &
+                PID_HW="${!}"
+        }
+
+        wait "${PID_DAV1D}" && wait "${PID_HW}" || exit 1
         build_ffmpeg &
         PID_FFMPEG="${!}"
 
+        ((mode_choice == 1)) && {
+                build_vship &
+                PID_VSHIP="${!}"
+        }
+
         wait "${PID_OPUS}" && wait "${PID_FFMPEG}" && wait "${PID_SVTAV1}" || exit 1
+        ((mode_choice == 1)) && { wait "${PID_VSHIP}" || exit 1; }
 
         cd "${XAV_DIR}"
 

@@ -1,17 +1,23 @@
-use std::io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin};
 #[cfg(target_os = "linux")]
-use std::{
+use alloc::{
+    string::{String, ToString as _},
+    vec::Vec,
+};
+use core::hint::cold_path;
+
+use crate::io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin};
+#[cfg(target_os = "linux")]
+use crate::sys::dup2;
+#[cfg(target_os = "linux")]
+use crate::{
+    chunk::{Chunk, get_resume},
     fs::{read, read_dir, read_link},
-    os::unix::io::AsRawFd as _,
     path::Path,
     process::{Command, Stdio, id},
 };
 
-#[cfg(target_os = "linux")]
-use crate::chunk::{Chunk, get_resume};
-#[cfg(target_os = "linux")]
-use crate::sys::dup2;
-
+#[cold]
+#[inline(never)]
 pub fn is_pipe() -> bool {
     !stdin().is_terminal()
 }
@@ -46,10 +52,13 @@ impl PipeReader {
     }
 }
 
+#[cold]
+#[inline(never)]
 pub fn init_pipe(start_idx: usize) -> Option<(Y4mInfo, PipeReader)> {
     if !is_pipe() {
         return None;
     }
+    cold_path();
 
     let stdin = stdin();
     let mut reader = BufReader::new(stdin);
