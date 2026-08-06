@@ -60,7 +60,7 @@ use crate::{
     pipeline::MetricProgs,
     thread::{PHandle, available_parallelism, pspawn},
     tq::{Probe, ProbeDec, ProbeLog, interpolate_crf, make_dav1d, make_ff},
-    vship::{PinnedBuf, VshipProcessor, init_device},
+    vship::{Disp, PinnedBuf, VshipProcessor, init_device},
     worker::TQState,
 };
 
@@ -378,7 +378,6 @@ struct TQCtx {
     qp_max: f32,
     use_butter: bool,
     use_cvvdp: bool,
-    cvvdp_conf: Option<&'static str>,
 }
 
 #[cfg(feature = "vship")]
@@ -545,7 +544,13 @@ fn resolve_output(svt: bool, use_alt: bool) -> fn(&Path, &TQState, &Path) {
 }
 
 #[cfg(feature = "vship")]
-fn run_metric_worker(rx: &SeqRing, work_tx: &SeqRing, ctx: &TQWorkerCtx, worker_id: usize) {
+fn run_metric_worker(
+    rx: &SeqRing,
+    work_tx: &SeqRing,
+    ctx: &TQWorkerCtx,
+    worker_id: usize,
+    disp: Option<Disp>,
+) {
     let mut vship: Option<VshipProcessor> = None;
     let mut dec: Option<ProbeDec> = None;
     let mut unpacked_buf = PinnedBuf::new(ctx.pipe.unpack_buf_sz).unwrap_or_else(|e| fatal(e));
@@ -575,8 +580,7 @@ fn run_metric_worker(rx: &SeqRing, work_tx: &SeqRing, ctx: &TQWorkerCtx, worker_
                 ctx.inf,
                 ctx.tq_ctx.use_cvvdp,
                 ctx.tq_ctx.use_butter,
-                Some("xav"),
-                ctx.tq_ctx.cvvdp_conf,
+                disp,
             )
             .unwrap_or_else(|e| fatal(e));
             vship = Some(v);
@@ -643,24 +647,33 @@ fn run_metric_worker(rx: &SeqRing, work_tx: &SeqRing, ctx: &TQWorkerCtx, worker_
 }
 
 #[cfg(feature = "vship")]
+#[must_use]
+pub fn tq_target(tq: &str) -> f32 {
+    let mut p = tq.split('-').filter_map(|s| s.parse().ok());
+    let a = unsafe { p.next().unwrap_unchecked() };
+    f32::midpoint(a, unsafe { p.next().unwrap_unchecked() })
+}
+
+#[cfg(feature = "vship")]
+#[must_use]
+pub const fn is_cvvdp(target: f32) -> bool {
+    target > 8.0 && target <= 10.0
+}
+
+#[cfg(feature = "vship")]
 fn parse_tq_ctx(args: &Args) -> TQCtx {
     let tq_str = unsafe { args.tq.as_ref().unwrap_unchecked() };
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
     let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
-    let cvvdp_conf: Option<&'static str> = args
-        .cvvdp_conf
-        .as_ref()
-        .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str);
     TQCtx {
         target: tq_target,
         tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
         qp_min: qp_parts[0],
         qp_max: qp_parts[1],
         use_butter: tq_target < 8.0,
-        use_cvvdp: tq_target > 8.0 && tq_target <= 10.0,
-        cvvdp_conf,
+        use_cvvdp: is_cvvdp(tq_target),
     }
 }
 
@@ -922,6 +935,7 @@ fn spawn_tq_metric(
     let output = resolve_output(svt, sc.use_alt_param);
     let threads = available_parallelism() as i32;
     let ext = sc.encoder.extension();
+    let disp = sc.args.disp;
     let mut metric_workers = Vec::new();
     for worker_id in 0..metric_worker {
         let rx = Arc::clone(met);
@@ -954,7 +968,7 @@ fn spawn_tq_metric(
                 threads,
                 ext,
             };
-            run_metric_worker(&rx, &coord, &ctx, worker_id);
+            run_metric_worker(&rx, &coord, &ctx, worker_id, disp);
         }));
     }
     metric_workers

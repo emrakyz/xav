@@ -146,6 +146,7 @@ pub struct Aux<'a> {
     pub audio: AudioSrc<'a>,
     pub subs: Vec<Stream>,
     pub chapters: Vec<Chapter>,
+    pub cvvdp: Option<(&'a str, &'a str)>,
 }
 
 pub fn mux_mkv(
@@ -162,6 +163,7 @@ pub fn mux_mkv(
         audio,
         subs,
         chapters,
+        cvvdp,
     } = aux;
     let is_nal = matches!(encoder, X264 | X265 | Vvenc);
     let Prep {
@@ -290,6 +292,7 @@ pub fn mux_mkv(
         date_utc_str: &date_str,
         encoder: &enc_name,
         settings: &v_settings,
+        cvvdp,
     });
     for a in &ainfos {
         stats.push(TrackStatistics {
@@ -301,6 +304,7 @@ pub fn mux_mkv(
             date_utc_str: &date_str,
             encoder: &a.encoder,
             settings: &a.settings,
+            cvvdp: None,
         });
     }
     for s in &sinfos {
@@ -313,6 +317,7 @@ pub fn mux_mkv(
             date_utc_str: &date_str,
             encoder: "",
             settings: "",
+            cvvdp: None,
         });
     }
     let tags_len = tags_size(&stats);

@@ -116,11 +116,15 @@ use chunk::{
 };
 use crop::{CropConf, detect_crop};
 use enc::enc_all;
+#[cfg(feature = "vship")]
+use enc::{is_cvvdp, tq_target};
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, SIGINT, SIGSEGV, Xerr, eprint, exit, fatal, signal};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
 use scd::fd_scenes;
 use svterr::val;
+#[cfg(feature = "vship")]
+use vship::{Disp, load_disp};
 #[cfg(target_os = "linux")]
 use y4m::vspipe_resume;
 use y4m::{PipeReader, init_pipe, is_pipe};
@@ -153,6 +157,8 @@ pub struct Args {
     pub metric_mode: String,
     #[cfg(feature = "vship")]
     pub cvvdp_conf: Option<String>,
+    #[cfg(feature = "vship")]
+    pub disp: Option<Disp>,
     #[cfg(feature = "vship")]
     pub alt_param: Option<String>,
     pub sc_only: bool,
@@ -189,7 +195,7 @@ fn print_help() {
         println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}or pN%");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
-        println!("{C}-d {P}┃ {C}--display    {W}CVVDP JSON. Set screen name as {R}xav{W}");
+        println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for probes ({R}NOT RECOMMENDED{W}; expert-only)");
     }
     println!("");
@@ -417,6 +423,8 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         #[cfg(feature = "vship")]
         cvvdp_conf,
         #[cfg(feature = "vship")]
+        disp: None,
+        #[cfg(feature = "vship")]
         alt_param,
     })
 }
@@ -639,6 +647,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let inf = get_vidinf(&args.inp)?;
 
+    let mut args = args.clone();
+    #[cfg(feature = "vship")]
+    if let Some(ref t) = args.tq && is_cvvdp(tq_target(t)) {
+        args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?);
+    }
+
     let thr = available_parallelism() as i32;
     let conf = CropConf {
         sample_cnt: 13,
@@ -649,12 +663,10 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         _ => (0, 0),
     };
 
-    ensure_sc_file(args, &inf, crop, 3)?;
+    ensure_sc_file(&args, &inf, crop, 3)?;
 
     print!("\x1b[H\x1b[2J");
     _ = stdout().flush();
-
-    let mut args = args.clone();
 
     #[cfg(feature = "vship")]
     let tq = args.tq.is_some();

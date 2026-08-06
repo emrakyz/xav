@@ -253,6 +253,12 @@ pub fn merge_out(
     }
 
     let (enc_w, enc_h) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
+    #[cfg(feature = "vship")]
+    let dtag = args.disp.map(|d| d.tag(enc_w, enc_h));
+    #[cfg(feature = "vship")]
+    let cvvdp = args.tq.as_deref().zip(dtag.as_deref());
+    #[cfg(not(feature = "vship"))]
+    let cvvdp: Option<(&str, &str)> = None;
     let want_extras = args.ranges.is_none();
     let src = args.inp.as_path();
     let chapters = if want_extras {
@@ -292,6 +298,7 @@ pub fn merge_out(
             audio,
             subs,
             chapters,
+            cvvdp,
         },
     )
 }

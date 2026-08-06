@@ -30,6 +30,7 @@ pub struct TrackStatistics<'a> {
     pub date_utc_str: &'a str,
     pub encoder: &'a str,
     pub settings: &'a str,
+    pub cvvdp: Option<(&'a str, &'a str)>,
 }
 
 const fn dec_len(v: u64) -> usize {
@@ -139,6 +140,9 @@ const fn tag_body_size(s: &TrackStatistics<'_>) -> usize {
     if !s.settings.is_empty() {
         n += entry_size("ENCODER_SETTINGS", s.settings.len());
     }
+    if let Some((target, disp)) = s.cvvdp {
+        n += entry_size("CVVDP_TARGET", target.len()) + entry_size("CVVDP_DISPLAY", disp.len());
+    }
     n += entry_size("BPS", dec_len(s.bps));
     n += entry_size("DURATION", duration_len(s.duration_ns));
     n += entry_size("NUMBER_OF_FRAMES", dec_len(s.n_frames));
@@ -163,6 +167,14 @@ fn write_tag(out: &mut [u8], s: &TrackStatistics<'_>) -> usize {
                 "ENCODER_SETTINGS",
                 s.settings.as_bytes(),
             );
+        }
+        if let Some((target, disp)) = s.cvvdp {
+            n += write_str(
+                out.get_unchecked_mut(n..),
+                "CVVDP_TARGET",
+                target.as_bytes(),
+            );
+            n += write_str(out.get_unchecked_mut(n..), "CVVDP_DISPLAY", disp.as_bytes());
         }
         n += write_num(out.get_unchecked_mut(n..), "BPS", s.bps);
         n += write_dur(out.get_unchecked_mut(n..), "DURATION", s.duration_ns);

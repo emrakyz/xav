@@ -11,7 +11,7 @@ use std::{
 };
 
 #[cfg(feature = "vship")]
-use crate::vship::{VshipProcessor, init_device};
+use crate::vship::{VshipProcessor, init_device, load_disp};
 use crate::{
     chan::{Semaphore, SpscRing, sem_release, spsc_close, spsc_recv, spsc_send},
     chunk::{chnkify, load_scenes},
@@ -428,8 +428,7 @@ fn val_tq(
     ivf: &Path,
     filename: &str,
 ) {
-    let display_json = test_path("display.json");
-    let conf_str = display_json.to_str().expect("non-UTF8 path");
+    let disp = load_disp(test_path("display.txt").to_str(), inf).unwrap();
 
     INIT_DEVICE.call_once(|| init_device().unwrap());
 
@@ -439,8 +438,7 @@ fn val_tq(
         inf,
         true,
         false,
-        Some("xav"),
-        Some(conf_str),
+        Some(disp),
     )
     .unwrap();
     vship.reset_cvvdp();

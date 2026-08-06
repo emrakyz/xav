@@ -1,9 +1,9 @@
-#[cfg(feature = "vship")]
-use core::arch::x86_64::{_mm_ceil_sd, _mm_ceil_ss};
 use core::arch::x86_64::{
     _MM_FROUND_NO_EXC, _MM_FROUND_TO_ZERO, _mm_cvtsd_f64, _mm_cvtss_f32, _mm_fmadd_sd,
     _mm_fmadd_ss, _mm_round_sd, _mm_round_ss, _mm_set_sd, _mm_set_ss,
 };
+#[cfg(feature = "vship")]
+use core::arch::x86_64::{_mm_ceil_sd, _mm_ceil_ss};
 
 const F64_SIGN: u64 = 1 << 63;
 const F32_SIGN: u32 = 1 << 31;

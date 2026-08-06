@@ -30,8 +30,12 @@ extern "C" fn xav_plat_write(buf: *const u8, len: usize) {
 }
 
 unsafe extern "system" {
-    fn WaitOnAddress(addr: *const core::ffi::c_void, cmp: *const core::ffi::c_void,
-                     size: usize, ms: u32) -> i32;
+    fn WaitOnAddress(
+        addr: *const core::ffi::c_void,
+        cmp: *const core::ffi::c_void,
+        size: usize,
+        ms: u32,
+    ) -> i32;
     fn WakeByAddressSingle(addr: *const core::ffi::c_void);
 }
 

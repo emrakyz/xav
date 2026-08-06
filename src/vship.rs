@@ -1,4 +1,4 @@
-use alloc::ffi::CString;
+use alloc::string::String;
 use core::{
     ffi::{CStr, c_void},
     mem::{MaybeUninit, zeroed},
@@ -10,6 +10,7 @@ use core::{
 use crate::{
     error::{Xerr, Xerr::Msg},
     ffms::VidInf,
+    fs::read_to_string,
     vship::{
         VshipChromaLocation::{Left, TopLeft},
         VshipColorFamily::Yuv,
@@ -43,6 +44,98 @@ fn vship_get_err(buf: &mut MaybeUninit<[u8; 1024]>) {
     unsafe {
         Vship_GetDetailedLastError(buf.as_mut_ptr().cast(), 1024);
     }
+}
+
+const DKEYS: [&str; 6] = ["dist", "size", "bright", "illum", "refl", "contrast"];
+
+#[derive(Copy, Clone)]
+pub struct Disp {
+    v: [f32; 6],
+    hdr: bool,
+}
+
+impl Disp {
+    const fn cs(&self) -> &'static str {
+        if self.hdr { "HDR" } else { "SDR" }
+    }
+
+    fn json(&self, w: u32, h: u32) -> String {
+        let [dist, size, bright, illum, refl, contrast] = self.v;
+        format!(
+            concat!(
+                r#"{{"xav":{{"resolution":[{},{}],"colorspace":"{}","viewing_distance_meters":{},"diagonal_size_inches":{},"max_luminance":{},"E_ambient":{},"k_refl":{},"contrast":{}}}}}"#,
+                "\0"
+            ),
+            w,
+            h,
+            self.cs(),
+            dist,
+            size,
+            bright,
+            illum,
+            refl,
+            contrast
+        )
+    }
+
+    #[must_use]
+    pub fn tag(&self, w: u32, h: u32) -> String {
+        let [dist, size, bright, illum, refl, contrast] = self.v;
+        format!(
+            "{w}x{h} {} dist={dist} size={size} bright={bright} illum={illum} refl={refl} \
+             contrast={contrast}",
+            self.cs()
+        )
+    }
+}
+
+pub fn load_disp(conf: Option<&str>, inf: &VidInf) -> Result<Disp, Xerr> {
+    let path = conf.ok_or("CVVDP requires -d/--display <file> argument")?;
+    let txt = read_to_string(path)?;
+    let hdr = matches!(inf.transfer_characteristics, 16 | 18);
+    let mut v = [f32::NAN; 6];
+
+    for line in txt.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, val) = line
+            .split_once('=')
+            .ok_or_else(|| Msg(format!("display: expected key = value: {line}")))?;
+        let (key, val) = (key.trim(), val.trim());
+        let i = DKEYS
+            .iter()
+            .position(|k| *k == key)
+            .ok_or_else(|| Msg(format!("display: unknown key: {key}")))?;
+        let n = val
+            .parse::<f32>()
+            .ok()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .ok_or_else(|| Msg(format!("display: bad {key}: {val}")))?;
+        unsafe { *v.get_unchecked_mut(i) = n };
+    }
+
+    for (key, n) in DKEYS.iter().zip(v) {
+        if n.is_nan() {
+            return Err(Msg(format!("display: missing {key}")));
+        }
+    }
+    if hdr && v[2] < 500.0 {
+        return Err(
+            "Brightness is too low for HDR. Lowest grade HDR brightness is considered \
+             >=500 minimum"
+                .into(),
+        );
+    }
+    if !hdr && v[2] > 500.0 {
+        return Err(
+            "Brightness is too high for SDR. No consumer TV can reach that brightness \
+             level"
+                .into(),
+        );
+    }
+    Ok(Disp { v, hdr })
 }
 
 #[repr(C)]
@@ -344,8 +437,7 @@ impl VshipProcessor {
         inf: &VidInf,
         use_cvvdp: bool,
         use_butter: bool,
-        cvvdp_model: Option<&str>,
-        cvvdp_conf: Option<&str>,
+        disp: Option<Disp>,
     ) -> Result<Self, Xerr> {
         let fps = inf.fps_num as f32 / inf.fps_den as f32;
         unsafe {
@@ -368,18 +460,15 @@ impl VshipProcessor {
 
             let cvvdp_handler = if use_cvvdp {
                 let mut handler = zeroed::<VshipCVVDPHandler>();
-                let model_key = CString::new(cvvdp_model.unwrap_or("xav"))?;
-                let config_cstr = CString::new(
-                    cvvdp_conf.ok_or("CVVDP requires -d/--display <json_file> argument")?,
-                )?;
+                let config = disp.unwrap_unchecked().json(width, height);
                 let ret = Vship_CVVDPInit2(
                     from_mut(&mut handler),
                     src_colorspace,
                     dis_colorspace,
                     fps,
                     true,
-                    model_key.as_ptr(),
-                    config_cstr.as_ptr(),
+                    c"xav".as_ptr(),
+                    config.as_ptr().cast(),
                 );
                 if ret as i32 != 0 {
                     vship_get_err(&mut errbuf);

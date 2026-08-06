@@ -309,6 +309,7 @@
           {P}· {W}Streamable/seekable directly through download
           {P}· {W}Per-frame, per-level {C}CRC32 {W}error detection (corrupted frames can be detected)
           {P}· {W}Embedded metadata as muxer/encoder libraries, encoding params, date, etc
+          {P}· {W}On CVVDP TQ encodes; target range & derived display model are embedded as tags
           {P}· {W}XAV stamps itself + versions so file is self-identifying
           {P}· {W}With all timing related information in-place (proper seeking, reverse-playback, etc)
   {P} {W}Audio/subtitle streams are muxed in with language/title tags & default/forced flags
@@ -835,7 +836,7 @@
   {P} {W}For {C}Butteraugli {W}small score changes in fractional side will matter more than {C}SSIMU2
   {P} {W}For {C}CVVDP {W}it's even more granular. {B}9.50 {W}can look good while {B}9.48 {W}can look bad
     {W}(Example scores are completely random; don't put value on them)
-  {P} {C}CVVDP {W} will REQUIRE a display profile in JSON that will be explained later
+  {P} {C}CVVDP {W} will REQUIRE a display file that will be explained later
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Examples:                                                                                                            {P}┃
@@ -927,38 +928,36 @@
   {P} {W}Per-worker VRAM scales with resolution (no issue for SSIMU2/Butter but CVVDP will use more VRAM)
 
 
-{P}▌ {C}2.15  {C}-d {P}┃ {C}--display    {W}CVVDP display file. Set screen name as {R}xav
+{P}▌ {C}2.15  {C}-d {P}┃ {C}--display    {W}CVVDP display file
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}It is mandatory for CVVDP & ignored otherwise
   {P} {W}CVVDP is a very sophisticated video quality metric. It requires you to create a display file
   {P} {W}So target scoring will be completely determined by features you indicate in that file
-  {P} {W}An example file can be seen below
-  {P} {W}JSON files can not have in-line comments; I will indicate them for educational purposes
+  {P} {W}Plain text; one {G}key {W}= {G}value {W}per line. Order is free & empty lines are skipped
+  {P} {W}An example is below; it can not have in-line comments, I indicate them for educational purposes
   {P} {W}Show PATH of file through this parameter:
-      {C} {G}-d display.json
-      {C} {G}-d "/path/to/the.json"
+      {C} {G}-d display.txt
+      {C} {G}-d "/path/to/the.txt"
 
-{P}    ╭━ {B}display.json {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
-{P}    ┃ {W}{                                                                                                                    {P}┃
-{P}    ┃ {W}    {C}"xav"{W}: {                               {P}# {B}Key name must be {G}xav                                                    {P}┃
-{P}    ┃ {W}        {C}"resolution"{W}: {B}[3840, 2160]{W},        {P}# {B}Resolution of your screen                                               {P}┃
-{P}    ┃ {W}        {C}"viewing_distance_meters"{W}: {B}1.86{W},   {P}# {B}Your distance from screen in meters                                     {P}┃
-{P}    ┃ {W}        {C}"diagonal_size_inches"{W}: {B}97{W},        {P}# {B}Your screen size like 55 inches                                         {P}┃
-{P}    ┃ {W}        {C}"max_luminance"{W}: {B}300{W},              {P}# {B}Max brightness in NITS (different for SDR/HDR)                          {P}┃
-{P}    ┃ {W}        {C}"E_ambient"{W}: {B}10{W},                   {P}# {B}Ambient lighting in LUX                                                 {P}┃
-{P}    ┃ {W}        {C}"k_refl"{W}: {B}0.001{W},                   {P}# {B}Screen reflectivity factor                                              {P}┃
-{P}    ┃ {W}        {C}"contrast"{W}: {B}1000000{W},               {P}# {B}Contrast value (it's too high here because OLED has infinite)           {P}┃
-{P}    ┃ {W}        {C}"colorspace"{W}: {G}"SDR"{W}                {P}# {B}Change according to your content if it's SDR or HDR                     {P}┃
-{P}    ┃ {W}    }                                                                                                                {P}┃
-{P}    ┃ {W}}                                                                                                                    {P}┃
+{P}    ╭━ {B}display.txt {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {C}dist {W}= {B}1.86                                {P}# {B}Your distance from screen in meters                                     {P}┃
+{P}    ┃ {C}size {W}= {B}97                                  {P}# {B}Your screen size like 55 inches                                         {P}┃
+{P}    ┃ {C}bright {W}= {B}300                               {P}# {B}Max brightness in NITS (different for SDR/HDR)                          {P}┃
+{P}    ┃ {C}illum {W}= {B}10                                 {P}# {B}Ambient lighting in LUX                                                 {P}┃
+{P}    ┃ {C}refl {W}= {B}0.001                               {P}# {B}Screen reflectivity factor                                              {P}┃
+{P}    ┃ {C}contrast {W}= {B}9999999                         {P}# {B}Contrast value (it's too high here because OLED has infinite)           {P}┃
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
-  {P} {W}Set ${G}resolution according to input video (preferably after crop is calculated such as {B}1920x800{W})
+  {P} {W}{G}resolution {W}& {G}colorspace {W}are NOT in the file; xav derives both from your video per encode
+    {W}{G}resolution {W}= encoded size after crop is applied (such as {B}1920x800{W})
+    {W}{G}colorspace {W}= {G}HDR {W}when source transfer is {B}PQ {W}or {B}HLG{W}, otherwise {G}SDR
   {P} {W}Target displays WILL ALWAYS have vastly different max luminance for SDR & HDR
     {W}Eg. LG C5 OLED can reach {B}~300 {W}nits on SDR mode but over {B}~1100 {W}NITS on HDR mode
-  {P} {W}If your {R}content {W}is HDR, set colorspace to {G}HDR {W}& if SDR, set your profile to {G}SDR
-  {P} {W}It is advised to create multiple display files for 1080/4K and/or SDR/HDR
+  {P} {W}Since {G}colorspace {W}follows content, {G}bright {W}must match the mode your screen would be in
+    {W}xav exits before encoding if {R}SDR {W}content has {G}bright {W}above {B}500{W}; no consumer TV reaches it
+    {W}& if {R}HDR {W}content has {G}bright {W}below {B}500{W}; lowest grade HDR is considered {B}500 {W}minimum
+  {P} {W}It is advised to create one display file for SDR & one for HDR
   {P} {W}Values don't do anything by themselves. Distance/Size only corresponds to a
     {W}single value which is Viewing Degree. On above example, it is {B}60 {W}degree
   {P} {W}So, if screen size is {B}15.6 {W}inches & distance is {B}0.30 {W}meters; you get same degree
@@ -966,15 +965,15 @@
     {W}A screen with {B}97 {W}inches doesn't mean anything without corresponding distance value
     {W}So, screen size alone = useless. It can be {B}6 {W}inches or {B}100 {W}while you get
     {W}same score; due to distance/resolution being different
-  {P} {W}Similarly, {G}max_luminance{W}, {G}E_ambient{W}, {G}k_refl {W}don't do anything alone. They are combined
-  {P} {W}In CVVDP, {G}k_refl {W}is display reflectivity factor used to model ambient light reflected off
+  {P} {W}Similarly, {G}bright{W}, {G}illum{W}, {G}refl {W}don't do anything alone. They are combined
+  {P} {W}In CVVDP, {G}refl {W}is display reflectivity factor used to model ambient light reflected off
     {W}display toward viewer
   {P} {W}Represents fraction of incident ambient illumination that is reflected by front surface of display
   {P} {W}This reflected light adds to displayed luminance & it reduces perceived contrast
     {W}(so it says: display luminance is low enough & it's very reflective & environment
     {W}is very bright; so viewer can not see contrast differences as well; so they can not identify
     {W}quality differences well -> score higher at actually lower quality)
-  {P} {G}K_refl {W}is used to estimate black level elevation under ambient light
+  {P} {G}refl {W}is used to estimate black level elevation under ambient light
   {P} {W}So we are harmonizing three values here:
       {C} {W}Luminance from display
       {C} {W}Ambient illuminance (lux)
@@ -983,9 +982,9 @@
     {W}Two other values don't affect anything
   {P} {W}I generally use values as above (regardless of target display, or audience) & modify
     {W}my target score instead. However you can use "more forgiving" values if you are not as sensitive
-    {W}to minor quality changes. I only change resolution (based on content) & colorspace (based on content)
-  {P} {B}(size, distance, resolution) {P} {W}pixels-per-degree; none of them matters alone
-  {P} {B}(max_luminance, E_ambient, k_refl) {P} {W}effective black level / contrast for tonal sensitivity
+    {W}to minor quality changes; resolution & colorspace already follow the content on their own
+  {P} {B}(size, dist, resolution) {P} {W}pixels-per-degree; none of them matters alone
+  {P} {B}(bright, illum, refl) {P} {W}effective black level / contrast for tonal sensitivity
 
 
 {P}▌ {C}2.16  {C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)
