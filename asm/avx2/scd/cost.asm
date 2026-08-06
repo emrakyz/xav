@@ -139,7 +139,8 @@ INIT_YMM avx2
 %elif MODE == 1
     vmovdqu   ymm%1, %2
 %else
-    vpsrlw    ymm%1, %2, 6
+    vmovdqu   ymm%1, %2
+    vpsrlw    ymm%1, ymm%1, 6
 %endif
 %endmacro
 
