@@ -44,6 +44,11 @@ use crate::{
     progs::ProgsBar,
     thread::{available_parallelism, scope, sleep},
 };
+#[cfg(feature = "avm")]
+use crate::{
+    av2_parse::{config as av2_config, parse as av2_parse},
+    encoder::Encoder::Avm,
+};
 
 #[inline]
 #[must_use]
@@ -174,10 +179,11 @@ pub fn mux_mkv(
         nal_ranges,
         displays,
         codec_private,
-    } = if is_nal {
-        prep_nal(paths, inf, encoder)?
-    } else {
-        prep_av1(paths, inf)?
+    } = match encoder {
+        #[cfg(feature = "avm")]
+        Avm => prep_av2(paths, inf)?,
+        _ if is_nal => prep_nal(paths, inf, encoder)?,
+        _ => prep_av1(paths, inf)?,
     };
 
     let (fps_num, fps_den) = (inf.fps_num, inf.fps_den);
@@ -415,6 +421,40 @@ fn prep_av1(paths: &[PathBuf], inf: &VidInf) -> Result<Prep, Xerr> {
         ranges.push((start, arena.len() - start));
     }
     let codec_private = av1_codec_private(conf_seq, max_level, inf.chroma_sample_position as u8);
+    Ok(Prep {
+        maps,
+        arena,
+        ranges,
+        nal_arena: Vec::new(),
+        nal_ranges: Vec::new(),
+        displays: Vec::new(),
+        codec_private,
+    })
+}
+
+// AV2 has no codec-private; decoder config is the sequence header
+// content interp OBU that precede the first coded frame carried as is
+#[cfg(feature = "avm")]
+#[cold]
+#[inline(never)]
+fn prep_av2(paths: &[PathBuf], inf: &VidInf) -> Result<Prep, Xerr> {
+    let maps = paths
+        .iter()
+        .map(|p| Mmap::open(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut arena: Vec<ByteRange> = Vec::with_capacity(inf.frames);
+    let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(maps.len());
+    for m in &maps {
+        let start = arena.len();
+        av2_parse(m.slice(), &mut arena);
+        ranges.push((start, arena.len() - start));
+    }
+    let head = maps.first().ok_or("no encoded chunks")?.slice();
+    let b0 = unsafe { *arena.get_unchecked(0) };
+    let codec_private = av2_config(head, b0.offset + b0.len)
+        .ok_or("chunk holds no coded frame")?
+        .slice(head)
+        .to_vec();
     Ok(Prep {
         maps,
         arena,

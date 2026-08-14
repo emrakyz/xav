@@ -132,6 +132,7 @@ unsafe extern "C" {
     fn xav_pb_frames(p: *mut ProgsBar, cur: usize, tot: usize, ln: usize, lb: *const u8, ll: usize);
     fn xav_pb_fin(sl: *mut u8, prc: *mut u8);
     fn xav_pb_draw(dw: *const Draw);
+    fn xav_svt_drain_tick(workers: usize);
 }
 
 #[repr(C)]
@@ -303,8 +304,7 @@ impl ProgsTrack {
         let inner = Arc::clone(&self.inner);
 
         spawn(move || match encoder {
-            SvtAv1 => assume_unreachable(),
-            Avm => watch_avm(&inner, stderr, w),
+            SvtAv1 | Avm => assume_unreachable(),
             X265 | X264 => watch_x265(&inner, stderr, w),
             Vvenc => watch_vvenc(&inner, stderr, w),
         });
@@ -403,70 +403,14 @@ impl Tracker {
         unsafe { (*self.slot).enced.store(n, Relaxed) }
     }
 
+    #[inline]
+    pub const fn enced(&self) -> *mut usize {
+        unsafe { (&raw mut (*self.slot).enced).cast::<usize>() }
+    }
+
     pub fn finish(&self) {
         unsafe { xav_pb_fin(self.slot.cast(), self.prc) }
     }
-}
-
-fn watch_avm(inner: &Shared, rd: impl Read, w: Watch) {
-    let Watch {
-        worker_id,
-        chnk_idx,
-        frames,
-        track_frames,
-        crf_score,
-    } = w;
-    let started = Mono::now();
-    let mut lr = LineReader::new(rd, b'\n');
-    let mut poc_cnt = 0;
-    let mut last_poc = 0;
-    let mut last_update = Mono::now();
-
-    loop {
-        if !lr.fill() {
-            break;
-        }
-
-        while let Some(rec) = lr.next_buffered() {
-            let Ok(raw) = from_utf8(rec) else {
-                continue;
-            };
-            let text = raw.trim();
-            if text.contains("error") || text.contains("Error") {
-                eprint(format_args!("{text}"));
-            }
-            if text.starts_with("POC") {
-                poc_cnt += 1;
-            }
-        }
-
-        if last_update.elapsed() >= Durat::from_millis(INTERVAL_MS) {
-            last_update = Mono::now();
-
-            let tot = frames.max(poc_cnt);
-            let fps = poc_cnt as f32 / started.elapsed().as_secs_f32().max(0.001);
-            let filled = (BAR_WIDTH * poc_cnt / tot.max(1)).min(BAR_WIDTH);
-            let perc = (poc_cnt * 100 / tot.max(1)).min(100);
-
-            let mut line = Line::new();
-            write_tag(&mut line, chnk_idx, crf_score);
-            _ = write!(line, " {P}[");
-            write_bar(&mut line, filled, B_HASH, Y_DASH);
-            _ = write!(
-                line,
-                "{P}] {W}{perc:3}%{C}, {Y}{fps:6.2}{C}, {G}{poc_cnt:3}{C}/{R}{tot:3}"
-            );
-
-            if track_frames {
-                let d = poc_cnt.saturating_sub(last_poc);
-                last_poc = poc_cnt;
-                inner.processed.fetch_add(d, Relaxed);
-            }
-            inner.put(worker_id, line);
-        }
-    }
-
-    inner.clear(worker_id);
 }
 
 struct LineReader<R: Read> {
@@ -682,6 +626,7 @@ fn display_loop(s: &Shared) {
     };
     loop {
         sleep(Durat::from_millis(INTERVAL_MS));
+        unsafe { xav_svt_drain_tick(nb) };
         if s.stop.load(Relaxed) {
             break;
         }

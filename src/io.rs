@@ -16,9 +16,9 @@ use std::fs::File as StdFile;
 use std::io::ErrorKind::{InvalidData, UnexpectedEof, WriteZero};
 #[cfg(not(target_os = "linux"))]
 use std::io::{
-    Error as StdError, IsTerminal as StdIsTerminal, Read as StdRead, Seek as StdSeek,
-    SeekFrom as StdSeekFrom, Stderr as StdStderr, Stdin as StdStdin, Stdout as StdStdout,
-    Write as StdWrite, stderr as std_stderr, stdin as std_stdin, stdout as std_stdout,
+    Error as StdError, IsTerminal as StdIsTerminal, Read as StdRead, Stderr as StdStderr,
+    Stdin as StdStdin, Stdout as StdStdout, Write as StdWrite, stderr as std_stderr,
+    stdin as std_stdin, stdout as std_stdout,
 };
 #[cfg(not(target_os = "linux"))]
 use std::process::{
@@ -85,14 +85,6 @@ fn invalid_data() -> Error {
 fn write_zero() -> Error {
     WriteZero.into()
 }
-
-#[cfg(target_os = "linux")]
-#[derive(Clone, Copy)]
-pub enum SeekFrom {
-    Start(u64),
-}
-#[cfg(not(target_os = "linux"))]
-pub type SeekFrom = StdSeekFrom;
 
 pub trait Read {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
@@ -184,10 +176,6 @@ impl Write for Vec<u8> {
     fn flush(&mut self) -> Result<()> {
         Ok(())
     }
-}
-
-pub trait Seek {
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64>;
 }
 
 pub trait BufRead: Read {
@@ -548,13 +536,6 @@ impl Write for StdFile {
 
     fn flush(&mut self) -> Result<()> {
         StdWrite::flush(self)
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-impl Seek for StdFile {
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-        StdSeek::seek(self, pos)
     }
 }
 

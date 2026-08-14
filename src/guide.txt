@@ -688,6 +688,7 @@
   {P} {W}However with {C}-a|--audio {W}; audio is cut sample-accurately to match kept frames
   {P} {W}Range endpoints are inclusive on both ends: {B}3000-39999 {W}keeps frames {B}3000 {W}and {B}39999
     {W}(internally end+1 becomes exclusive cut)
+  {P} {W}End of the last segment can be left empty; it becomes input's last frame: {B}0- {W}or {B}100-299,1200-
   {P} {W}Can be used & compatible with zoning, piping, target quality, resuming
   {P} {W}Segments concatenate continuously. Kept ranges are spliced end-to-end with rebuilt timestamps
     {W}There will be no gaps, no black, output plays as one piece

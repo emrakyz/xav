@@ -5,37 +5,48 @@ use alloc::string::String;
 #[cfg(target_os = "linux")]
 use alloc::{boxed::Box, vec::Vec};
 use alloc::{collections::BTreeSet, sync::Arc};
+#[cfg(feature = "avm")]
+use core::{ffi::c_void, ptr::null};
 #[cfg(feature = "vship")]
 use core::{fmt::Write as _, mem::swap};
 use core::{
     hint::cold_path,
-    mem::{size_of, zeroed},
+    mem::{MaybeUninit, size_of, transmute, zeroed},
     ptr::{copy_nonoverlapping, null_mut},
     slice::from_raw_parts,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
 };
 
+#[cfg(feature = "avm")]
+use crate::avm::{
+    AVM_CFG_SIZE, AVM_CODEC_CX_FRAME_PKT, AVM_CODEC_OK, AVM_CTRL_CNT, AVM_IMG_FMT_I42016,
+    AVM_TMPL_HDR, AvmCodecCtx, AvmCodecEncCfg, AvmImage, AvmTmpl, avm_blit, avm_codec_av2_cx,
+    avm_codec_destroy, avm_codec_enc_config_default, avm_codec_encode, avm_codec_get_cx_data,
+    avm_init, avm_snapshot, avm_split, set_avm_base,
+};
 #[cfg(feature = "vship")]
 use crate::chan::{mpmc_close, mpmc_recv, mpmc_send, mpsc_recv, mpsc_send};
 #[cfg(all(target_os = "linux", not(test), feature = "vship"))]
 use crate::fmath::FloatExt as _;
-#[cfg(feature = "vship")]
-use crate::interp::bisect;
+#[cfg(not(target_os = "linux"))]
+use crate::path::PathBuf;
 use crate::{
     Args,
     chan::{Semaphore, SeqRing, sem_release, spmc_close, spmc_recv, spmc_send},
-    chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume},
+    chunk::{Chunk, ChunkComp, ResumeInf, get_resume, save_resume, zone_tmpls},
     dec::{dec_chnks, dec_pipe},
     encoder::{
         EncConfig, Encoder,
         Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
-        SVT_CONF_SIZE, make_enc_cmd, set_svt_base, set_svt_chunk,
+        SVT_CONF_SIZE, make_enc_cmd, parse_svt_params, set_svt_base,
     },
     error::fatal,
     ffms::{DecStrat, VidInf, nv12_10b, nv12_10b_rem},
     fs::{File, metadata},
     io::{BufWriter, Write},
-    pack::{SHIFT_CHUNK, conv_10b, conv_10b_rem},
+    pack::{
+        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_10b, conv_10b_rem, unpack_10b, unpack_10b_rem,
+    },
     path::Path,
     pipeline::Pipeline,
     process::Child,
@@ -43,8 +54,8 @@ use crate::{
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
         EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
-        svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
-        svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
+        svt_av1_enc_init, svt_av1_enc_init_handle, svt_av1_enc_send_picture,
+        svt_av1_enc_set_parameter,
     },
     sync::{Mutex, OnceLock},
     thread::{JoinHandle, spawn},
@@ -56,13 +67,21 @@ use crate::{
 use crate::{
     atofu::{TqChunkLine, parse_chunks},
     fs::{OpenOptions, copy, read, write},
-    path::PathBuf,
     pipeline::MetricProgs,
     thread::{PHandle, available_parallelism, pspawn},
-    tq::{Probe, ProbeDec, ProbeLog, interpolate_crf, make_dav1d, make_ff},
+    tq::{
+        Probe, ProbeDec, ProbeLog, calc_butter_8b_dav1d, calc_butter_8b_ff, calc_butter_10b_dav1d,
+        calc_butter_10b_ff, calc_butter_rem_dav1d, calc_butter_rem_ff, calc_cvvdp_8b_dav1d,
+        calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff, calc_cvvdp_rem_dav1d,
+        calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff, calc_ssimu2_10b_dav1d,
+        calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff, interpolate_crf, make_dav1d,
+        make_ff, prep_dav1d, prep_ff,
+    },
     vship::{Disp, PinnedBuf, VshipProcessor, init_device},
     worker::TQState,
 };
+#[cfg(feature = "vship")]
+use crate::{encoder::set_svt_crf, interp::bisect};
 
 fn join_one(handle: JoinHandle<()>) {
     handle.join();
@@ -74,10 +93,200 @@ fn join_all(handles: Vec<JoinHandle<()>>) {
     }
 }
 
+#[cfg(target_os = "linux")]
+struct OutPath {
+    buf: Vec<u8>,
+    at: usize,
+    tail: [u8; 4],
+}
+
+#[cfg(target_os = "linux")]
+fn dot_ext(ext: &str) -> [u8; 4] {
+    let mut tail = [b'.', 0, 0, 0];
+    tail[1..].copy_from_slice(ext.as_bytes());
+    tail
+}
+
+#[cfg(target_os = "linux")]
+fn idx_digits(idx: u16) -> u64 {
+    let v0 = u32::from(idx);
+    let v1 = (v0 * 0xCCCD) >> 19;
+    let v2 = (v1 * 0xCCCD) >> 19;
+    let v3 = (v2 * 0xCCCD) >> 19;
+    let v4 = (v3 * 0xCCCD) >> 19;
+    0x0030_3030_3030u64
+        | u64::from(v4)
+        | (u64::from(v3 - v4 * 10) << 8)
+        | (u64::from(v2 - v3 * 10) << 16)
+        | (u64::from(v1 - v2 * 10) << 24)
+        | (u64::from(v0 - v1 * 10) << 32)
+}
+
+#[cfg(target_os = "linux")]
+impl OutPath {
+    #[cold]
+    #[inline(never)]
+    fn new(work_dir: &Path, ext: &str) -> Self {
+        let dir = work_dir.as_bytes();
+        let mut buf = Vec::with_capacity(dir.len() + ext.len() + 14);
+        buf.extend_from_slice(dir);
+        buf.extend_from_slice(b"/encode/00000.");
+        buf.extend_from_slice(ext.as_bytes());
+        Self {
+            at: dir.len() + 8,
+            tail: dot_ext(ext),
+            buf,
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, idx: u16) -> &Path {
+        let dig = idx_digits(idx);
+        let skip = usize::from(idx < 10000);
+        unsafe {
+            let p = self.buf.as_mut_ptr().add(self.at);
+            p.cast::<[u8; 8]>()
+                .write_unaligned((dig >> (skip * 8)).to_le_bytes());
+            p.add(5 - skip).cast::<[u8; 4]>().write_unaligned(self.tail);
+            self.buf.set_len(self.at + 9 - skip);
+        }
+        Path::from_bytes(&self.buf)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct OutPath {
+    dir: PathBuf,
+    ext: &'static str,
+    buf: PathBuf,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl OutPath {
+    #[cold]
+    #[inline(never)]
+    fn new(work_dir: &Path, ext: &'static str) -> Self {
+        Self {
+            dir: work_dir.join("encode"),
+            ext,
+            buf: PathBuf::new(),
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, idx: u16) -> &Path {
+        self.buf = self.dir.join(format!("{idx:04}.{}", self.ext));
+        &self.buf
+    }
+}
+
+#[cfg(feature = "vship")]
 #[inline]
-pub fn get_frame(frames: &[u8], i: usize, frame_sz: usize) -> &[u8] {
-    let start = i * frame_sz;
-    &frames[start..start + frame_sz]
+fn hundredths(crf: f32) -> u32 {
+    (crf * 100.0).round() as u32
+}
+
+#[cfg(all(target_os = "linux", feature = "vship"))]
+pub struct SplitPath {
+    buf: Vec<u8>,
+    at: usize,
+    tail: [u8; 4],
+}
+
+#[cfg(all(target_os = "linux", feature = "vship"))]
+impl SplitPath {
+    const fn unused() -> Self {
+        Self {
+            buf: Vec::new(),
+            at: 0,
+            tail: [0; 4],
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn new(work_dir: &Path, ext: &str) -> Self {
+        let dir = work_dir.as_bytes();
+        let mut buf = Vec::with_capacity(dir.len() + ext.len() + 20);
+        buf.extend_from_slice(dir);
+        buf.extend_from_slice(b"/split/00000_000.00.");
+        buf.extend_from_slice(ext.as_bytes());
+        Self {
+            at: dir.len() + 7,
+            tail: dot_ext(ext),
+            buf,
+        }
+    }
+
+    #[inline]
+    pub fn set(&mut self, idx: u16, crf: f32) -> &Path {
+        let h0 = u64::from(hundredths(crf));
+        let h1 = (h0 * 0xCCCC_CCCD) >> 35;
+        let h2 = (h1 * 0xCCCC_CCCD) >> 35;
+        let h3 = (h2 * 0xCCCC_CCCD) >> 35;
+        let h4 = (h3 * 0xCCCC_CCCD) >> 35;
+        let qua = 0x0030_302E_3030_305Fu64
+            | (h4 << 8)
+            | ((h3 - h4 * 10) << 16)
+            | ((h2 - h3 * 10) << 24)
+            | ((h1 - h2 * 10) << 40)
+            | ((h0 - h1 * 10) << 48);
+        let dig = idx_digits(idx);
+        let skip = usize::from(idx < 10000);
+        unsafe {
+            let p = self.buf.as_mut_ptr().add(self.at);
+            p.cast::<[u8; 8]>()
+                .write_unaligned((dig >> (skip * 8)).to_le_bytes());
+            p.add(5 - skip)
+                .cast::<[u8; 8]>()
+                .write_unaligned(qua.to_le_bytes());
+            p.add(12 - skip)
+                .cast::<[u8; 4]>()
+                .write_unaligned(self.tail);
+            self.buf.set_len(self.at + 16 - skip);
+        }
+        Path::from_bytes(&self.buf)
+    }
+}
+
+#[cfg(all(not(target_os = "linux"), feature = "vship"))]
+pub struct SplitPath {
+    dir: PathBuf,
+    ext: &'static str,
+    buf: PathBuf,
+}
+
+#[cfg(all(not(target_os = "linux"), feature = "vship"))]
+impl SplitPath {
+    fn unused() -> Self {
+        Self {
+            dir: PathBuf::new(),
+            ext: "",
+            buf: PathBuf::new(),
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn new(work_dir: &Path, ext: &'static str) -> Self {
+        Self {
+            dir: work_dir.join("split"),
+            ext,
+            buf: PathBuf::new(),
+        }
+    }
+
+    #[inline]
+    pub fn set(&mut self, idx: u16, crf: f32) -> &Path {
+        let h = hundredths(crf);
+        self.buf = self.dir.join(format!(
+            "{idx:04}_{:03}.{:02}.{}",
+            h / 100,
+            h % 100,
+            self.ext
+        ));
+        &self.buf
+    }
 }
 
 struct WorkerStats {
@@ -133,11 +342,12 @@ struct EncTrack {
     crf_score: Option<(f32, Option<f32>)>,
 }
 
-type SvtEncFn = fn(&mut Vec<u8>, &mut dyn Write, &EncConfig, &EncWorkerCtx, &mut [u8], &EncTrack);
+type LibEncFn =
+    fn(&mut Vec<u8>, &mut dyn Write, &EncConfig, &EncWorkerCtx, &mut [u8], &EncTrack) -> u64;
 
 type WatchEncFn = fn(&Arc<ProgsTrack>, &mut Child, Watch, Encoder);
 
-type ChnkFn = fn(&mut WorkPkg, &str, &EncWorkerCtx, Option<&[u8]>, &mut [u8], usize);
+type ChnkFn = fn(&mut WorkPkg, &str, &EncWorkerCtx, &Path, &mut [u8], usize) -> u64;
 
 #[cfg(feature = "vship")]
 struct EncRecipe<'a> {
@@ -168,26 +378,35 @@ const fn watch_enc_unreachable(_: &Arc<ProgsTrack>, _: &mut Child, _: Watch, _: 
     assume_unreachable();
 }
 
+#[cold]
 fn resolve_watch_enc(encoder: Encoder) -> WatchEncFn {
     match encoder {
         X265 | X264 => watch_enc_stderr,
-        Avm | Vvenc => watch_enc_stdout,
-        SvtAv1 => watch_enc_unreachable,
+        Vvenc => watch_enc_stdout,
+        SvtAv1 | Avm => watch_enc_unreachable,
     }
 }
 
-fn resolve_chnk_fn(encoder: Encoder) -> ChnkFn {
-    if encoder == SvtAv1 {
-        enc_chnk_svt
-    } else {
+const fn is_lib_enc(encoder: Encoder) -> bool {
+    matches!(encoder, SvtAv1 | Avm)
+}
+
+#[cold]
+fn resolve_chnk_fn(encoder: Encoder, zoned: bool) -> ChnkFn {
+    if !is_lib_enc(encoder) {
         enc_chnk_sub
+    } else if zoned {
+        enc_chnk_lib_zoned
+    } else {
+        enc_chnk_lib
     }
 }
 
 #[cfg(feature = "vship")]
+#[cold]
 fn resolve_probe_fn(encoder: Encoder) -> ProbeFn {
-    if encoder == SvtAv1 {
-        enc_tq_probe_svt
+    if is_lib_enc(encoder) {
+        enc_tq_probe_lib
     } else {
         enc_tq_probe_sub
     }
@@ -199,9 +418,11 @@ struct EncWorkerCtx<'a> {
     work_dir: &'a Path,
     prog: &'a Arc<ProgsTrack>,
     encoder: Encoder,
-    svt_enc: SvtEncFn,
+    lib_enc: LibEncFn,
     watch_enc: WatchEncFn,
     chnk_fn: ChnkFn,
+    tmpl: Option<&'a [u8]>,
+    tmpls: &'a [Arc<[u8]>],
     #[cfg(feature = "vship")]
     probe_fn: ProbeFn,
 }
@@ -220,28 +441,97 @@ struct TQWorkerCtx<'a> {
     tq_ctx: &'a TQCtx,
     use_alt_param: bool,
     worker_cnt: usize,
-    make_decoder: fn(i32) -> ProbeDec,
-    retain: fn(&mut WorkPkg, f32),
-    output: fn(&Path, &TQState, &Path),
     threads: i32,
     ext: &'static str,
 }
 
-fn resolve_svt_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> SvtEncFn {
+#[cold]
+#[inline(never)]
+fn resolve_svt_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
     if strat.is_raw() {
         enc_svt_direct
     } else if is_nv12 {
-        let y_ok = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK);
-        let uv_ok = (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
-        if y_ok && uv_ok {
+        if nv12_exact(pipe) {
             enc_svt_nv12_drop
         } else {
             enc_svt_nv12_drop_rem
         }
-    } else if !inf.is_10b && !pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-        enc_svt_drop_rem
-    } else {
+    } else if inf.is_10b {
+        if unpack_exact(pipe) {
+            enc_svt_unpack_drop
+        } else {
+            enc_svt_unpack_drop_rem
+        }
+    } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
         enc_svt_drop
+    } else {
+        enc_svt_drop_rem
+    }
+}
+
+#[cfg(feature = "vship")]
+#[cold]
+#[inline(never)]
+fn resolve_svt_crf_enc(inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+    if inf.is_10b {
+        if unpack_exact(pipe) {
+            enc_svt_lib_unpack
+        } else {
+            enc_svt_lib_unpack_rem
+        }
+    } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
+        enc_svt_lib
+    } else {
+        enc_svt_lib_rem
+    }
+}
+
+const fn nv12_exact(pipe: &Pipeline) -> bool {
+    (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK)
+        && (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2)
+}
+
+const fn unpack_exact(pipe: &Pipeline) -> bool {
+    pipe.final_w.is_multiple_of(PACK_CHUNK) && pipe.frame_sz.is_multiple_of(UNPACK_CHUNK)
+}
+
+#[cfg(feature = "avm")]
+#[cold]
+#[inline(never)]
+fn resolve_avm_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+    if strat.is_raw() {
+        enc_avm_direct
+    } else if is_nv12 {
+        if nv12_exact(pipe) {
+            enc_avm_nv12
+        } else {
+            enc_avm_nv12_rem
+        }
+    } else if inf.is_10b {
+        if unpack_exact(pipe) {
+            enc_avm_unpack
+        } else {
+            enc_avm_unpack_rem
+        }
+    } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
+        enc_avm_conv
+    } else {
+        enc_avm_conv_rem
+    }
+}
+
+#[cold]
+fn resolve_lib_enc(
+    encoder: Encoder,
+    strat: DecStrat,
+    is_nv12: bool,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> LibEncFn {
+    match encoder {
+        #[cfg(feature = "avm")]
+        Avm => resolve_avm_enc(strat, is_nv12, inf, pipe),
+        _ => resolve_svt_enc(strat, is_nv12, inf, pipe),
     }
 }
 
@@ -265,15 +555,15 @@ pub fn enc_all(
     }
 
     let (skip_indices, completed_cnt, completed_frames) = build_skip_set(&resume_data);
-    let stats = Some(create_stats(completed_cnt, &resume_data));
+    let stats = create_stats(completed_cnt, &resume_data);
     let (prog, display_handle) = ProgsTrack::new(
         chnks,
         inf,
         args.worker,
         completed_frames,
-        Arc::clone(&unsafe { stats.as_ref().unwrap_unchecked() }.completed),
-        Arc::clone(&unsafe { stats.as_ref().unwrap_unchecked() }.completed_frames),
-        Arc::clone(&unsafe { stats.as_ref().unwrap_unchecked() }.tot_sz),
+        Arc::clone(&stats.completed),
+        Arc::clone(&stats.completed_frames),
+        Arc::clone(&stats.tot_sz),
     );
     let prog = Arc::new(prog);
 
@@ -282,7 +572,7 @@ pub fn enc_all(
         strat,
         DecStrat::HwNv12To10 | DecStrat::HwNv12To10Stride | DecStrat::HwNv12CropTo10 { .. }
     );
-    let strat = if args.encoder == SvtAv1 && inf.is_10b && args.chnk_buff == args.worker {
+    let strat = if is_lib_enc(args.encoder) && inf.is_10b && args.chnk_buff == args.worker {
         strat.to_raw()
     } else {
         strat
@@ -293,16 +583,18 @@ pub fn enc_all(
         #[cfg(feature = "vship")]
         None,
     );
-    let svt_enc_fn = resolve_svt_enc(strat, is_nv12, inf, &pipe);
-    let chnk_fn = resolve_chnk_fn(args.encoder);
+    let lib_enc_fn = resolve_lib_enc(args.encoder, strat, is_nv12, inf, &pipe);
     #[cfg(feature = "vship")]
     let probe_fn = resolve_probe_fn(args.encoder);
 
     let ring = Arc::new(SeqRing::new());
     let sem = Arc::new(Semaphore::new(args.chnk_buff));
 
+    let build = resolve_build_tmpl(args.encoder);
+    let mut chnks = chnks.to_vec();
+    let zones = build.map_or_else(Vec::new, |_| zone_tmpls(&mut chnks));
+
     let decoder = {
-        let chnks = chnks.to_vec();
         let path = path.to_path_buf();
         let inf = inf.clone();
         let sem = Arc::clone(&sem);
@@ -321,8 +613,9 @@ pub fn enc_all(
         })
     };
 
-    let template = resolve_build_tmpl(args.encoder)
-        .map(|build| build(inf, &args.params, pipe.final_w as u32, pipe.final_h as u32));
+    let tmpls = build.map(|b| build_zoned(b, inf, &args.params, &pipe, &zones));
+    let chnk_fn = resolve_chnk_fn(args.encoder, !zones.is_empty());
+    let watch_enc = resolve_watch_enc(args.encoder);
 
     let mut workers = Vec::new();
     for worker_id in 0..args.worker {
@@ -330,23 +623,26 @@ pub fn enc_all(
         let inf = inf.clone();
         let pipe = pipe.clone();
         let params = args.params.clone();
-        let stats_clone = stats.clone();
+        let stats_clone = Arc::clone(&stats);
         let wd = work_dir.to_path_buf();
         let prog_clone = Arc::clone(&prog);
         let sem_clone = Arc::clone(&sem);
         let encoder = args.encoder;
-        let template = template.clone();
+        let tmpls = tmpls.clone();
 
         let handle = spawn(move || {
+            let tset: &[Arc<[u8]>] = tmpls.as_deref().unwrap_or(&[]);
             let ctx = EncWorkerCtx {
                 inf: &inf,
                 pipe: &pipe,
                 work_dir: &wd,
                 prog: &prog_clone,
                 encoder,
-                svt_enc: svt_enc_fn,
-                watch_enc: resolve_watch_enc(encoder),
+                lib_enc: lib_enc_fn,
+                watch_enc,
                 chnk_fn,
+                tmpl: tset.first().map(|t| &**t),
+                tmpls: tset,
                 #[cfg(feature = "vship")]
                 probe_fn,
             };
@@ -354,8 +650,7 @@ pub fn enc_all(
                 &rx_clone,
                 &params,
                 &ctx,
-                template.as_deref(),
-                stats_clone.as_ref(),
+                &stats_clone,
                 worker_id,
                 &sem_clone,
             );
@@ -384,11 +679,7 @@ struct TQCtx {
 impl TQCtx {
     #[inline(always)]
     fn converged(&self, score: f32) -> bool {
-        if self.use_butter {
-            (self.target - score).abs() <= self.tolerance
-        } else {
-            (score - self.target).abs() <= self.tolerance
-        }
+        (score - self.target).abs() <= self.tolerance
     }
 
     #[inline(always)]
@@ -439,19 +730,13 @@ impl TQCtx {
 fn complete_chnk(
     chnk_idx: u16,
     chnk_frames: usize,
-    probe_path: &Path,
+    file_sz: u64,
     ctx: &TQWorkerCtx,
     tq_state: &TQState,
     best: &Probe,
 ) {
-    let dst = ctx
-        .work_dir
-        .join("encode")
-        .join(format!("{chnk_idx:04}.{}", ctx.ext));
-    (ctx.output)(&dst, tq_state, probe_path);
     unsafe { mpsc_send(ctx.done_tx, 1) };
 
-    let file_sz = metadata(&dst).unwrap_or(0);
     let comp = ChunkComp {
         idx: chnk_idx,
         frames: chnk_frames,
@@ -496,12 +781,6 @@ fn complete_chnk(
 }
 
 #[cfg(feature = "vship")]
-#[inline]
-pub fn probe_path(dir: &Path, idx: u16, crf: f32, ext: &str) -> PathBuf {
-    dir.join("split").join(format!("{idx:04}_{crf:.2}.{ext}"))
-}
-
-#[cfg(feature = "vship")]
 fn retain_swap(pkg: &mut WorkPkg, score: f32) {
     let WorkPkg {
         ref mut probe,
@@ -520,129 +799,386 @@ fn retain_swap(pkg: &mut WorkPkg, score: f32) {
 const fn retain_noop(_: &mut WorkPkg, _: f32) {}
 
 #[cfg(feature = "vship")]
-fn output_bytes(dst: &Path, tq: &TQState, _: &Path) {
+fn output_bytes(dst: &Path, tq: &TQState, _: &mut SplitPath, _: u16, _: f32, _: usize) -> u64 {
     _ = write(dst, &tq.best_probe);
+    tq.best_probe.len() as u64
 }
 
 #[cfg(feature = "vship")]
-const fn output_noop(_: &Path, _: &TQState, _: &Path) {}
-
-#[cfg(feature = "vship")]
-fn output_copy(dst: &Path, _: &TQState, probe_path: &Path) {
-    if probe_path != dst {
-        _ = copy(probe_path, dst);
-    }
+const fn output_probe(_: &Path, _: &TQState, _: &mut SplitPath, _: u16, _: f32, n: usize) -> u64 {
+    n as u64
 }
 
 #[cfg(feature = "vship")]
-fn resolve_output(svt: bool, use_alt: bool) -> fn(&Path, &TQState, &Path) {
-    match (svt, use_alt) {
-        (true, false) => output_bytes,
-        (true, true) => output_noop,
-        (false, _) => output_copy,
-    }
+fn output_copy(dst: &Path, _: &TQState, sp: &mut SplitPath, idx: u16, crf: f32, _: usize) -> u64 {
+    copy(sp.set(idx, crf), dst).unwrap_or(0)
+}
+
+#[cold]
+#[inline(never)]
+#[cfg(feature = "vship")]
+fn output_stat(dst: &Path, _: &TQState, _: &mut SplitPath, _: u16, _: f32, _: usize) -> u64 {
+    metadata(dst).unwrap_or(0)
 }
 
 #[cfg(feature = "vship")]
-fn run_metric_worker(
-    rx: &SeqRing,
-    work_tx: &SeqRing,
-    ctx: &TQWorkerCtx,
-    worker_id: usize,
-    disp: Option<Disp>,
-) {
-    let mut vship: Option<VshipProcessor> = None;
-    let mut dec: Option<ProbeDec> = None;
-    let mut unpacked_buf = PinnedBuf::new(ctx.pipe.unpack_buf_sz).unwrap_or_else(|e| fatal(e));
+const fn split_unused(_: &Path, _: &str) -> SplitPath {
+    SplitPath::unused()
+}
 
-    loop {
-        let m = unsafe { mpmc_recv(rx) };
-        if m == 0 {
-            cold_path();
-            break;
-        }
-        let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
-        let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
-        if tq_st.final_enc {
-            let best = ctx.tq_ctx.best_probe(&tq_st.probes);
-            let p = ctx
-                .work_dir
-                .join("encode")
-                .join(format!("{:04}.{}", pkg.chnk.idx, ctx.ext));
-            complete_chnk(pkg.chnk.idx, pkg.frame_cnt, &p, ctx, tq_st, best);
-            continue;
-        }
+#[cfg(feature = "vship")]
+type MetricLoopFn = fn(&SeqRing, &SeqRing, &TQWorkerCtx, usize, Option<Disp>);
 
-        if vship.is_none() {
-            let v = VshipProcessor::new(
-                pkg.width,
-                pkg.height,
-                ctx.inf,
-                ctx.tq_ctx.use_cvvdp,
-                ctx.tq_ctx.use_butter,
-                disp,
-            )
-            .unwrap_or_else(|e| fatal(e));
-            vship = Some(v);
-        }
+#[cfg(feature = "vship")]
+macro_rules! make_metric_loop {
+    (
+        $name:ident,
+        $mk_dec:expr,
+        $prep:expr,
+        $retain:expr,
+        $output:expr,
+        $mk_split:expr,
+        $calc:expr
+    ) => {
+        fn $name(
+            rx: &SeqRing,
+            work_tx: &SeqRing,
+            ctx: &TQWorkerCtx,
+            worker_id: usize,
+            disp: Option<Disp>,
+        ) {
+            let mut vship: Option<VshipProcessor> = None;
+            let mut dec: Option<ProbeDec> = None;
+            let mut unpacked_buf =
+                PinnedBuf::new(ctx.pipe.unpack_buf_sz).unwrap_or_else(|e| fatal(e));
+            let mut enc_path = OutPath::new(ctx.work_dir, ctx.ext);
+            let mut split_path = ($mk_split)(ctx.work_dir, ctx.ext);
 
-        let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
-        let crf = tq_st.last_crf;
-        let last_score = tq_st.probes.last().map(|probe| probe.score);
-        let metric_slot = ctx.worker_cnt + worker_id;
+            loop {
+                let m = unsafe { mpmc_recv(rx) };
+                if m == 0 {
+                    cold_path();
+                    break;
+                }
+                let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
+                let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
+                if tq_st.final_enc {
+                    let best = ctx.tq_ctx.best_probe(&tq_st.probes);
+                    let sz = ($output)(
+                        enc_path.set(pkg.chnk.idx),
+                        tq_st,
+                        &mut split_path,
+                        pkg.chnk.idx,
+                        best.crf,
+                        pkg.probe.len(),
+                    );
+                    complete_chnk(pkg.chnk.idx, pkg.frame_cnt, sz, ctx, tq_st, best);
+                    continue;
+                }
 
-        let d = dec.get_or_insert_with(|| (ctx.make_decoder)(ctx.threads));
-        let probe_sz = d.prep(&pkg, ctx.work_dir, pkg.chnk.idx, crf, ctx.ext);
-        unsafe { pkg.tq_state.as_mut().unwrap_unchecked() }
-            .probe_szs
-            .push((crf, probe_sz));
+                if vship.is_none() {
+                    let v = VshipProcessor::new(
+                        pkg.width,
+                        pkg.height,
+                        ctx.inf,
+                        ctx.tq_ctx.use_cvvdp,
+                        ctx.tq_ctx.use_butter,
+                        disp,
+                    )
+                    .unwrap_or_else(|e| fatal(e));
+                    vship = Some(v);
+                }
 
-        let mp = MetricProgs {
-            prog: ctx.prog,
-            slot: metric_slot,
-            crf,
-            last_score,
-        };
-        let (score, frame_scores) = (ctx.pipe.calc_metric)(
-            &pkg,
-            d,
-            ctx.pipe,
-            unsafe { vship.as_ref().unwrap_unchecked() },
-            ctx.metric_mode,
-            &mut unpacked_buf,
-            &mp,
-        );
+                let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
+                let crf = tq_st.last_crf;
+                let last_score = tq_st.probes.last().map(|probe| probe.score);
+                let metric_slot = ctx.worker_cnt + worker_id;
 
-        (ctx.retain)(&mut pkg, score);
+                let d = dec.get_or_insert_with(|| ($mk_dec)(ctx.threads));
+                let probe_sz = ($prep)(d, &pkg, &mut split_path, pkg.chnk.idx, crf);
+                unsafe { pkg.tq_state.as_mut().unwrap_unchecked() }
+                    .probe_szs
+                    .push((crf, probe_sz));
 
-        let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
+                let mp = MetricProgs {
+                    prog: ctx.prog,
+                    slot: metric_slot,
+                    crf,
+                    last_score,
+                };
+                let score = ($calc)(
+                    &pkg,
+                    d,
+                    ctx.pipe,
+                    unsafe { vship.as_ref().unwrap_unchecked() },
+                    ctx.metric_mode,
+                    &mut unpacked_buf,
+                    &mp,
+                );
 
-        let should_complete = ctx.tq_ctx.converged(score)
-            || tq_state
-                .probes
-                .iter()
-                .any(|p| (p.crf - crf) * (p.score - score) >= 0.0)
-            || ctx.tq_ctx.up_bounds(tq_state, score);
+                ($retain)(&mut pkg, score);
 
-        tq_state.probes.push(Probe {
-            crf,
-            score,
-            frame_scores,
-        });
+                let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
 
-        if should_complete {
-            let best = ctx.tq_ctx.best_probe(&tq_state.probes);
-            if ctx.use_alt_param {
-                tq_state.final_enc = true;
-                tq_state.last_crf = best.crf;
-                unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
-            } else {
-                let bp = probe_path(ctx.work_dir, pkg.chnk.idx, best.crf, ctx.ext);
-                complete_chnk(pkg.chnk.idx, pkg.frame_cnt, &bp, ctx, tq_state, best);
+                let should_complete = ctx.tq_ctx.converged(score)
+                    || tq_state
+                        .probes
+                        .iter()
+                        .any(|p| (p.crf - crf) * (p.score - score) >= 0.0)
+                    || ctx.tq_ctx.up_bounds(tq_state, score);
+
+                tq_state.probes.push(Probe { crf, score });
+
+                if should_complete {
+                    let best = ctx.tq_ctx.best_probe(&tq_state.probes);
+                    if ctx.use_alt_param {
+                        tq_state.final_enc = true;
+                        tq_state.last_crf = best.crf;
+                        unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
+                    } else {
+                        let sz = ($output)(
+                            enc_path.set(pkg.chnk.idx),
+                            tq_state,
+                            &mut split_path,
+                            pkg.chnk.idx,
+                            best.crf,
+                            pkg.probe.len(),
+                        );
+                        complete_chnk(pkg.chnk.idx, pkg.frame_cnt, sz, ctx, tq_state, best);
+                    }
+                } else {
+                    unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
+                }
             }
-        } else {
-            unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
         }
+    };
+}
+
+#[cfg(feature = "vship")]
+macro_rules! make_metric_group {
+    (
+        $mk_dec:expr,
+        $prep:expr,
+        $retain:expr,
+        $output:expr,
+        $mk_split:expr,
+        $ss8:ident,
+        $c_ss8:expr,
+        $ss10:ident,
+        $c_ss10:expr,
+        $ssr:ident,
+        $c_ssr:expr,
+        $bu8:ident,
+        $c_bu8:expr,
+        $bu10:ident,
+        $c_bu10:expr,
+        $bur:ident,
+        $c_bur:expr,
+        $cv8:ident,
+        $c_cv8:expr,
+        $cv10:ident,
+        $c_cv10:expr,
+        $cvr:ident,
+        $c_cvr:expr
+    ) => {
+        make_metric_loop!($ss8, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss8);
+        make_metric_loop!($ss10, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss10);
+        make_metric_loop!($ssr, $mk_dec, $prep, $retain, $output, $mk_split, $c_ssr);
+        make_metric_loop!($bu8, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu8);
+        make_metric_loop!($bu10, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu10);
+        make_metric_loop!($bur, $mk_dec, $prep, $retain, $output, $mk_split, $c_bur);
+        make_metric_loop!($cv8, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv8);
+        make_metric_loop!($cv10, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv10);
+        make_metric_loop!($cvr, $mk_dec, $prep, $retain, $output, $mk_split, $c_cvr);
+    };
+}
+
+#[cfg(feature = "vship")]
+make_metric_group!(
+    make_dav1d,
+    prep_dav1d,
+    retain_swap,
+    output_bytes,
+    split_unused,
+    met_d_ss_8b,
+    calc_ssimu2_8b_dav1d,
+    met_d_ss_10b,
+    calc_ssimu2_10b_dav1d,
+    met_d_ss_rem,
+    calc_ssimu2_rem_dav1d,
+    met_d_bu_8b,
+    calc_butter_8b_dav1d,
+    met_d_bu_10b,
+    calc_butter_10b_dav1d,
+    met_d_bu_rem,
+    calc_butter_rem_dav1d,
+    met_d_cv_8b,
+    calc_cvvdp_8b_dav1d,
+    met_d_cv_10b,
+    calc_cvvdp_10b_dav1d,
+    met_d_cv_rem,
+    calc_cvvdp_rem_dav1d
+);
+#[cfg(feature = "vship")]
+make_metric_group!(
+    make_dav1d,
+    prep_dav1d,
+    retain_noop,
+    output_probe,
+    split_unused,
+    met_da_ss_8b,
+    calc_ssimu2_8b_dav1d,
+    met_da_ss_10b,
+    calc_ssimu2_10b_dav1d,
+    met_da_ss_rem,
+    calc_ssimu2_rem_dav1d,
+    met_da_bu_8b,
+    calc_butter_8b_dav1d,
+    met_da_bu_10b,
+    calc_butter_10b_dav1d,
+    met_da_bu_rem,
+    calc_butter_rem_dav1d,
+    met_da_cv_8b,
+    calc_cvvdp_8b_dav1d,
+    met_da_cv_10b,
+    calc_cvvdp_10b_dav1d,
+    met_da_cv_rem,
+    calc_cvvdp_rem_dav1d
+);
+#[cfg(feature = "vship")]
+make_metric_group!(
+    make_ff,
+    prep_ff,
+    retain_noop,
+    output_copy,
+    SplitPath::new,
+    met_f_ss_8b,
+    calc_ssimu2_8b_ff,
+    met_f_ss_10b,
+    calc_ssimu2_10b_ff,
+    met_f_ss_rem,
+    calc_ssimu2_rem_ff,
+    met_f_bu_8b,
+    calc_butter_8b_ff,
+    met_f_bu_10b,
+    calc_butter_10b_ff,
+    met_f_bu_rem,
+    calc_butter_rem_ff,
+    met_f_cv_8b,
+    calc_cvvdp_8b_ff,
+    met_f_cv_10b,
+    calc_cvvdp_10b_ff,
+    met_f_cv_rem,
+    calc_cvvdp_rem_ff
+);
+#[cfg(feature = "vship")]
+make_metric_group!(
+    make_ff,
+    prep_ff,
+    retain_noop,
+    output_stat,
+    SplitPath::new,
+    met_fa_ss_8b,
+    calc_ssimu2_8b_ff,
+    met_fa_ss_10b,
+    calc_ssimu2_10b_ff,
+    met_fa_ss_rem,
+    calc_ssimu2_rem_ff,
+    met_fa_bu_8b,
+    calc_butter_8b_ff,
+    met_fa_bu_10b,
+    calc_butter_10b_ff,
+    met_fa_bu_rem,
+    calc_butter_rem_ff,
+    met_fa_cv_8b,
+    calc_cvvdp_8b_ff,
+    met_fa_cv_10b,
+    calc_cvvdp_10b_ff,
+    met_fa_cv_rem,
+    calc_cvvdp_rem_ff
+);
+
+#[cfg(feature = "vship")]
+#[cold]
+fn by_shape(
+    inf: &VidInf,
+    pipe: &Pipeline,
+    b8: MetricLoopFn,
+    p10: MetricLoopFn,
+    rem: MetricLoopFn,
+) -> MetricLoopFn {
+    if !inf.is_10b {
+        b8
+    } else if unpack_exact(pipe) {
+        p10
+    } else {
+        rem
+    }
+}
+
+#[cfg(feature = "vship")]
+#[cold]
+fn dav1d_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    if tq.use_butter {
+        by_shape(inf, pipe, met_d_bu_8b, met_d_bu_10b, met_d_bu_rem)
+    } else if tq.use_cvvdp {
+        by_shape(inf, pipe, met_d_cv_8b, met_d_cv_10b, met_d_cv_rem)
+    } else {
+        by_shape(inf, pipe, met_d_ss_8b, met_d_ss_10b, met_d_ss_rem)
+    }
+}
+
+#[cfg(feature = "vship")]
+#[cold]
+fn dav1d_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    if tq.use_butter {
+        by_shape(inf, pipe, met_da_bu_8b, met_da_bu_10b, met_da_bu_rem)
+    } else if tq.use_cvvdp {
+        by_shape(inf, pipe, met_da_cv_8b, met_da_cv_10b, met_da_cv_rem)
+    } else {
+        by_shape(inf, pipe, met_da_ss_8b, met_da_ss_10b, met_da_ss_rem)
+    }
+}
+
+#[cfg(feature = "vship")]
+#[cold]
+fn ff_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    if tq.use_butter {
+        by_shape(inf, pipe, met_f_bu_8b, met_f_bu_10b, met_f_bu_rem)
+    } else if tq.use_cvvdp {
+        by_shape(inf, pipe, met_f_cv_8b, met_f_cv_10b, met_f_cv_rem)
+    } else {
+        by_shape(inf, pipe, met_f_ss_8b, met_f_ss_10b, met_f_ss_rem)
+    }
+}
+
+#[cfg(feature = "vship")]
+#[cold]
+fn ff_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    if tq.use_butter {
+        by_shape(inf, pipe, met_fa_bu_8b, met_fa_bu_10b, met_fa_bu_rem)
+    } else if tq.use_cvvdp {
+        by_shape(inf, pipe, met_fa_cv_8b, met_fa_cv_10b, met_fa_cv_rem)
+    } else {
+        by_shape(inf, pipe, met_fa_ss_8b, met_fa_ss_10b, met_fa_ss_rem)
+    }
+}
+
+#[cfg(feature = "vship")]
+#[cold]
+#[inline(never)]
+fn resolve_metric_loop(
+    dav1d: bool,
+    use_alt: bool,
+    tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    match (dav1d, use_alt) {
+        (true, false) => dav1d_loop(tq, inf, pipe),
+        (true, true) => dav1d_alt_loop(tq, inf, pipe),
+        (false, false) => ff_loop(tq, inf, pipe),
+        (false, true) => ff_alt_loop(tq, inf, pipe),
     }
 }
 
@@ -715,78 +1251,139 @@ struct TqEncParams<'a> {
 }
 
 #[cfg(feature = "vship")]
-fn tq_enc_loop(
-    rx: &SeqRing,
-    tx: &SeqRing,
-    ctx: &EncWorkerCtx,
-    enc: &TqEncParams,
-    tq_ctx: &TQCtx,
-    worker_id: usize,
-) {
-    let &TqEncParams {
-        tmpls,
-        params,
-        alt_param,
-    } = enc;
-    let mut conv_buf = vec![0u8; ctx.pipe.conv_buf_sz];
-    loop {
-        let m = unsafe { spmc_recv(rx) };
-        if m == 0 {
-            cold_path();
-            break;
-        }
-        let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
-        let tq = pkg.tq_state.get_or_insert_with(|| TQState {
-            probes: Vec::new(),
-            probe_szs: Vec::new(),
-            search_min: tq_ctx.qp_min,
-            search_max: tq_ctx.qp_max,
-            round: 0,
-            target: tq_ctx.target,
-            last_crf: 0.0,
-            final_enc: false,
-            best_probe: Vec::new(),
-            best_diff: f32::INFINITY,
-        });
-        let is_final = tq.final_enc;
-        let crf = if is_final {
-            tq.last_crf
-        } else {
-            tq_search_crf(tq, ctx.encoder)
-        };
-        let (p, out) = if is_final {
-            (
+type TqLoopFn = fn(&SeqRing, &SeqRing, &EncWorkerCtx, &TqEncParams, &TQCtx, usize);
+
+#[cfg(feature = "vship")]
+macro_rules! make_tq_loop {
+    (
+        $name:ident, $pkg:ident, $crf:ident, $fin:ident, $probe:ident, $is_final:ident,
+        $sel:expr, $probe_dst:expr $(, $split:ident)?
+    ) => {
+        fn $name(
+            rx: &SeqRing,
+            tx: &SeqRing,
+            ctx: &EncWorkerCtx,
+            enc: &TqEncParams,
+            tq_ctx: &TQCtx,
+            worker_id: usize,
+        ) {
+            let &TqEncParams {
+                tmpls,
                 params,
-                Some(ctx.work_dir.join("encode").join(format!(
-                    "{:04}.{}",
-                    pkg.chnk.idx,
-                    ctx.encoder.extension()
-                ))),
-            )
-        } else {
-            (alt_param.unwrap_or(params), None)
-        };
-        let svt_t = tmpls.map(|t| {
-            let base: &[u8] = &t.base;
-            if is_final {
-                base
-            } else {
-                t.alt.as_deref().unwrap_or(base)
+                alt_param,
+            } = enc;
+            let mut conv_buf = vec![0u8; ctx.pipe.conv_buf_sz];
+            let ext = ctx.encoder.extension();
+            let mut enc_path = OutPath::new(ctx.work_dir, ext);
+            $(let mut $split = SplitPath::new(ctx.work_dir, ext);)?
+            let probe_params = alt_param.unwrap_or(params);
+            let ($fin, $probe) = tmpls.map_or((&[][..], &[][..]), |t| {
+                (t.base.as_slice(), t.alt.as_deref().unwrap_or(&t.base))
+            });
+            loop {
+                let m = unsafe { spmc_recv(rx) };
+                if m == 0 {
+                    cold_path();
+                    break;
+                }
+                let mut $pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
+                let tq = $pkg.tq_state.get_or_insert_with(|| TQState {
+                    probes: Vec::new(),
+                    probe_szs: Vec::new(),
+                    search_min: tq_ctx.qp_min,
+                    search_max: tq_ctx.qp_max,
+                    round: 0,
+                    target: tq_ctx.target,
+                    last_crf: 0.0,
+                    final_enc: false,
+                    best_probe: Vec::new(),
+                    best_diff: f32::INFINITY,
+                });
+                let $is_final = tq.final_enc;
+                let $crf = if $is_final {
+                    tq.last_crf
+                } else {
+                    tq_search_crf(tq, ctx.encoder)
+                };
+                let (p, dst) = if $is_final {
+                    (params, Some(enc_path.set($pkg.chnk.idx)))
+                } else {
+                    (probe_params, $probe_dst)
+                };
+                let svt_t = $sel;
+                (ctx.probe_fn)(
+                    &mut $pkg,
+                    $crf,
+                    &EncRecipe {
+                        params: p,
+                        template: svt_t,
+                    },
+                    ctx,
+                    &mut conv_buf,
+                    worker_id,
+                    dst,
+                );
+                unsafe { mpmc_send(tx, Box::into_raw($pkg) as u64) };
             }
-        });
-        (ctx.probe_fn)(
-            &mut pkg,
-            crf,
-            &EncRecipe {
-                params: p,
-                template: svt_t,
-            },
-            ctx,
-            &mut conv_buf,
-            worker_id,
-            out.as_deref(),
-        );
-        unsafe { mpmc_send(tx, Box::into_raw(pkg) as u64) };
+        }
+    };
+}
+
+#[cfg(feature = "vship")]
+make_tq_loop!(
+    tq_enc_loop,
+    pkg,
+    crf,
+    fin,
+    probe,
+    is_final,
+    if is_final { fin } else { probe }.first().map(|t| &**t),
+    None
+);
+#[cfg(feature = "vship")]
+make_tq_loop!(
+    tq_enc_loop_zoned,
+    pkg,
+    crf,
+    fin,
+    probe,
+    is_final,
+    Some(&**unsafe { if is_final { fin } else { probe }.get_unchecked(pkg.chnk.tmpl as usize) }),
+    None
+);
+#[cfg(feature = "vship")]
+make_tq_loop!(
+    tq_enc_loop_sub,
+    pkg,
+    crf,
+    fin,
+    probe,
+    is_final,
+    if is_final { fin } else { probe }.first().map(|t| &**t),
+    Some(split.set(pkg.chnk.idx, crf)),
+    split
+);
+#[cfg(feature = "vship")]
+make_tq_loop!(
+    tq_enc_loop_sub_zoned,
+    pkg,
+    crf,
+    fin,
+    probe,
+    is_final,
+    Some(&**unsafe { if is_final { fin } else { probe }.get_unchecked(pkg.chnk.tmpl as usize) }),
+    Some(split.set(pkg.chnk.idx, crf)),
+    split
+);
+
+#[cfg(feature = "vship")]
+#[cold]
+fn resolve_tq_loop(zoned: bool, lib: bool) -> TqLoopFn {
+    match (lib, zoned) {
+        (true, false) => tq_enc_loop,
+        (true, true) => tq_enc_loop_zoned,
+        (false, false) => tq_enc_loop_sub,
+        (false, true) => tq_enc_loop_sub_zoned,
     }
 }
 
@@ -853,6 +1450,10 @@ fn enc_tq(
     let strat = unsafe { args.dec_strat.unwrap_unchecked() };
     let pipe = Pipeline::new(inf, strat, args.tq.as_deref());
     let permits = Arc::new(Semaphore::new(args.chnk_buff));
+    let build = resolve_build_tmpl(args.encoder);
+    let mut chnks = chnks.to_vec();
+    let zones = build.map_or_else(Vec::new, |_| zone_tmpls(&mut chnks));
+    let chnks = &chnks;
 
     let dec = spawn_tq_dec(chnks, path, inf, skip_indices, strat, &permits, pipe_reader);
     let met = Arc::new(SeqRing::new());
@@ -881,6 +1482,8 @@ fn enc_tq(
         resume_state: &resume_state,
         tq_logger: &tq_logger,
         tq_ctx,
+        zones: &zones,
+        build,
         encoder: args.encoder,
         use_alt_param: args.alt_param.is_some(),
         worker_cnt: args.worker,
@@ -913,6 +1516,8 @@ struct TQSpawnCtx<'a> {
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
     tq_ctx: TQCtx,
+    zones: &'a [Box<str>],
+    build: Option<BuildTmpl>,
     encoder: Encoder,
     use_alt_param: bool,
     worker_cnt: usize,
@@ -925,14 +1530,13 @@ fn spawn_tq_metric(
     coord: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<PHandle> {
-    let svt = sc.encoder == SvtAv1;
-    let make_decoder: fn(i32) -> ProbeDec = if svt { make_dav1d } else { make_ff };
-    let retain: fn(&mut WorkPkg, f32) = if svt && !sc.use_alt_param {
-        retain_swap
-    } else {
-        retain_noop
-    };
-    let output = resolve_output(svt, sc.use_alt_param);
+    let metric_loop = resolve_metric_loop(
+        sc.encoder == SvtAv1,
+        sc.use_alt_param,
+        &sc.tq_ctx,
+        sc.inf,
+        sc.pipe,
+    );
     let threads = available_parallelism() as i32;
     let ext = sc.encoder.extension();
     let disp = sc.args.disp;
@@ -962,13 +1566,10 @@ fn spawn_tq_metric(
                 tq_ctx: &tq_ctx,
                 use_alt_param,
                 worker_cnt,
-                make_decoder,
-                retain,
-                output,
                 threads,
                 ext,
             };
-            run_metric_worker(&rx, &coord, &ctx, worker_id, disp);
+            metric_loop(&rx, &coord, &ctx, worker_id, disp);
         }));
     }
     metric_workers
@@ -977,8 +1578,8 @@ fn spawn_tq_metric(
 #[cfg(feature = "vship")]
 #[derive(Clone)]
 struct TqTmpls {
-    base: Arc<[u8]>,
-    alt: Option<Arc<[u8]>>,
+    base: Vec<Arc<[u8]>>,
+    alt: Option<Vec<Arc<[u8]>>>,
 }
 
 #[cfg(feature = "vship")]
@@ -987,20 +1588,23 @@ fn spawn_tq_encoders(
     met: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<JoinHandle<()>> {
-    let tmpls = resolve_build_tmpl(sc.encoder).map(|build| {
-        let (w, h) = (sc.pipe.final_w as u32, sc.pipe.final_h as u32);
-        TqTmpls {
-            base: build(sc.inf, &sc.args.params, w, h),
-            alt: sc
-                .args
-                .alt_param
-                .as_deref()
-                .map(|ap| build(sc.inf, ap, w, h)),
-        }
+    let tmpls = sc.build.map(|build| TqTmpls {
+        base: build_zoned(build, sc.inf, &sc.args.params, sc.pipe, sc.zones),
+        alt: sc
+            .args
+            .alt_param
+            .as_deref()
+            .map(|ap| build_zoned(build, sc.inf, ap, sc.pipe, sc.zones)),
     });
     let mut workers = Vec::new();
-    let chnk_fn = resolve_chnk_fn(sc.encoder);
+    let chnk_fn = resolve_chnk_fn(sc.encoder, false);
     let probe_fn = resolve_probe_fn(sc.encoder);
+    let watch_enc = resolve_watch_enc(sc.encoder);
+    let svt_enc = resolve_svt_crf_enc(sc.inf, sc.pipe);
+    let tq_loop = resolve_tq_loop(
+        !sc.zones.is_empty() && tmpls.is_some(),
+        is_lib_enc(sc.encoder),
+    );
     for worker_id in 0..sc.worker_cnt {
         let (rx, tx) = (Arc::clone(enc), Arc::clone(met));
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
@@ -1008,11 +1612,6 @@ fn spawn_tq_encoders(
         let prog_clone = Arc::clone(sc.prog);
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
         let tmpls = tmpls.clone();
-        let svt_enc: SvtEncFn = if !sc.inf.is_10b && !sc.pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            enc_svt_lib_rem
-        } else {
-            enc_svt_lib
-        };
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
                 inf: &inf,
@@ -1020,12 +1619,14 @@ fn spawn_tq_encoders(
                 work_dir: &wd,
                 prog: &prog_clone,
                 encoder,
-                svt_enc,
-                watch_enc: resolve_watch_enc(encoder),
+                lib_enc: svt_enc,
+                watch_enc,
                 chnk_fn,
+                tmpl: None,
+                tmpls: &[],
                 probe_fn,
             };
-            tq_enc_loop(
+            tq_loop(
                 &rx,
                 &tx,
                 &ctx,
@@ -1043,14 +1644,14 @@ fn spawn_tq_encoders(
 }
 
 #[cfg(feature = "vship")]
-fn enc_tq_probe_svt(
+fn enc_tq_probe_lib(
     pkg: &mut WorkPkg,
     crf: f32,
     recipe: &EncRecipe,
     ctx: &EncWorkerCtx,
     conv_buf: &mut [u8],
     worker_id: usize,
-    out_override: Option<&Path>,
+    dst: Option<&Path>,
 ) {
     let &EncRecipe { params, template } = recipe;
     let last_score = pkg
@@ -1061,7 +1662,6 @@ fn enc_tq_probe_svt(
         inf: ctx.inf,
         template,
         params,
-        zone_params: pkg.chnk.params.as_deref(),
         crf: Some(crf),
         out: Path::new(""),
         chnk_idx: pkg.chnk.idx,
@@ -1070,7 +1670,7 @@ fn enc_tq_probe_svt(
         frames: pkg.frame_cnt,
     };
     pkg.probe.clear();
-    (ctx.svt_enc)(
+    (ctx.lib_enc)(
         &mut pkg.yuv,
         &mut pkg.probe,
         &cfg,
@@ -1082,8 +1682,8 @@ fn enc_tq_probe_svt(
             crf_score: Some((crf, last_score)),
         },
     );
-    if let Some(out_path) = out_override {
-        _ = write(out_path, &pkg.probe);
+    if let Some(fin) = dst {
+        _ = write(fin, &pkg.probe);
     }
 }
 
@@ -1095,21 +1695,14 @@ fn enc_tq_probe_sub(
     ctx: &EncWorkerCtx,
     conv_buf: &mut [u8],
     worker_id: usize,
-    out_override: Option<&Path>,
+    dst: Option<&Path>,
 ) {
     let &EncRecipe { params, template } = recipe;
-    let default_out;
-    let out = if let Some(p) = out_override {
-        p
-    } else {
-        default_out = probe_path(ctx.work_dir, pkg.chnk.idx, crf, ctx.encoder.extension());
-        &default_out
-    };
+    let out = unsafe { dst.unwrap_unchecked() };
     let cfg = EncConfig {
         inf: ctx.inf,
         template,
         params,
-        zone_params: pkg.chnk.params.as_deref(),
         crf: Some(crf),
         out,
         chnk_idx: pkg.chnk.idx,
@@ -1118,7 +1711,7 @@ fn enc_tq_probe_sub(
         frames: pkg.frame_cnt,
     };
 
-    let cmd = make_enc_cmd(ctx.encoder, &cfg);
+    let cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params.as_deref());
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     let last_score = pkg
@@ -1155,12 +1748,12 @@ fn run_enc_worker(
     rx: &SeqRing,
     params: &str,
     ctx: &EncWorkerCtx,
-    template: Option<&[u8]>,
-    stats: Option<&Arc<WorkerStats>>,
+    stats: &Arc<WorkerStats>,
     worker_id: usize,
     sem: &Arc<Semaphore>,
 ) {
     let mut conv_buf = vec![0u8; ctx.pipe.conv_buf_sz];
+    let mut enc_path = OutPath::new(ctx.work_dir, ctx.encoder.extension());
 
     loop {
         let m = unsafe { spmc_recv(rx) };
@@ -1169,95 +1762,90 @@ fn run_enc_worker(
             break;
         }
         let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
-        (ctx.chnk_fn)(&mut pkg, params, ctx, template, &mut conv_buf, worker_id);
+        let out = enc_path.set(pkg.chnk.idx);
+        let sz = (ctx.chnk_fn)(&mut pkg, params, ctx, out, &mut conv_buf, worker_id);
 
-        if let Some(s) = stats {
-            s.completed.fetch_add(1, Relaxed);
-            let out = ctx.work_dir.join("encode").join(format!(
-                "{:04}.{}",
-                pkg.chnk.idx,
-                ctx.encoder.extension()
-            ));
-            let file_sz = metadata(&out).unwrap_or(0);
-            let comp = ChunkComp {
+        stats.completed.fetch_add(1, Relaxed);
+        stats.add_completion(
+            ChunkComp {
                 idx: pkg.chnk.idx,
                 frames: pkg.frame_cnt,
-                sz: file_sz,
-            };
-            s.add_completion(comp, ctx.work_dir);
-        }
+                sz,
+            },
+            ctx.work_dir,
+        );
 
         sem_release(sem);
     }
 }
 
-fn enc_chnk_svt(
-    pkg: &mut WorkPkg,
-    params: &str,
-    ctx: &EncWorkerCtx,
-    template: Option<&[u8]>,
-    conv_buf: &mut [u8],
-    worker_id: usize,
-) {
-    let out = ctx.work_dir.join("encode").join(format!(
-        "{:04}.{}",
-        pkg.chnk.idx,
-        ctx.encoder.extension()
-    ));
-    let cfg = EncConfig {
-        inf: ctx.inf,
-        template,
-        params,
-        zone_params: pkg.chnk.params.as_deref(),
-        crf: None,
-        out: &out,
-        chnk_idx: pkg.chnk.idx,
-        width: pkg.width,
-        height: pkg.height,
-        frames: pkg.frame_cnt,
+macro_rules! make_chnk_lib {
+    ($name:ident, $ctx:ident, $pkg:ident, $tmpl:expr) => {
+        fn $name(
+            $pkg: &mut WorkPkg,
+            params: &str,
+            $ctx: &EncWorkerCtx,
+            out: &Path,
+            conv_buf: &mut [u8],
+            worker_id: usize,
+        ) -> u64 {
+            let cfg = EncConfig {
+                inf: $ctx.inf,
+                template: $tmpl,
+                params,
+                crf: None,
+                out,
+                chnk_idx: $pkg.chnk.idx,
+                width: $pkg.width,
+                height: $pkg.height,
+                frames: $pkg.frame_cnt,
+            };
+            let mut sink = BufWriter::new(File::create(out).unwrap_or_else(|e| fatal(e)));
+            ($ctx.lib_enc)(
+                &mut $pkg.yuv,
+                &mut sink,
+                &cfg,
+                $ctx,
+                conv_buf,
+                &EncTrack {
+                    worker_id,
+                    track_frames: true,
+                    crf_score: None,
+                },
+            )
+        }
     };
-    let mut sink = BufWriter::new(File::create(&out).unwrap_or_else(|e| fatal(e)));
-    (ctx.svt_enc)(
-        &mut pkg.yuv,
-        &mut sink,
-        &cfg,
-        ctx,
-        conv_buf,
-        &EncTrack {
-            worker_id,
-            track_frames: true,
-            crf_score: None,
-        },
-    );
 }
+
+make_chnk_lib!(enc_chnk_lib, ctx, pkg, ctx.tmpl);
+make_chnk_lib!(
+    enc_chnk_lib_zoned,
+    ctx,
+    pkg,
+    Some(unsafe { &**ctx.tmpls.get_unchecked(pkg.chnk.tmpl as usize) })
+);
 
 fn enc_chnk_sub(
     pkg: &mut WorkPkg,
     params: &str,
     ctx: &EncWorkerCtx,
-    template: Option<&[u8]>,
+    out: &Path,
     conv_buf: &mut [u8],
     worker_id: usize,
-) {
-    let out = ctx.work_dir.join("encode").join(format!(
-        "{:04}.{}",
-        pkg.chnk.idx,
-        ctx.encoder.extension()
-    ));
+) -> u64 {
     let cfg = EncConfig {
         inf: ctx.inf,
-        template,
+        template: None,
         params,
-        zone_params: pkg.chnk.params.as_deref(),
         crf: None,
-        out: &out,
+        out,
         chnk_idx: pkg.chnk.idx,
         width: pkg.width,
         height: pkg.height,
         frames: pkg.frame_cnt,
     };
 
-    let cmd = make_enc_cmd(ctx.encoder, &cfg);
+    let cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params.as_deref());
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     (ctx.watch_enc)(
@@ -1284,8 +1872,10 @@ fn enc_chnk_sub(
 
     let status = child.wait().unwrap_or_else(|e| fatal(e));
     if !status.success() {
+        cold_path();
         fatal(format_args!("encode failed: chunk {:04}", pkg.chnk.idx));
     }
+    metadata(out).unwrap_or(0)
 }
 
 #[cfg(feature = "vship")]
@@ -1447,51 +2037,93 @@ fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
     }
 }
 
-fn drain_svt_packets(handle: *mut EbComponentType, out: &mut dyn Write) {
-    loop {
-        let mut pkt: *mut EbBufferHeaderType = null_mut();
-        let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, 0) };
-        if ret != EB_ERROR_NONE {
-            break;
-        }
-        let p = unsafe { &*pkt };
-        if p.n_filled_len > 0 {
-            let data = unsafe { from_raw_parts(p.p_buffer.add(2), p.n_filled_len as usize - 2) };
-            _ = out.write_all(data);
-        }
-        unsafe { svt_av1_enc_release_out_buffer(&raw mut pkt) };
-    }
+unsafe extern "C" {
+    fn xav_svt_drain_go(
+        worker_id: usize,
+        handle: *mut EbComponentType,
+        d: usize,
+        v: usize,
+        enced: *mut usize,
+        wr: unsafe extern "C" fn(*mut u8, *const u8, usize),
+    ) -> *mut u8;
+    fn xav_svt_drain_wait(worker_id: usize) -> u64;
 }
 
-fn svt_handle() -> (*mut EbComponentType, EbSvtAv1EncConfiguration) {
+#[inline(always)]
+fn drain_poke(st: *mut u8) {
+    sem_release(unsafe { &*st.cast::<Semaphore>() });
+}
+
+unsafe extern "C" fn wr_dyn(ctx: *mut u8, buf: *const u8, n: usize) {
+    let w = unsafe { *ctx.cast::<*mut dyn Write>() };
+    _ = unsafe { &mut *w }.write_all(unsafe { from_raw_parts(buf, n) });
+}
+
+fn drain_go(
+    worker_id: usize,
+    handle: *mut EbComponentType,
+    out: &mut dyn Write,
+    tr: &Tracker,
+) -> *mut u8 {
+    let (d, v) = unsafe { transmute::<*mut dyn Write, (usize, usize)>(out) };
+    unsafe { xav_svt_drain_go(worker_id, handle, d, v, tr.enced(), wr_dyn) }
+}
+
+fn svt_handle(conf: *mut EbSvtAv1EncConfiguration) -> *mut EbComponentType {
     let mut handle: *mut EbComponentType = null_mut();
-    let mut conf = unsafe { zeroed::<EbSvtAv1EncConfiguration>() };
-    let ret = unsafe { svt_av1_enc_init_handle(&raw mut handle, &raw mut conf) };
+    let ret = unsafe { svt_av1_enc_init_handle(&raw mut handle, conf) };
     if ret != EB_ERROR_NONE {
+        cold_path();
         fatal(format_args!("svt_av1_enc_init_handle failed: {ret}"));
     }
-    (handle, conf)
+    handle
 }
 
 fn svt_defaults() -> &'static [u8; SVT_CONF_SIZE] {
     static DEFAULTS: OnceLock<[u8; SVT_CONF_SIZE]> = OnceLock::new();
     DEFAULTS.get_or_init(|| {
-        let (handle, conf) = svt_handle();
+        let mut conf = unsafe { zeroed::<EbSvtAv1EncConfiguration>() };
+        let handle = svt_handle(&raw mut conf);
         unsafe { svt_av1_enc_deinit_handle(handle) };
         unsafe { (&raw const conf).cast::<[u8; SVT_CONF_SIZE]>().read() }
     })
 }
 
-type BuildTmpl = fn(&VidInf, &str, u32, u32) -> Arc<[u8]>;
+type BuildTmpl = fn(&VidInf, &str, &[Box<str>], u32, u32) -> Vec<Arc<[u8]>>;
 
+#[cold]
+#[inline(never)]
+fn build_zoned(
+    build: BuildTmpl,
+    inf: &VidInf,
+    params: &str,
+    pipe: &Pipeline,
+    zones: &[Box<str>],
+) -> Vec<Arc<[u8]>> {
+    build(inf, params, zones, pipe.final_w as u32, pipe.final_h as u32)
+}
+
+#[cold]
 fn resolve_build_tmpl(encoder: Encoder) -> Option<BuildTmpl> {
     match encoder {
-        SvtAv1 => Some(build_svt_template),
-        Avm | Vvenc | X265 | X264 => None,
+        SvtAv1 => Some(build_svt_templates),
+        #[cfg(feature = "avm")]
+        Avm => Some(build_avm_templates),
+        #[cfg(not(feature = "avm"))]
+        Avm => None,
+        Vvenc | X265 | X264 => None,
     }
 }
 
-fn build_svt_template(inf: &VidInf, params: &str, width: u32, height: u32) -> Arc<[u8]> {
+#[cold]
+#[inline(never)]
+fn build_svt_templates(
+    inf: &VidInf,
+    params: &str,
+    zones: &[Box<str>],
+    width: u32,
+    height: u32,
+) -> Vec<Arc<[u8]>> {
     let mut conf = unsafe {
         svt_defaults()
             .as_ptr()
@@ -1499,29 +2131,68 @@ fn build_svt_template(inf: &VidInf, params: &str, width: u32, height: u32) -> Ar
             .read_unaligned()
     };
     set_svt_base(&raw mut conf, inf, params, width, height);
-    Arc::new(unsafe { (&raw const conf).cast::<[u8; SVT_CONF_SIZE]>().read() })
+    let base = unsafe { (&raw const conf).cast::<[u8; SVT_CONF_SIZE]>().read() };
+
+    let mut v: Vec<Arc<[u8]>> = Vec::with_capacity(zones.len() + 1);
+    v.push(Arc::new(base));
+    for z in zones {
+        let mut zc = unsafe {
+            (&raw const base)
+                .cast::<EbSvtAv1EncConfiguration>()
+                .read_unaligned()
+        };
+        parse_svt_params(&raw mut zc, z);
+        v.push(Arc::new(unsafe {
+            (&raw const zc).cast::<[u8; SVT_CONF_SIZE]>().read()
+        }));
+    }
+    v
 }
 
 fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
-    let (handle, mut conf) = svt_handle();
+    let mut conf = MaybeUninit::<EbSvtAv1EncConfiguration>::uninit();
+    let handle = svt_handle(conf.as_mut_ptr());
     unsafe {
         let t = cfg.template.unwrap_unchecked();
-        copy_nonoverlapping(t.as_ptr(), (&raw mut conf).cast::<u8>(), SVT_CONF_SIZE);
+        copy_nonoverlapping(t.as_ptr(), conf.as_mut_ptr().cast::<u8>(), SVT_CONF_SIZE);
     }
-    set_svt_chunk(&raw mut conf, cfg);
-    let ret = unsafe { svt_av1_enc_set_parameter(handle, &raw mut conf) };
+    let ret = unsafe { svt_av1_enc_set_parameter(handle, conf.as_mut_ptr()) };
     if ret != EB_ERROR_NONE {
+        cold_path();
         fatal(format_args!("svt_av1_enc_set_parameter failed: {ret}"));
     }
     let ret = unsafe { svt_av1_enc_init(handle) };
     if ret != EB_ERROR_NONE {
+        cold_path();
+        fatal(format_args!("svt_av1_enc_init failed: {ret}"));
+    }
+    handle
+}
+
+#[cfg(feature = "vship")]
+fn init_svt_crf(cfg: &EncConfig) -> *mut EbComponentType {
+    let mut conf = MaybeUninit::<EbSvtAv1EncConfiguration>::uninit();
+    let handle = svt_handle(conf.as_mut_ptr());
+    unsafe {
+        let t = cfg.template.unwrap_unchecked();
+        copy_nonoverlapping(t.as_ptr(), conf.as_mut_ptr().cast::<u8>(), SVT_CONF_SIZE);
+        set_svt_crf(conf.as_mut_ptr(), cfg.crf.unwrap_unchecked());
+    }
+    let ret = unsafe { svt_av1_enc_set_parameter(handle, conf.as_mut_ptr()) };
+    if ret != EB_ERROR_NONE {
+        cold_path();
+        fatal(format_args!("svt_av1_enc_set_parameter failed: {ret}"));
+    }
+    let ret = unsafe { svt_av1_enc_init(handle) };
+    if ret != EB_ERROR_NONE {
+        cold_path();
         fatal(format_args!("svt_av1_enc_init failed: {ret}"));
     }
     handle
 }
 
 macro_rules! make_send_svt {
-    ($name:ident, $conv_8b:expr) => {
+    ($name:ident, $init:ident, $conv:expr) => {
         fn $name(
             out: &mut dyn Write,
             yuv: &[u8],
@@ -1535,7 +2206,7 @@ macro_rules! make_send_svt {
                 track_frames,
                 crf_score,
             } = track;
-            let handle = init_svt(cfg);
+            let handle = $init(cfg);
 
             let w = cfg.width as usize;
             let h = cfg.height as usize;
@@ -1567,23 +2238,16 @@ macro_rules! make_send_svt {
                 crf_score,
             );
 
-            let is_raw = ctx.pipe.conv_buf_sz == 0;
+            let st = drain_go(worker_id, handle, out, &tracker);
+
+            let (fw, fh) = (ctx.pipe.final_w, ctx.pipe.final_h);
+            let frame_sz = ctx.pipe.frame_sz;
+            let mut src = yuv.as_ptr();
             for i in 0..cfg.frames {
-                let frame = get_frame(yuv, i, ctx.pipe.frame_sz);
-                if is_raw {
-                    unsafe {
-                        (*io_ptr).luma = frame.as_ptr().cast_mut();
-                        (*io_ptr).cb = frame[y_sz..].as_ptr().cast_mut();
-                        (*io_ptr).cr = frame[y_sz + uv_sz..].as_ptr().cast_mut();
-                    }
-                } else if cfg.inf.is_10b {
-                    (ctx.pipe.unpack)(frame, conv_buf, ctx.pipe);
-                } else {
-                    ($conv_8b)(frame, conv_buf, ctx.pipe);
-                }
+                ($conv)(unsafe { from_raw_parts(src, frame_sz) }, conv_buf, fw, fh);
+                src = unsafe { src.add(frame_sz) };
 
                 in_hdr.pts = i as i64;
-                in_hdr.flags = 0;
 
                 let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
                 if ret != EB_ERROR_NONE {
@@ -1592,9 +2256,7 @@ macro_rules! make_send_svt {
                         "svt_av1_enc_send_picture failed at frame {i}: {ret}"
                     ));
                 }
-
-                drain_svt_packets(handle, out);
-                tracker.set(i + 1);
+                drain_poke(st);
             }
 
             (handle, tracker)
@@ -1604,108 +2266,114 @@ macro_rules! make_send_svt {
 
 make_send_svt!(
     send_svt_conv,
-    |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_10b(frame, buf)
+    init_svt,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
+        conv_10b(f, b);
+    }
 );
 make_send_svt!(
     send_svt_conv_rem,
-    |frame: &[u8], buf: &mut [u8], _pipe: &Pipeline| conv_10b_rem(frame, buf)
+    init_svt,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+);
+make_send_svt!(
+    send_svt_unpack,
+    init_svt,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+);
+make_send_svt!(
+    send_svt_unpack_rem,
+    init_svt,
+    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
 );
 make_send_svt!(
     send_svt_nv12,
-    |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_10b(
-        frame,
-        buf,
-        pipe.final_w,
-        pipe.final_h
-    )
+    init_svt,
+    |f: &[u8], b: &mut [u8], w: usize, h: usize| {
+        nv12_10b(f, b, w, h);
+    }
 );
 make_send_svt!(
     send_svt_nv12_rem,
-    |frame: &[u8], buf: &mut [u8], pipe: &Pipeline| nv12_10b_rem(
-        frame,
-        buf,
-        pipe.final_w,
-        pipe.final_h
-    )
+    init_svt,
+    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
 );
 
 #[cfg(feature = "vship")]
-fn enc_svt_lib(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    track: &EncTrack,
-) {
-    let (handle, tracker) = send_svt_conv(out, yuv.as_slice(), cfg, ctx, conv_buf, track);
-    finish_svt(handle, out, &tracker);
+make_send_svt!(
+    send_svt_crf,
+    init_svt_crf,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
+        conv_10b(f, b);
+    }
+);
+#[cfg(feature = "vship")]
+make_send_svt!(
+    send_svt_crf_rem,
+    init_svt_crf,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+);
+#[cfg(feature = "vship")]
+make_send_svt!(
+    send_svt_crf_unpack,
+    init_svt_crf,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+);
+#[cfg(feature = "vship")]
+make_send_svt!(
+    send_svt_crf_unpack_rem,
+    init_svt_crf,
+    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+);
+macro_rules! make_enc_svt {
+    ($name:ident, $send:ident) => {
+        fn $name(
+            yuv: &mut Vec<u8>,
+            out: &mut dyn Write,
+            cfg: &EncConfig,
+            ctx: &EncWorkerCtx,
+            conv_buf: &mut [u8],
+            track: &EncTrack,
+        ) -> u64 {
+            let (handle, tracker) = $send(out, yuv, cfg, ctx, conv_buf, track);
+            *yuv = Vec::new();
+            finish_svt(handle, track.worker_id, &tracker)
+        }
+    };
 }
 
 #[cfg(feature = "vship")]
-fn enc_svt_lib_rem(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    track: &EncTrack,
-) {
-    let (handle, tracker) = send_svt_conv_rem(out, yuv.as_slice(), cfg, ctx, conv_buf, track);
-    finish_svt(handle, out, &tracker);
+macro_rules! make_enc_svt_tq {
+    ($name:ident, $send:ident) => {
+        fn $name(
+            yuv: &mut Vec<u8>,
+            out: &mut dyn Write,
+            cfg: &EncConfig,
+            ctx: &EncWorkerCtx,
+            conv_buf: &mut [u8],
+            track: &EncTrack,
+        ) -> u64 {
+            let (handle, tracker) = $send(out, yuv.as_slice(), cfg, ctx, conv_buf, track);
+            finish_svt(handle, track.worker_id, &tracker)
+        }
+    };
 }
 
-fn enc_svt_drop(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    track: &EncTrack,
-) {
-    let (handle, tracker) = send_svt_conv(out, yuv, cfg, ctx, conv_buf, track);
-    *yuv = Vec::new();
-    finish_svt(handle, out, &tracker);
-}
+make_enc_svt!(enc_svt_drop, send_svt_conv);
+make_enc_svt!(enc_svt_drop_rem, send_svt_conv_rem);
+make_enc_svt!(enc_svt_unpack_drop, send_svt_unpack);
+make_enc_svt!(enc_svt_unpack_drop_rem, send_svt_unpack_rem);
+make_enc_svt!(enc_svt_nv12_drop, send_svt_nv12);
+make_enc_svt!(enc_svt_nv12_drop_rem, send_svt_nv12_rem);
 
-fn enc_svt_drop_rem(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    track: &EncTrack,
-) {
-    let (handle, tracker) = send_svt_conv_rem(out, yuv, cfg, ctx, conv_buf, track);
-    *yuv = Vec::new();
-    finish_svt(handle, out, &tracker);
-}
-
-fn enc_svt_nv12_drop(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    track: &EncTrack,
-) {
-    let (handle, tracker) = send_svt_nv12(out, yuv, cfg, ctx, conv_buf, track);
-    *yuv = Vec::new();
-    finish_svt(handle, out, &tracker);
-}
-
-fn enc_svt_nv12_drop_rem(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    conv_buf: &mut [u8],
-    track: &EncTrack,
-) {
-    let (handle, tracker) = send_svt_nv12_rem(out, yuv, cfg, ctx, conv_buf, track);
-    *yuv = Vec::new();
-    finish_svt(handle, out, &tracker);
-}
+#[cfg(feature = "vship")]
+make_enc_svt_tq!(enc_svt_lib, send_svt_crf);
+#[cfg(feature = "vship")]
+make_enc_svt_tq!(enc_svt_lib_rem, send_svt_crf_rem);
+#[cfg(feature = "vship")]
+make_enc_svt_tq!(enc_svt_lib_unpack, send_svt_crf_unpack);
+#[cfg(feature = "vship")]
+make_enc_svt_tq!(enc_svt_lib_unpack_rem, send_svt_crf_unpack_rem);
 
 fn enc_svt_direct(
     yuv: &mut Vec<u8>,
@@ -1714,7 +2382,7 @@ fn enc_svt_direct(
     ctx: &EncWorkerCtx,
     _conv_buf: &mut [u8],
     track: &EncTrack,
-) {
+) -> u64 {
     let &EncTrack {
         worker_id,
         track_frames,
@@ -1752,16 +2420,19 @@ fn enc_svt_direct(
         crf_score,
     );
 
+    let st = drain_go(worker_id, handle, out, &tracker);
+
+    let frame_sz = ctx.pipe.frame_sz;
+    let mut src = yuv.as_ptr().cast_mut();
     for i in 0..cfg.frames {
-        let off = i * ctx.pipe.frame_sz;
         unsafe {
-            (*io_ptr).luma = yuv[off..].as_ptr().cast_mut();
-            (*io_ptr).cb = yuv[off + y_sz..].as_ptr().cast_mut();
-            (*io_ptr).cr = yuv[off + y_sz + uv_sz..].as_ptr().cast_mut();
+            (*io_ptr).luma = src;
+            (*io_ptr).cb = src.add(y_sz);
+            (*io_ptr).cr = src.add(y_sz + uv_sz);
+            src = src.add(frame_sz);
         }
 
         in_hdr.pts = i as i64;
-        in_hdr.flags = 0;
 
         let ret = unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) };
         if ret != EB_ERROR_NONE {
@@ -1770,37 +2441,19 @@ fn enc_svt_direct(
                 "svt_av1_enc_send_picture failed at frame {i}: {ret}"
             ));
         }
-
-        drain_svt_packets(handle, out);
-        tracker.set(i + 1);
+        drain_poke(st);
     }
     *yuv = Vec::new();
 
-    finish_svt(handle, out, &tracker);
+    finish_svt(handle, worker_id, &tracker)
 }
 
-fn finish_svt(handle: *mut EbComponentType, out: &mut dyn Write, tracker: &Tracker) {
+fn finish_svt(handle: *mut EbComponentType, worker_id: usize, tracker: &Tracker) -> u64 {
     let mut eos = unsafe { zeroed::<EbBufferHeaderType>() };
     eos.flags = EB_BUFFERFLAG_EOS;
     unsafe { svt_av1_enc_send_picture(handle, &raw mut eos) };
 
-    loop {
-        let mut pkt: *mut EbBufferHeaderType = null_mut();
-        let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, 1) };
-        if ret != EB_ERROR_NONE {
-            break;
-        }
-        let p = unsafe { &*pkt };
-        if p.n_filled_len > 0 {
-            let data = unsafe { from_raw_parts(p.p_buffer.add(2), p.n_filled_len as usize - 2) };
-            _ = out.write_all(data);
-        }
-        let is_eos = p.flags & EB_BUFFERFLAG_EOS != 0;
-        unsafe { svt_av1_enc_release_out_buffer(&raw mut pkt) };
-        if is_eos {
-            break;
-        }
-    }
+    let sz = unsafe { xav_svt_drain_wait(worker_id) };
 
     tracker.finish();
 
@@ -1808,6 +2461,325 @@ fn finish_svt(handle: *mut EbComponentType, out: &mut dyn Write, tracker: &Track
         svt_av1_enc_deinit(handle);
         svt_av1_enc_deinit_handle(handle);
     }
+    sz
+}
+
+#[cfg(feature = "avm")]
+#[cold]
+#[inline(never)]
+fn build_avm_templates(
+    inf: &VidInf,
+    params: &str,
+    zones: &[Box<str>],
+    width: u32,
+    height: u32,
+) -> Vec<Arc<[u8]>> {
+    let mut conf = MaybeUninit::<AvmCodecEncCfg>::uninit();
+    unsafe { avm_codec_enc_config_default(avm_codec_av2_cx(), conf.as_mut_ptr(), 0) };
+    let mut conf = unsafe { conf.assume_init() };
+    let ctrls = set_avm_base(&mut conf, inf, width, height);
+
+    let mut opts = Vec::with_capacity(params.len());
+    avm_split(&mut conf, params, &mut opts);
+
+    let mut v = Vec::with_capacity(zones.len() + 1);
+    v.push(assemble_avm_tmpl(&conf, &ctrls, &opts));
+    for z in zones {
+        let mut zc = conf;
+        let mut zopts = Vec::with_capacity(opts.len() + z.len());
+        zopts.extend_from_slice(&opts);
+        avm_split(&mut zc, z, &mut zopts);
+        v.push(assemble_avm_tmpl(&zc, &ctrls, &zopts));
+    }
+    v
+}
+
+#[cfg(feature = "avm")]
+#[cold]
+#[inline(never)]
+fn assemble_avm_tmpl(conf: &AvmCodecEncCfg, ctrls: &[i32; AVM_CTRL_CNT], opts: &[u8]) -> Arc<[u8]> {
+    let (hdr, extra) = avm_snapshot(conf, ctrls, opts);
+    let mut tmpl = Vec::with_capacity(AVM_TMPL_HDR + extra.len());
+    tmpl.extend_from_slice(unsafe {
+        from_raw_parts((&raw const *conf).cast::<u8>(), AVM_CFG_SIZE)
+    });
+    tmpl.extend_from_slice(unsafe {
+        from_raw_parts((&raw const hdr).cast::<u8>(), size_of::<AvmTmpl>())
+    });
+    tmpl.extend_from_slice(&extra);
+    Arc::from(tmpl)
+}
+
+#[cfg(feature = "avm")]
+fn init_avm(cfg: &EncConfig, ec: *mut AvmCodecCtx) {
+    let t = unsafe { cfg.template.unwrap_unchecked() };
+    let mut conf = unsafe { t.as_ptr().cast::<AvmCodecEncCfg>().read_unaligned() };
+    conf.g_limit = cfg.frames as u32;
+    let hdr = unsafe {
+        t.as_ptr()
+            .add(AVM_CFG_SIZE)
+            .cast::<AvmTmpl>()
+            .read_unaligned()
+    };
+
+    avm_init(&conf, ec);
+    avm_blit(ec, hdr, unsafe { t.get_unchecked(AVM_TMPL_HDR..) });
+}
+
+#[cfg(feature = "avm")]
+const fn avm_img(cfg: &EncConfig) -> AvmImage {
+    let mut img = unsafe { zeroed::<AvmImage>() };
+    img.fmt = AVM_IMG_FMT_I42016;
+    img.w = cfg.width;
+    img.h = cfg.height;
+    img.d_w = cfg.width;
+    img.d_h = cfg.height;
+    img.bit_depth = 16;
+    img.bps = 24;
+    img.x_chroma_shift = 1;
+    img.y_chroma_shift = 1;
+    img.stride = [(cfg.width * 2) as i32, cfg.width as i32, cfg.width as i32];
+    img
+}
+
+#[cfg(feature = "avm")]
+fn drain_avm_packets(
+    ec: *mut AvmCodecCtx,
+    out: &mut dyn Write,
+    tracker: &Tracker,
+    done: &mut usize,
+) -> u64 {
+    let mut iter: *const c_void = null();
+    let mut sz = 0;
+    loop {
+        let pkt = unsafe { avm_codec_get_cx_data(ec, &raw mut iter) };
+        if pkt.is_null() {
+            return sz;
+        }
+        let p = unsafe { &*pkt };
+        if p.kind == AVM_CODEC_CX_FRAME_PKT {
+            _ = out.write_all(unsafe { from_raw_parts(p.frame.buf.cast::<u8>(), p.frame.sz) });
+            sz += p.frame.sz as u64;
+        } else {
+            cold_path();
+        }
+        *done += 1;
+        tracker.set(*done);
+    }
+}
+
+#[cfg(feature = "avm")]
+macro_rules! make_send_avm {
+    ($name:ident, $conv:expr) => {
+        fn $name(
+            ec: *mut AvmCodecCtx,
+            out: &mut dyn Write,
+            yuv: &[u8],
+            cfg: &EncConfig,
+            ctx: &EncWorkerCtx,
+            conv_buf: &mut [u8],
+            track: &EncTrack,
+        ) -> (Tracker, usize, u64) {
+            let &EncTrack {
+                worker_id,
+                track_frames,
+                crf_score,
+            } = track;
+            init_avm(cfg, ec);
+
+            let w = cfg.width as usize;
+            let h = cfg.height as usize;
+            let y_sz = w * h * 2;
+            let uv_sz = (w / 2) * (h / 2) * 2;
+
+            let mut img = avm_img(cfg);
+            img.planes = [
+                conv_buf.as_mut_ptr(),
+                unsafe { conv_buf.as_mut_ptr().add(y_sz) },
+                unsafe { conv_buf.as_mut_ptr().add(y_sz + uv_sz) },
+            ];
+            let img_ptr = &raw const img;
+
+            let tracker = Tracker::new(
+                ctx.prog,
+                worker_id,
+                cfg.chnk_idx,
+                cfg.frames,
+                track_frames,
+                crf_score,
+            );
+            let mut done = 0;
+            let mut sz = 0;
+            let (fw, fh) = (ctx.pipe.final_w, ctx.pipe.final_h);
+            let frame_sz = ctx.pipe.frame_sz;
+            let mut src = yuv.as_ptr();
+
+            for i in 0..cfg.frames {
+                ($conv)(unsafe { from_raw_parts(src, frame_sz) }, conv_buf, fw, fh);
+                src = unsafe { src.add(frame_sz) };
+
+                let ret = unsafe { avm_codec_encode(ec, img_ptr, i as i64, 1, 0) };
+                if ret != AVM_CODEC_OK {
+                    cold_path();
+                    fatal(format_args!("avm_codec_encode failed at frame {i}: {ret}"));
+                }
+
+                sz += drain_avm_packets(ec, out, &tracker, &mut done);
+            }
+
+            (tracker, done, sz)
+        }
+    };
+}
+
+#[cfg(feature = "avm")]
+make_send_avm!(send_avm_conv, |f: &[u8],
+                               b: &mut [u8],
+                               _w: usize,
+                               _h: usize| {
+    conv_10b(f, b);
+});
+#[cfg(feature = "avm")]
+make_send_avm!(
+    send_avm_conv_rem,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+);
+#[cfg(feature = "avm")]
+make_send_avm!(
+    send_avm_unpack,
+    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+);
+#[cfg(feature = "avm")]
+make_send_avm!(
+    send_avm_unpack_rem,
+    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+);
+#[cfg(feature = "avm")]
+make_send_avm!(send_avm_nv12, |f: &[u8],
+                               b: &mut [u8],
+                               w: usize,
+                               h: usize| {
+    nv12_10b(f, b, w, h);
+});
+#[cfg(feature = "avm")]
+make_send_avm!(
+    send_avm_nv12_rem,
+    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
+);
+
+#[cfg(feature = "avm")]
+macro_rules! make_enc_avm {
+    ($name:ident, $send:ident) => {
+        fn $name(
+            yuv: &mut Vec<u8>,
+            out: &mut dyn Write,
+            cfg: &EncConfig,
+            ctx: &EncWorkerCtx,
+            conv_buf: &mut [u8],
+            track: &EncTrack,
+        ) -> u64 {
+            let mut ec = MaybeUninit::<AvmCodecCtx>::uninit();
+            let ecp = ec.as_mut_ptr();
+            let (tracker, mut done, sz) = $send(ecp, out, yuv, cfg, ctx, conv_buf, track);
+            *yuv = Vec::new();
+            sz + finish_avm(ecp, out, &tracker, &mut done)
+        }
+    };
+}
+
+#[cfg(feature = "avm")]
+make_enc_avm!(enc_avm_conv, send_avm_conv);
+#[cfg(feature = "avm")]
+make_enc_avm!(enc_avm_conv_rem, send_avm_conv_rem);
+#[cfg(feature = "avm")]
+make_enc_avm!(enc_avm_unpack, send_avm_unpack);
+#[cfg(feature = "avm")]
+make_enc_avm!(enc_avm_unpack_rem, send_avm_unpack_rem);
+#[cfg(feature = "avm")]
+make_enc_avm!(enc_avm_nv12, send_avm_nv12);
+#[cfg(feature = "avm")]
+make_enc_avm!(enc_avm_nv12_rem, send_avm_nv12_rem);
+
+#[cfg(feature = "avm")]
+fn enc_avm_direct(
+    yuv: &mut Vec<u8>,
+    out: &mut dyn Write,
+    cfg: &EncConfig,
+    ctx: &EncWorkerCtx,
+    _conv_buf: &mut [u8],
+    track: &EncTrack,
+) -> u64 {
+    let &EncTrack {
+        worker_id,
+        track_frames,
+        crf_score,
+    } = track;
+    let mut ec = MaybeUninit::<AvmCodecCtx>::uninit();
+    let ecp = ec.as_mut_ptr();
+    init_avm(cfg, ecp);
+
+    let w = cfg.width as usize;
+    let h = cfg.height as usize;
+    let y_sz = w * h * 2;
+    let uv_sz = (w / 2) * (h / 2) * 2;
+
+    let mut img = avm_img(cfg);
+    let img_ptr = &raw mut img;
+
+    let tracker = Tracker::new(
+        ctx.prog,
+        worker_id,
+        cfg.chnk_idx,
+        cfg.frames,
+        track_frames,
+        crf_score,
+    );
+    let mut done = 0;
+    let mut sz = 0;
+    let frame_sz = ctx.pipe.frame_sz;
+    let mut src = yuv.as_ptr().cast_mut();
+
+    for i in 0..cfg.frames {
+        unsafe {
+            (*img_ptr).planes = [src, src.add(y_sz), src.add(y_sz + uv_sz)];
+            src = src.add(frame_sz);
+        }
+
+        let ret = unsafe { avm_codec_encode(ecp, img_ptr, i as i64, 1, 0) };
+        if ret != AVM_CODEC_OK {
+            cold_path();
+            fatal(format_args!("avm_codec_encode failed at frame {i}: {ret}"));
+        }
+
+        sz += drain_avm_packets(ecp, out, &tracker, &mut done);
+    }
+    *yuv = Vec::new();
+
+    sz + finish_avm(ecp, out, &tracker, &mut done)
+}
+
+#[cfg(feature = "avm")]
+fn finish_avm(
+    ec: *mut AvmCodecCtx,
+    out: &mut dyn Write,
+    tracker: &Tracker,
+    done: &mut usize,
+) -> u64 {
+    let mut sz = 0;
+    loop {
+        unsafe { avm_codec_encode(ec, null(), 0, 0, 0) };
+        let before = *done;
+        sz += drain_avm_packets(ec, out, tracker, done);
+        if *done == before {
+            break;
+        }
+    }
+
+    tracker.finish();
+
+    unsafe { avm_codec_destroy(ec) };
+
+    sz
 }
 
 #[cfg(test)]
@@ -1825,18 +2797,56 @@ pub mod test_access {
     }
 
     pub fn enc_svt_direct_addr() -> usize {
-        (enc_svt_direct as SvtEncFn) as usize
+        (enc_svt_direct as LibEncFn) as usize
     }
     pub fn enc_svt_drop_addr() -> usize {
-        (enc_svt_drop as SvtEncFn) as usize
+        (enc_svt_drop as LibEncFn) as usize
     }
     pub fn enc_svt_drop_rem_addr() -> usize {
-        (enc_svt_drop_rem as SvtEncFn) as usize
+        (enc_svt_drop_rem as LibEncFn) as usize
     }
     pub fn enc_svt_nv12_drop_addr() -> usize {
-        (enc_svt_nv12_drop as SvtEncFn) as usize
+        (enc_svt_nv12_drop as LibEncFn) as usize
     }
     pub fn enc_svt_nv12_drop_rem_addr() -> usize {
-        (enc_svt_nv12_drop_rem as SvtEncFn) as usize
+        (enc_svt_nv12_drop_rem as LibEncFn) as usize
+    }
+    pub fn enc_svt_unpack_drop_addr() -> usize {
+        (enc_svt_unpack_drop as LibEncFn) as usize
+    }
+    pub fn enc_svt_unpack_drop_rem_addr() -> usize {
+        (enc_svt_unpack_drop_rem as LibEncFn) as usize
+    }
+
+    #[cfg(feature = "vship")]
+    pub fn resolve_metric_loop_addr(
+        dav1d: bool,
+        use_alt: bool,
+        cvvdp: bool,
+        inf: &VidInf,
+        pipe: &Pipeline,
+    ) -> usize {
+        let tq = TQCtx {
+            target: 0.0,
+            tolerance: 0.0,
+            qp_min: 0.0,
+            qp_max: 0.0,
+            use_butter: false,
+            use_cvvdp: cvvdp,
+        };
+        resolve_metric_loop(dav1d, use_alt, &tq, inf, pipe) as usize
+    }
+
+    #[cfg(feature = "vship")]
+    pub fn met_cvvdp_8b_addr() -> usize {
+        (met_d_cv_8b as MetricLoopFn) as usize
+    }
+    #[cfg(feature = "vship")]
+    pub fn met_cvvdp_10b_addr() -> usize {
+        (met_d_cv_10b as MetricLoopFn) as usize
+    }
+    #[cfg(feature = "vship")]
+    pub fn met_cvvdp_rem_addr() -> usize {
+        (met_d_cv_rem as MetricLoopFn) as usize
     }
 }

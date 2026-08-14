@@ -16,16 +16,16 @@ use crate::{
     chan::{Semaphore, SpscRing, sem_release, spsc_close, spsc_recv, spsc_send},
     chunk::{chnkify, load_scenes},
     dec::dec_chnks,
-    enc::get_frame,
-    encoder::{EncConfig, set_svt_base, set_svt_chunk},
+    encoder::{EncConfig, set_svt_base, set_svt_crf},
     ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf},
     fs::{File, metadata, remove_file},
     io::{BufWriter, Write},
-    pack::{PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz},
-    path::{Path, PathBuf},
-    pipeline::{
-        Pipeline, UnpackFn, WriteFn, write_frames_8b, write_frames_8b_rem, write_frames_10b,
+    pack::{
+        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, unpack_10b,
+        unpack_10b_rem,
     },
+    path::{Path, PathBuf},
+    pipeline::{Pipeline, WriteFn},
     process::{self, Command, Stdio},
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
@@ -106,7 +106,7 @@ fn svt_init(cfg: &EncConfig) -> *mut EbComponentType {
         EB_ERROR_NONE
     );
     set_svt_base(&raw mut conf, cfg.inf, cfg.params, cfg.width, cfg.height);
-    set_svt_chunk(&raw mut conf, cfg);
+    set_svt_crf(&raw mut conf, unsafe { cfg.crf.unwrap_unchecked() });
     assert_eq!(
         unsafe { svt_av1_enc_set_parameter(handle, &raw mut conf) },
         EB_ERROR_NONE
@@ -190,7 +190,6 @@ fn svt_enc(converted: &[u8], pipe: &Pipeline, inf: &VidInf, frame_cnt: usize, ou
         inf,
         template: None,
         params: "--preset 7 --lp 5 --scm 0",
-        zone_params: None,
         crf: Some(20.0),
         out,
         chnk_idx: 0,
@@ -291,41 +290,41 @@ fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool
     use crate::{
         enc::test_access::{
             enc_svt_direct_addr, enc_svt_drop_addr, enc_svt_drop_rem_addr, enc_svt_nv12_drop_addr,
-            enc_svt_nv12_drop_rem_addr, resolve_svt_enc_addr,
+            enc_svt_nv12_drop_rem_addr, enc_svt_unpack_drop_addr, enc_svt_unpack_drop_rem_addr,
+            resolve_svt_enc_addr,
         },
-        pipeline::test_access::{NV12_10B, NV12_10B_REM, UNPACK_10B, UNPACK_10B_REM, UNPACK_NOOP},
+        pipeline::test_access::{
+            WRITE_8B, WRITE_8B_REM, WRITE_NV12, WRITE_NV12_REM, WRITE_RAW, WRITE_UNPACK,
+            WRITE_UNPACK_REM,
+        },
     };
 
     let name = format!("{strat:?}");
     let is_nv12_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
+    let nv12_exact = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK)
+        && (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
+    let unpack_exact =
+        pipe.final_w.is_multiple_of(PACK_CHUNK) && pipe.frame_sz.is_multiple_of(UNPACK_CHUNK);
 
-    let (exp_unpack, exp_write): (UnpackFn, WriteFn) = if is_nv12_10 {
-        let y_ok = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK);
-        let uv_ok = (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
-        if y_ok && uv_ok {
-            (NV12_10B, write_frames_10b)
+    let exp_write: WriteFn = if is_nv12_10 {
+        if nv12_exact {
+            WRITE_NV12
         } else {
-            (NV12_10B_REM, write_frames_10b)
+            WRITE_NV12_REM
         }
     } else if strat.is_raw() {
-        (UNPACK_NOOP, write_frames_10b)
+        WRITE_RAW
     } else if !inf.is_10b {
         if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            (UNPACK_NOOP, write_frames_8b)
+            WRITE_8B
         } else {
-            (UNPACK_NOOP, write_frames_8b_rem)
+            WRITE_8B_REM
         }
-    } else if !pipe.final_w.is_multiple_of(PACK_CHUNK)
-        || !pipe.frame_sz.is_multiple_of(UNPACK_CHUNK)
-    {
-        (UNPACK_10B_REM, write_frames_10b)
+    } else if unpack_exact {
+        WRITE_UNPACK
     } else {
-        (UNPACK_10B, write_frames_10b)
+        WRITE_UNPACK_REM
     };
-    assert!(
-        fn_addr_eq(pipe.unpack, exp_unpack),
-        "wrong unpack fn for {name}"
-    );
     assert!(
         fn_addr_eq(pipe.write_frames, exp_write),
         "wrong write_frames fn for {name}"
@@ -336,41 +335,42 @@ fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool
         let expected_enc = if strat.is_raw() {
             enc_svt_direct_addr()
         } else if is_nv12_10 {
-            let y_ok = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK);
-            let uv_ok = (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
-            if y_ok && uv_ok {
+            if nv12_exact {
                 enc_svt_nv12_drop_addr()
             } else {
                 enc_svt_nv12_drop_rem_addr()
             }
-        } else if !inf.is_10b && !pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            enc_svt_drop_rem_addr()
-        } else {
+        } else if inf.is_10b {
+            if unpack_exact {
+                enc_svt_unpack_drop_addr()
+            } else {
+                enc_svt_unpack_drop_rem_addr()
+            }
+        } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
             enc_svt_drop_addr()
+        } else {
+            enc_svt_drop_rem_addr()
         };
         assert_eq!(actual_enc, expected_enc, "wrong SVT encode fn for {name}");
     }
 
     #[cfg(feature = "vship")]
     if tq_mode {
-        use crate::{
-            pipeline::{CalcMetricFn, test_access::COMPUTE_CVVDP},
-            tq::{calc_metric_8b, calc_metric_10b},
+        use crate::enc::test_access::{
+            met_cvvdp_8b_addr, met_cvvdp_10b_addr, met_cvvdp_rem_addr, resolve_metric_loop_addr,
         };
 
-        assert!(
-            fn_addr_eq(pipe.compute_metric, COMPUTE_CVVDP),
-            "wrong compute_metric for {name}"
-        );
-
-        let expected_calc: CalcMetricFn = if inf.is_10b {
-            calc_metric_10b
+        let expected = if !inf.is_10b {
+            met_cvvdp_8b_addr()
+        } else if unpack_exact {
+            met_cvvdp_10b_addr()
         } else {
-            calc_metric_8b
+            met_cvvdp_rem_addr()
         };
-        assert!(
-            fn_addr_eq(pipe.calc_metric, expected_calc),
-            "wrong calc_metric fn for {name}"
+        assert_eq!(
+            resolve_metric_loop_addr(true, false, true, inf, pipe),
+            expected,
+            "wrong metric loop for {name}"
         );
     }
 }
@@ -455,12 +455,19 @@ fn val_tq(
     let mut unpacked_buf = vec![0u8; pipe.conv_buf_sz];
     let mut last_score = 0.0;
 
+    let unpack_exact =
+        pipe.final_w.is_multiple_of(PACK_CHUNK) && pipe.frame_sz.is_multiple_of(UNPACK_CHUNK);
+
     for i in 0..tot_frames {
-        let inp_frame = get_frame(all_yuv, i, pipe.frame_sz);
+        let inp_frame = &all_yuv[i * pipe.frame_sz..(i + 1) * pipe.frame_sz];
         let of = probe_dec.dec_next();
 
         let inp_yuv: &[u8] = if inf.is_10b {
-            (pipe.unpack)(inp_frame, &mut unpacked_buf, pipe);
+            if unpack_exact {
+                unpack_10b(inp_frame, &mut unpacked_buf);
+            } else {
+                unpack_10b_rem(inp_frame, &mut unpacked_buf, pipe.final_w, pipe.final_h);
+            }
             &unpacked_buf
         } else {
             inp_frame
@@ -484,13 +491,11 @@ fn val_tq(
             i64::from(of.linesize[2]),
         ];
 
-        last_score = (pipe.compute_metric)(
-            &vship,
-            inp_planes,
-            output_planes,
-            [ys, cs, cs],
-            output_strides,
-        );
+        last_score = unsafe {
+            vship
+                .comp_cvvdp(inp_planes, output_planes, [ys, cs, cs], output_strides)
+                .unwrap_unchecked()
+        };
     }
 
     assert!(

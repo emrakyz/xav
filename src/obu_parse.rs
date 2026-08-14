@@ -60,7 +60,7 @@ pub fn parse(buf: &[u8], blocks: &mut Vec<ByteRange>) -> Option<ByteRange> {
 }
 
 #[inline]
-fn read_leb128(buf: &[u8]) -> Option<(usize, usize)> {
+pub fn read_leb128(buf: &[u8]) -> Option<(usize, usize)> {
     let b0 = *buf.first()?;
     if b0 & 0x80 == 0 {
         return Some(((b0 & 0x7F) as usize, 1));

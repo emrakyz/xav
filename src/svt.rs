@@ -1,7 +1,14 @@
-use core::ffi::{c_char, c_void};
+use core::{
+    ffi::{c_char, c_void},
+    mem::offset_of,
+};
 
 pub const EB_ERROR_NONE: i32 = 0;
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
+#[cfg(any(feature = "vship", test))]
+pub const MAX_QP_VALUE: u32 = 63;
+#[cfg(any(feature = "vship", test))]
+pub const SVT_AV1_RC_MODE_CQP_OR_CRF: u8 = 0;
 
 const MAX_TEMPORAL_LAYERS: usize = 6;
 const FRAME_UPDATE_TYPES: usize = 7;
@@ -37,6 +44,11 @@ pub struct EbBufferHeaderType {
     pub cb_ssim: f64,
     pub metadata: *mut c_void,
 }
+
+// svt_drain.asm: layout change is a type error at compile time
+const _: [(); 8] = [(); offset_of!(EbBufferHeaderType, p_buffer)];
+const _: [(); 16] = [(); offset_of!(EbBufferHeaderType, n_filled_len)];
+const _: [(); 104] = [(); offset_of!(EbBufferHeaderType, flags)];
 
 #[repr(C)]
 pub struct EbSvtIOFormat {
@@ -122,7 +134,7 @@ pub struct EbSvtAv1EncConfiguration {
     pub content_light_level: ContentLightLevel,
     pub chroma_sample_position: i32,
     pub rate_control_mode: u8,
-    qp: u32,
+    pub qp: u32,
     use_qp_file: bool,
     target_bit_rate: u32,
     max_bit_rate: u32,
@@ -160,7 +172,7 @@ pub struct EbSvtAv1EncConfiguration {
     look_ahead_distance: u32,
     recode_loop: u32,
     pub screen_content_mode: u32,
-    aq_mode: u8,
+    pub aq_mode: u8,
     enable_tf: u8,
     enable_overlays: bool,
     tune: u8,
@@ -211,7 +223,7 @@ pub struct EbSvtAv1EncConfiguration {
     sframe_qp_offset: i8,
     adaptive_film_grain: bool,
     max_tx_size: u8,
-    extended_crf_qindex_offset: u8,
+    pub extended_crf_qindex_offset: u8,
     ac_bias: f64,
     _padding: [u8; 128],
 }
@@ -241,12 +253,15 @@ unsafe extern "C" {
         p_buffer: *mut EbBufferHeaderType,
     ) -> i32;
 
+    // the drain owns these; only the tests calls them from here
+    #[cfg(test)]
     pub fn svt_av1_enc_get_packet(
         svt_enc_component: *mut EbComponentType,
         p_buffer: *mut *mut EbBufferHeaderType,
         pic_send_done: u8,
     ) -> i32;
 
+    #[cfg(test)]
     pub fn svt_av1_enc_release_out_buffer(p_buffer: *mut *mut EbBufferHeaderType);
 
     pub fn svt_av1_enc_deinit(svt_enc_component: *mut EbComponentType) -> i32;

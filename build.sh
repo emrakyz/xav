@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
 
 ((BASH_VERSINFO[0] >= 5)) || {
-        echo "You need Bash 5+. On Mac, use brew to install a newer Bash."
+        echo "You need Bash 5+."
         exit 1
 }
 
 set -Eeuo pipefail
-
-[[ "${OSTYPE}" == darwin* ]] && {
-        IS_MAC=true
-        echo "Mac support is temporarily disabled" && exit 1
-} || IS_MAC=false
-"${IS_MAC}" && LLVM_PREFIX="$(brew --prefix llvm)" && export PATH="${LLVM_PREFIX}/bin:${PATH}"
 
 has_nvidia() { grep -qx 0x10de /sys/bus/pci/devices/*/vendor 2> /dev/null; }
 
@@ -19,12 +13,12 @@ install_deps() {
         ((UID != 0)) && { for i in sudo doas; do command -v "${i}" > /dev/null 2>&1 && priv="${i}"; done; }
 
         pm="unknown"
-        for i in pacman dnf emerge brew; do command -v "${i}" > /dev/null 2>&1 && pm="${i}"; done
+        for i in pacman dnf emerge; do command -v "${i}" > /dev/null 2>&1 && pm="${i}"; done
 
         case "${pm}" in
                 "pacman")
                         pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson ffmpeg curl gcc)
-                        has_nvidia && pkgs+=(cuda)
+                        ((${mode_choice:-0} == 1)) && pkgs+=(cuda)
                         ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
                         ;;
                 "dnf")
@@ -33,19 +27,12 @@ install_deps() {
                                 llvm lld compiler-rt llvm-libunwind-static autoconf automake
                                 libtool cmake ninja-build pkgconf meson ffmpeg curl gcc
                         )
-                        has_nvidia && pkgs+=(cuda-toolkit)
+                        ((${mode_choice:-0} == 1)) && pkgs+=(cuda-toolkit)
                         ${priv:-} dnf install -y "${pkgs[@]}"
                         ;;
                 "emerge")
                         echo "You need Rust Nightly (-9999), nasm, clang/llvm toolchain"
                         echo "USEFLAGS needed for toolchain: atomic-builtins profile static-libs sanitize compiler-rt"
-                        ;;
-                "brew")
-                        pkgs=(
-                                rustup nasm llvm lld autoconf automake libtool
-                                cmake ninja meson pkgconf ffmpeg curl
-                        )
-                        brew install "${pkgs[@]}"
                         ;;
                 *)
                         echo "ERROR: You need Rust Nightly, nasm, clang/llvm/lld/compiler-rt toolchain"
@@ -156,19 +143,18 @@ detect_deps() {
         [[ -n "${CLANG_RT_DIR}" && -d "${CLANG_RT_DIR}" ]] && CLANG_LIB_DIRS+=("${CLANG_RT_DIR}")
         [[ -n "${CLANG_RESOURCE_DIR}" ]] && CLANG_LIB_DIRS+=(
                 "${CLANG_RESOURCE_DIR}/lib/linux"
-                "${CLANG_RESOURCE_DIR}/lib/darwin"
                 "${CLANG_RESOURCE_DIR}/lib"
         )
         while IFS= read -r d; do
                 CLANG_LIB_DIRS+=("${d}")
-        done < <(find /usr/lib/clang /usr/lib64/clang /usr/lib/llvm /usr/lib64/llvm -type d \( -name "linux" -o -name "darwin" -o -name "lib" \) 2> /dev/null || true)
+        done < <(find /usr/lib/clang /usr/lib64/clang /usr/lib/llvm /usr/lib64/llvm -type d \( -name "linux" -o -name "lib" \) 2> /dev/null || true)
 
         ALL_STATIC_DIRS=("${SYS_LIB_DIRS[@]}" "${GCC_LIB_DIRS[@]}" "${CLANG_LIB_DIRS[@]}")
 
         RUSTC_VERSION="$(rustc --version 2> /dev/null || true)"
 
         COMPILERRT_PATH=""
-        for rt_name in libclang_rt.builtins.a libclang_rt.builtins-x86_64.a libclang_rt.builtins-aarch64.a libclang_rt.osx.a; do
+        for rt_name in libclang_rt.builtins.a libclang_rt.builtins-x86_64.a libclang_rt.builtins-aarch64.a; do
                 COMPILERRT_PATH="$(find_lib "${rt_name}" "${CLANG_LIB_DIRS[@]}" "${ALL_STATIC_DIRS[@]}" || true)"
                 [[ -n "${COMPILERRT_PATH}" ]] && break
         done
@@ -179,13 +165,14 @@ detect_deps() {
                 -n "$(find_bin clang)" && -n "$(find_bin llvm-ar)" ]] || HAS_HARD_REQS=false
 
         has_nvidia && HW=cuda || HW=vulkan
-
-        ELIGIBLE=("${HAS_HARD_REQS}" "${HAS_HARD_REQS}")
 }
 
 show_build_menu() {
         detect_deps
-        [[ ! " ${ELIGIBLE[*]} " =~ " true " ]] && install_deps && detect_deps
+        "${HAS_HARD_REQS}" || {
+                install_deps
+                detect_deps
+        }
 
         for i in cargo ffmpeg clang pkgconf ninja meson cmake; do
                 command -v "${i}" > /dev/null 2>&1 || {
@@ -198,15 +185,32 @@ show_build_menu() {
         cargo clean > /dev/null 2>&1
         rm -f Cargo.lock
 
-        echo -e "  ${W}[x]${N} ${Y}= Eligible to build${N}\n"
-
         for i in "${!BUILD_MODES[@]}"; do
-                local idx=$((i + 1))
-                [[ "${ELIGIBLE[i]}" == true ]] &&
-                        printf "  ${G}[x] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}" ||
-                        printf "  ${R}[ ] ${Y}%d) ${P}%b${N}\n" "${idx}" "${BUILD_MODES[i]}"
+                printf "  ${Y}%d) ${P}%b${N}\n" "$((i + 1))" "${BUILD_MODES[i]}"
         done
         echo
+}
+
+select_encoders() {
+        local n="${#ENCODER_NAMES[@]}" key i e mark
+
+        echo -e "\n${C}Enabled Encoders ${W}(number toggles, enter confirms)${N}"
+        printf "  ${G}[X] ${P}SVT-AV1${N}\n"
+
+        while true; do
+                for ((i = 0; i < n; i++)); do
+                        ((ENC_ON[${ENCODER_FEATS[i]}])) && mark="${G}[X]" || mark="${R}[ ]"
+                        printf "  ${mark} ${P}%s ${Y}(%d)${N}\n" "${ENCODER_NAMES[i]}" "$((i + 1))"
+                done
+
+                read -rsn1 key
+                [[ "${key}" ]] || break
+                [[ "${key}" =~ ^[1-9]$ ]] && ((key <= n)) && {
+                        e="${ENCODER_FEATS[key - 1]}"
+                        ENC_ON["${e}"]=$((1 - ENC_ON[${e}]))
+                }
+                printf "\e[%dA" "${n}"
+        done
 }
 
 cleanup_existing() {
@@ -217,7 +221,8 @@ cleanup_existing() {
                 ["SVT-AV1"]="Bin/Release/libSvtAv1Enc.a"
                 [vulkan]="install/lib/pkgconfig/vulkan.pc"
                 ["nv-codec-headers"]="install/lib/pkgconfig/ffnvcodec.pc"
-                [Vship]="src/VshipLib.cpp"
+                [Vship]="libvship.a"
+                [avm]="build/libavm_full.a"
         )
 
         local successful=() incomplete=()
@@ -225,6 +230,7 @@ cleanup_existing() {
 
         [[ "${HW}" == cuda ]] && dirs+=(nv-codec-headers) || dirs+=(vulkan)
         ((mode_choice == 1)) && dirs+=(Vship)
+        ((ENC_ON[avm])) && dirs+=(avm)
 
         for dir in "${dirs[@]}"; do
                 [[ -d "${BUILD_DIR}/${dir}" ]] || continue
@@ -287,6 +293,7 @@ clone_phase() {
         }
 
         ((mode_choice == 1)) && clone_async "${BUILD_DIR}/Vship" "https://codeberg.org/Line-fr/Vship" "--depth 1"
+        ((ENC_ON[avm])) && clone_async "${BUILD_DIR}/avm" "https://github.com/AOMediaCodec/avm" "--depth 1"
 
         local pid rc=0
         for pid in "${pids[@]}"; do
@@ -411,6 +418,8 @@ build_nvheaders() {
 }
 
 build_vship() {
+        [[ -f "${BUILD_DIR}/Vship/libvship.a" ]] && return
+
         loginf b "Building Vship (${HW})"
 
         local logfile="/tmp/build_vship_$.log"
@@ -682,6 +691,54 @@ build_svtav1() {
         }
 }
 
+build_avm() {
+        [[ -f "${BUILD_DIR}/avm/build/libavm_full.a" ]] && return
+
+        loginf b "Building AVM (AV2 + TFLite)"
+
+        local logfile="/tmp/build_avm_$.log"
+        : > "${logfile}"
+
+        cd "${BUILD_DIR}/avm"
+        cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER="${CC}" \
+                -DCMAKE_CXX_COMPILER="${CXX}" \
+                -DCMAKE_C_FLAGS="${CFLAGS//-fwhole-program-vtables/}" \
+                -DCMAKE_CXX_FLAGS="${CXXFLAGS//-fwhole-program-vtables/}" \
+                -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -flto=thin" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DENABLE_APPS=0 \
+                -DENABLE_EXAMPLES=0 \
+                -DENABLE_TOOLS=0 \
+                -DENABLE_TESTS=0 \
+                -DENABLE_DOCS=0 \
+                -DENABLE_NASM=1 \
+                -DCONFIG_AV2_ENCODER=1 \
+                -DCONFIG_AV2_DECODER=0 \
+                -DCONFIG_WEBM_IO=0 \
+                -DCONFIG_TENSORFLOW_LITE=1 >> "${logfile}" 2>&1
+        ninja -C build avm >> "${logfile}" 2>&1
+
+        {
+                echo "create build/libavm_full.a"
+                echo "addlib build/libavm.a"
+                find build -name "*.a" ! -name "libavm.a" ! -name "libavm_full.a" -printf "addlib %p\n"
+                echo save
+                echo end
+        } | "${AR}" -M >> "${logfile}" 2>&1
+
+        [[ -f "${BUILD_DIR}/avm/build/libavm_full.a" ]] && {
+                rm -f "${logfile}"
+                loginf g "AVM built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
 setup_toolchain() {
         export CC="clang"
         export CXX="clang++"
@@ -702,11 +759,15 @@ setup_toolchain() {
 	-fno-threadsafe-statics -mno-vzeroupper -mno-retpoline -mno-lvi-cfi \
 	-mharden-sls=none -mno-lvi-hardening -ftls-model=local-exec \
 	-fno-use-cxa-atexit -D_FORTIFY_SOURCE=0"
-        "${IS_MAC}" && export COMMON_FLAGS="${COMMON_FLAGS//-mno-vzeroupper/}"
         export CFLAGS="${COMMON_FLAGS}"
-        "${IS_MAC}" && export CXXFLAGS="${COMMON_FLAGS} -stdlib=libc++" || export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
+        export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
 }
+
+ENCODER_NAMES=("AVM")
+ENCODER_FEATS=("avm")
+declare -A ENC_ON=()
+for i in "${!ENCODER_FEATS[@]}"; do ENC_ON["${ENCODER_FEATS[i]}"]=0; done
 
 SVT_FORK_NAMES=("hdr" "essential" "mainline")
 SVT_FORK_URLS=(
@@ -718,6 +779,7 @@ SVT_FORK_URLS=(
 main() {
         preset="${1:-}"
         svt_fork="${2:-}"
+        encoders="${3:-}"
 
         case "$preset" in
                 static_tq) mode_choice=1 ;;
@@ -744,34 +806,47 @@ main() {
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
                         [[ "${mode_choice}" =~ ^[1-2]$ ]] && {
-                                [[ "${ELIGIBLE[mode_choice - 1]}" == false ]] && {
-                                        echo -e "${R}Mode ${mode_choice} is not eligible on this system.${N}"
-                                        continue
-                                }
                                 loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
                                 break
                         }
                 done
         }
 
+        [[ "${preset}" ]] && {
+                for e in ${encoders//,/ }; do
+                        [[ -v ENC_ON[${e}] ]] || {
+                                echo -e "${R}Unknown encoder: ${e}${N}"
+                                echo "Valid encoders: ${ENCODER_FEATS[*]}"
+                                exit 1
+                        }
+                        ENC_ON["${e}"]=1
+                done
+        } || select_encoders
+
         config_file=".cargo/config.toml.static"
 
         case "${mode_choice}" in
                 1)
                         [[ "${HW}" == cuda ]] && feats="vship,cuda" || feats="vship"
-                        cargo_features="--no-default-features --features ${feats}"
                         ;;
                 2)
-                        cargo_features="--no-default-features"
-                        HW=vulkan
+                        [[ "${HW}" == cuda ]] && feats="cuda" || feats=""
                         ;;
         esac
+        cargo_features="--no-default-features${feats:+ --features ${feats}}"
+
+        enc_list="SVT-AV1"
+        for i in "${!ENCODER_FEATS[@]}"; do
+                ((ENC_ON[${ENCODER_FEATS[i]}])) && {
+                        enc_list+=", ${ENCODER_NAMES[i]}"
+                        cargo_features+=" --features ${ENCODER_FEATS[i]}"
+                }
+        done
+        loginf g "Encoders: ${enc_list}"
 
         ((mode_choice == 1)) && [[ "${HW}" == cuda && -z "$(find_bin nvcc)" ]] && install_deps
 
         loginf g "Hardware backend: ${HW}"
-
-        "${IS_MAC}" && config_file=".cargo/config.toml.mac"
 
         [[ -n "${svt_fork}" ]] && {
                 local fork_idx=-1
@@ -813,6 +888,11 @@ main() {
 
         clone_phase
 
+        ((ENC_ON[avm])) && {
+                build_avm &
+                PID_AVM="${!}"
+        }
+
         build_opus &
         PID_OPUS="${!}"
         build_dav1d &
@@ -839,6 +919,7 @@ main() {
 
         wait "${PID_OPUS}" && wait "${PID_FFMPEG}" && wait "${PID_SVTAV1}" || exit 1
         ((mode_choice == 1)) && { wait "${PID_VSHIP}" || exit 1; }
+        ((ENC_ON[avm])) && { wait "${PID_AVM}" || exit 1; }
 
         cd "${XAV_DIR}"
 

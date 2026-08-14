@@ -4,9 +4,7 @@ use alloc::{string::String, vec::Vec};
 use core::mem::MaybeUninit;
 
 #[cfg(target_os = "linux")]
-use crate::io::SeekFrom::Start;
-#[cfg(target_os = "linux")]
-use crate::io::{Error, Read, Result, Seek, SeekFrom, Write};
+use crate::io::{Error, Read, Result, Write};
 #[cfg(all(target_os = "linux", feature = "vship"))]
 use crate::sys::copy_file_range;
 #[cfg(target_os = "linux")]
@@ -14,8 +12,8 @@ use crate::{
     path::{Path, PathBuf},
     sys::{
         AT_REMOVEDIR, O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_RDONLY, O_RDWR, O_TRUNC,
-        O_WRONLY, SEEK_SET, Stat, close, fstat, ftruncate, getdents64, lseek, mkdirat, newfstatat,
-        openat, read as sys_read, readlinkat, unlinkat, write as sys_write,
+        O_WRONLY, Stat, close, fstat, ftruncate, getdents64, mkdirat, newfstatat, openat,
+        read as sys_read, readlinkat, unlinkat, write as sys_write,
     },
 };
 
@@ -109,18 +107,6 @@ impl Write for File {
     #[inline]
     fn flush(&mut self) -> Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Seek for File {
-    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-        let Start(n) = pos;
-        let r = lseek(self.fd, n as i64, SEEK_SET);
-        if r < 0 {
-            return err(r);
-        }
-        Ok(r as u64)
     }
 }
 

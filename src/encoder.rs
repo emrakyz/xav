@@ -6,8 +6,12 @@ use alloc::{
 };
 use core::{ffi::CStr, mem::size_of};
 
+#[cfg(feature = "avm")]
+use crate::avm::avm_codec_version_str;
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::fmath::FloatExt as _;
+#[cfg(any(feature = "vship", test))]
+use crate::svt::{MAX_QP_VALUE, SVT_AV1_RC_MODE_CQP_OR_CRF};
 use crate::{
     Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
     ffms::{VidInf, gcd},
@@ -34,6 +38,7 @@ impl Encoder {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "svt-av1" => Some(SvtAv1),
+            #[cfg(feature = "avm")]
             "avm" => Some(Avm),
             "vvenc" => Some(Vvenc),
             "x265" => Some(X265),
@@ -44,8 +49,7 @@ impl Encoder {
 
     pub const fn extension(self) -> &'static str {
         match self {
-            SvtAv1 => "obu",
-            Avm => "ivf",
+            SvtAv1 | Avm => "obu",
             Vvenc => "266",
             X265 => "265",
             X264 => "264",
@@ -78,7 +82,13 @@ impl Encoder {
                 let v = unsafe { CStr::from_ptr(svt_av1_get_version()).to_string_lossy() };
                 format!("SVT-AV1 {}", v.trim_end_matches("-dirty"))
             }
-            Avm => "AVM".into(),
+            #[cfg(feature = "avm")]
+            Avm => {
+                let v = unsafe { CStr::from_ptr(avm_codec_version_str()).to_string_lossy() };
+                format!("AVM {v}")
+            }
+            #[cfg(not(feature = "avm"))]
+            Avm => assume_unreachable(),
             X264 => run_version("x264", "x264", None),
             X265 => run_version("x265", "x265", Some("version ")),
             Vvenc => run_version("vvencFFapp", "vvenc", Some("version ")),
@@ -119,7 +129,6 @@ pub struct EncConfig<'a> {
     pub inf: &'a VidInf,
     pub template: Option<&'a [u8]>,
     pub params: &'a str,
-    pub zone_params: Option<&'a str>,
     pub crf: Option<f32>,
     pub out: &'a Path,
     pub chnk_idx: u16,
@@ -128,67 +137,16 @@ pub struct EncConfig<'a> {
     pub frames: usize,
 }
 
-pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig) -> Command {
+pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig, zone: Option<&str>) -> Command {
     let mut cmd = match encoder {
-        SvtAv1 => assume_unreachable(),
-        Avm => make_avm_cmd(cfg),
+        SvtAv1 | Avm => assume_unreachable(),
         Vvenc => make_vvenc_cmd(cfg),
         X265 => make_x265_cmd(cfg),
         X264 => make_x264_cmd(cfg),
     };
-    if let Some(z) = cfg.zone_params {
+    if let Some(z) = zone {
         cmd.args(z.split_whitespace());
     }
-    cmd
-}
-
-fn make_avm_cmd(cfg: &EncConfig) -> Command {
-    let mut cmd = Command::new("avmenc");
-
-    let width_str = cfg.width.to_string();
-    let height_str = cfg.height.to_string();
-    let fps_str = format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den);
-
-    cmd.args([
-        "--threads=1",
-        "--codec=av2",
-        "--profile=0",
-        "--usage=0",
-        "--passes=1",
-        "--i420",
-        "--bit-depth=10",
-        "--input-bit-depth=10",
-        "--good",
-        "--end-usage=q",
-        "--psnr=0",
-        "--ivf",
-        "--disable-warnings",
-        "--disable-warning-prompt",
-        "--test-decode=off",
-        "--enable-fwd-kf=0",
-        "--disable-kf",
-    ]);
-
-    cmd.arg(format!("--width={width_str}"));
-    cmd.arg(format!("--height={height_str}"));
-    cmd.arg(format!("--forced_max_frame_width={width_str}"));
-    cmd.arg(format!("--forced_max_frame_height={height_str}"));
-    cmd.arg(format!("--fps={fps_str}"));
-    cmd.arg(format!("--limit={}", cfg.frames));
-    cmd.arg(format!("--output={}", cfg.out.display()));
-
-    colorize_avm(&mut cmd, cfg.inf);
-
-    if let Some(crf) = cfg.crf {
-        cmd.arg(format!("--qp={}", crf as u32));
-    }
-
-    cmd.args(cfg.params.split_whitespace());
-    cmd.arg("-");
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-
     cmd
 }
 
@@ -534,25 +492,6 @@ fn x265_color_volume(md: &str) -> Option<&'static str> {
     }
 }
 
-fn colorize_avm(cmd: &mut Command, inf: &VidInf) {
-    cmd.arg(format!(
-        "--color-primaries={}",
-        color_prims_str(inf.color_primaries)
-    ));
-    cmd.arg(format!(
-        "--transfer-characteristics={}",
-        trans_char_str(inf.transfer_characteristics)
-    ));
-    cmd.arg(format!(
-        "--matrix-coefficients={}",
-        matrix_coef_str(inf.matrix_coefficients)
-    ));
-    cmd.arg(format!(
-        "--chroma-sample-position={}",
-        chroma_pos_str(inf.chroma_sample_position)
-    ));
-}
-
 fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
     let pair = |s: &str, p: &str| -> Option<(f64, f64)> {
         let start = s.find(p)? + p.len();
@@ -701,75 +640,17 @@ const fn h26x_matrix_coef_str(v: i8) -> &'static str {
     }
 }
 
-const fn color_prims_str(v: i8) -> &'static str {
-    match v {
-        1 => "bt709",
-        4 => "bt470m",
-        5 => "bt470bg",
-        6 => "bt601",
-        7 => "smpte240",
-        8 => "film",
-        9 => "bt2020",
-        10 => "xyz",
-        11 => "smpte431",
-        12 => "smpte432",
-        22 => "ebu3213",
-        _ => "unspecified",
-    }
-}
-
-const fn trans_char_str(v: i8) -> &'static str {
-    match v {
-        1 => "bt709",
-        4 => "bt470m",
-        5 => "bt470bg",
-        6 => "bt601",
-        7 => "smpte240",
-        8 => "lin",
-        9 => "log100",
-        10 => "log100sq10",
-        11 => "iec61966",
-        12 => "bt1361",
-        13 => "srgb",
-        14 => "bt2020-10bit",
-        15 => "bt2020-12bit",
-        16 => "smpte2084",
-        17 => "smpte428",
-        18 => "hlg",
-        _ => "unspecified",
-    }
-}
-
-const fn matrix_coef_str(v: i8) -> &'static str {
-    match v {
-        0 => "identity",
-        1 => "bt709",
-        4 => "fcc73",
-        5 => "bt470bg",
-        6 => "bt601",
-        7 => "smpte240",
-        8 => "ycgco",
-        9 => "bt2020ncl",
-        10 => "bt2020cl",
-        11 => "smpte2085",
-        12 => "chromncl",
-        13 => "chromcl",
-        14 => "ictcp",
-        _ => "unspecified",
-    }
-}
-
+#[cold]
+#[inline(never)]
 fn parse_svt_param(conf: *mut EbSvtAv1EncConfiguration, name: &str, value: &str) {
-    let Ok(n) = CString::new(name) else {
-        return;
-    };
-    let Ok(v) = CString::new(value) else {
-        return;
-    };
+    let n = unsafe { CString::from_vec_unchecked(name.into()) };
+    let v = unsafe { CString::from_vec_unchecked(value.into()) };
     unsafe { svt_av1_enc_parse_parameter(conf, n.as_ptr(), v.as_ptr()) };
 }
 
-fn parse_svt_params(conf: *mut EbSvtAv1EncConfiguration, params: &str) {
+#[cold]
+#[inline(never)]
+pub fn parse_svt_params(conf: *mut EbSvtAv1EncConfiguration, params: &str) {
     let mut iter = params.split_whitespace();
     while let Some(key) = iter.next() {
         if let Some(name) = key.strip_prefix("--")
@@ -780,6 +661,8 @@ fn parse_svt_params(conf: *mut EbSvtAv1EncConfiguration, params: &str) {
     }
 }
 
+#[cold]
+#[inline(never)]
 pub fn set_svt_base(
     conf: *mut EbSvtAv1EncConfiguration,
     inf: &VidInf,
@@ -827,23 +710,15 @@ pub fn set_svt_base(
     parse_svt_params(conf, params);
 }
 
-pub fn set_svt_chunk(conf: *mut EbSvtAv1EncConfiguration, cfg: &EncConfig) {
-    if let Some(crf) = cfg.crf {
-        parse_svt_param(conf, "crf", &format!("{crf:.2}"));
-    }
-    if let Some(z) = cfg.zone_params {
-        parse_svt_params(conf, z);
-    }
-}
-
-const fn chroma_pos_str(v: i8) -> &'static str {
-    match v {
-        1 => "left",
-        2 => "center",
-        3 => "topleft",
-        4 => "top",
-        5 => "bottomleft",
-        6 => "bottom",
-        _ => "unspecified",
+#[cfg(any(feature = "vship", test))]
+pub fn set_svt_crf(conf: *mut EbSvtAv1EncConfiguration, crf: f32) {
+    let c = (f64::from(crf) * 100.0).round() / 100.0;
+    let ext = (c * 4.0) as u32;
+    let qp = (c as u32).min(MAX_QP_VALUE);
+    unsafe {
+        (*conf).qp = qp;
+        (*conf).rate_control_mode = SVT_AV1_RC_MODE_CQP_OR_CRF;
+        (*conf).aq_mode = 2;
+        (*conf).extended_crf_qindex_offset = (ext - qp * 4) as u8;
     }
 }

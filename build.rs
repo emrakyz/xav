@@ -1,13 +1,12 @@
 use std::{env, error::Error, path::Path};
 
-const SYS_PATHS: [&str; 7] = [
+const SYS_PATHS: [&str; 6] = [
     "/usr/lib64",
     "/usr/lib",
     "/usr/local/lib64",
     "/usr/local/lib",
     "/lib64",
     "/lib",
-    "/opt/homebrew/lib",
 ];
 
 fn fd_static_libs(primary_paths: &[String], lib_name: &str) {
@@ -106,6 +105,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
                 b.file("asm/sync/sem.asm");
                 if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
                     b.file("asm/vdso.asm");
+                    b.file("asm/sync/svt_drain.asm");
                     b.file("asm/sync/ring_spsc.asm");
                     b.file("asm/sync/ring_spmc.asm");
                     b.file("asm/sync/ring_mpmc.asm");
@@ -153,6 +153,16 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     );
     println!("cargo:rustc-link-lib=static=SvtAv1Enc");
 
+    #[cfg(feature = "avm")]
+    {
+        let avm_dir = format!("{home}/.local/src/avm/build");
+        if !Path::new(&format!("{avm_dir}/libavm_full.a")).exists() {
+            return Err(format!("{avm_dir}/libavm_full.a not found").into());
+        }
+        println!("cargo:rustc-link-search=native={avm_dir}");
+        println!("cargo:rustc-link-lib=static=avm_full");
+    }
+
     #[cfg(feature = "vship")]
     {
         let vship_dir = format!("{home}/.local/src/Vship");
@@ -174,9 +184,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("cargo:rustc-link-lib=static=cudart_static");
             println!("cargo:rustc-link-lib=dylib=cuda");
         }
-
-        println!("cargo:rustc-link-arg=-l:libstdc++.a");
     }
+
+    #[cfg(any(feature = "vship", feature = "avm"))]
+    println!("cargo:rustc-link-arg=-l:libstdc++.a");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         let stat = env::var("CARGO_CFG_TARGET_FEATURE")

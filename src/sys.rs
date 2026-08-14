@@ -194,7 +194,6 @@ pub const O_APPEND: i32 = 0o2000;
 pub const O_DIRECTORY: i32 = 0o200_000;
 pub const O_CLOEXEC: i32 = 0o2_000_000;
 pub const AT_REMOVEDIR: i32 = 0x200;
-pub const SEEK_SET: i32 = 0;
 const AT_FDCWD: i64 = -100;
 
 pub fn openat(path: *const u8, flags: i32, mode: u32) -> i32 {
@@ -207,10 +206,6 @@ pub fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
 
 pub fn write(fd: i32, buf: *const u8, count: usize) -> isize {
     syscall!(1, fd, buf, count) as isize
-}
-
-pub fn lseek(fd: i32, offset: i64, whence: i32) -> i64 {
-    syscall!(8, fd, offset, whence)
 }
 
 pub fn mkdirat(path: *const u8, mode: u32) -> i32 {

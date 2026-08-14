@@ -23,13 +23,15 @@ use core::{
 #[cfg(any(not(target_os = "linux"), test))]
 use std::{env::args as env_args, panic::set_hook};
 
+#[cfg(all(feature = "vship", feature = "avm"))]
+use crate::encoder::Encoder::Avm;
 #[cfg(unix)]
 use crate::process::{Command, Stdio};
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::sync::OnceLock;
 use crate::{
     clk::Mono,
-    encoder::Encoder::{Avm, SvtAv1},
+    encoder::Encoder::SvtAv1,
     error::Xerr::Help,
     fs::{
         create_dir_all, read_to_string as read_to_str, remove_dir_all as rm_dir_all,
@@ -51,6 +53,10 @@ macro_rules! println {
 #[cfg(feature = "vship")]
 mod atofu;
 mod audio;
+#[cfg(feature = "avm")]
+mod av2_parse;
+#[cfg(feature = "avm")]
+mod avm;
 mod byte_range;
 mod chan;
 mod chunk;
@@ -180,7 +186,10 @@ extern "C" fn exit_restore(_: i32) {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
+    #[cfg(feature = "avm")]
     println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
+    #[cfg(not(feature = "avm"))]
+    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
     println!("{C}-w {P}┃ {C}--worker     {W}Parallelism");
     println!("{C}-b {P}┃ {C}--buff       {W}Chunks to buffer");
     println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
@@ -243,19 +252,27 @@ fn parse_args() -> Result<Args, Xerr> {
 }
 
 fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
-    s.split(',')
+    let r: Vec<(usize, usize)> = s
+        .split(',')
         .map(|p| {
-            let (a, b) = p.trim().split_once('-').ok_or("invalid range")?;
-            Ok((a.trim().parse()?, b.trim().parse()?))
+            let (a, b) = p.split_once('-').ok_or("invalid range")?;
+            let b = b.trim();
+            Ok((
+                a.trim().parse()?,
+                if b.is_empty() { usize::MAX } else { b.parse()? },
+            ))
         })
-        .collect()
+        .collect::<Result<_, Xerr>>()?;
+    if r.iter().rev().skip(1).any(|&(_, e)| e == usize::MAX) {
+        return Err("only the last range may omit its end".into());
+    }
+    Ok(r)
 }
 
 fn apply_defaults(args: &mut Args) {
     if args.out == PathBuf::new() {
         let stem = unsafe { args.inp.file_stem().unwrap_unchecked() }.to_string_lossy();
-        let ext = if args.encoder == Avm { "ivf" } else { "mkv" };
-        args.out = args.inp.with_file_name(format!("{stem}_xav.{ext}"));
+        args.out = args.inp.with_file_name(format!("{stem}_xav.mkv"));
     }
 
     if args.sc_file == PathBuf::new() {
@@ -279,9 +296,7 @@ fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
 fn val_out(out: &Path, encoder: Encoder) -> Result<(), Xerr> {
     let ext = out.extension().and_then(|e| e.to_str()).unwrap_or("");
     match (encoder, ext) {
-        (Avm, "ivf") | (SvtAv1, "webm") => Ok(()),
-        (Avm, _) => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: ivf").into()),
-        (_, "mkv") => Ok(()),
+        (SvtAv1, "webm") | (_, "mkv") => Ok(()),
         (_, "webm") => Err(format!("webm output requires svt-av1, not {encoder:?}").into()),
         _ => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: mkv, webm").into()),
     }
@@ -451,6 +466,10 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
 
     #[cfg(feature = "vship")]
     if let Some(ref tq) = result.tq {
+        #[cfg(feature = "avm")]
+        if result.encoder == Avm {
+            return Err("Target quality is not supported by avm".into());
+        }
         val_range(tq, "-t/--tq")?;
         val_range(
             unsafe { result.qp_range.as_ref().unwrap_unchecked() },
@@ -648,8 +667,16 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     let inf = get_vidinf(&args.inp)?;
 
     let mut args = args.clone();
+    if let Some(r) = args.ranges.as_mut() {
+        let l = unsafe { r.last_mut().unwrap_unchecked() };
+        if l.1 == usize::MAX {
+            l.1 = inf.frames - 1;
+        }
+    }
     #[cfg(feature = "vship")]
-    if let Some(ref t) = args.tq && is_cvvdp(tq_target(t)) {
+    if let Some(ref t) = args.tq
+        && is_cvvdp(tq_target(t))
+    {
         args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?);
     }
 
@@ -710,9 +737,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     enc_all(&chnks, &inf, &args, &args.inp, &work_dir, pipe_reader);
     let enc_time = enc_start.elapsed() + Durat::from_secs(prior_secs);
 
-    let au_tracks = if let Some(ref au_spec) = args.au
-        && args.encoder != Avm
-    {
+    let au_tracks = if let Some(ref au_spec) = args.au {
         acq_au(au_spec, &args, &inf, &work_dir)?
     } else {
         Vec::new()

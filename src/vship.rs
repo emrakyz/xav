@@ -123,16 +123,14 @@ pub fn load_disp(conf: Option<&str>, inf: &VidInf) -> Result<Disp, Xerr> {
     }
     if hdr && v[2] < 500.0 {
         return Err(
-            "Brightness is too low for HDR. Lowest grade HDR brightness is considered \
-             >=500 minimum"
+            "Brightness is too low for HDR. Lowest grade HDR brightness is considered >=500 \
+             minimum"
                 .into(),
         );
     }
     if !hdr && v[2] > 500.0 {
         return Err(
-            "Brightness is too high for SDR. No consumer TV can reach that brightness \
-             level"
-                .into(),
+            "Brightness is too high for SDR. No consumer TV can reach that brightness level".into(),
         );
     }
     Ok(Disp { v, hdr })

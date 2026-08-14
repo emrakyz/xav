@@ -10,11 +10,10 @@ use crate::{
     audio::AuStream,
     clk::Mono,
     copy::{demux, read_chapters},
-    encoder::Encoder::Avm,
     error::Xerr,
     ffms::{AVMEDIA_TYPE_AUDIO, VidInf},
-    fs::{DirEntry, File, read_dir, read_to_string as read_to_str, write},
-    io::{Read as _, Seek as _, SeekFrom::Start, Write as _, print_fmt, stdout},
+    fs::{read_dir, read_to_string as read_to_str, write},
+    io::{Write as _, print_fmt, stdout},
     mkv_mux::{AudioSrc, Aux, mux_mkv},
     mux_webm::mux_webm,
     path::{Path, PathBuf},
@@ -38,6 +37,7 @@ pub struct Scene {
 #[derive(Clone)]
 pub struct Chunk {
     pub idx: u16,
+    pub tmpl: u16,
     pub start: usize,
     pub end: usize,
     pub params: Option<Box<str>>,
@@ -120,11 +120,31 @@ pub fn chnkify(scenes: &[Scene]) -> Vec<Chunk> {
         .enumerate()
         .map(|(i, s)| Chunk {
             idx: i as u16,
+            tmpl: 0,
             start: s.s_frame,
             end: s.e_frame,
             params: s.params.clone(),
         })
         .collect()
+}
+
+#[cold]
+#[inline(never)]
+pub fn zone_tmpls(chnks: &mut [Chunk]) -> Vec<Box<str>> {
+    let mut zones: Vec<Box<str>> = Vec::new();
+    for c in chnks {
+        let Some(ref p) = c.params else {
+            continue;
+        };
+        c.tmpl = zones.iter().position(|z| z == p).map_or_else(
+            || {
+                zones.push(p.clone());
+                zones.len() as u16
+            },
+            |i| i as u16 + 1,
+        );
+    }
+    zones
 }
 
 pub fn get_resume(work_dir: &Path) -> Option<ResumeInf> {
@@ -180,43 +200,6 @@ pub fn save_resume(data: &ResumeInf, work_dir: &Path) -> Result<(), Xerr> {
     Ok(())
 }
 
-fn concat_ivf(files: &[PathBuf], out: &Path, tot_frames: u32) -> Result<(), Xerr> {
-    let mut writer = File::create(out)?;
-    let mut pts_off: u64 = 0;
-    let mut buf: Vec<u8> = Vec::new();
-
-    for (i, file) in files.iter().enumerate() {
-        buf.clear();
-        File::open(file)?.read_to_end(&mut buf)?;
-        if buf.len() < 32 {
-            continue;
-        }
-
-        let mut chunk_max: u64 = pts_off;
-        unsafe {
-            let base = buf.as_mut_ptr();
-            let end = base.add(buf.len());
-            let mut p = base.add(32);
-            while end.offset_from(p) >= 12 {
-                let sz = p.cast::<u32>().read_unaligned() as usize;
-                let pts_ptr = p.add(4).cast::<u64>();
-                let new_pts = pts_ptr.read_unaligned() + pts_off;
-                pts_ptr.write_unaligned(new_pts);
-                chunk_max = chunk_max.max(new_pts);
-                p = p.add(12 + sz);
-            }
-        }
-
-        writer.write_all(if i == 0 { &buf } else { &buf[32..] })?;
-        pts_off = chunk_max + 1;
-    }
-
-    writer.seek(Start(24))?;
-    writer.write_all(&tot_frames.to_le_bytes())?;
-
-    Ok(())
-}
-
 pub fn merge_out(
     args: &Args,
     enc_dir: &Path,
@@ -224,32 +207,30 @@ pub fn merge_out(
     au: &[(AuStream, PathBuf)],
     crop: (u32, u32),
 ) -> Result<(), Xerr> {
-    let mut files: Vec<_> = read_dir(enc_dir)?
+    let mut files: Vec<(usize, PathBuf)> = read_dir(enc_dir)?
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension()
                 .is_some_and(|ext| ext == args.encoder.extension())
+        })
+        .map(|p| {
+            let idx = p
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0);
+            (idx, p)
         })
         .collect();
 
-    files.sort_unstable_by_key(|e| {
-        e.path()
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0)
-    });
+    files.sort_unstable_by_key(|&(idx, _)| idx);
 
-    let paths: Vec<PathBuf> = files.iter().map(DirEntry::path).collect();
+    let paths: Vec<PathBuf> = files.into_iter().map(|(_, p)| p).collect();
 
     if args.out.extension().is_some_and(|e| e == "webm") {
         let dims = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
         return mux_webm(&paths, &args.out, inf, dims, au);
-    }
-
-    if args.encoder == Avm {
-        return concat_ivf(&paths, &args.out, inf.frames as u32);
     }
 
     let (enc_w, enc_h) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
