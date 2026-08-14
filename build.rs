@@ -1,4 +1,4 @@
-use std::{env, error::Error, path::Path};
+use std::{env, error::Error, fs, path::Path, process::Command};
 
 const SYS_PATHS: [&str; 6] = [
     "/usr/lib64",
@@ -20,6 +20,203 @@ fn fd_static_libs(primary_paths: &[String], lib_name: &str) {
             return;
         }
     }
+}
+
+fn git(dir: &str, args: &[&str]) -> String {
+    Command::new("git")
+        .args(["-C", dir])
+        .args(args)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map_or_else(String::new, |o| {
+            String::from_utf8_lossy(&o.stdout).trim().to_owned()
+        })
+}
+
+fn field(path: &str, key: &str) -> Option<String> {
+    let t = fs::read_to_string(path).ok()?;
+    t.lines()
+        .find_map(|l| l.trim_start().strip_prefix(key))
+        .and_then(|r| {
+            r.split([' ', '\t', '\'', '"', ',', ')'])
+                .find(|s| !s.is_empty())
+        })
+        .map(str::to_owned)
+}
+
+fn stamp(var: &str, ver: Option<String>, dir: &str) {
+    let v = ver.unwrap_or_default();
+    let h = git(dir, &["rev-parse", "--short", "HEAD"]);
+    println!(
+        "cargo:rustc-env=XAV_V_{var}={}{}{h}",
+        if v.is_empty() { "unknown" } else { v.as_str() },
+        if h.is_empty() { "" } else { "-" }
+    );
+    println!(
+        "cargo:rustc-env=XAV_D_{var}={}",
+        git(dir, &["log", "-1", "--format=%cs"])
+    );
+    for f in ["HEAD", "logs/HEAD"] {
+        let p = format!("{dir}/.git/{f}");
+        if Path::new(&p).exists() {
+            println!("cargo:rerun-if-changed={p}");
+        }
+    }
+}
+
+fn triple(path: &str, key: &str, parts: [&str; 3]) -> Option<String> {
+    let p = |k: &str| field(path, &format!("{key}{k}"));
+    match (p(parts[0]), p(parts[1]), p(parts[2])) {
+        (Some(a), Some(b), Some(c)) => Some(format!("{a}.{b}.{c}")),
+        _ => None,
+    }
+}
+
+#[cfg(all(feature = "vship", feature = "cuda"))]
+fn cuda_ver() -> String {
+    ["/opt/cuda", "/usr/local/cuda"]
+        .iter()
+        .find_map(|d| {
+            field(
+                &format!("{d}/include/cuda_runtime_api.h"),
+                "#define CUDART_VERSION",
+            )
+        })
+        .and_then(|v| v.parse::<u32>().ok())
+        .map_or_else(
+            || "unknown".to_owned(),
+            |n| format!("{}.{}.{}", n / 1000, n % 1000 / 10, n % 10),
+        )
+}
+
+#[cfg(feature = "vship")]
+fn mesa() -> Option<String> {
+    [
+        "/usr/lib64/pkgconfig/dri.pc",
+        "/usr/lib/pkgconfig/dri.pc",
+        "/usr/share/pkgconfig/dri.pc",
+    ]
+    .iter()
+    .find_map(|p| field(p, "Version:"))
+    .or_else(|| {
+        Command::new("pkg-config")
+            .args(["--modversion", "dri"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+            .filter(|s| !s.is_empty())
+    })
+}
+
+#[cfg(feature = "vship")]
+fn gpu() -> String {
+    let ids: Vec<String> = fs::read_dir("/sys/class/drm")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| fs::read_to_string(e.path().join("device/vendor")).ok())
+        .map(|v| v.trim().to_owned())
+        .collect();
+    for (id, name) in [("0x10de", "NVIDIA"), ("0x1002", "AMD"), ("0x8086", "Intel")] {
+        if ids.iter().any(|v| v.as_str() == id) {
+            return if id == "0x10de" {
+                fs::read_to_string("/sys/module/nvidia/version")
+                    .map_or_else(|_| name.to_owned(), |v| format!("{name} {}", v.trim()))
+            } else {
+                mesa().map_or_else(|| name.to_owned(), |m| format!("{name} Mesa {m}"))
+            };
+        }
+    }
+    "unknown".to_owned()
+}
+
+fn stamp_versions(home: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let src = format!("{home}/.local/src");
+
+    stamp(
+        "XAV",
+        env::var("CARGO_PKG_VERSION").ok(),
+        &env::var("CARGO_MANIFEST_DIR")?,
+    );
+
+    let svt = format!("{src}/SVT-AV1");
+    let url = git(&svt, &["remote", "get-url", "origin"]);
+    let base = url
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(".git");
+    let fork = base
+        .strip_prefix("SVT-AV1-")
+        .or_else(|| base.strip_prefix("svt-av1-"))
+        .map_or_else(String::new, |f| format!("-{f}"));
+    stamp(
+        "SVT",
+        triple(
+            &format!("{svt}/Source/API/EbSvtAv1.h"),
+            "#define SVT_AV1_VERSION_",
+            ["MAJOR", "MINOR", "PATCHLEVEL"],
+        )
+        .map(|v| v + &fork),
+        &svt,
+    );
+
+    let dav1d = format!("{src}/dav1d");
+    stamp(
+        "DAV1D",
+        field(&format!("{dav1d}/meson.build"), "version:"),
+        &dav1d,
+    );
+
+    #[cfg(feature = "avm")]
+    {
+        let avm = format!("{src}/avm");
+        stamp(
+            "AVM",
+            field(
+                &format!("{avm}/build/config/avm_version.h"),
+                "#define VERSION_STRING_NOSP",
+            )
+            .map(|v| v.trim_start_matches('v').to_owned()),
+            &avm,
+        );
+    }
+
+    #[cfg(feature = "vship")]
+    {
+        let vship = format!("{src}/Vship");
+        stamp(
+            "VSHIP",
+            triple(
+                &format!("{vship}/Makefile"),
+                "VSHIP_VERSION_",
+                ["MAJOR=", "MINOR=", "MINORMINOR="],
+            ),
+            &vship,
+        );
+
+        #[cfg(feature = "cuda")]
+        println!("cargo:rustc-env=XAV_V_CUDA={}", cuda_ver());
+
+        #[cfg(not(feature = "cuda"))]
+        {
+            let vk = format!("{src}/vulkan/Vulkan-Loader");
+            stamp(
+                "VULKAN",
+                field(
+                    &format!("{vk}/CMakeLists.txt"),
+                    "project(VULKAN_LOADER VERSION",
+                ),
+                &vk,
+            );
+        }
+
+        println!("cargo:rustc-env=XAV_V_GPU={}", gpu());
+    }
+
+    Ok(())
 }
 
 fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -124,6 +321,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let home = env::var("HOME")?;
 
+    stamp_versions(&home)?;
     build_asm()?;
 
     println!("cargo:rustc-link-search=native={home}/.local/src/FFmpeg/install/lib");

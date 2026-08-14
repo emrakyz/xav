@@ -1,7 +1,4 @@
-use core::{
-    ffi::{c_char, c_void},
-    mem::offset_of,
-};
+use core::{ffi::c_void, mem::offset_of};
 
 pub const EB_ERROR_NONE: i32 = 0;
 pub const EB_BUFFERFLAG_EOS: u32 = 0x0000_0001;
@@ -267,6 +264,4 @@ unsafe extern "C" {
     pub fn svt_av1_enc_deinit(svt_enc_component: *mut EbComponentType) -> i32;
 
     pub fn svt_av1_enc_deinit_handle(svt_enc_component: *mut EbComponentType) -> i32;
-
-    pub fn svt_av1_get_version() -> *const c_char;
 }

@@ -6,7 +6,7 @@ use super::{
 
 const INFO_ID: u32 = 0x1549_A966;
 const TITLE_ID: u32 = 0x7BA9;
-const APP: &[u8] = concat!("xav ", env!("CARGO_PKG_VERSION")).as_bytes();
+const APP: &[u8] = concat!("xav ", env!("XAV_V_XAV")).as_bytes();
 const FIXED_CONTENT_SIZE: usize = 7 + 19 + 11 + 11 + 2 * (3 + APP.len());
 
 #[inline]

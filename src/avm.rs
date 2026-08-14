@@ -326,8 +326,6 @@ unsafe extern "C" {
     ) -> *const AvmCxPkt;
 
     pub fn avm_codec_destroy(ctx: *mut AvmCodecCtx) -> i32;
-
-    pub fn avm_codec_version_str() -> *const c_char;
 }
 
 pub const AVM_CFG_SIZE: usize = size_of::<AvmCodecEncCfg>();

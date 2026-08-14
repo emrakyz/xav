@@ -18,7 +18,7 @@ const TAG_NAME: u32 = 0x45A3;
 const TAG_LANG_IETF: u32 = 0x447B;
 const TAG_STRING: u32 = 0x4487;
 
-const APP: &str = concat!("xav ", env!("CARGO_PKG_VERSION"));
+const APP: &str = concat!("xav ", env!("XAV_V_XAV"));
 const STATS_TAGS: &str = "BPS DURATION NUMBER_OF_FRAMES NUMBER_OF_BYTES";
 
 pub struct TrackStatistics<'a> {

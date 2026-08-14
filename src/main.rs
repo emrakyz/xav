@@ -182,6 +182,22 @@ extern "C" fn exit_restore(_: i32) {
     exit(130)
 }
 
+const fn wmax(a: usize, b: usize) -> usize {
+    if a > b { a } else { b }
+}
+
+const VW: usize = {
+    let w = wmax(env!("XAV_V_XAV").len(), env!("XAV_V_SVT").len());
+    let w = wmax(w, env!("XAV_V_DAV1D").len());
+    #[cfg(feature = "avm")]
+    let w = wmax(w, env!("XAV_V_AVM").len());
+    #[cfg(feature = "vship")]
+    let w = wmax(w, env!("XAV_V_VSHIP").len());
+    #[cfg(all(feature = "vship", not(feature = "cuda")))]
+    let w = wmax(w, env!("XAV_V_VULKAN").len());
+    w
+};
+
 #[rustfmt::skip]
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
@@ -209,6 +225,21 @@ fn print_help() {
     }
     println!("");
     println!("   {P}┃ {C}--guide      {W}Use fullscreen & Nerd Fonts");
+    println!();
+    println!("{C}XAV:         {G}{:<VW$}  {B}{}{N}", env!("XAV_V_XAV"), env!("XAV_D_XAV"));
+    println!("{C}SVT-AV1:     {G}{:<VW$}  {B}{}{N}", env!("XAV_V_SVT"), env!("XAV_D_SVT"));
+    println!("{C}DAV1D:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_DAV1D"), env!("XAV_D_DAV1D"));
+    #[cfg(feature = "avm")]
+    println!("{C}AVM:         {G}{:<VW$}  {B}{}{N}", env!("XAV_V_AVM"), env!("XAV_D_AVM"));
+    #[cfg(feature = "vship")]
+    {
+        println!("{C}VSHIP:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VSHIP"), env!("XAV_D_VSHIP"));
+        #[cfg(feature = "cuda")]
+        println!("{C}CUDA:        {G}{}{N}", env!("XAV_V_CUDA"));
+        #[cfg(not(feature = "cuda"))]
+        println!("{C}VULKAN:      {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VULKAN"), env!("XAV_D_VULKAN"));
+        println!("{C}GPU Drivers: {G}{}{N}", env!("XAV_V_GPU"));
+    }
 }
 
 fn print_guide() {

@@ -4,10 +4,8 @@ use alloc::{
     borrow::ToOwned as _,
     string::{String, ToString as _},
 };
-use core::{ffi::CStr, mem::size_of};
+use core::mem::size_of;
 
-#[cfg(feature = "avm")]
-use crate::avm::avm_codec_version_str;
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::fmath::FloatExt as _;
 #[cfg(any(feature = "vship", test))]
@@ -19,7 +17,7 @@ use crate::{
     process::{Command, Stdio},
     svt::{
         ChromaPoints, ContentLightLevel, EbSvtAv1EncConfiguration, MasteringDisplayInfo,
-        svt_av1_enc_parse_parameter, svt_av1_get_version,
+        svt_av1_enc_parse_parameter,
     },
     util::assume_unreachable,
 };
@@ -78,15 +76,9 @@ impl Encoder {
 
     pub fn version(self) -> String {
         match self {
-            SvtAv1 => {
-                let v = unsafe { CStr::from_ptr(svt_av1_get_version()).to_string_lossy() };
-                format!("SVT-AV1 {}", v.trim_end_matches("-dirty"))
-            }
+            SvtAv1 => concat!("SVT-AV1 v", env!("XAV_V_SVT")).to_owned(),
             #[cfg(feature = "avm")]
-            Avm => {
-                let v = unsafe { CStr::from_ptr(avm_codec_version_str()).to_string_lossy() };
-                format!("AVM {v}")
-            }
+            Avm => concat!("AVM v", env!("XAV_V_AVM")).to_owned(),
             #[cfg(not(feature = "avm"))]
             Avm => assume_unreachable(),
             X264 => run_version("x264", "x264", None),
