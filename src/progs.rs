@@ -398,6 +398,7 @@ impl Tracker {
         Self::mk(prog, worker_id, chnk_idx, tot, false, crf_score, TAG_MET)
     }
 
+    #[cfg(any(feature = "vship", feature = "avm"))]
     #[inline]
     pub fn set(&self, n: usize) {
         unsafe { (*self.slot).enced.store(n, Relaxed) }
