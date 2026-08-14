@@ -12,8 +12,9 @@ const TD_LEN: usize = 2;
 
 pub fn parse(buf: &[u8], blocks: &mut Vec<ByteRange>) {
     let len = buf.len();
-    let mut block_start = TD_LEN.min(len);
-    let mut pos = block_start;
+    // TEMPORARILY DISABLE TD STRIP WITH AV2
+    let mut block_start = 0;
+    let mut pos = TD_LEN.min(len);
 
     while pos < len {
         let obu_start = pos;
@@ -35,7 +36,7 @@ pub fn parse(buf: &[u8], blocks: &mut Vec<ByteRange>) {
                 offset: block_start,
                 len: obu_start - block_start,
             });
-            block_start = pos;
+            block_start = obu_start;
         }
     }
 
