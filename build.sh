@@ -764,7 +764,7 @@ setup_toolchain() {
 	-fno-use-cxa-atexit -D_FORTIFY_SOURCE=0"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
-        unset LDFLAGS
+        export LDFLAGS="-fuse-ld=lld"
 }
 
 ENCODER_NAMES=("AVM")
