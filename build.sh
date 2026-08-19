@@ -19,7 +19,10 @@ install_deps() {
                 "pacman")
                         pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson ffmpeg curl gcc)
                         ((${mode_choice:-0} == 1)) && pkgs+=(cuda)
-                        ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
+                        mapfile -t needed_pkgs < <(pacman -T "${pkgs[@]}" 2>/dev/null || true)
+                        if ((${#needed_pkgs[@]} > 0 && ${#needed_pkgs[0]} > 0)); then
+                                ${priv:-} pacman -S --needed --noconfirm "${needed_pkgs[@]}"
+                        fi
                         ;;
                 "dnf")
                         pkgs=(
@@ -761,7 +764,7 @@ setup_toolchain() {
 	-fno-use-cxa-atexit -D_FORTIFY_SOURCE=0"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
-        unset LDFLAGS
+        export LDFLAGS="-fuse-ld=lld"
 }
 
 ENCODER_NAMES=("AVM")
