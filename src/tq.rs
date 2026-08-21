@@ -261,6 +261,13 @@ fn aggregate_scores(
         jod(q[..cutoff].iter().sum::<f32>() / cutoff as f32)
     } else if metric_mode == "mean" {
         scores.iter().sum::<f32>() / scores.len() as f32
+    } else if metric_mode == "min" {
+        if pipe.sort_descending {
+            scores.sort_unstable_by(|a, b| b.total_cmp(a));
+        } else {
+            scores.sort_unstable_by(f32::total_cmp);
+        }
+        scores[0]
     } else if let Some(p) = metric_mode.strip_prefix('p') {
         let percentile: f32 = unsafe { p.parse().unwrap_unchecked() };
         if pipe.sort_descending {

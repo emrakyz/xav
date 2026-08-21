@@ -847,18 +847,20 @@
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
 
-{P}▌ {C}2.12  {C}-m {P}┃ {C}--mode       {W}TQ Metric stat: {G}mean {W}or pN%
+{P}▌ {C}2.12  {C}-m {P}┃ {C}--mode       {W}TQ Metric stat: {G}mean {W}, pN% or min
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Assess how you aggregate per-scene scores for TQ runs
   {P} {W}Don't use if you are not sure what you are doing
   {P} {W}Default is {G}mean{W}: Average score of each scene is used
-  {P} {W}Other option is to use a percentage value such as {B}p25
+  {P} {W}Another option is to use a percentage value such as {B}p25
+  {P} {W}Lastly, the minimum score of each scene (i.e. the score for the worst looking frame)
+       {W}can be used
   {P} {W}Perc option takes mean score of worst values under given percentile value
     {W}For {B}p25{W}, worst {B}25th {W}percentile is found. That value & all values under that
     {W}will be averaged. Best {B}75% {W}of scores are eliminated/discarded from calculation
   {P} {W}Perc mode: To increase lowest possible quality in videos where you
-    {W}are extremely careful about quality drops even if they are very short-durat segments
+    {W}are extremely careful about quality drops even if they are very short-duration segments
   {P} {W}Perc mode is less useful with {C}CVVDP {W}and requires knowledge & experience regarding
     {W}how metric works at lower level. CVVDP has internal weighted score management +
     {W}temporal feature modeling human vision for motion-specific changes. Using a percentage

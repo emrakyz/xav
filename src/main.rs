@@ -217,7 +217,7 @@ fn print_help() {
     #[cfg(feature = "vship")]
     {
         println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
-        println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}or pN%");
+        println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}, pN% or min");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
         println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file");
@@ -501,7 +501,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
         if result.encoder == Avm {
             return Err("Target quality is not supported by avm".into());
         }
-        val_range(tq, "-t/--tq")?;
+        val_ranges(tq, "-t/--tq")?;
         val_range(
             unsafe { result.qp_range.as_ref().unwrap_unchecked() },
             "-f/--qp",
