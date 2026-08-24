@@ -345,6 +345,24 @@ fn val_range(s: &str, name: &str) -> Result<(), Xerr> {
     Ok(())
 }
 
+#[cfg(feature = "vship")]
+fn val_ranges(s: &str, name: &str) -> Result<(), Xerr> {
+    let ranges: Vec<String> = s.split(',').collect();
+    for (i, range) in ranges.iter().enumerate() {
+        let parts: Vec<f32> = s.split('-').filter_map(|v| v.parse().ok()).collect();
+        if parts.len() > 2 {
+            return Err(format!("Part {i} in {name} requires a range: <min>-[max]").into());
+        }
+        else if parts.len() == 1 {
+            parts.push(100.0);
+        }
+        if parts[0] >= parts[1] {
+            return Err(format!("Part {i} in {name} min must be less than max: {range}").into());
+        }
+    }
+    Ok(())
+}
+
 macro_rules! arg {
     (str $a:ident, $i:ident, $v:expr) => {
         if let Some(v) = next_arg($a, &mut $i) {
