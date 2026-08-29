@@ -105,6 +105,8 @@ mod sys;
 mod thread;
 #[cfg(feature = "vship")]
 mod tq;
+#[cfg(feature = "vship")]
+mod tq_prior;
 #[cfg(target_os = "linux")]
 mod uring;
 mod util;

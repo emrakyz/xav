@@ -143,7 +143,7 @@ pub struct ProbeLog {
     pub frames: usize,
 }
 
-fn round_crf(crf: f32) -> f32 {
+pub fn round_crf(crf: f32) -> f32 {
     (crf * 4.0).round() / 4.0
 }
 

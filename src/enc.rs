@@ -75,8 +75,9 @@ use crate::{
         calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff, calc_cvvdp_rem_dav1d,
         calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff, calc_ssimu2_10b_dav1d,
         calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff, interpolate_crf, make_dav1d,
-        make_ff, prep_dav1d, prep_ff,
+        make_ff, prep_dav1d, prep_ff, round_crf,
     },
+    tq_prior::{Done, first_probe, second_probe},
     vship::{Disp, PinnedBuf, VshipProcessor, init_device},
     worker::TQState,
 };
@@ -425,6 +426,8 @@ struct EncWorkerCtx<'a> {
     tmpls: &'a [Arc<[u8]>],
     #[cfg(feature = "vship")]
     probe_fn: ProbeFn,
+    #[cfg(feature = "vship")]
+    tq_logger: Option<&'a Arc<Mutex<Vec<ProbeLog>>>>,
 }
 
 #[cfg(feature = "vship")]
@@ -645,6 +648,8 @@ pub fn enc_all(
                 tmpls: tset,
                 #[cfg(feature = "vship")]
                 probe_fn,
+                #[cfg(feature = "vship")]
+                tq_logger: None,
             };
             run_enc_worker(
                 &rx_clone,
@@ -1228,14 +1233,25 @@ fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphor
     unsafe { spmc_close(enc) };
 }
 
+/// A finished chunk's log entry as the prior wants it.
+#[cfg(feature = "vship")]
+const fn as_done(e: &ProbeLog) -> Done<'_> {
+    Done {
+        crf: e.final_crf,
+        frames: e.frames,
+        probes: e.probes.as_slice(),
+    }
+}
+
 #[cfg(feature = "vship")]
 #[inline]
-fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f32 {
+fn tq_search_crf(tq: &mut TQState, encoder: Encoder, guess: Option<f32>) -> f32 {
     tq.round += 1;
-    let c = if tq.round <= 2 {
-        bisect(tq.search_min, tq.search_max)
-    } else {
-        interpolate_crf(&tq.probes, tq.target, tq.round)
+    let c = match (tq.round, guess) {
+        // Rounds 1-2 open where the film's recent chunks say, not at the range midpoint.
+        (1 | 2, Some(g)) => round_crf(g),
+        (1 | 2, None) => bisect(tq.search_min, tq.search_max),
+        _ => interpolate_crf(&tq.probes, tq.target, tq.round),
     }
     .clamp(tq.search_min, tq.search_max);
     let c = if encoder.integer_qp() { c.round() } else { c };
@@ -1303,7 +1319,29 @@ macro_rules! make_tq_loop {
                 let $crf = if $is_final {
                     tq.last_crf
                 } else {
-                    tq_search_crf(tq, ctx.encoder)
+                    // Only the first two rounds consult the prior, so only they take the lock.
+                    let guess = match (tq.round, ctx.tq_logger, tq.probes.last()) {
+                        (0, Some(l), _) => {
+                            let g = l.lock();
+                            first_probe(
+                                g.iter().rev().map(as_done),
+                                tq_ctx.qp_min,
+                                tq_ctx.qp_max,
+                            )
+                        }
+                        // Round 2 shifts the neighbours' curves through round 1's measurement.
+                        (1, Some(l), Some(last)) => {
+                            let g = l.lock();
+                            second_probe(
+                                g.iter().rev().map(as_done),
+                                last.crf,
+                                last.score,
+                                tq.target,
+                            )
+                        }
+                        _ => None,
+                    };
+                    tq_search_crf(tq, ctx.encoder, guess)
                 };
                 let (p, dst) = if $is_final {
                     (params, Some(enc_path.set($pkg.chnk.idx)))
@@ -1612,6 +1650,7 @@ fn spawn_tq_encoders(
         let prog_clone = Arc::clone(sc.prog);
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
         let tmpls = tmpls.clone();
+        let tq_logger = Arc::clone(sc.tq_logger);
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
                 inf: &inf,
@@ -1625,6 +1664,7 @@ fn spawn_tq_encoders(
                 tmpl: None,
                 tmpls: &[],
                 probe_fn,
+                tq_logger: Some(&tq_logger),
             };
             tq_loop(
                 &rx,
