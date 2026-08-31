@@ -1,4 +1,6 @@
 use alloc::ffi::CString;
+#[cfg(feature = "vvenc")]
+use alloc::vec::Vec;
 #[cfg(target_os = "linux")]
 use alloc::{
     borrow::ToOwned as _,
@@ -38,6 +40,7 @@ impl Encoder {
             "svt-av1" => Some(SvtAv1),
             #[cfg(feature = "avm")]
             "avm" => Some(Avm),
+            #[cfg(feature = "vvenc")]
             "vvenc" => Some(Vvenc),
             "x265" => Some(X265),
             "x264" => Some(X264),
@@ -81,9 +84,12 @@ impl Encoder {
             Avm => concat!("AVM v", env!("XAV_V_AVM")).to_owned(),
             #[cfg(not(feature = "avm"))]
             Avm => assume_unreachable(),
+            #[cfg(feature = "vvenc")]
+            Vvenc => concat!("VVenC v", env!("XAV_V_VVENC")).to_owned(),
+            #[cfg(not(feature = "vvenc"))]
+            Vvenc => assume_unreachable(),
             X264 => run_version("x264", "x264", None),
             X265 => run_version("x265", "x265", Some("version ")),
-            Vvenc => run_version("vvencFFapp", "vvenc", Some("version ")),
         }
     }
 
@@ -131,8 +137,7 @@ pub struct EncConfig<'a> {
 
 pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig, zone: Option<&str>) -> Command {
     let mut cmd = match encoder {
-        SvtAv1 | Avm => assume_unreachable(),
-        Vvenc => make_vvenc_cmd(cfg),
+        SvtAv1 | Avm | Vvenc => assume_unreachable(),
         X265 => make_x265_cmd(cfg),
         X264 => make_x264_cmd(cfg),
     };
@@ -142,70 +147,160 @@ pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig, zone: Option<&str>) -> Co
     cmd
 }
 
-fn make_vvenc_cmd(cfg: &EncConfig) -> Command {
-    let mut cmd = Command::new("vvencFFapp");
+// NUL-sep argv arena + token count; nothing scans it back for one
+#[cfg(feature = "vvenc")]
+pub struct Argv {
+    pub buf: Vec<u8>,
+    pub n: usize,
+}
 
-    let width_str = cfg.width.to_string();
-    let height_str = cfg.height.to_string();
-    let fps_str = format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den);
-    let frames_str = cfg.frames.to_string();
+#[cfg(feature = "vvenc")]
+impl Argv {
+    pub const EMPTY: Self = Self {
+        buf: Vec::new(),
+        n: 0,
+    };
+}
 
-    cmd.args([
-        "-v",
-        "4",
-        "--stats",
-        "0",
-        "--InputBitDepth",
-        "10",
-        "--InputChromaFormat",
-        "420",
-        "--IntraPeriod",
-        "-1",
-        "--RefreshSec",
-        "0",
-        "--DecodingRefreshType",
-        "idr",
-        "--POC0IDR",
-        "1",
-        "--NumPasses",
-        "1",
-        "--Passes",
-        "1",
-        "--Threads",
-        "1",
-        "--Profile",
-        "main_10",
-        "--Tier",
-        "main",
-        "--MaxBitDepthConstraint",
-        "10",
-        "--InternalBitDepth",
-        "10",
-        "--OutputBitDepth",
-        "10",
-    ]);
+#[cfg(feature = "vvenc")]
+fn push_arg(a: &mut Argv, s: &str) {
+    a.buf.extend_from_slice(s.as_bytes());
+    a.buf.push(0);
+    a.n += 1;
+}
 
-    cmd.arg("--SourceWidth").arg(&width_str);
-    cmd.arg("--SourceHeight").arg(&height_str);
-    cmd.arg("--fps").arg(&fps_str);
-    cmd.arg("--FramesToBeEncoded").arg(&frames_str);
+#[cfg(feature = "vvenc")]
+#[rustfmt::skip]
+const VVENC_BASE: &[&str] = &[
+    "--InputBitDepth", "10",
+    "--InputChromaFormat", "420",
+    "--InternalBitDepth", "10",
+    "--OutputBitDepth", "10",
+    "--MaxBitDepthConstraint", "10",
+    "--Profile", "main_10",
+    "--Tier", "main",
+    "--IntraPeriod", "-1",
+    "--RefreshSec", "0",
+    "--DecodingRefreshType", "idr",
+    "--POC0IDR", "1",
+    "--STA", "0",
+    "--NumPasses", "1",
+    "--Passes", "1",
+    "--Threads", "0",
+    "--SaoEncodingRate", "0",
+    "--Verbosity", "silent",
+];
 
-    if let Some(crf) = cfg.crf {
-        cmd.arg("--QP").arg(format!("{}", crf as i32));
+#[cfg(feature = "vvenc")]
+const VVENC_BASE_LEN: usize = {
+    let mut n = 0;
+    let mut i = 0;
+    while i < VVENC_BASE.len() {
+        n += VVENC_BASE[i].len() + 1;
+        i += 1;
+    }
+    n
+};
+
+// everything but the zone shared; built once for all
+#[cfg(feature = "vvenc")]
+#[cold]
+#[inline(never)]
+pub fn vvenc_args(inf: &VidInf, params: &str, w: u32, h: u32) -> Argv {
+    let mut a = Argv {
+        buf: Vec::with_capacity(VVENC_BASE_LEN + params.len() + 1),
+        n: 0,
+    };
+
+    for &s in VVENC_BASE {
+        push_arg(&mut a, s);
     }
 
-    colorize_vvenc(&mut cmd, cfg.inf);
+    push_arg(&mut a, "--SourceWidth");
+    push_arg(&mut a, &w.to_string());
+    push_arg(&mut a, "--SourceHeight");
+    push_arg(&mut a, &h.to_string());
+    push_arg(&mut a, "--fps");
+    push_arg(&mut a, &format!("{}/{}", inf.fps_num, inf.fps_den));
 
-    cmd.args(cfg.params.split_whitespace());
+    colorize_vvenc(&mut a, inf);
 
-    cmd.arg("-i").arg("-");
-    cmd.arg("-b").arg(cfg.out);
+    for t in params.split_whitespace() {
+        push_arg(&mut a, t);
+    }
+    a
+}
 
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+#[cfg(feature = "vvenc")]
+#[cold]
+#[inline(never)]
+pub fn vvenc_zone_args(zone: &str) -> Argv {
+    let mut a = Argv {
+        buf: Vec::with_capacity(zone.len() + 1),
+        n: 0,
+    };
+    for t in zone.split_whitespace() {
+        push_arg(&mut a, t);
+    }
+    a
+}
 
-    cmd
+#[cfg(feature = "vvenc")]
+#[cold]
+#[inline(never)]
+fn colorize_vvenc(a: &mut Argv, inf: &VidInf) {
+    let tc = inf.transfer_characteristics;
+    let cp = inf.color_primaries;
+
+    let is_hlg = tc == 18;
+    let is_pq = tc == 16;
+    let is_bt2020 = cp == 9;
+    let is_bt470bg = cp == 5;
+
+    if is_pq || is_hlg {
+        let mode = match (is_pq, is_bt2020) {
+            (true, true) => "pq_2020",
+            (true, false) => "pq",
+            (false, true) => "hlg_2020",
+            (false, false) => "hlg",
+        };
+        push_arg(a, "--Hdr");
+        push_arg(a, mode);
+    } else {
+        let mode = match (is_bt2020, is_bt470bg) {
+            (true, _) => "sdr_2020",
+            (_, true) => "sdr_470bg",
+            _ => "sdr_709",
+        };
+        push_arg(a, "--Sdr");
+        push_arg(a, mode);
+    }
+
+    push_arg(a, "--ColourPrimaries");
+    push_arg(a, h26x_color_prims_str(inf.color_primaries));
+    push_arg(a, "--TransferCharacteristics");
+    push_arg(a, h26x_trans_char_str(inf.transfer_characteristics));
+    push_arg(a, "--MatrixCoefficients");
+    push_arg(a, h26x_matrix_coef_str(inf.matrix_coefficients));
+    let cr = inf.color_range;
+    push_arg(a, "--Range");
+    push_arg(a, if cr == 1 { "full" } else { "limited" });
+
+    let csp = inf.chroma_sample_position;
+    if (1..=6).contains(&csp) {
+        push_arg(a, "--ChromaSampleLocType");
+        push_arg(a, &(csp - 1).to_string());
+    }
+    if let Some(ref md) = inf.mastering_display
+        && let Some(converted) = h26x_mastering(md, false)
+    {
+        push_arg(a, "--MasteringDisplayColourVolume");
+        push_arg(a, &converted);
+    }
+    if let Some(ref cl) = inf.content_light {
+        push_arg(a, "--MaxContentLightLevel");
+        push_arg(a, cl);
+    }
 }
 
 fn make_x265_cmd(cfg: &EncConfig) -> Command {
@@ -517,61 +612,6 @@ fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
         Some(format!(
             "{gx},{gy},{bx},{by},{rx},{ry},{wx},{wy},{lmax},{lmin}"
         ))
-    }
-}
-
-fn colorize_vvenc(cmd: &mut Command, inf: &VidInf) {
-    let tc = inf.transfer_characteristics;
-    let cp = inf.color_primaries;
-
-    let is_hlg = tc == 18;
-    let is_pq = tc == 16;
-    let is_bt2020 = cp == 9;
-    let is_bt470bg = cp == 5;
-
-    if is_pq || is_hlg {
-        let hdr_mode = match (is_pq, is_hlg, is_bt2020) {
-            (true, _, true) => "pq_2020",
-            (true, _, false) => "pq",
-            (_, true, true) => "hlg_2020",
-            (_, true, false) => "hlg",
-            _ => "off",
-        };
-        cmd.args(["--Hdr", hdr_mode]);
-    } else {
-        let sdr_mode = match (is_bt2020, is_bt470bg) {
-            (true, _) => "sdr_2020",
-            (_, true) => "sdr_470bg",
-            _ => "sdr_709",
-        };
-        cmd.args(["--Sdr", sdr_mode]);
-    }
-
-    cmd.args([
-        "--ColourPrimaries",
-        h26x_color_prims_str(inf.color_primaries),
-    ]);
-    cmd.args([
-        "--TransferCharacteristics",
-        h26x_trans_char_str(inf.transfer_characteristics),
-    ]);
-    cmd.args([
-        "--MatrixCoefficients",
-        h26x_matrix_coef_str(inf.matrix_coefficients),
-    ]);
-    let cr = inf.color_range;
-    cmd.args(["--Range", if cr == 1 { "full" } else { "limited" }]);
-    let csp = inf.chroma_sample_position;
-    if (1..=6).contains(&csp) {
-        cmd.args(["--ChromaSampleLocType", &(csp - 1).to_string()]);
-    }
-    if let Some(ref md) = inf.mastering_display
-        && let Some(converted) = h26x_mastering(md, false)
-    {
-        cmd.args(["--MasteringDisplayColourVolume", &converted]);
-    }
-    if let Some(ref cl) = inf.content_light {
-        cmd.args(["--MaxContentLightLevel", cl]);
     }
 }
 

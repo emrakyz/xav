@@ -1,64 +1,8 @@
-use core::fmt::Arguments;
-
 use crate::{
     error::Xerr,
-    util::{C, N, R, W, Y},
+    paramerr::{auto_err, chk_custom, chk_frange, chk_range, chk_switch, err, name_of, off_err},
+    util::{C, W, Y},
 };
-
-#[cold]
-#[inline(never)]
-fn err(key: &str, msg: Arguments<'_>) -> Xerr {
-    format!("{R}{key} {msg}{N}").into()
-}
-
-#[cold]
-#[inline(never)]
-fn chk_range(key: &str, name: &str, val: &str, lo: i64, hi: i64) -> Result<i64, Xerr> {
-    match val.parse::<i64>() {
-        Ok(v) if v >= lo && v <= hi => Ok(v),
-        Ok(_) => Err(err(
-            key,
-            format_args!("{Y}{name} must be between {C}{lo} {Y}and {C}{hi}"),
-        )),
-        Err(_) => Err(err(key, format_args!("{Y}{val} {W}is not a valid integer"))),
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn chk_switch(key: &str, name: &str, val: &str) -> Result<i64, Xerr> {
-    match val.parse::<i64>() {
-        Ok(v @ (0 | 1)) => Ok(v),
-        Ok(_) => Err(err(
-            key,
-            format_args!("{Y}{name} is an on off switch. It should be {C}0 {Y}or {C}1"),
-        )),
-        Err(_) => Err(err(key, format_args!("{Y}{val} {W}is not a valid integer"))),
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn chk_custom(key: &str, val: &str, lo: i64, hi: i64, msg: Arguments<'_>) -> Result<i64, Xerr> {
-    match val.parse::<i64>() {
-        Ok(v) if v >= lo && v <= hi => Ok(v),
-        Ok(_) => Err(err(key, msg)),
-        Err(_) => Err(err(key, format_args!("{Y}{val} {W}is not a valid integer"))),
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn chk_frange(key: &str, name: &str, val: &str, lo: f32, hi: f32) -> Result<(), Xerr> {
-    match val.parse::<f32>() {
-        Ok(v) if v >= lo && v <= hi => Ok(()),
-        Ok(_) => Err(err(
-            key,
-            format_args!("{Y}{name} must be between {C}{lo} {Y}and {C}{hi}"),
-        )),
-        Err(_) => Err(err(key, format_args!("{Y}{val} {W}is not a valid number"))),
-    }
-}
 
 const NOT_RELEVANT: &[&str] = &[
     "help",
@@ -162,21 +106,10 @@ const AUTO_SET: &[&str] = &[
 
 fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
     if NOT_RELEVANT.contains(&name) {
-        return Some(err(
-            key,
-            format_args!(
-                "{Y}The parameter {R}{key} {Y}is not relevant with xav and should not be set"
-            ),
-        ));
+        return Some(off_err(key));
     }
     if AUTO_SET.contains(&name) {
-        return Some(err(
-            key,
-            format_args!(
-                "{Y}The parameter {R}{key} {Y}is used by xav automatically, you should never set \
-                 it."
-            ),
-        ));
+        return Some(auto_err(key));
     }
     Some(match name {
         "input-depth" => err(
@@ -252,7 +185,6 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
     })
 }
 
-#[allow(clippy::too_many_lines)]
 fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
     match name {
         "preset" => {
@@ -434,13 +366,7 @@ pub fn val(params: &str) -> Result<(), Xerr> {
     let mut iter = params.split_whitespace();
 
     while let Some(key) = iter.next() {
-        let name = if let Some(n) = key.strip_prefix("--") {
-            n
-        } else if let Some(n) = key.strip_prefix('-') {
-            n
-        } else {
-            return Err(err(key, format_args!("{Y}unknown or wrong parameter")));
-        };
+        let name = name_of(key)?;
 
         if let Some(e) = reject_msg(name, key) {
             return Err(e);

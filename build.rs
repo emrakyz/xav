@@ -132,6 +132,41 @@ fn gpu() -> String {
     "unknown".to_owned()
 }
 
+#[cfg(feature = "vvenc")]
+const VVENC_LAYOUT: &str = r#"#include <cstddef>
+#include "vvenc/vvencCfg.h"
+static_assert(sizeof(vvenc_config)==CFG_SIZE,"");
+static_assert(offsetof(vvenc_config,m_SourceWidth)==0,"");
+static_assert(offsetof(vvenc_config,m_SourceHeight)==4,"");
+static_assert(offsetof(vvenc_config,m_FrameRate)==8,"");
+static_assert(offsetof(vvenc_config,m_FrameScale)==12,"");
+static_assert(offsetof(vvenc_config,m_TicksPerSecond)==16,"");
+static_assert(offsetof(vvenc_config,m_framesToBeEncoded)==20,"");
+static_assert(offsetof(vvenc_config,m_inputBitDepth)==24,"");
+static_assert(offsetof(vvenc_config,m_numThreads)==32,"");
+static_assert(offsetof(vvenc_config,m_QP)==36,"");
+"#;
+
+#[cfg(feature = "vvenc")]
+fn check_vvenc_layout(dir: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let hdr = format!("{dir}/include/vvenc/vvencCfg.h");
+    println!("cargo:rerun-if-changed={hdr}");
+    println!("cargo:rerun-if-changed=src/vvenc.rs");
+    let sz = field("src/vvenc.rs", "pub const VVENC_CFG_SIZE: usize =")
+        .ok_or("src/vvenc.rs: VVENC_CFG_SIZE not found")?;
+    let probe = format!("{}/vvenc_layout.cpp", env::var("OUT_DIR")?);
+    let src = VVENC_LAYOUT.replace("CFG_SIZE", sz.trim_end_matches(';'));
+    fs::write(&probe, src)?;
+    Command::new("clang++")
+        .args(["-std=c++20", "-fsyntax-only"])
+        .arg(format!("-I{dir}/include"))
+        .arg(&probe)
+        .status()
+        .is_ok_and(|s| s.success())
+        .then_some(())
+        .ok_or_else(|| "vvenc_config layout changed: update src/vvenc.rs".into())
+}
+
 fn stamp_versions(home: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     let src = format!("{home}/.local/src");
 
@@ -182,6 +217,27 @@ fn stamp_versions(home: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
             .map(|v| v.trim_start_matches('v').to_owned()),
             &avm,
         );
+    }
+
+    #[cfg(feature = "vvenc")]
+    {
+        let vvenc = format!("{src}/vvenc");
+        stamp(
+            "VVENC",
+            field(&format!("{vvenc}/CMakeLists.txt"), "project( vvenc VERSION"),
+            &vvenc,
+        );
+        check_vvenc_layout(&vvenc)?;
+
+        #[cfg(feature = "vship")]
+        {
+            let vvdec = format!("{src}/vvdec");
+            stamp(
+                "VVDEC",
+                field(&format!("{vvdec}/CMakeLists.txt"), "project( vvdec VERSION"),
+                &vvdec,
+            );
+        }
     }
 
     #[cfg(feature = "vship")]
@@ -361,6 +417,26 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         println!("cargo:rustc-link-lib=static=avm_full");
     }
 
+    #[cfg(feature = "vvenc")]
+    {
+        let vvenc_dir = format!("{home}/.local/src/vvenc/lib/release-static");
+        if !Path::new(&format!("{vvenc_dir}/libvvenc.a")).exists() {
+            return Err(format!("{vvenc_dir}/libvvenc.a not found").into());
+        }
+        println!("cargo:rustc-link-search=native={vvenc_dir}");
+        println!("cargo:rustc-link-lib=static=vvenc");
+
+        #[cfg(feature = "vship")]
+        {
+            let vvdec_dir = format!("{home}/.local/src/vvdec/lib/release-static");
+            if !Path::new(&format!("{vvdec_dir}/libvvdec.a")).exists() {
+                return Err(format!("{vvdec_dir}/libvvdec.a not found").into());
+            }
+            println!("cargo:rustc-link-search=native={vvdec_dir}");
+            println!("cargo:rustc-link-lib=static=vvdec");
+        }
+    }
+
     #[cfg(feature = "vship")]
     {
         let vship_dir = format!("{home}/.local/src/Vship");
@@ -384,7 +460,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 
-    #[cfg(any(feature = "vship", feature = "avm"))]
+    #[cfg(any(feature = "vship", feature = "avm", feature = "vvenc"))]
     println!("cargo:rustc-link-arg=-l:libstdc++.a");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {

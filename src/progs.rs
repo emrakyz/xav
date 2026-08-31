@@ -31,7 +31,7 @@ const BAR_WIDTH: usize = 20;
 pub const INTERVAL_MS: u64 = 512;
 const READ_CAP: usize = 8192;
 
-use crate::util::{C, G, P, R, W, Y, assume_unreachable};
+use crate::util::{C, G, P, W, Y, assume_unreachable};
 
 const B_HASH: &str = "\x1b[1;94m#";
 const Y_DASH: &str = "\x1b[1;93m-";
@@ -304,9 +304,8 @@ impl ProgsTrack {
         let inner = Arc::clone(&self.inner);
 
         spawn(move || match encoder {
-            SvtAv1 | Avm => assume_unreachable(),
+            SvtAv1 | Avm | Vvenc => assume_unreachable(),
             X265 | X264 => watch_x265(&inner, stderr, w),
-            Vvenc => watch_vvenc(&inner, stderr, w),
         });
     }
 }
@@ -398,7 +397,7 @@ impl Tracker {
         Self::mk(prog, worker_id, chnk_idx, tot, false, crf_score, TAG_MET)
     }
 
-    #[cfg(any(feature = "vship", feature = "avm"))]
+    #[cfg(any(feature = "vship", feature = "avm", feature = "vvenc"))]
     #[inline]
     pub fn set(&self, n: usize) {
         unsafe { (*self.slot).enced.store(n, Relaxed) }
@@ -458,67 +457,6 @@ impl<R: Read> LineReader<R> {
         }
         None
     }
-}
-
-fn watch_vvenc(inner: &Shared, rd: impl Read, w: Watch) {
-    let Watch {
-        worker_id,
-        chnk_idx,
-        frames,
-        track_frames,
-        crf_score,
-    } = w;
-    let started = Mono::now();
-    let mut lr = LineReader::new(rd, b'\n');
-    let mut poc_cnt = 0;
-    let mut last_poc = 0;
-    let mut last_update = Mono::now();
-
-    loop {
-        if !lr.fill() {
-            break;
-        }
-
-        while let Some(rec) = lr.next_buffered() {
-            let Ok(raw) = from_utf8(rec) else {
-                continue;
-            };
-            let text = raw.trim();
-            if text.contains("error") || text.contains("Error") {
-                eprint(format_args!("{text}"));
-            }
-            if text.starts_with("POC") {
-                poc_cnt += 1;
-            }
-        }
-
-        if last_update.elapsed() >= Durat::from_millis(INTERVAL_MS) {
-            last_update = Mono::now();
-
-            let tot = frames.max(poc_cnt);
-            let fps = poc_cnt as f32 / started.elapsed().as_secs_f32().max(0.001);
-            let filled = (BAR_WIDTH * poc_cnt / tot.max(1)).min(BAR_WIDTH);
-            let perc = (poc_cnt * 100 / tot.max(1)).min(100);
-
-            let mut line = Line::new();
-            write_tag(&mut line, chnk_idx, crf_score);
-            _ = write!(line, " {P}[");
-            write_bar(&mut line, filled, B_HASH, Y_DASH);
-            _ = write!(
-                line,
-                "{P}] {W}{perc:3}%{C}, {Y}{fps:6.2}{C}, {G}{poc_cnt:3}{C}/{R}{tot:3}"
-            );
-
-            if track_frames {
-                let d = poc_cnt.saturating_sub(last_poc);
-                last_poc = poc_cnt;
-                inner.processed.fetch_add(d, Relaxed);
-            }
-            inner.put(worker_id, line);
-        }
-    }
-
-    inner.clear(worker_id);
 }
 
 fn watch_x265(inner: &Shared, rd: impl Read, w: Watch) {

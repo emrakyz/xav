@@ -57,6 +57,8 @@ mod audio;
 mod av2_parse;
 #[cfg(feature = "avm")]
 mod avm;
+#[cfg(feature = "avm")]
+mod avmerr;
 mod byte_range;
 mod chan;
 mod chunk;
@@ -90,6 +92,7 @@ mod norm;
 mod obu_parse;
 mod opus;
 mod pack;
+mod paramerr;
 mod path;
 pub mod pipeline;
 mod plat;
@@ -110,6 +113,12 @@ mod uring;
 mod util;
 #[cfg(feature = "vship")]
 mod vship;
+#[cfg(all(feature = "vvenc", feature = "vship"))]
+mod vvdec;
+#[cfg(feature = "vvenc")]
+mod vvenc;
+#[cfg(feature = "vvenc")]
+mod vvencerr;
 mod worker;
 mod y4m;
 
@@ -127,8 +136,8 @@ use enc::{is_cvvdp, tq_target};
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, SIGINT, SIGSEGV, Xerr, eprint, exit, fatal, signal};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
+use paramerr::val;
 use scd::fd_scenes;
-use svterr::val;
 #[cfg(feature = "vship")]
 use vship::{Disp, load_disp};
 #[cfg(target_os = "linux")]
@@ -191,6 +200,10 @@ const VW: usize = {
     let w = wmax(w, env!("XAV_V_DAV1D").len());
     #[cfg(feature = "avm")]
     let w = wmax(w, env!("XAV_V_AVM").len());
+    #[cfg(feature = "vvenc")]
+    let w = wmax(w, env!("XAV_V_VVENC").len());
+    #[cfg(all(feature = "vvenc", feature = "vship"))]
+    let w = wmax(w, env!("XAV_V_VVDEC").len());
     #[cfg(feature = "vship")]
     let w = wmax(w, env!("XAV_V_VSHIP").len());
     #[cfg(all(feature = "vship", not(feature = "cuda")))]
@@ -202,10 +215,14 @@ const VW: usize = {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    #[cfg(feature = "avm")]
+    #[cfg(all(feature = "avm", feature = "vvenc"))]
     println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
-    #[cfg(not(feature = "avm"))]
+    #[cfg(all(feature = "avm", not(feature = "vvenc")))]
+    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}x265{P}┃{G}x264{R}>");
+    #[cfg(all(not(feature = "avm"), feature = "vvenc"))]
     println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
+    #[cfg(all(not(feature = "avm"), not(feature = "vvenc")))]
+    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}x265{P}┃{G}x264{R}>");
     println!("{C}-w {P}┃ {C}--worker     {W}Parallelism");
     println!("{C}-b {P}┃ {C}--buff       {W}Chunks to buffer");
     println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
@@ -231,6 +248,10 @@ fn print_help() {
     println!("{C}DAV1D:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_DAV1D"), env!("XAV_D_DAV1D"));
     #[cfg(feature = "avm")]
     println!("{C}AVM:         {G}{:<VW$}  {B}{}{N}", env!("XAV_V_AVM"), env!("XAV_D_AVM"));
+    #[cfg(feature = "vvenc")]
+    println!("{C}VVENC:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VVENC"), env!("XAV_D_VVENC"));
+    #[cfg(all(feature = "vvenc", feature = "vship"))]
+    println!("{C}VVDEC:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VVDEC"), env!("XAV_D_VVDEC"));
     #[cfg(feature = "vship")]
     {
         println!("{C}VSHIP:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VSHIP"), env!("XAV_D_VSHIP"));
@@ -329,7 +350,10 @@ fn val_out(out: &Path, encoder: Encoder) -> Result<(), Xerr> {
     match (encoder, ext) {
         (SvtAv1, "webm") | (_, "mkv") => Ok(()),
         (_, "webm") => Err(format!("webm output requires svt-av1, not {encoder:?}").into()),
-        _ => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: mkv, webm").into()),
+        (SvtAv1, _) => {
+            Err(format!("Invalid extension .{ext} for {encoder:?}. Use: mkv, webm").into())
+        }
+        _ => Err(format!("Invalid extension .{ext} for {encoder:?}. Use: mkv").into()),
     }
 }
 
@@ -514,12 +538,10 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
         }
     }
 
-    if result.encoder == SvtAv1 {
-        val(&result.params)?;
-        #[cfg(feature = "vship")]
-        if let Some(ref pp) = result.alt_param {
-            val(pp)?;
-        }
+    val(result.encoder, &result.params)?;
+    #[cfg(feature = "vship")]
+    if let Some(ref pp) = result.alt_param {
+        val(result.encoder, pp)?;
     }
 
     if result.hwdec && is_pipe() {
@@ -666,11 +688,9 @@ fn acq_au(
 
 fn val_all_scenes(scenes: &[Scene], enc: Encoder) -> Result<(), Xerr> {
     val_scenes(scenes)?;
-    if enc == SvtAv1 {
-        for s in scenes {
-            if let Some(ref p) = s.params {
-                val(p)?;
-            }
+    for s in scenes {
+        if let Some(ref p) = s.params {
+            val(enc, p)?;
         }
     }
     Ok(())

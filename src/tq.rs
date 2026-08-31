@@ -4,6 +4,8 @@ use core::slice::from_raw_parts;
 
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::fmath::{FloatExt as _, Powf as _};
+#[cfg(feature = "vvenc")]
+use crate::vvdec::VvdecDec;
 use crate::{
     dav1d::Dav1dDec,
     enc::SplitPath,
@@ -20,21 +22,37 @@ use crate::{
 
 pub struct ProbeDec {
     dav1d: Option<Dav1dDec>,
+    #[cfg(feature = "vvenc")]
+    vvdec: Option<VvdecDec>,
     vid: Option<VidDecoder>,
     threads: i32,
 }
 
-pub fn make_dav1d(threads: i32) -> ProbeDec {
+pub fn make_dav1d(threads: i32, w: u32, h: u32) -> ProbeDec {
     ProbeDec {
-        dav1d: Some(Dav1dDec::new(threads).unwrap_or_else(|e| fatal(e))),
+        dav1d: Some(Dav1dDec::new(threads, w, h).unwrap_or_else(|e| fatal(e))),
+        #[cfg(feature = "vvenc")]
+        vvdec: None,
         vid: None,
         threads,
     }
 }
 
-pub const fn make_ff(threads: i32) -> ProbeDec {
+#[cfg(feature = "vvenc")]
+pub fn make_vvdec(threads: i32, _: u32, _: u32) -> ProbeDec {
     ProbeDec {
         dav1d: None,
+        vvdec: Some(VvdecDec::new(threads).unwrap_or_else(|e| fatal(e))),
+        vid: None,
+        threads,
+    }
+}
+
+pub const fn make_ff(threads: i32, _: u32, _: u32) -> ProbeDec {
+    ProbeDec {
+        dav1d: None,
+        #[cfg(feature = "vvenc")]
+        vvdec: None,
         vid: None,
         threads,
     }
@@ -52,8 +70,19 @@ pub fn prep_ff(d: &mut ProbeDec, _: &WorkPkg, sp: &mut SplitPath, idx: u16, crf:
     sz
 }
 
+#[cfg(feature = "vvenc")]
+pub fn prep_vvdec(d: &mut ProbeDec, pkg: &WorkPkg, _: &mut SplitPath, _: u16, _: f32) -> u64 {
+    unsafe { d.vvdec.as_mut().unwrap_unchecked() }.load(&pkg.probe, pkg.frame_cnt);
+    pkg.probe.len() as u64
+}
+
 fn frame_dav1d(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
     unsafe { d.dav1d.as_mut().unwrap_unchecked() }.dec_next()
+}
+
+#[cfg(feature = "vvenc")]
+fn frame_vvdec(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
+    unsafe { d.vvdec.as_mut().unwrap_unchecked() }.dec_next()
 }
 
 fn frame_ff(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
@@ -275,50 +304,36 @@ fn aggregate_scores(
     }
 }
 
+macro_rules! make_metric_shapes {
+    ($compute:expr, $frame:ident, $b8:ident, $p10:ident, $r10:ident) => {
+        calc_metric_impl!(
+            $b8,
+            false,
+            |_: &[u8], _: &mut [u8], _: usize, _: usize| (),
+            $frame,
+            $compute
+        );
+        calc_metric_impl!(
+            $p10,
+            true,
+            |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b),
+            $frame,
+            $compute
+        );
+        calc_metric_impl!(
+            $r10,
+            true,
+            |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h),
+            $frame,
+            $compute
+        );
+    };
+}
+
 macro_rules! make_metric_set {
     ($compute:expr, $b8d:ident, $b8f:ident, $p10d:ident, $p10f:ident, $r10d:ident, $r10f:ident) => {
-        calc_metric_impl!(
-            $b8d,
-            false,
-            |_: &[u8], _: &mut [u8], _: usize, _: usize| (),
-            frame_dav1d,
-            $compute
-        );
-        calc_metric_impl!(
-            $b8f,
-            false,
-            |_: &[u8], _: &mut [u8], _: usize, _: usize| (),
-            frame_ff,
-            $compute
-        );
-        calc_metric_impl!(
-            $p10d,
-            true,
-            |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b),
-            frame_dav1d,
-            $compute
-        );
-        calc_metric_impl!(
-            $p10f,
-            true,
-            |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b),
-            frame_ff,
-            $compute
-        );
-        calc_metric_impl!(
-            $r10d,
-            true,
-            |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h),
-            frame_dav1d,
-            $compute
-        );
-        calc_metric_impl!(
-            $r10f,
-            true,
-            |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h),
-            frame_ff,
-            $compute
-        );
+        make_metric_shapes!($compute, frame_dav1d, $b8d, $p10d, $r10d);
+        make_metric_shapes!($compute, frame_ff, $b8f, $p10f, $r10f);
     };
 }
 
@@ -348,4 +363,29 @@ make_metric_set!(
     calc_cvvdp_10b_ff,
     calc_cvvdp_rem_dav1d,
     calc_cvvdp_rem_ff
+);
+
+#[cfg(feature = "vvenc")]
+make_metric_shapes!(
+    comp_ssimu2,
+    frame_vvdec,
+    calc_ssimu2_8b_vvdec,
+    calc_ssimu2_10b_vvdec,
+    calc_ssimu2_rem_vvdec
+);
+#[cfg(feature = "vvenc")]
+make_metric_shapes!(
+    comp_butter,
+    frame_vvdec,
+    calc_butter_8b_vvdec,
+    calc_butter_10b_vvdec,
+    calc_butter_rem_vvdec
+);
+#[cfg(feature = "vvenc")]
+make_metric_shapes!(
+    comp_cvvdp,
+    frame_vvdec,
+    calc_cvvdp_8b_vvdec,
+    calc_cvvdp_10b_vvdec,
+    calc_cvvdp_rem_vvdec
 );

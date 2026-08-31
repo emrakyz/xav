@@ -19,7 +19,7 @@ install_deps() {
                 "pacman")
                         pkgs=(base-devel rustup nasm clang compiler-rt cmake llvm lld ninja meson ffmpeg curl gcc)
                         ((${mode_choice:-0} == 1)) && pkgs+=(cuda)
-                        ${priv:-} pacman -S --needed --noconfirm "${pkgs[@]}"
+                        needed=$(pacman -T "${pkgs[@]}") || ${priv:-} pacman -S --needed --noconfirm ${needed}
                         ;;
                 "dnf")
                         pkgs=(
@@ -223,6 +223,8 @@ cleanup_existing() {
                 ["nv-codec-headers"]="install/lib/pkgconfig/ffnvcodec.pc"
                 [Vship]="libvship.a"
                 [avm]="build/libavm_full.a"
+                [vvenc]="lib/release-static/libvvenc.a"
+                [vvdec]="lib/release-static/libvvdec.a"
         )
 
         local successful=() incomplete=()
@@ -231,6 +233,8 @@ cleanup_existing() {
         [[ "${HW}" == cuda ]] && dirs+=(nv-codec-headers) || dirs+=(vulkan)
         ((mode_choice == 1)) && dirs+=(Vship)
         ((ENC_ON[avm])) && dirs+=(avm)
+        ((ENC_ON[vvenc])) && dirs+=(vvenc)
+        ((ENC_ON[vvenc] && mode_choice == 1)) && dirs+=(vvdec)
 
         for dir in "${dirs[@]}"; do
                 [[ -d "${BUILD_DIR}/${dir}" ]] || continue
@@ -294,6 +298,8 @@ clone_phase() {
 
         ((mode_choice == 1)) && clone_async "${BUILD_DIR}/Vship" "https://codeberg.org/Line-fr/Vship" "--depth 1"
         ((ENC_ON[avm])) && clone_async "${BUILD_DIR}/avm" "https://github.com/AOMediaCodec/avm" "--depth 1"
+        ((ENC_ON[vvenc])) && clone_async "${BUILD_DIR}/vvenc" "https://github.com/fraunhoferhhi/vvenc" "--depth 1"
+        ((ENC_ON[vvenc] && mode_choice == 1)) && clone_async "${BUILD_DIR}/vvdec" "https://github.com/fraunhoferhhi/vvdec" "--depth 1"
 
         local pid rc=0
         for pid in "${pids[@]}"; do
@@ -665,6 +671,59 @@ build_svtav1() {
         sed -i 's|0, // thread active when created|STACK_SIZE_PARAM_IS_A_RESERVATION, // thread active when created|' Source/Lib/Codec/svt_threads.c
         sed -i 's|const size_t min_stack_size = 1024 \* 1024;|const size_t min_stack_size = 8 * 1024 * 1024;|' Source/Lib/Codec/svt_threads.c
 
+        sed -i '/^    svt_aom_setup_common_rtcd_internal(scs->static_config.use_cpu_flags);$/,/^    svt_aom_build_blk_geom(scs->svt_aom_geom_idx, scs->blk_geom_mds);$/c\
+    return_error = svt_shared_setup(scs);\
+    if (return_error != EB_ErrorNone)\
+        return return_error;' Source/Lib/Globals/enc_handle.c
+        grep -q init_shared_rtcd Source/Lib/Globals/enc_handle.c || sed -i '/^DEFINE_ONCE(global_tables_once);$/a\
+\
+static uint64_t          shared_cpu_flags;\
+static uint32_t          shared_geom_idx;\
+static uint16_t          shared_geom_cnt;\
+static struct BlockGeom *shared_blk_geom;\
+static uint32_t          shared_blk_geom_idx;\
+\
+static ONCE_ROUTINE(init_shared_rtcd) {\
+    svt_aom_setup_common_rtcd_internal(shared_cpu_flags);\
+    svt_aom_setup_rtcd_internal(shared_cpu_flags);\
+    ONCE_ROUTINE_EPILOG;\
+}\
+DEFINE_ONCE(shared_rtcd_once);\
+\
+static ONCE_ROUTINE(init_shared_blk_geom) {\
+    shared_blk_geom_idx = shared_geom_idx;\
+    EB_MALLOC_ARRAY_NO_CHECK(shared_blk_geom, shared_geom_cnt);\
+    if (shared_blk_geom)\
+        svt_aom_build_blk_geom(shared_blk_geom_idx, shared_blk_geom);\
+    ONCE_ROUTINE_EPILOG;\
+}\
+DEFINE_ONCE(shared_blk_geom_once);\
+\
+static EbErrorType svt_shared_setup(SequenceControlSet *scs) {\
+    shared_cpu_flags = scs->static_config.use_cpu_flags;\
+    svt_run_once(\&shared_rtcd_once, init_shared_rtcd);\
+    svt_run_once(\&global_tables_once, init_global_tables);\
+    shared_geom_idx = scs->svt_aom_geom_idx;\
+    shared_geom_cnt = scs->max_block_cnt;\
+    svt_run_once(\&shared_blk_geom_once, init_shared_blk_geom);\
+    if (shared_blk_geom \&\& shared_blk_geom_idx == scs->svt_aom_geom_idx) {\
+        scs->blk_geom_mds = shared_blk_geom;\
+        return EB_ErrorNone;\
+    }\
+    EB_MALLOC_ARRAY(scs->blk_geom_mds, scs->max_block_cnt);\
+    svt_aom_build_blk_geom(scs->svt_aom_geom_idx, scs->blk_geom_mds);\
+    return EB_ErrorNone;\
+}' Source/Lib/Globals/enc_handle.c
+        sed -i 's|handle->scs_instance->scs->blk_geom_mds != NULL) {|handle->scs_instance->scs->blk_geom_mds != NULL \&\& handle->scs_instance->scs->blk_geom_mds != shared_blk_geom) {|' Source/Lib/Globals/enc_handle.c
+        sed -i 's|^        return_error = svt_av1_set_default_params(config_ptr);$|        return_error = config_ptr ? svt_av1_set_default_params(config_ptr) : EB_ErrorNone;|' Source/Lib/Globals/enc_handle.c
+        grep -q avx2 /proc/cpuinfo && sed -i '/^#ifndef CONFIG_X86_AVX2_IS_GUARANTEED$/,/^#endif$/s/       0$/       1/' Source/API/EbConfigMacros.h
+        sed -i 's|^        SET_FUNCTIONS_X86(ptr, neon, neon_dotprod, neon_i8mm, sve, sve2) *\\$|        SET_FUNCTIONS_X86(ptr, mmx, sse, sse2, sse3, ssse3, sse4_1, sse4_2, avx, avx2, avx512) \\|' Source/Lib/Codec/aom_dsp_rtcd.c Source/Lib/Codec/common_dsp_rtcd.c
+
+        sed -i 's|^    if (scs->static_config.encoder_bit_depth == EB_EIGHT_BIT) {$|    if (0) {|' Source/Lib/Globals/enc_handle.c
+        sed -i 's|^    if (validate_on_the_fly_settings(p_buffer,scs, enc_handle_ptr->scs_instance->config_mutex)) {$|    if (0) {|' Source/Lib/Globals/enc_handle.c
+        sed -i 's|^    EbErrorType return_error = svt_av1_verify_settings(scs);$|    EbErrorType return_error = EB_ErrorNone;|' Source/Lib/Globals/enc_handle.c
+        sed -i 's|^            if (svt_aom_copy_metadata_buffer(dst, src->metadata) != EB_ErrorNone)$|            if (1)|' Source/Lib/Globals/enc_handle.c
+
         mkdir -p "${pgo_dir}"
         loginf b "Downloading PGO training video"
         curl -L "https://media.xiph.org/video/derf/webm/Netflix_FoodMarket2_4096x2160_60fps_10bit_420.webm" -o "${pgo_dir}/i.webm" >> "${logfile}" 2>&1
@@ -700,6 +759,29 @@ build_avm() {
         : > "${logfile}"
 
         cd "${BUILD_DIR}/avm"
+
+        grep -q tls_part_split av2/encoder/part_split_prune_tflite.cc || sed -i '/^static void ensure_tflite_init(void \*\*context, MODEL_TYPE model_type) {$/i\
+static thread_local PartSplitContext *tls_part_split;' av2/encoder/part_split_prune_tflite.cc
+        sed -i 's|^  if (\*context == nullptr) \*context = new PartSplitContext();$|  if (*context == nullptr) {\n    if (tls_part_split == nullptr) tls_part_split = new PartSplitContext();\n    *context = tls_part_split;\n  }|' av2/encoder/part_split_prune_tflite.cc
+        sed -i '/^extern "C" void av2_part_prune_tflite_close(void \*\*context) {$/,/^}$/c\
+extern "C" void av2_part_prune_tflite_close(void **context) { *context = nullptr; }' av2/encoder/part_split_prune_tflite.cc
+        grep -q tls_dip av2/encoder/intra_dip_mode_prune_tflite.cc || sed -i '/^static void ensure_tflite_init(void \*\*context, int model_index) {$/i\
+static thread_local DipContext *tls_dip;' av2/encoder/intra_dip_mode_prune_tflite.cc
+        sed -i 's|^    \*context = new DipContext();$|    if (tls_dip == nullptr) tls_dip = new DipContext();\n    *context = tls_dip;|' av2/encoder/intra_dip_mode_prune_tflite.cc
+        sed -i '/^extern "C" void intra_dip_mode_prune_close(void \*\*context) {$/,/^}$/c\
+extern "C" void intra_dip_mode_prune_close(void **context) { *context = nullptr; }' av2/encoder/intra_dip_mode_prune_tflite.cc
+
+        sed -i '\|generic/avm_scale.c"$|d;\|generic/gen_scalers.c"$|d' avm_scale/avm_scale.cmake
+
+        sed -i 's/^#if ARCH_X86 || ARCH_X86_64$/#if 0/' avm/src/avm_encoder.c
+        sed -i 's/if (!ctx || (img \&\& !duration))/if (0)/' avm/src/avm_encoder.c
+        sed -i 's/if (!ctx->iface || !ctx->priv)/if (0)/g' avm/src/avm_encoder.c
+        sed -i 's/if (!(ctx->iface->caps \& AVM_CODEC_CAP_ENCODER))/if (0)/g' avm/src/avm_encoder.c
+        sed -i 's/if (!iter)/if (0)/' avm/src/avm_encoder.c
+        sed -i 's|^                                    const avm_image_t \*img) {$|                                    const avm_image_t *img) { return AVM_CODEC_OK;|' av2/av2_cx_iface.c
+        sed -i 's|^                                       const struct av2_extracfg \*extra_cfg) {$|                                       const struct av2_extracfg *extra_cfg) { return AVM_CODEC_OK;|' av2/av2_cx_iface.c
+        grep -q '^    if (ctx->cx_data == NULL) {$' av2/av2_cx_iface.c || sed -i '/^static avm_codec_err_t encoder_encode(/,/^    if (res == AVM_CODEC_OK) {$/s|^    if (res == AVM_CODEC_OK) {$|    if (ctx->cx_data == NULL) {|' av2/av2_cx_iface.c
+
         cmake -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_C_COMPILER="${CC}" \
@@ -717,6 +799,13 @@ build_avm() {
                 -DCONFIG_AV2_ENCODER=1 \
                 -DCONFIG_AV2_DECODER=0 \
                 -DCONFIG_WEBM_IO=0 \
+                -DCONFIG_RUNTIME_CPU_DETECT=0 \
+                -DCONFIG_MULTITHREAD=0 \
+                -DCONFIG_LIBYUV=0 \
+                -DCONFIG_LANCZOS_RESAMPLE=0 \
+                -DCONFIG_SPATIAL_RESAMPLING=0 \
+                -DCONFIG_12BIT_PROFILE=0 \
+                -DCONFIG_DENOISE=0 \
                 -DCONFIG_TENSORFLOW_LITE=1 >> "${logfile}" 2>&1
         ninja -C build avm >> "${logfile}" 2>&1
 
@@ -731,6 +820,125 @@ build_avm() {
         [[ -f "${BUILD_DIR}/avm/build/libavm_full.a" ]] && {
                 rm -f "${logfile}"
                 loginf g "AVM built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
+build_vvenc() {
+        [[ -f "${BUILD_DIR}/vvenc/lib/release-static/libvvenc.a" ]] && return
+
+        loginf b "Building VVenC"
+
+        local logfile="/tmp/build_vvenc_$.log"
+        : > "${logfile}"
+
+        cd "${BUILD_DIR}/vvenc"
+
+        sed -i 's/set( CMAKE_POSITION_INDEPENDENT_CODE TRUE )/set( CMAKE_POSITION_INDEPENDENT_CODE FALSE )/' CMakeLists.txt
+        sed -i 's/set( CMAKE_CXX_STANDARD 14 )/set( CMAKE_CXX_STANDARD 20 )/' CMakeLists.txt
+
+        sed -i '/setSIMDExtension( nullptr );/d' source/Lib/vvenc/vvencimpl.cpp
+        sed -i '/m_cEncoderInfo = createEncoderInfoStr();/d' source/Lib/vvenc/vvencimpl.cpp
+        sed -i '/m_cVVEncCfgExt = \*config;/d' source/Lib/vvenc/vvencimpl.cpp
+        sed -i '/vvenc_config           m_cVVEncCfgExt;/d' source/Lib/vvenc/vvencimpl.h
+        sed -i 's/if ( vvenc_init_config_parameter(&m_cVVEncCfg) )/if ( !m_cVVEncCfg.m_configDone \&\& vvenc_init_config_parameter(\&m_cVVEncCfg) )/' source/Lib/vvenc/vvencimpl.cpp
+        sed -i '/malloc_trim(0);/d' source/Lib/vvenc/vvencimpl.cpp
+        sed -i 's/! xConvertVerifyYUVBuffer( pcYUVBuffer )/false/' source/Lib/vvenc/vvencimpl.cpp
+        grep -q 'false && !m_bInitialized' source/Lib/vvenc/vvencimpl.cpp || {
+                sed -i '/^int VVEncImpl::encode(/,/^  int iRet= VVENC_OK;$/s|^  if(|  if( false \&\& |' source/Lib/vvenc/vvencimpl.cpp
+                sed -i '/^    if( m_eState == INTERNAL_STATE_FLUSHING ) { m_cErrorString = "encoder already received flush indication/,/^    if ( false )$/s|^    if(|    if( false \&\& |' source/Lib/vvenc/vvencimpl.cpp
+        }
+        sed -i '/memset( accessUnit->infoString, 0, sizeof( accessUnit->infoString ) );/d' source/Lib/vvenc/vvenc.cpp
+        sed -i -e '/^  accessUnit->cts             = 0;$/d' -e '/^  accessUnit->dts             = 0;$/d' \
+                -e '/^  accessUnit->ctsValid        = false;$/d' -e '/^  accessUnit->dtsValid        = false;$/d' \
+                -e '/^  accessUnit->sliceType       = VVENC_NUMBER_OF_SLICE_TYPES;$/d' \
+                -e '/^  accessUnit->refPic          = false;$/d' -e '/^  accessUnit->temporalLayer   = 0;$/d' \
+                -e '/^  accessUnit->poc             = 0;$/d' -e '/^  accessUnit->status          = 0;$/d' \
+                -e '/accessUnit->infoString\[0\]/d' source/Lib/vvenc/vvenc.cpp
+        sed -i '/^VVENC_DECL void vvenc_accessUnit_reset/,/^}/s|^  if( nullptr == accessUnit )$|  if( false )|' source/Lib/vvenc/vvenc.cpp
+        sed -i 's|^  if ( ! bflag )$|  if ( true )|' source/Lib/vvenc/vvencCfg.cpp
+        sed -i 's/m_nalUnitData\.str()\.c_str()/m_nalUnitData.view().data()/g' source/Lib/vvenc/vvencimpl.cpp source/Lib/EncoderLib/EncGOP.cpp
+        sed -i 's/m_nalUnitData\.str()\.size()/m_nalUnitData.view().size()/g' source/Lib/vvenc/vvencimpl.cpp source/Lib/EncoderLib/EncGOP.cpp
+        sed -i '/xPrintPictureInfo ( pic, au, digestStr, m_pcEncCfg->m_printFrameMSE, isEncodeLtRef );/d' source/Lib/EncoderLib/EncGOP.cpp
+        sed -i '/xCalcDistortion( pic, \*slice->sps );/d' source/Lib/EncoderLib/EncPicture.cpp
+        sed -i 's|^#define CHECK(c,x)          if(c){ THROW(x); }$|#define CHECK(c,x)|' source/Lib/CommonLib/TypeDef.h
+
+        cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER="${CC}" \
+                -DCMAKE_CXX_COMPILER="${CXX}" \
+                -DCMAKE_C_FLAGS="${CFLAGS}" \
+                -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DVVENC_ENABLE_WERROR=OFF \
+                -DVVENC_ENABLE_INSTALL=OFF \
+                -DVVENC_ENABLE_LINK_TIME_OPT=OFF \
+                -DVVENC_ENABLE_UNSTABLE_API=OFF \
+                -DVVENC_ENABLE_TRACING=OFF >> "${logfile}" 2>&1
+        ninja -C build vvenc >> "${logfile}" 2>&1
+
+        [[ -f "${BUILD_DIR}/vvenc/lib/release-static/libvvenc.a" ]] && {
+                rm -f "${logfile}"
+                loginf g "VVenC built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
+build_vvdec() {
+        [[ -f "${BUILD_DIR}/vvdec/lib/release-static/libvvdec.a" ]] && return
+
+        loginf b "Building VVdeC"
+
+        local logfile="/tmp/build_vvdec_$.log"
+        : > "${logfile}"
+
+        cd "${BUILD_DIR}/vvdec"
+
+        sed -i 's/set( CMAKE_POSITION_INDEPENDENT_CODE TRUE )/set( CMAKE_POSITION_INDEPENDENT_CODE FALSE )/' CMakeLists.txt
+        sed -i 's/set( CMAKE_CXX_STANDARD 14 )/set( CMAKE_CXX_STANDARD 20 )/' CMakeLists.txt
+
+        grep -q 'false && !m_bInitialized' source/Lib/vvdec/vvdecimpl.cpp || {
+                sed -i '/^int VVDecImpl::decode(/,/not supported feature detected/s|^  if(|  if( false \&\& |' source/Lib/vvdec/vvdecimpl.cpp
+                sed -i '/^  if( !rcAccessUnit.payload )$/,/^  int iRet = VVDEC_OK;$/s|^  if(|  if( false \&\& |' source/Lib/vvdec/vvdecimpl.cpp
+        }
+        sed -i '/^      bool bStartCodeFound = false;$/,/^      iAUEndPosVec.push_back( iLastPos );$/c\
+      const size_t iStartCodeSizeVec[1] = { rcAccessUnit.payload[2] == 1 ? (size_t)3 : (size_t)4 };\
+      const size_t iStartCodePosVec[1] = { iStartCodeSizeVec[0] };\
+      int iLastPos = rcAccessUnit.payloadUsedSize;\
+      while( iLastPos > 0 \&\& rcAccessUnit.payload[iLastPos-1] == 0 )\
+      {\
+        iLastPos--;\
+      }\
+      const size_t iAUEndPosVec[1] = { (size_t)iLastPos };' source/Lib/vvdec/vvdecimpl.cpp
+        sed -i 's/!iStartCodePosVec.empty() && iStartCodePosVec\[0\] != iStartCodeSizeVec\[0\]/false/' source/Lib/vvdec/vvdecimpl.cpp
+        sed -i 's/iAU < iStartCodePosVec.size()/iAU < 1/' source/Lib/vvdec/vvdecimpl.cpp
+        sed -i 's|parserFrameDelay = std::min<int>( ( numDecThreads \* DEFAULT_PARSE_DELAY_FACTOR ) >> 4, DEFAULT_PARSE_DELAY_MAX );|parserFrameDelay = (int) m_decLibRecon.size();|' source/Lib/DecoderLib/DecLib.cpp
+
+        cmake -B build -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER="${CC}" \
+                -DCMAKE_CXX_COMPILER="${CXX}" \
+                -DCMAKE_C_FLAGS="${CFLAGS}" \
+                -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DVVDEC_LIBRARY_ONLY=ON \
+                -DVVDEC_ENABLE_WERROR=OFF \
+                -DVVDEC_ENABLE_LINK_TIME_OPT=OFF \
+                -DVVDEC_ENABLE_UNSTABLE_API=OFF \
+                -DVVDEC_ENABLE_TRACING=OFF >> "${logfile}" 2>&1
+        ninja -C build vvdec >> "${logfile}" 2>&1
+
+        [[ -f "${BUILD_DIR}/vvdec/lib/release-static/libvvdec.a" ]] && {
+                rm -f "${logfile}"
+                loginf g "VVdeC built successfully"
         } || {
                 echo -e "\n${R}Build failed! Output:${N}\n"
                 cat "${logfile}"
@@ -762,10 +970,11 @@ setup_toolchain() {
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
         unset LDFLAGS
+        export LDFLAGS="${LDFLAGS} -fuse-ld=lld"
 }
 
-ENCODER_NAMES=("AVM")
-ENCODER_FEATS=("avm")
+ENCODER_NAMES=("AVM" "VVenC")
+ENCODER_FEATS=("avm" "vvenc")
 declare -A ENC_ON=()
 for i in "${!ENCODER_FEATS[@]}"; do ENC_ON["${ENCODER_FEATS[i]}"]=0; done
 
@@ -893,6 +1102,16 @@ main() {
                 PID_AVM="${!}"
         }
 
+        ((ENC_ON[vvenc])) && {
+                build_vvenc &
+                PID_VVENC="${!}"
+        }
+
+        ((ENC_ON[vvenc] && mode_choice == 1)) && {
+                build_vvdec &
+                PID_VVDEC="${!}"
+        }
+
         build_opus &
         PID_OPUS="${!}"
         build_dav1d &
@@ -920,6 +1139,8 @@ main() {
         wait "${PID_OPUS}" && wait "${PID_FFMPEG}" && wait "${PID_SVTAV1}" || exit 1
         ((mode_choice == 1)) && { wait "${PID_VSHIP}" || exit 1; }
         ((ENC_ON[avm])) && { wait "${PID_AVM}" || exit 1; }
+        ((ENC_ON[vvenc])) && { wait "${PID_VVENC}" || exit 1; }
+        ((ENC_ON[vvenc] && mode_choice == 1)) && { wait "${PID_VVDEC}" || exit 1; }
 
         cd "${XAV_DIR}"
 
