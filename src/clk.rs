@@ -2,6 +2,8 @@ use core::time::Duration;
 #[cfg(not(target_os = "linux"))]
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_os = "linux"))]
+use crate::sync::OnceLock;
 #[cfg(target_os = "linux")]
 use crate::sys::{clock_mono_ns, clock_real};
 
@@ -11,7 +13,15 @@ pub struct Mono(u64);
 
 #[cfg(not(target_os = "linux"))]
 #[derive(Clone, Copy)]
-pub struct Mono(Instant);
+pub struct Mono(u64);
+
+#[cfg(not(target_os = "linux"))]
+static START: OnceLock<Instant> = OnceLock::new();
+
+#[cfg(not(target_os = "linux"))]
+pub fn mono() -> Duration {
+    START.get_or_init(Instant::now).elapsed()
+}
 
 #[cfg(target_os = "linux")]
 impl Mono {
@@ -35,12 +45,17 @@ impl Mono {
 impl Mono {
     #[inline]
     pub fn now() -> Self {
-        Self(Instant::now())
+        Self(mono().as_nanos() as u64)
     }
 
     #[inline]
     pub fn elapsed(self) -> Duration {
-        self.0.elapsed()
+        Duration::from_nanos(mono().as_nanos() as u64 - self.0)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> u64 {
+        self.0
     }
 }
 

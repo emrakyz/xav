@@ -277,7 +277,7 @@ pub struct SplitPath {
 
 #[cfg(all(not(target_os = "linux"), feature = "vship"))]
 impl SplitPath {
-    fn unused() -> Self {
+    const fn unused() -> Self {
         Self {
             dir: PathBuf::new(),
             ext: "",
@@ -1856,7 +1856,8 @@ fn enc_tq_probe_sub(
         frames: pkg.frame_cnt,
     };
 
-    let cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params.as_deref());
+    #[allow(unused_mut)]
+    let mut cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params.as_deref());
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     let last_score = pkg
@@ -1990,7 +1991,8 @@ fn enc_chnk_sub(
         frames: pkg.frame_cnt,
     };
 
-    let cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params.as_deref());
+    #[allow(unused_mut)]
+    let mut cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params.as_deref());
     let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
 
     (ctx.watch_enc)(

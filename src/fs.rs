@@ -435,29 +435,28 @@ pub fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
     })
 }
 
+#[cfg(all(not(target_os = "linux"), feature = "vship"))]
+use std::fs::{copy as std_copy, read as std_read};
 #[cfg(not(target_os = "linux"))]
 use std::fs::{
-    copy as std_copy, create_dir_all as std_create_dir_all, metadata as std_metadata,
-    read as std_read, read_dir as std_read_dir, read_link as std_read_link,
+    create_dir_all as std_create_dir_all, metadata as std_metadata, read_dir as std_read_dir,
     read_to_string as std_read_to_string, remove_dir_all as std_remove_dir_all,
     remove_file as std_remove_file, write as std_write,
 };
 #[cfg(not(target_os = "linux"))]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(not(target_os = "linux"))]
-use crate::Result;
+use crate::io::Result;
 
 #[cfg(not(target_os = "linux"))]
 pub type File = std::fs::File;
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "vship"))]
 pub type OpenOptions = std::fs::OpenOptions;
 #[cfg(not(target_os = "linux"))]
 pub type ReadDir = std::fs::ReadDir;
-#[cfg(not(target_os = "linux"))]
-pub type DirEntry = std::fs::DirEntry;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(all(not(target_os = "linux"), feature = "vship"))]
 pub fn read<P: AsRef<Path>>(path: P) -> Result<Vec<u8>> {
     std_read(path)
 }
@@ -475,11 +474,6 @@ pub fn write<P: AsRef<Path>, D: AsRef<[u8]>>(path: P, data: D) -> Result<()> {
 #[cfg(all(not(target_os = "linux"), feature = "vship"))]
 pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
     std_copy(from, to)
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn read_link<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
-    std_read_link(path)
 }
 
 #[cfg(not(target_os = "linux"))]

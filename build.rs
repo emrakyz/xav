@@ -353,6 +353,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
                 b.file("asm/sync/ring_spmc_win.asm");
                 b.file("asm/sync/ring_mpmc_win.asm");
                 b.file("asm/sync/ring_mpsc_win.asm");
+                b.file("asm/sync/svt_drain_win.asm");
                 println!("cargo:rustc-link-lib=dylib=synchronization");
             } else {
                 b.file("asm/sync/sem.asm");
@@ -461,7 +462,9 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     #[cfg(any(feature = "vship", feature = "avm", feature = "vvenc"))]
-    println!("cargo:rustc-link-arg=-l:libstdc++.a");
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-arg=-l:libstdc++.a");
+    }
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         let stat = env::var("CARGO_CFG_TARGET_FEATURE")
