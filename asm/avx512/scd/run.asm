@@ -30,6 +30,12 @@ cextern_naked av_frame_free
 %define SLACK  32
 %define LOOK   5
 %define WNEG   0xBF800000
+%if WIN64
+%define SHD 48
+%else
+%define SHD 0
+%endif
+%define FRM (2312+SHD)
 
 %macro POPF 0
     mov          t1q, [wnpq+W_HEAD]
@@ -44,30 +50,30 @@ cextern_naked av_frame_free
 
 %macro RUN 4
 cglobal %1, 6, 15, 2, rg, dm, tt, kf, wt, ot, ax, t1, t2, dqp, wnp, fno, nin, kfp, t3
-    sub          rsp, 2312
-    mov          [rsp+0], rgq
-    mov          [rsp+8], ttq
-    mov          [rsp+16], wtq
-    mov          [rsp+40], kfq
-    mov          [rsp+56], otq
+    sub          rsp, FRM
+    mov          [rsp+SHD+0], rgq
+    mov          [rsp+SHD+8], ttq
+    mov          [rsp+SHD+16], wtq
+    mov          [rsp+SHD+40], kfq
+    mov          [rsp+SHD+56], otq
     mov          kfpq, kfq
     mov          qword [kfpq], 0
     add          kfpq, 8
     mov          t1q, dmq
     shr          t1q, 16
     movzx        t1d, t1w
-    mov          [rsp+24], t1q
+    mov          [rsp+SHD+24], t1q
     movzx        t1d, dmw
     imul         t1q, t1q, %3
-    mov          [rsp+32], t1q
-    mov          rgq, wtq
-    mov          kfq, ttq
+    mov          [rsp+SHD+32], t1q
+    mov          rdi, wtq
+    mov          rcx, ttq
     mov          eax, WNEG
     rep stosd
-    lea          dqpq, [rsp+127]
+    lea          dqpq, [rsp+SHD+127]
     and          dqpq, -64
     lea          wnpq, [dqpq+D_SZ]
-    mov          rgq, dqpq
+    mov          rdi, dqpq
     xor          eax, eax
     mov          ecx, D_SZ/8
     rep stosq
@@ -92,14 +98,14 @@ cglobal %1, 6, 15, 2, rg, dm, tt, kf, wt, ot, ax, t1, t2, dqp, wnp, fno, nin, kf
     xor          nind, nind
 .loop:
     lea          t1q, [fnoq+LOOK+1]
-    mov          t2q, [rsp+8]
+    mov          t2q, [rsp+SHD+8]
     cmp          t1q, t2q
     cmova        t1q, t2q
-    mov          [rsp+48], t1q
+    mov          [rsp+SHD+48], t1q
 .recv:
-    cmp          ninq, [rsp+48]
+    cmp          ninq, [rsp+SHD+48]
     jae          .rdone
-    mov          rgq, [rsp+0]
+    mov          rgq, [rsp+SHD+0]
     call         xav_spsc_recv
     test         axq, axq
     jz           .rdone
@@ -109,9 +115,9 @@ cglobal %1, 6, 15, 2, rg, dm, tt, kf, wt, ot, ax, t1, t2, dqp, wnp, fno, nin, kf
     movsxd       t2q, dword [axq+64]
     mov          [wnpq+W_AV+t1q*8], axq
     mov          [wnpq+W_STR+t1q*8], t2q
-    mov          t3q, [rsp+24]
+    mov          t3q, [rsp+SHD+24]
     imul         t3q, t2q
-    add          t3q, [rsp+32]
+    add          t3q, [rsp+SHD+32]
     add          t3q, [axq]
     mov          [wnpq+W_DATA+t1q*8], t3q
     inc          qword [wnpq+W_LEN]
@@ -130,7 +136,10 @@ cglobal %1, 6, 15, 2, rg, dm, tt, kf, wt, ot, ax, t1, t2, dqp, wnp, fno, nin, kf
     mov          dmq, wnpq
     mov          ttq, t1q
     mov          kfq, fnoq
-    mov          wtq, [rsp+16]
+    mov          wtq, [rsp+SHD+16]
+%if WIN64
+    mov          [rsp+32], wtq
+%endif
     call         %2
     test         axq, axq
     jz           .nocut
@@ -148,15 +157,18 @@ cglobal %1, 6, 15, 2, rg, dm, tt, kf, wt, ot, ax, t1, t2, dqp, wnp, fno, nin, kf
     jmp          .done
 .fin:
     mov          axq, kfpq
-    sub          axq, [rsp+40]
+    sub          axq, [rsp+SHD+40]
     shr          axq, 3
-    mov          rgq, [rsp+40]
+    mov          rgq, [rsp+SHD+40]
     mov          dmq, axq
-    mov          ttq, [rsp+8]
-    mov          kfq, [rsp+16]
-    mov          wtq, [rsp+56]
+    mov          ttq, [rsp+SHD+8]
+    mov          kfq, [rsp+SHD+16]
+    mov          wtq, [rsp+SHD+56]
+%if WIN64
+    mov          [rsp+32], wtq
+%endif
     call         xav_refine
-    add          rsp, 2312
+    add          rsp, FRM
     RET
 %endmacro
 

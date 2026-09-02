@@ -2,6 +2,10 @@
 
 SECTION .text
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 1, 6
+WIN64_MMMAP 7, 16, 15
+%endif
 
 %macro FLUSH 0
     vextracti64x4 ymm9, zmm5, 1

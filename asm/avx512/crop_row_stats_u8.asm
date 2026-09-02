@@ -6,6 +6,10 @@ ones: times 64 db 1
 
 SECTION .text
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 5, 6
+WIN64_MMMAP 7, 16, 11
+%endif
 cglobal crop_row_stats_u8, 6, 6, 12, src, n, clamp, sum_p, min_p, max_p
     vpbroadcastb  zmm1, clampd
     vpxorq        zmm2, zmm2, zmm2

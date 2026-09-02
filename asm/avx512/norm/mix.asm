@@ -28,6 +28,9 @@ c05: dd 0.5
 
 SECTION .text
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 22, 15
+%endif
 
 %macro DM 2
     vmovups       zmm0, [srcq + %1]

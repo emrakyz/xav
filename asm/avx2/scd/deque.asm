@@ -55,7 +55,7 @@ INIT_YMM avx2
 %endmacro
 
 ALIGN 64
-cglobal scd_fill, 5, 9, 8, st, ia, ie, ip, ifno, hd, t0, ln, of
+cglobal scd_fill, 5, 9, 8+3*WIN64, st, ia, ie, ip, ifno, hd, t0, ln, of
     mov     hdq, [stq+D_HEAD]
     mov     lnq, [stq+D_LEN]
     mov     ofq, [stq+D_OFF]

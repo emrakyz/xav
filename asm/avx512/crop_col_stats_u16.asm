@@ -2,6 +2,11 @@
 
 SECTION .text
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 7, 1, 8    ; FLUSH zeroes these each pass; keep them VEX
+WIN64_MMMAP 6, 18, 6
+WIN64_MMMAP 9, 19, 15
+%endif
 
 %macro FLUSH 0
     vextracti64x4 ymm17, zmm7, 1

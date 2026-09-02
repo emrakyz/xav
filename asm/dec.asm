@@ -20,11 +20,17 @@ cextern_naked av_hwframe_transfer_data
 %define P_SIDX  36
 %define E_EOF   -541478725
 %define E_AGAIN -11
+%if WIN64
+%define SHD 32
+%else
+%define SHD 0
+%endif
+%define FRM (8+SHD)
 
 %macro DECN 2
 cglobal %1, 1, 15, 0, dc, a1, a2, a3, a4, a5, ax, t1, t2, cc, fr, pk, fm, si, sv
-    sub          rsp, 8
-    mov          [rsp], dcq
+    sub          rsp, FRM
+    mov          [rsp+SHD], dcq
     mov          ccq, [dcq+D_CODEC]
     mov          frq, [dcq+D_FRAME]
     mov          pkq, [dcq+D_PKT]
@@ -60,19 +66,19 @@ cglobal %1, 1, 15, 0, dc, a1, a2, a3, a4, a5, ax, t1, t2, cc, fr, pk, fm, si, sv
     test         eax, eax
     jnz          .read
 .got:
-    mov          t1q, [rsp]
+    mov          t1q, [rsp+SHD]
     inc          qword [t1q+D_NEXT]
 %if %2
     mov          dcq, [t1q+D_SW]
     mov          a1q, frq
     xor          a2d, a2d
     call         av_hwframe_transfer_data
-    mov          t1q, [rsp]
+    mov          t1q, [rsp+SHD]
     mov          axq, [t1q+D_SW]
 %else
     mov          axq, frq
 %endif
-    add          rsp, 8
+    add          rsp, FRM
     RET
 .drop:
     mov          dcq, pkq
@@ -84,10 +90,10 @@ cglobal %1, 1, 15, 0, dc, a1, a2, a3, a4, a5, ax, t1, t2, cc, fr, pk, fm, si, sv
     call         avcodec_send_packet
     jmp          .outer
 .iseof:
-    mov          t1q, [rsp]
+    mov          t1q, [rsp+SHD]
     mov          byte [t1q+D_EOF], 1
     mov          axq, frq
-    add          rsp, 8
+    add          rsp, FRM
     RET
 %endmacro
 

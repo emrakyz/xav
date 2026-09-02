@@ -11,6 +11,9 @@ pb2: dq 1.19839281085285009887
 
 SECTION .text
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 23, 13
+%endif
 cglobal loud, 5, 13, 16, src, n, stride, st, out
     vbroadcastsd  zmm16, [ra1]
     vbroadcastsd  zmm17, [ra2]
@@ -111,9 +114,15 @@ cglobal loud, 5, 13, 16, src, n, stride, st, out
     vmovups       [stq + 0x40], zmm9
     vmovups       [stq + 0x80], zmm10
     vmovups       [stq + 0xc0], zmm11
+%if WIN64                             ; vhaddpd VEX only; land the reduction low
+    vaddpd        zmm0, zmm12, zmm13
+    vextractf64x4 ymm1, zmm0, 1
+    vhaddpd       ymm0, ymm0, ymm1
+%else
     vaddpd        zmm12, zmm12, zmm13
     vextractf64x4 ymm1, zmm12, 1
     vhaddpd       ymm0, ymm12, ymm1
+%endif
     vpermpd       ymm0, ymm0, 0xd8
     vmovupd       [r12], ymm0
     RET

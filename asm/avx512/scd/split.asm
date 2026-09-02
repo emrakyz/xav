@@ -10,6 +10,9 @@ pd_16:  dd 16
 
 SECTION .text align=64
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 16, 15
+%endif
 
 %macro STEP 1
 %if %1

@@ -2,6 +2,15 @@
 
 SECTION .text
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 16, 8
+%endif
+%if WIN64
+%define xmm6 xmm16
+%define zmm6 zmm16
+%define zmm7 zmm17
+%define zmm8 zmm18
+%endif
 cglobal crop_row_stats_u16, 6, 6, 9, src, n, clamp, sum_p, min_p, max_p
     vpbroadcastw  zmm0, clampd
     vpternlogd    zmm1, zmm1, zmm1, 0xFF

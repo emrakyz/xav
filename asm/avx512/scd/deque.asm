@@ -17,6 +17,9 @@ pd_bias: dq 0x3FD3333333333334
 
 SECTION .text align=64
 INIT_ZMM avx512
+%if WIN64
+WIN64_MMMAP 6, 20, 15
+%endif
 
 %macro MV 1
     vmovupd zmm16, [stq+%1]
@@ -187,9 +190,9 @@ cglobal scd_frame, 5, 9, 16, st, ia, ie, ip, ifno, hd, t0, ln, of
     vmovsd  [stq+hdq*8+D_IMP], xmm2
     vmovsd  [stq+hdq*8+D_THR], xmm1
     lea     eax, [ofq+1]
-    mov     ecx, -1
-    bzhi    ecx, ecx, eax
-    kmovb   k6, ecx
+    mov     ipd, -1
+    bzhi    ipd, ipd, eax
+    kmovb   k6, ipd
     vmovupd [stq+hdq*8+D_FWD] {k6}, zmm5
     vextractf64x4 ymm4, zmm7, 1
     vmaxpd  ymm4, ymm7, ymm4
@@ -203,24 +206,24 @@ cglobal scd_frame, 5, 9, 16, st, ia, ie, ip, ifno, hd, t0, ln, of
     cmp     ifnoq, 1
     setne   al
     cmp     ofq, 1
-    sbb     ecx, ecx
-    not     ecx
-    and     eax, ecx
+    sbb     ipd, ipd
+    not     ipd
+    and     eax, ipd
     kmovb   k7, eax
     vmovsd  xmm4 {k7}{z}, xmm4, xmm4
     vmovsd  [stq+hdq*8+D_BACK], xmm4
     inc     lnq
     mov     eax, -1
-    bzhi    esi, eax, lnd
-    bzhi    edx, eax, ofd
-    lea     eax, [rdx*2+1]
+    bzhi    iad, eax, lnd
+    bzhi    ied, eax, ofd
+    lea     eax, [ieq*2+1]
     kmovw   k3, eax
-    andn    eax, edx, esi
+    andn    eax, ied, iad
     kmovw   k1, eax
     blsr    eax, eax
     shr     eax, 1
     kmovw   k2, eax
-    lea     ecx, [rdx+1]
+    lea     ipd, [ieq+1]
     kshiftrw k4, k1, 8
     kshiftrw k5, k2, 8
     vcmppd  k5 {k5}, zmm13, zmm11, 0x12
@@ -229,17 +232,17 @@ cglobal scd_frame, 5, 9, 16, st, ia, ie, ip, ifno, hd, t0, ln, of
     vcmppd  k2 {k2}, zmm12, zmm10, 0x12
     vcmppd  k3 {k3}, zmm8, zmm5, 0x12
     korw    k2, k2, k5
-    kmovw   edx, k3
-    kmovw   esi, k2
-    sub     edx, ecx
-    neg     esi
-    adc     edx, edx
-    xor     ecx, ecx
-    cmp     edx, 3
-    sbb     edx, edx
+    kmovw   ied, k3
+    kmovw   iad, k2
+    sub     ied, ipd
+    neg     iad
+    adc     ied, ied
+    xor     ipd, ipd
+    cmp     ied, 3
+    sbb     ied, ied
     kortestb k1, k4
-    cmovne  ecx, edx
-    and     ecx, 1
+    cmovne  ipd, ied
+    and     ipd, 1
     lea     t0q, [lnq-1]
     cmp     lnq, 10
     cmova   lnq, t0q
@@ -252,7 +255,7 @@ cglobal scd_frame, 5, 9, 16, st, ia, ie, ip, ifno, hd, t0, ln, of
     vdivss  xmm3, xmm3, xmm4
     vmovd   eax, xmm3
     shl     rax, 32
-    or      rax, rcx
+    or      rax, ipq
     RET
 .compact:
     MV D_INTER
