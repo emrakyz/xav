@@ -134,7 +134,7 @@ use enc::enc_all;
 #[cfg(feature = "vship")]
 use enc::{is_cvvdp, tq_target};
 use encoder::Encoder;
-use error::{IN_ALT_SCREEN, SIGINT, SIGSEGV, Xerr, eprint, exit, fatal, signal};
+use error::{IN_ALT_SCREEN, Xerr, eprint, exit, fatal, reraise, signals};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
 use paramerr::val;
 use scd::fd_scenes;
@@ -186,9 +186,10 @@ extern "C" fn restore() {
         _ = stdout().flush();
     }
 }
-extern "C" fn exit_restore(_: i32) {
+extern "C" fn exit_restore(s: i32) {
     restore();
-    exit(130)
+    reraise(s);
+    exit(128 + s)
 }
 
 const fn wmax(a: usize, b: usize) -> usize {
@@ -697,9 +698,9 @@ fn val_all_scenes(scenes: &[Scene], enc: Encoder) -> Result<(), Xerr> {
 }
 
 fn main_with_args(args: &Args) -> Result<(), Xerr> {
+    IN_ALT_SCREEN.store(true, Relaxed);
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     _ = stdout().flush();
-    IN_ALT_SCREEN.store(true, Relaxed);
 
     let canon_inp = args.inp.canonicalize()?;
     let hash = hash_inp(&canon_inp);
@@ -897,8 +898,7 @@ fn run() -> Result<(), Xerr> {
     }
 
     let h: usize = unsafe { transmute_copy(&(exit_restore as extern "C" fn(i32))) };
-    signal(SIGINT, h);
-    signal(SIGSEGV, h);
+    signals(h);
 
     if let Err(e) = main_with_args(&args) {
         print!("\x1b[?1049l");

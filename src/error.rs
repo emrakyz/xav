@@ -10,7 +10,7 @@ use core::{
 };
 
 #[cfg(target_os = "linux")]
-use crate::sys::{exit_group, sigaction};
+use crate::sys::{exit_group, sigactions};
 use crate::{
     error::Xerr::Msg,
     io::{Error, Write as _, print_fmt, stderr, stdout},
@@ -90,6 +90,9 @@ impl From<String> for Xerr {
 }
 
 #[cfg(target_os = "linux")]
+pub use crate::sys::reraise;
+
+#[cfg(target_os = "linux")]
 pub fn exit(code: i32) -> ! {
     unsafe { exit_group(code) }
 }
@@ -102,24 +105,31 @@ pub fn exit(code: i32) -> ! {
     unsafe { _exit(code) }
 }
 
-pub const SIGINT: i32 = 2;
-pub const SIGSEGV: i32 = 11;
+#[cfg(target_os = "linux")]
+const TERM_SIGS: [i32; 9] = [1, 2, 3, 4, 6, 7, 8, 11, 15];
+#[cfg(not(target_os = "linux"))]
+const TERM_SIGS: [i32; 6] = [2, 4, 8, 11, 15, 22];
 
 #[cfg(target_os = "linux")]
-pub fn signal(sig: i32, handler: usize) {
-    sigaction(sig, handler);
+pub fn signals(handler: usize) {
+    sigactions(&TERM_SIGS, handler);
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn signal(sig: i32, handler: usize) {
+pub fn signals(handler: usize) {
     unsafe extern "C" {
         #[link_name = "signal"]
         fn c_signal(sig: i32, handler: usize) -> usize;
     }
-    unsafe {
-        c_signal(sig, handler);
+    for sig in TERM_SIGS {
+        unsafe {
+            c_signal(sig, handler);
+        }
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+pub fn reraise(_: i32) {}
 
 #[cold]
 #[inline(never)]
