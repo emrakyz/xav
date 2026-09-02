@@ -10,7 +10,7 @@ use core::{
 };
 
 #[cfg(target_os = "linux")]
-use crate::sys::{exit_group, sigactions};
+use crate::sys::{self, exit_group, sigactions};
 use crate::{
     error::Xerr::Msg,
     io::{Error, Write as _, print_fmt, stderr, stdout},
@@ -90,7 +90,9 @@ impl From<String> for Xerr {
 }
 
 #[cfg(target_os = "linux")]
-pub use crate::sys::reraise;
+pub fn reraise(sig: i32) {
+    sys::reraise(sig);
+}
 
 #[cfg(target_os = "linux")]
 pub fn exit(code: i32) -> ! {
