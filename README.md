@@ -6,7 +6,7 @@ The planned features are the following:
 - [x] Add a new TQ mode `min`, that targets the minimum quality score achieved per scene (i.e., the quality of the worst-looking frame).
 - [ ] Allow multiple TQ targets at the same time (`-t` and `-m` parameters). All of them have to be met (if possible with the specified CRF range). The user is responsible of specifying compatible targets. Example use case: "target an average SSIMULACRA2 score of 80, and, at the same time, with 95% of frames above 70".
   - [x] Initial implementation (proof of concept).
-  - [ ] Debug + optimize multi-TQ computation / make production ready.
+  - [x] Debug + optimize multi-TQ computation / make production ready.
   - [ ] Add support for reporting status, logging, and resuming multi-TQ encodes.
   - [ ] Update guide with multi-TQ usage documentation.
 - [ ] Allow not specifying the higher end of TQ ranges, which will be interpreted as the maximum quality score achievable.

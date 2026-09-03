@@ -80,12 +80,12 @@ use crate::{
     pipeline::MetricProgs,
     thread::{PHandle, available_parallelism, pspawn},
     tq::{
-        Probe, ProbeDec, ProbeLog, calc_butter_8b_dav1d, calc_butter_8b_ff, calc_butter_10b_dav1d,
-        calc_butter_10b_ff, calc_butter_rem_dav1d, calc_butter_rem_ff, calc_cvvdp_8b_dav1d,
-        calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff, calc_cvvdp_rem_dav1d,
-        calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff, calc_ssimu2_10b_dav1d,
-        calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff, interpolate_crf, make_dav1d,
-        make_ff, prep_dav1d, prep_ff,
+        Probe, ProbeDec, ProbeLog, aggregate_scores, calc_butter_8b_dav1d, calc_butter_8b_ff,
+        calc_butter_10b_dav1d, calc_butter_10b_ff, calc_butter_rem_dav1d, calc_butter_rem_ff,
+        calc_cvvdp_8b_dav1d, calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff,
+        calc_cvvdp_rem_dav1d, calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff,
+        calc_ssimu2_10b_dav1d, calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff,
+        interpolate_crf, make_dav1d, make_ff, prep_dav1d, prep_ff,
     },
     vship::{Disp, PinnedBuf, VshipProcessor, init_device},
     worker::TQState,
@@ -1001,7 +1001,7 @@ macro_rules! make_metric_loop {
                 } else {
                     $calc_ssimu2
                 };
-                let score = (calc)(
+                let mut scores = (calc)(
                     &pkg,
                     d,
                     ctx.pipe,
@@ -1010,23 +1010,53 @@ macro_rules! make_metric_loop {
                     &mut unpacked_buf,
                     &mp,
                 );
-
+                let mut score =
+                    aggregate_scores(&mut scores, &ctx.pipe, &ctx.metric_mode[tq_idx], false);
                 ($retain)(&mut pkg, score);
+
+                let mut last_tq_converged = tq_ctxs[tq_idx].converged(score);
+                let convergence_occurred = last_tq_converged;
+                // Start new TQ loop:
+                while last_tq_converged {
+                    converged += 1;
+                    if converged < tq_ctxs.len() {
+                        // Compute first score of new TQ:
+                        let old_metric = &ctx.metric_mode[tq_idx];
+                        let new_metric = &ctx.metric_mode[converged];
+                        if old_metric == new_metric {
+                            scores = (calc)(
+                                &pkg,
+                                d,
+                                ctx.pipe,
+                                unsafe { vship.as_ref().unwrap_unchecked() },
+                                new_metric,
+                                &mut unpacked_buf,
+                                &mp,
+                            );
+                        }
+                        score = aggregate_scores(
+                            &mut scores,
+                            &ctx.pipe,
+                            new_metric,
+                            old_metric == new_metric,
+                        );
+                        last_tq_converged = tq_ctxs[converged].converged(score);
+                    } else {
+                        break;
+                    }
+                }
 
                 let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
 
-                let has_converged = tq_ctxs[tq_idx].converged(score);
-                if has_converged {
-                    converged += 1;
-                    if converged < tq_ctxs.len() {
-                        // Prepare TQState for next TQ; partial reset,
-                        // similar to "startin again" in some aspects:
-                        tq_state.probes = Vec::new();
-                        tq_state.probe_szs = Vec::new();
-                        tq_state.target = tq_ctxs[tq_idx + 1].target;
-                        tq_state.best_diff = f32::INFINITY;
-                    }
+                if convergence_occurred && converged < tq_ctxs.len() {
+                    // Prepare TQState for next TQ; partial reset,
+                    // similar to "startin again" in some aspects:
+                    tq_state.probes = Vec::new();
+                    tq_state.probe_szs = Vec::new();
+                    tq_state.target = tq_ctxs[converged].target;
+                    tq_state.best_diff = f32::INFINITY;
                 }
+
                 let should_complete = (converged == tq_ctxs.len())
                     || tq_state
                         .probes
@@ -1039,6 +1069,7 @@ macro_rules! make_metric_loop {
                 if should_complete {
                     // Reset converged count for next TQ:
                     converged = 0;
+
                     let best = tq_ctxs[tq_idx].best_probe(&tq_state.probes);
                     if ctx.use_alt_param {
                         tq_state.final_enc = true;
