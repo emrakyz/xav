@@ -347,9 +347,9 @@ fn val_range(s: &str, name: &str) -> Result<(), Xerr> {
 
 #[cfg(feature = "vship")]
 fn val_ranges(s: &str, name: &str) -> Result<(), Xerr> {
-    let ranges: Vec<String> = s.split(',').collect();
+    let ranges: Vec<&str> = s.split(',').collect();
     for (i, range) in ranges.iter().enumerate() {
-        let parts: Vec<f32> = s.split('-').filter_map(|v| v.parse().ok()).collect();
+        let mut parts: Vec<f32> = s.split('-').filter_map(|v| v.parse().ok()).collect();
         if parts.len() > 2 {
             return Err(format!("Part {i} in {name} requires a range: <min>-[max]").into());
         }

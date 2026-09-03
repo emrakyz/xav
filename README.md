@@ -5,6 +5,10 @@ This is a **WIP** fork of the [xav tool for video encoding](https://github.com/e
 The planned features are the following:
 - [x] Add a new TQ mode `min`, that targets the minimum quality score achieved per scene (i.e., the quality of the worst-looking frame).
 - [ ] Allow multiple TQ targets at the same time (`-t` and `-m` parameters). All of them have to be met (if possible with the specified CRF range). The user is responsible of specifying compatible targets. Example use case: "target an average SSIMULACRA2 score of 80, and, at the same time, with 95% of frames above 70".
+  - [x] Initial implementation (proof of concept).
+  - [ ] Debug + optimize multi-TQ computation / make production ready.
+  - [ ] Add support for reporting status, logging, and resuming multi-TQ encodes.
+  - [ ] Update guide with multi-TQ usage documentation.
 - [ ] Allow not specifying the higher end of TQ ranges, which will be interpreted as the maximum quality score achievable.
 - [ ] Allow setting a "default" or "initial" CRF value, instead of using the midpoint in the specified range. Useful if you want to stay closer to one of the extremes not to overuse/underuse bitrate, but also want to allow deviating from the usual CRF values significantly in tricky scenes that cannot reach the target quality near them. Example use case: "allow CRFs ranging from 20 to 40, but stay near 35 as much as possible".
 

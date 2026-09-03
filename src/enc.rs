@@ -432,13 +432,13 @@ struct TQWorkerCtx<'a> {
     inf: &'a VidInf,
     pipe: &'a Pipeline,
     work_dir: &'a Path,
-    metric_mode: &'a str,
+    metric_mode: Vec<String>,
     prog: &'a Arc<ProgsTrack>,
     done_tx: &'a SeqRing,
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     stats: Option<&'a Arc<WorkerStats>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
-    tq_ctx: &'a TQCtx,
+    tq_ctx: &'a Vec<TQCtx>,
     use_alt_param: bool,
     worker_cnt: usize,
     threads: i32,
@@ -838,7 +838,9 @@ macro_rules! make_metric_loop {
         $retain:expr,
         $output:expr,
         $mk_split:expr,
-        $calc:expr
+        $calc_ssimu2:expr,
+        $calc_butter:expr,
+        $calc_cvvdp:expr
     ) => {
         fn $name(
             rx: &SeqRing,
@@ -847,6 +849,9 @@ macro_rules! make_metric_loop {
             worker_id: usize,
             disp: Option<Disp>,
         ) {
+            let tq_ctxs = ctx.tq_ctx;
+            let mut converged = 0;
+
             let mut vship: Option<VshipProcessor> = None;
             let mut dec: Option<ProbeDec> = None;
             let mut unpacked_buf =
@@ -860,10 +865,14 @@ macro_rules! make_metric_loop {
                     cold_path();
                     break;
                 }
+
+                // Select current TQ targetted:
+                let tq_idx = converged;
+
                 let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
                 let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
                 if tq_st.final_enc {
-                    let best = ctx.tq_ctx.best_probe(&tq_st.probes);
+                    let best = tq_ctxs[tq_idx].best_probe(&tq_st.probes);
                     let sz = ($output)(
                         enc_path.set(pkg.chnk.idx),
                         tq_st,
@@ -876,17 +885,25 @@ macro_rules! make_metric_loop {
                     continue;
                 }
 
+                // Build the VSHip processor for this TQ:
                 if vship.is_none() {
-                    let v = VshipProcessor::new(
-                        pkg.width,
-                        pkg.height,
-                        ctx.inf,
-                        ctx.tq_ctx.use_cvvdp,
-                        ctx.tq_ctx.use_butter,
-                        disp,
-                    )
-                    .unwrap_or_else(|e| fatal(e));
-                    vship = Some(v);
+                    cold_path();
+                    if tq_ctxs[tq_idx].use_butter {
+                        let v =
+                            VshipProcessor::new(pkg.width, pkg.height, ctx.inf, false, true, disp)
+                                .unwrap_or_else(|e| fatal(e));
+                        vship = Some(v);
+                    } else if tq_ctxs[tq_idx].use_cvvdp {
+                        let v =
+                            VshipProcessor::new(pkg.width, pkg.height, ctx.inf, true, false, disp)
+                                .unwrap_or_else(|e| fatal(e));
+                        vship = Some(v);
+                    } else {
+                        let v =
+                            VshipProcessor::new(pkg.width, pkg.height, ctx.inf, false, false, disp)
+                                .unwrap_or_else(|e| fatal(e));
+                        vship = Some(v);
+                    }
                 }
 
                 let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
@@ -906,12 +923,21 @@ macro_rules! make_metric_loop {
                     crf,
                     last_score,
                 };
-                let score = ($calc)(
+
+                // Select metrict calculation function to use:
+                let calc = if tq_ctxs[tq_idx].use_cvvdp {
+                    $calc_cvvdp
+                } else if tq_ctxs[tq_idx].use_butter {
+                    $calc_butter
+                } else {
+                    $calc_ssimu2
+                };
+                let score = (calc)(
                     &pkg,
                     d,
                     ctx.pipe,
                     unsafe { vship.as_ref().unwrap_unchecked() },
-                    ctx.metric_mode,
+                    &ctx.metric_mode[tq_idx],
                     &mut unpacked_buf,
                     &mp,
                 );
@@ -920,17 +946,31 @@ macro_rules! make_metric_loop {
 
                 let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
 
-                let should_complete = ctx.tq_ctx.converged(score)
+                let has_converged = tq_ctxs[tq_idx].converged(score);
+                if has_converged {
+                    converged += 1;
+                    if converged < tq_ctxs.len() {
+                        // Prepare TQState for next TQ; partial reset,
+                        // similar to "startin again" in some aspects:
+                        tq_state.probes = Vec::new();
+                        tq_state.probe_szs = Vec::new();
+                        tq_state.target = tq_ctxs[tq_idx + 1].target;
+                        tq_state.best_diff = f32::INFINITY;
+                    }
+                }
+                let should_complete = (converged == tq_ctxs.len())
                     || tq_state
                         .probes
                         .iter()
                         .any(|p| (p.crf - crf) * (p.score - score) >= 0.0)
-                    || ctx.tq_ctx.up_bounds(tq_state, score);
+                    || tq_ctxs[tq_idx].up_bounds(tq_state, score);
 
                 tq_state.probes.push(Probe { crf, score });
 
                 if should_complete {
-                    let best = ctx.tq_ctx.best_probe(&tq_state.probes);
+                    // Reset converged count for next TQ:
+                    converged = 0;
+                    let best = tq_ctxs[tq_idx].best_probe(&tq_state.probes);
                     if ctx.use_alt_param {
                         tq_state.final_enc = true;
                         tq_state.last_crf = best.crf;
@@ -962,34 +1002,28 @@ macro_rules! make_metric_group {
         $retain:expr,
         $output:expr,
         $mk_split:expr,
-        $ss8:ident,
+        $m8:ident,
+        $m10:ident,
+        $mr:ident,
         $c_ss8:expr,
-        $ss10:ident,
         $c_ss10:expr,
-        $ssr:ident,
         $c_ssr:expr,
-        $bu8:ident,
         $c_bu8:expr,
-        $bu10:ident,
         $c_bu10:expr,
-        $bur:ident,
         $c_bur:expr,
-        $cv8:ident,
         $c_cv8:expr,
-        $cv10:ident,
         $c_cv10:expr,
-        $cvr:ident,
         $c_cvr:expr
     ) => {
-        make_metric_loop!($ss8, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss8);
-        make_metric_loop!($ss10, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss10);
-        make_metric_loop!($ssr, $mk_dec, $prep, $retain, $output, $mk_split, $c_ssr);
-        make_metric_loop!($bu8, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu8);
-        make_metric_loop!($bu10, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu10);
-        make_metric_loop!($bur, $mk_dec, $prep, $retain, $output, $mk_split, $c_bur);
-        make_metric_loop!($cv8, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv8);
-        make_metric_loop!($cv10, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv10);
-        make_metric_loop!($cvr, $mk_dec, $prep, $retain, $output, $mk_split, $c_cvr);
+        make_metric_loop!(
+            $m8, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss8, $c_bu8, $c_cv8
+        );
+        make_metric_loop!(
+            $m10, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss10, $c_bu10, $c_cv10
+        );
+        make_metric_loop!(
+            $mr, $mk_dec, $prep, $retain, $output, $mk_split, $c_ssr, $c_bur, $c_cvr
+        );
     };
 }
 
@@ -1000,23 +1034,17 @@ make_metric_group!(
     retain_swap,
     output_bytes,
     split_unused,
-    met_d_ss_8b,
+    met_d_8b,
+    met_d_10b,
+    met_d_rem,
     calc_ssimu2_8b_dav1d,
-    met_d_ss_10b,
     calc_ssimu2_10b_dav1d,
-    met_d_ss_rem,
     calc_ssimu2_rem_dav1d,
-    met_d_bu_8b,
     calc_butter_8b_dav1d,
-    met_d_bu_10b,
     calc_butter_10b_dav1d,
-    met_d_bu_rem,
     calc_butter_rem_dav1d,
-    met_d_cv_8b,
     calc_cvvdp_8b_dav1d,
-    met_d_cv_10b,
     calc_cvvdp_10b_dav1d,
-    met_d_cv_rem,
     calc_cvvdp_rem_dav1d
 );
 #[cfg(feature = "vship")]
@@ -1026,23 +1054,17 @@ make_metric_group!(
     retain_noop,
     output_probe,
     split_unused,
-    met_da_ss_8b,
+    met_da_8b,
+    met_da_10b,
+    met_da_rem,
     calc_ssimu2_8b_dav1d,
-    met_da_ss_10b,
     calc_ssimu2_10b_dav1d,
-    met_da_ss_rem,
     calc_ssimu2_rem_dav1d,
-    met_da_bu_8b,
     calc_butter_8b_dav1d,
-    met_da_bu_10b,
     calc_butter_10b_dav1d,
-    met_da_bu_rem,
     calc_butter_rem_dav1d,
-    met_da_cv_8b,
     calc_cvvdp_8b_dav1d,
-    met_da_cv_10b,
     calc_cvvdp_10b_dav1d,
-    met_da_cv_rem,
     calc_cvvdp_rem_dav1d
 );
 #[cfg(feature = "vship")]
@@ -1052,23 +1074,17 @@ make_metric_group!(
     retain_noop,
     output_copy,
     SplitPath::new,
-    met_f_ss_8b,
+    met_f_8b,
+    met_f_10b,
+    met_f_rem,
     calc_ssimu2_8b_ff,
-    met_f_ss_10b,
     calc_ssimu2_10b_ff,
-    met_f_ss_rem,
     calc_ssimu2_rem_ff,
-    met_f_bu_8b,
     calc_butter_8b_ff,
-    met_f_bu_10b,
     calc_butter_10b_ff,
-    met_f_bu_rem,
     calc_butter_rem_ff,
-    met_f_cv_8b,
     calc_cvvdp_8b_ff,
-    met_f_cv_10b,
     calc_cvvdp_10b_ff,
-    met_f_cv_rem,
     calc_cvvdp_rem_ff
 );
 #[cfg(feature = "vship")]
@@ -1078,23 +1094,17 @@ make_metric_group!(
     retain_noop,
     output_stat,
     SplitPath::new,
-    met_fa_ss_8b,
+    met_fa_8b,
+    met_fa_10b,
+    met_fa_rem,
     calc_ssimu2_8b_ff,
-    met_fa_ss_10b,
     calc_ssimu2_10b_ff,
-    met_fa_ss_rem,
     calc_ssimu2_rem_ff,
-    met_fa_bu_8b,
     calc_butter_8b_ff,
-    met_fa_bu_10b,
     calc_butter_10b_ff,
-    met_fa_bu_rem,
     calc_butter_rem_ff,
-    met_fa_cv_8b,
     calc_cvvdp_8b_ff,
-    met_fa_cv_10b,
     calc_cvvdp_10b_ff,
-    met_fa_cv_rem,
     calc_cvvdp_rem_ff
 );
 
@@ -1118,67 +1128,41 @@ fn by_shape(
 
 #[cfg(feature = "vship")]
 #[cold]
-fn dav1d_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
-    if tq.use_butter {
-        by_shape(inf, pipe, met_d_bu_8b, met_d_bu_10b, met_d_bu_rem)
-    } else if tq.use_cvvdp {
-        by_shape(inf, pipe, met_d_cv_8b, met_d_cv_10b, met_d_cv_rem)
-    } else {
-        by_shape(inf, pipe, met_d_ss_8b, met_d_ss_10b, met_d_ss_rem)
-    }
+#[inline(always)]
+fn dav1d_loop(inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    by_shape(inf, pipe, met_d_8b, met_d_10b, met_d_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
-fn dav1d_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
-    if tq.use_butter {
-        by_shape(inf, pipe, met_da_bu_8b, met_da_bu_10b, met_da_bu_rem)
-    } else if tq.use_cvvdp {
-        by_shape(inf, pipe, met_da_cv_8b, met_da_cv_10b, met_da_cv_rem)
-    } else {
-        by_shape(inf, pipe, met_da_ss_8b, met_da_ss_10b, met_da_ss_rem)
-    }
+#[inline(always)]
+fn dav1d_alt_loop(inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    by_shape(inf, pipe, met_da_8b, met_da_10b, met_da_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
-fn ff_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
-    if tq.use_butter {
-        by_shape(inf, pipe, met_f_bu_8b, met_f_bu_10b, met_f_bu_rem)
-    } else if tq.use_cvvdp {
-        by_shape(inf, pipe, met_f_cv_8b, met_f_cv_10b, met_f_cv_rem)
-    } else {
-        by_shape(inf, pipe, met_f_ss_8b, met_f_ss_10b, met_f_ss_rem)
-    }
+#[inline(always)]
+fn ff_loop(inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    by_shape(inf, pipe, met_f_8b, met_f_10b, met_f_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
-fn ff_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
-    if tq.use_butter {
-        by_shape(inf, pipe, met_fa_bu_8b, met_fa_bu_10b, met_fa_bu_rem)
-    } else if tq.use_cvvdp {
-        by_shape(inf, pipe, met_fa_cv_8b, met_fa_cv_10b, met_fa_cv_rem)
-    } else {
-        by_shape(inf, pipe, met_fa_ss_8b, met_fa_ss_10b, met_fa_ss_rem)
-    }
+#[inline(always)]
+fn ff_alt_loop(inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+    by_shape(inf, pipe, met_fa_8b, met_fa_10b, met_fa_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
 #[inline(never)]
-fn resolve_metric_loop(
-    dav1d: bool,
-    use_alt: bool,
-    tq: &TQCtx,
-    inf: &VidInf,
-    pipe: &Pipeline,
-) -> MetricLoopFn {
+fn resolve_metric_loop(dav1d: bool, use_alt: bool, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     match (dav1d, use_alt) {
-        (true, false) => dav1d_loop(tq, inf, pipe),
-        (true, true) => dav1d_alt_loop(tq, inf, pipe),
-        (false, false) => ff_loop(tq, inf, pipe),
-        (false, true) => ff_alt_loop(tq, inf, pipe),
+        (true, false) => dav1d_loop(inf, pipe),
+        (true, true) => dav1d_alt_loop(inf, pipe),
+        (false, false) => ff_loop(inf, pipe),
+        (false, true) => ff_alt_loop(inf, pipe),
     }
 }
 
@@ -1197,20 +1181,25 @@ pub const fn is_cvvdp(target: f32) -> bool {
 }
 
 #[cfg(feature = "vship")]
-fn parse_tq_ctx(args: &Args) -> TQCtx {
-    let tq_str = unsafe { args.tq.as_ref().unwrap_unchecked() };
+fn parse_tq_ctx(args: &Args) -> Vec<TQCtx> {
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
-    let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
-    let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
-    TQCtx {
-        target: tq_target,
-        tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
-        qp_min: qp_parts[0],
-        qp_max: qp_parts[1],
-        use_butter: tq_target < 8.0,
-        use_cvvdp: is_cvvdp(tq_target),
+
+    let tqs_str = unsafe { args.tq.as_ref().unwrap_unchecked() };
+    let mut tqs = Vec::new();
+    for tq_str in tqs_str.split(',') {
+        let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
+        let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
+        tqs.push(TQCtx {
+            target: tq_target,
+            tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
+            qp_min: qp_parts[0],
+            qp_max: qp_parts[1],
+            use_butter: tq_target < 8.0,
+            use_cvvdp: is_cvvdp(tq_target),
+        });
     }
+    tqs
 }
 
 #[cfg(feature = "vship")]
@@ -1251,7 +1240,7 @@ struct TqEncParams<'a> {
 }
 
 #[cfg(feature = "vship")]
-type TqLoopFn = fn(&SeqRing, &SeqRing, &EncWorkerCtx, &TqEncParams, &TQCtx, usize);
+type TqLoopFn = fn(&SeqRing, &SeqRing, &EncWorkerCtx, &TqEncParams, &Vec<TQCtx>, usize);
 
 #[cfg(feature = "vship")]
 macro_rules! make_tq_loop {
@@ -1264,7 +1253,7 @@ macro_rules! make_tq_loop {
             tx: &SeqRing,
             ctx: &EncWorkerCtx,
             enc: &TqEncParams,
-            tq_ctx: &TQCtx,
+            tq_ctxs: &Vec<TQCtx>,
             worker_id: usize,
         ) {
             let &TqEncParams {
@@ -1287,6 +1276,9 @@ macro_rules! make_tq_loop {
                     break;
                 }
                 let mut $pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
+                let tq_ctx = tq_ctxs[0];
+                // TODO: This ^ results in constructing the TQState with the first TQ's target, not
+                // the "current" TQ's.
                 let tq = $pkg.tq_state.get_or_insert_with(|| TQState {
                     probes: Vec::new(),
                     probe_szs: Vec::new(),
@@ -1500,7 +1492,9 @@ fn enc_tq(
     unsafe { mpmc_close(Arc::as_ptr(&met)) };
     metric_workers.into_iter().for_each(PHandle::join);
 
-    write_tq_log(&args.inp, work_dir, inf, sc.tq_ctx.metric_name());
+    // TODO: The current implementation of multi-TQ breaks the log.
+    // Find a way of logging the information of all the TQs.
+    write_tq_log(&args.inp, work_dir, inf, sc.tq_ctx[0].metric_name());
     drop(prog);
     join_one(display_handle);
 }
@@ -1515,7 +1509,7 @@ struct TQSpawnCtx<'a> {
     stats: Option<Arc<WorkerStats>>,
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
-    tq_ctx: TQCtx,
+    tq_ctx: Vec<TQCtx>,
     zones: &'a [Box<str>],
     build: Option<BuildTmpl>,
     encoder: Encoder,
@@ -1530,13 +1524,7 @@ fn spawn_tq_metric(
     coord: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<PHandle> {
-    let metric_loop = resolve_metric_loop(
-        sc.encoder == SvtAv1,
-        sc.use_alt_param,
-        &sc.tq_ctx,
-        sc.inf,
-        sc.pipe,
-    );
+    let metric_loop = resolve_metric_loop(sc.encoder == SvtAv1, sc.use_alt_param, sc.inf, sc.pipe);
     let threads = available_parallelism() as i32;
     let ext = sc.encoder.extension();
     let disp = sc.args.disp;
@@ -1545,19 +1533,27 @@ fn spawn_tq_metric(
         let rx = Arc::clone(met);
         let coord = Arc::clone(coord);
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
-        let (metric_mode, st) = (sc.args.metric_mode.clone(), sc.stats.clone());
+        let (metric_mode, st) = (
+            sc.args
+                .metric_mode
+                .split(',')
+                .map(|s| String::from(s))
+                .collect(),
+            sc.stats.clone(),
+        );
         let (resume_state, tq_logger, prog_clone) = (
             Arc::clone(sc.resume_state),
             Arc::clone(sc.tq_logger),
             Arc::clone(sc.prog),
         );
-        let (tq_ctx, use_alt_param, worker_cnt) = (sc.tq_ctx, sc.use_alt_param, sc.worker_cnt);
+        let (tq_ctx, use_alt_param, worker_cnt) =
+            (sc.tq_ctx.clone(), sc.use_alt_param, sc.worker_cnt);
         metric_workers.push(pspawn(move || {
             let ctx = TQWorkerCtx {
                 inf: &inf,
                 pipe: &pipe,
                 work_dir: &wd,
-                metric_mode: &metric_mode,
+                metric_mode,
                 prog: &prog_clone,
                 done_tx: &coord,
                 resume_state: &resume_state,
@@ -1610,7 +1606,7 @@ fn spawn_tq_encoders(
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
         let (params, alt_param) = (sc.args.params.clone(), sc.args.alt_param.clone());
         let prog_clone = Arc::clone(sc.prog);
-        let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
+        let (tq_ctx, encoder) = (sc.tq_ctx.clone(), sc.encoder);
         let tmpls = tmpls.clone();
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
@@ -2834,7 +2830,7 @@ pub mod test_access {
             use_butter: false,
             use_cvvdp: cvvdp,
         };
-        resolve_metric_loop(dav1d, use_alt, &tq, inf, pipe) as usize
+        resolve_metric_loop(dav1d, use_alt, inf, pipe) as usize
     }
 
     #[cfg(feature = "vship")]
