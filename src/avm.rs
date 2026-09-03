@@ -335,8 +335,10 @@ pub const AVM_TMPL_HDR: usize = AVM_CFG_SIZE + size_of::<AvmTmpl>();
 // `encoder_init` derives timestamp_ratio from g_timebase; av2/encoder/encoder.h
 const TICKS_PER_SEC: i64 = 10_000_000;
 
-// `avm_codec_alg_priv` is larger than this
+// `avm_codec_alg_priv` is larger
 const AVM_SCAN_MAX: usize = 0x4000;
+
+pub const AVM_MAX_LAG: u32 = 35;
 
 static AVM_CTRL_IDS: [i32; AVM_CTRL_CNT] = [
     AV2E_SET_COLOR_PRIMARIES,
@@ -346,7 +348,7 @@ static AVM_CTRL_IDS: [i32; AVM_CTRL_CNT] = [
     AV2E_SET_COLOR_RANGE,
 ];
 
-// colour range re-triggers `update_extra_cfg` after a blit without disturbing any other field
+// color range re-triggers `update_extra_cfg`
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AvmTmpl {
@@ -381,7 +383,7 @@ pub fn set_avm_base(c: &mut AvmCodecEncCfg, inf: &VidInf, w: u32, h: u32) -> [i3
     ]
 }
 
-// `known`: bitmask of the CICP codepoints; else UNSPECIFIED (2).
+// `known` is bitmask of the CICP codepoints; or UNSPECIFIED (2).
 // fold the negative and the oor test into one compare
 const fn cicp(v: i8, known: u32) -> i32 {
     let u = v as u8;
@@ -398,27 +400,14 @@ const fn csp(v: i8) -> i32 {
     if u < 6 { u as i32 } else { 6 }
 }
 
-// cfg-level options own a field of `avm_codec_enc_cfg_t` and land before enc_init;
+// cfg-level options own a field of `avm_codec_enc_cfg_t` and land before enc_init
 #[cold]
 #[inline(never)]
 pub fn avm_split(c: &mut AvmCodecEncCfg, params: &str, opts: &mut Vec<u8>) {
     let mut it = params.split_whitespace();
     while let Some(tok) = it.next() {
-        let Some(key) = tok.strip_prefix("--") else {
-            cold_path();
-            fatal(format_args!("avm: expected --option, got {tok}"));
-        };
-        let (name, val) = match key.split_once('=') {
-            Some(nv) => nv,
-            None if is_flag(key) => (key, "1"),
-            None => (
-                key,
-                it.next().unwrap_or_else(|| {
-                    cold_path();
-                    fatal(format_args!("avm: --{key} needs a value"))
-                }),
-            ),
-        };
+        let name = unsafe { tok.get_unchecked(2..) };
+        let val = unsafe { it.next().unwrap_unchecked() };
         if !set_cfg_arg(c, name, val) {
             opts.extend_from_slice(name.as_bytes());
             opts.push(0);
@@ -429,7 +418,7 @@ pub fn avm_split(c: &mut AvmCodecEncCfg, params: &str, opts: &mut Vec<u8>) {
 }
 
 pub fn avm_init(conf: &AvmCodecEncCfg, ec: *mut AvmCodecCtx) {
-    // version pins the layout of public structs: avm bumps it for any added, (re)moved fields
+    // version pins the layout of public structs; avm bumps it for any added, (re)moved fields
     let ret =
         unsafe { avm_codec_enc_init_ver(ec, avm_codec_av2_cx(), conf, 0, AVM_ENCODER_ABI_VERSION) };
     if ret != AVM_CODEC_OK {
@@ -578,134 +567,11 @@ const fn text(b: &[u8]) -> &str {
     unsafe { from_utf8_unchecked(b) }
 }
 
-fn is_flag(name: &str) -> bool {
-    matches!(name, "monochrome" | "full-still-picture-hdr" | "disable-kf")
-}
-
-#[cold]
-#[inline(never)]
 fn set_cfg_arg(c: &mut AvmCodecEncCfg, name: &str, val: &str) -> bool {
     match name {
-        "threads" => c.g_threads = u(name, val),
-        "profile" => c.g_profile = u(name, val),
-        "width" => c.g_w = u(name, val),
-        "height" => c.g_h = u(name, val),
-        "forced_max_frame_width" => c.g_forced_max_frame_width = u(name, val),
-        "forced_max_frame_height" => c.g_forced_max_frame_height = u(name, val),
-        "bit-depth" => c.g_bit_depth = i(name, val),
-        "input-bit-depth" => c.g_input_bit_depth = u(name, val),
-        "timebase" => c.g_timebase = rational(name, val),
-        "global-error-resilient" => c.g_error_resilient = u(name, val),
-        "lag-in-frames" => c.g_lag_in_frames = u(name, val),
-        "monochrome" => c.monochrome = 1,
-        "full-still-picture-hdr" => c.full_still_picture_hdr = 1,
-        "enable-tcq" => c.enable_tcq = u(name, val),
-        "frame-hash" => {
-            c.frame_hash_metadata = enum_or_int(name, val, &["off", "raw", "filmgrain", "both"]);
-        }
-        "use-per-plane-frame-hash" => c.frame_hash_per_plane = u(name, val),
-        "drop-frame" => c.rc_dropframe_thresh = u(name, val),
-        "resize-mode" => c.rc_resize_mode = u(name, val),
-        "resize-denominator" => c.rc_resize_denominator = u(name, val),
-        "resize-kf-denominator" => c.rc_resize_kf_denominator = u(name, val),
-        "end-usage" => c.rc_end_usage = enum_or_int(name, val, &["vbr", "cbr", "cq", "q"]),
-        "target-bitrate" => c.rc_target_bitrate = u(name, val),
-        "min-qp" => c.rc_min_quantizer = i(name, val),
-        "max-qp" => c.rc_max_quantizer = i(name, val),
-        "min-q" => c.rc_min_quantizer = qindex(u(name, val)),
-        "max-q" => c.rc_max_quantizer = qindex(u(name, val)),
-        "undershoot-pct" => c.rc_undershoot_pct = u(name, val),
-        "overshoot-pct" => c.rc_overshoot_pct = u(name, val),
-        "buf-sz" => c.rc_buf_sz = u(name, val),
-        "buf-initial-sz" => c.rc_buf_initial_sz = u(name, val),
-        "buf-optimal-sz" => c.rc_buf_optimal_sz = u(name, val),
-        "minsection-pct" => c.rc_2pass_vbr_minsection_pct = u(name, val),
-        "maxsection-pct" => c.rc_2pass_vbr_maxsection_pct = u(name, val),
-        "enable-fwd-kf" => c.fwd_kf_enabled = i(name, val),
-        "kf-min-dist" => c.kf_min_dist = u(name, val),
-        "kf-max-dist" => c.kf_max_dist = u(name, val),
-        "disable-kf" => c.kf_mode = AVM_KF_DISABLED,
-        "enable-sframe" => c.enable_sframe = u(name, val),
-        "sframe-dist" => c.sframe_dist = u(name, val),
-        "sframe-mode" => c.sframe_mode = u(name, val),
-        "sframe-type" => c.sframe_type = u(name, val),
-        "enable-lcr" => c.enable_lcr = u(name, val),
-        "enable-operating-point-sets" => c.enable_ops = u(name, val),
-        "num-operating-point-sets" => c.num_ops = u(name, val),
-        "enable-atlas" => c.enable_atlas = u(name, val),
-        "tile-width" => c.tile_width_count = list(name, val, &mut c.tile_widths),
-        "tile-height" => c.tile_height_count = list(name, val, &mut c.tile_heights),
-        "use-fixed-qp-offsets" => c.use_fixed_qp_offsets = u(name, val),
-        "fixed-qp-offsets" => {
-            let n = list(name, val, &mut c.fixed_qp_offsets) as usize;
-            if n < 2 {
-                cold_path();
-                fatal("avm: --fixed-qp-offsets needs >= 2 comma-separated values");
-            }
-            for k in n..FIXED_QP_OFFSET_COUNT {
-                unsafe {
-                    *c.fixed_qp_offsets.get_unchecked_mut(k) =
-                        (*c.fixed_qp_offsets.get_unchecked(k - 1) + 1) / 2;
-                }
-            }
-            c.use_fixed_qp_offsets = 1;
-        }
+        "enable-tcq" => c.enable_tcq = unsafe { val.parse().unwrap_unchecked() },
+        "enable-lcr" => c.enable_lcr = unsafe { val.parse().unwrap_unchecked() },
         _ => return false,
     }
     true
-}
-
-fn u(name: &str, val: &str) -> u32 {
-    val.parse().unwrap_or_else(|_| {
-        cold_path();
-        fatal(format_args!("avm: --{name}={val} is not a number"))
-    })
-}
-
-fn i(name: &str, val: &str) -> i32 {
-    val.parse().unwrap_or_else(|_| {
-        cold_path();
-        fatal(format_args!("avm: --{name}={val} is not a number"))
-    })
-}
-
-fn rational(name: &str, val: &str) -> AvmRational {
-    let (n, d) = val.split_once('/').unwrap_or_else(|| {
-        cold_path();
-        fatal(format_args!("avm: --{name}={val} is not a ratio"))
-    });
-    AvmRational {
-        num: i(name, n),
-        den: i(name, d),
-    }
-}
-
-fn enum_or_int(name: &str, val: &str, names: &[&str]) -> i32 {
-    names
-        .iter()
-        .position(|n| *n == val)
-        .map_or_else(|| i(name, val), |p| p as i32)
-}
-
-fn list(name: &str, val: &str, out: &mut [i32]) -> i32 {
-    let cap = out.len();
-    let mut n = 0;
-    for part in val.split(',') {
-        if n == cap {
-            cold_path();
-            fatal(format_args!("avm: --{name}={val} has too many values"));
-        }
-        // the compare above is the bound
-        unsafe { *out.get_unchecked_mut(n) = i(name, part) };
-        n += 1;
-    }
-    n as i32
-}
-
-const fn qindex(q: u32) -> i32 {
-    match q {
-        0..=61 => (q * 4) as i32,
-        62 => 249,
-        _ => 255,
-    }
 }

@@ -17,10 +17,16 @@ cextern_naked av_frame_move_ref
 
 %define D_EOF 64
 %define P_CNT 40
+%if WIN64
+%define SHD 48
+%else
+%define SHD 0
+%endif
+%define FRM (24+SHD)
 
 %macro FEED 2
 cglobal %1, 5, 15, 0, dc, rg, tt, ln, pb, a5, ax, t1, t2, dcb, rgb, ttb, lnb, pbb, ib
-    sub          rsp, 24
+    sub          rsp, FRM
     mov          dcbq, dcq
     mov          rgbq, rgq
     mov          ttbq, ttq
@@ -34,14 +40,14 @@ cglobal %1, 5, 15, 0, dc, rg, tt, ln, pb, a5, ax, t1, t2, dcb, rgb, ttb, lnb, pb
     call         %2
     cmp          byte [dcbq+D_EOF], 0
     jne          .fin
-    mov          [rsp], axq
+    mov          [rsp+SHD], axq
     call         av_frame_alloc
-    mov          [rsp+8], axq
+    mov          [rsp+SHD+8], axq
     mov          dcq, axq
-    mov          rgq, [rsp]
+    mov          rgq, [rsp+SHD]
     call         av_frame_move_ref
     mov          dcq, rgbq
-    mov          rgq, [rsp+8]
+    mov          rgq, [rsp+SHD+8]
     call         xav_spsc_send
     inc          ibq
     sub          dword [pbbq+P_CNT], 1
@@ -52,6 +58,10 @@ cglobal %1, 5, 15, 0, dc, rg, tt, ln, pb, a5, ax, t1, t2, dcb, rgb, ttb, lnb, pb
     mov          lnq, lnbq
     lea          pbq, [lab_scd]
     mov          a5d, 3
+%if WIN64
+    mov          [rsp+32], pbq
+    mov          [rsp+40], a5q
+%endif
     call         xav_pb_fmt
     jmp          .loop
 .fin:
@@ -63,8 +73,12 @@ cglobal %1, 5, 15, 0, dc, rg, tt, ln, pb, a5, ax, t1, t2, dcb, rgb, ttb, lnb, pb
     mov          lnq, lnbq
     lea          pbq, [lab_scd]
     mov          a5d, 3
+%if WIN64
+    mov          [rsp+32], pbq
+    mov          [rsp+40], a5q
+%endif
     call         xav_pb_frames
-    add          rsp, 24
+    add          rsp, FRM
     RET
 %endmacro
 

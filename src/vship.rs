@@ -1,14 +1,20 @@
 use alloc::string::String;
 use core::{
+    cell::Cell,
     ffi::{CStr, c_void},
-    mem::{MaybeUninit, zeroed},
+    hint::cold_path,
+    mem::MaybeUninit,
     ops::{Deref, DerefMut},
-    ptr::{NonNull, from_mut, null, null_mut},
+    ptr::{NonNull, null, null_mut},
     slice::{from_raw_parts, from_raw_parts_mut},
+    sync::atomic::{
+        AtomicPtr,
+        Ordering::{Acquire, Relaxed, Release},
+    },
 };
 
 use crate::{
-    error::{Xerr, Xerr::Msg},
+    error::{Xerr, Xerr::Msg, fatal},
     ffms::VidInf,
     fs::read_to_string,
     vship::{
@@ -19,6 +25,9 @@ use crate::{
         },
         VshipRange::{Full, Limited},
         VshipSample::{Uint8, Uint10},
+        VshipStructType::{
+            InitButter, InitCvvdp, InitSsimu2, ScoreButter, ScoreCvvdp, ScoreSsimu2,
+        },
         VshipTransferFunction::{
             Bt470Bg as TrBt470Bg, Bt470M as TrBt470M, Bt601, Bt709 as TrBt709, Hlg, Linear, Pq,
             Srgb, St428,
@@ -136,30 +145,69 @@ pub fn load_disp(conf: Option<&str>, inf: &VidInf) -> Result<Disp, Xerr> {
     Ok(Disp { v, hdr })
 }
 
-#[repr(C)]
+#[repr(i32)]
 #[derive(Copy, Clone)]
-struct VshipSSIMU2Handler {
-    id: i32,
+enum VshipStructType {
+    InitSsimu2 = 1,
+    InitButter = 2,
+    InitCvvdp = 3,
+    ScoreSsimu2 = 4,
+    ScoreButter = 5,
+    ScoreCvvdp = 6,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-struct VshipCVVDPHandler {
-    id: i32,
+struct VshipInitSsimu2 {
+    struct_type: VshipStructType,
+    src: VshipColorspace,
+    dis: VshipColorspace,
+    gpu_id: i32,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-struct VshipButteraugliHandler {
-    id: i32,
+struct VshipInitButter {
+    struct_type: VshipStructType,
+    src: VshipColorspace,
+    dis: VshipColorspace,
+    qnorm: i32,
+    intensity: f32,
+    gpu_id: i32,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
-struct VshipButteraugliScore {
+struct VshipInitCvvdp {
+    struct_type: VshipStructType,
+    src: VshipColorspace,
+    dis: VshipColorspace,
+    fps: f32,
+    resize_to_display: bool,
+    model_key: *const i8,
+    model_config_json: *const i8,
+    gpu_id: i32,
+}
+
+#[repr(C)]
+struct VshipScoreSsimu2 {
+    struct_type: VshipStructType,
+    score: f64,
+}
+
+#[repr(C)]
+struct VshipScoreButter {
+    struct_type: VshipStructType,
     norm_q: f64,
     norm3: f64,
     norminf: f64,
+    dstp: *const u8,
+    dststride: i64,
+}
+
+#[repr(C)]
+struct VshipScoreCvvdp {
+    struct_type: VshipStructType,
+    score: f64,
+    dstp: *const u8,
+    dststride: i64,
 }
 
 #[repr(i32)]
@@ -271,88 +319,26 @@ struct VshipColorspace {
     crop: VshipCropRectangle,
 }
 
-#[repr(i32)]
-#[derive(Copy, Clone)]
-#[allow(dead_code)]
-enum VshipException {
-    NoError = 0,
-    OutOfVRAM = 1,
-    OutOfRAM = 2,
-    BadDisplayModel = 3,
-    DifferingInputType = 4,
-    NonRGBSInput = 5,
-    DeviceCountError = 6,
-    NoDeviceDetected = 7,
-    BadDeviceArgument = 8,
-    BadDeviceCode = 9,
-    BadHandler = 10,
-    BadPointer = 11,
-    HIPError = 12,
-    BadPath = 13,
-    BadJson = 14,
-    NotSupported = 15,
-    BadErrorType = 16,
-}
+const GPU: i32 = 0;
 
 unsafe extern "C" {
-    fn Vship_SetDevice(gpu_id: i32) -> VshipException;
-    fn Vship_PinnedMalloc(ptr: *mut *mut c_void, size: u64) -> VshipException;
-    fn Vship_PinnedFree(ptr: *mut c_void) -> VshipException;
-    fn Vship_SSIMU2Init(
-        handler: *mut VshipSSIMU2Handler,
-        src_colorspace: VshipColorspace,
-        dis_colorspace: VshipColorspace,
-    ) -> VshipException;
-    fn Vship_SSIMU2Free(handler: VshipSSIMU2Handler) -> VshipException;
-    fn Vship_ComputeSSIMU2(
-        handler: VshipSSIMU2Handler,
-        score: *mut f64,
+    fn Vship_GPUFullCheck(gpu_id: i32) -> i32;
+    fn Vship_PinnedMalloc2(ptr: *mut *mut c_void, size: u64, gpu_id: i32) -> i32;
+    fn Vship_PinnedFree2(ptr: *mut c_void, gpu_id: i32) -> i32;
+    fn Vship_InitHandler(handler: *mut *mut c_void, argument: *const c_void) -> i32;
+    fn Vship_FreeHandler(handler: *mut c_void) -> i32;
+    fn Vship_ComputeHandler(
+        handler: *mut c_void,
+        score: *mut c_void,
         srcp1: *const *const u8,
         srcp2: *const *const u8,
-        lineSize: *const i64,
-        lineSize2: *const i64,
-    ) -> VshipException;
-    fn Vship_CVVDPInit2(
-        handler: *mut VshipCVVDPHandler,
-        src_colorspace: VshipColorspace,
-        dis_colorspace: VshipColorspace,
-        fps: f32,
-        resize_to_display: bool,
-        model_key: *const i8,
-        model_config_json: *const i8,
-    ) -> VshipException;
-    fn Vship_CVVDPFree(handler: VshipCVVDPHandler) -> VshipException;
-    fn Vship_ResetCVVDP(handler: VshipCVVDPHandler) -> VshipException;
-    fn Vship_ResetScoreCVVDP(handler: VshipCVVDPHandler) -> VshipException;
-    fn Vship_ComputeCVVDP(
-        handler: VshipCVVDPHandler,
-        score: *mut f64,
-        dstp: *const u8,
-        dststride: i64,
-        srcp1: *const *const u8,
-        srcp2: *const *const u8,
-        lineSize: *const i64,
-        lineSize2: *const i64,
-    ) -> VshipException;
-    fn Vship_ButteraugliInit(
-        handler: *mut VshipButteraugliHandler,
-        src_colorspace: VshipColorspace,
-        dis_colorspace: VshipColorspace,
-        qnorm: i32,
-        intensity_multiplier: f32,
-    ) -> VshipException;
-    fn Vship_ButteraugliFree(handler: VshipButteraugliHandler) -> VshipException;
-    fn Vship_ComputeButteraugli(
-        handler: VshipButteraugliHandler,
-        score: *mut VshipButteraugliScore,
-        dstp: *const u8,
-        dststride: i64,
-        srcp1: *const *const u8,
-        srcp2: *const *const u8,
-        lineSize: *const i64,
-        lineSize2: *const i64,
-    ) -> VshipException;
+        line_size: *const i64,
+        line_size2: *const i64,
+    ) -> i32;
+    fn Vship_Reset(handler: *mut c_void) -> i32;
+    fn Vship_ResetScore(handler: *mut c_void) -> i32;
     fn Vship_GetDetailedLastError(out_msg: *mut i8, len: i32) -> i32;
+    fn Vship_GetDetailedLastErrorHandler(handler: *mut c_void, out_msg: *mut i8, len: i32) -> i32;
 }
 
 pub struct PinnedBuf {
@@ -368,18 +354,88 @@ impl PinnedBuf {
                 len: 0,
             });
         }
-        unsafe {
-            let mut ptr: *mut c_void = null_mut();
-            let ret = Vship_PinnedMalloc(&raw mut ptr, len as u64);
-            if ret as i32 != 0 {
-                let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-                vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf));
+        let mut ptr: *mut c_void = null_mut();
+        if unsafe { Vship_PinnedMalloc2(&raw mut ptr, len as u64, GPU) } != 0 {
+            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
+            vship_get_err(&mut errbuf);
+            return Err(vship_err_str(&errbuf));
+        }
+        Ok(Self {
+            ptr: ptr.cast(),
+            len,
+        })
+    }
+}
+
+pub struct PinPool<const N: usize> {
+    shared: [AtomicPtr<u8>; N],
+    local: [Cell<*mut u8>; N],
+}
+
+impl<const N: usize> PinPool<N> {
+    pub const fn new() -> Self {
+        Self {
+            shared: [const { AtomicPtr::new(null_mut()) }; N],
+            local: [const { Cell::new(null_mut()) }; N],
+        }
+    }
+
+    // `sz` reached only when class runs dry; never loads on recycle
+    #[inline]
+    pub fn get<F: FnOnce() -> usize>(&self, cls: usize, sz: F) -> *mut u8 {
+        let l = unsafe { self.local.get_unchecked(cls) };
+        let mut h = l.get();
+        if h.is_null() {
+            h = unsafe { self.shared.get_unchecked(cls) }.swap(null_mut(), Acquire);
+            if h.is_null() {
+                cold_path();
+                return pin_alloc(sz());
             }
-            Ok(Self {
-                ptr: ptr.cast(),
-                len,
-            })
+        }
+        l.set(unsafe { h.cast::<*mut u8>().read() });
+        h
+    }
+
+    #[inline]
+    pub fn put(&self, cls: usize, base: *mut u8) {
+        let s = unsafe { self.shared.get_unchecked(cls) };
+        let mut h = s.load(Relaxed);
+        loop {
+            unsafe { base.cast::<*mut u8>().write(h) };
+            match s.compare_exchange_weak(h, base, Release, Relaxed) {
+                Ok(_) => return,
+                Err(cur) => h = cur,
+            }
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn pin_alloc(sz: usize) -> *mut u8 {
+    let mut ptr: *mut c_void = null_mut();
+    if unsafe { Vship_PinnedMalloc2(&raw mut ptr, sz as u64, GPU) } != 0 {
+        let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
+        vship_get_err(&mut errbuf);
+        fatal(vship_err_str(&errbuf));
+    }
+    ptr.cast()
+}
+
+impl<const N: usize> Drop for PinPool<N> {
+    fn drop(&mut self) {
+        for i in 0..N {
+            let s = unsafe { self.shared.get_unchecked(i) };
+            for mut h in [
+                unsafe { self.local.get_unchecked(i) }.get(),
+                s.swap(null_mut(), Acquire),
+            ] {
+                while !h.is_null() {
+                    let next = unsafe { h.cast::<*mut u8>().read() };
+                    unsafe { Vship_PinnedFree2(h.cast(), GPU) };
+                    h = next;
+                }
+            }
         }
     }
 }
@@ -403,29 +459,20 @@ impl DerefMut for PinnedBuf {
 impl Drop for PinnedBuf {
     fn drop(&mut self) {
         if self.len != 0 {
-            unsafe {
-                Vship_PinnedFree(self.ptr.cast());
-            }
+            unsafe { Vship_PinnedFree2(self.ptr.cast(), GPU) };
         }
     }
 }
 
-pub struct VshipProcessor {
-    handler: Option<VshipSSIMU2Handler>,
-    cvvdp_handler: Option<VshipCVVDPHandler>,
-    butter_handler: Option<VshipButteraugliHandler>,
-}
+pub struct VshipProcessor(*mut c_void);
 
 pub fn init_device() -> Result<(), Xerr> {
-    unsafe {
+    if unsafe { Vship_GPUFullCheck(GPU) } != 0 {
         let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-        let ret = Vship_SetDevice(0);
-        if ret as i32 != 0 {
-            vship_get_err(&mut errbuf);
-            return Err(vship_err_str(&errbuf));
-        }
-        Ok(())
+        vship_get_err(&mut errbuf);
+        return Err(vship_err_str(&errbuf));
     }
+    Ok(())
 }
 
 impl VshipProcessor {
@@ -437,70 +484,87 @@ impl VshipProcessor {
         use_butter: bool,
         disp: Option<Disp>,
     ) -> Result<Self, Xerr> {
-        let fps = inf.fps_num as f32 / inf.fps_den as f32;
-        unsafe {
-            let src_colorspace = create_yuv_colorspace(width, height, inf.is_10b, inf);
-            let dis_colorspace = create_yuv_colorspace(width, height, true, inf);
+        let src = create_yuv_colorspace(width, height, inf.is_10b, inf);
+        let dis = create_yuv_colorspace(width, height, true, inf);
+        let mut handler: *mut c_void = null_mut();
 
+        let ret = if use_cvvdp {
+            let config = unsafe { disp.unwrap_unchecked() }.json(width, height);
+            let init = VshipInitCvvdp {
+                struct_type: InitCvvdp,
+                src,
+                dis,
+                fps: inf.fps_num as f32 / inf.fps_den as f32,
+                resize_to_display: true,
+                model_key: c"xav".as_ptr(),
+                model_config_json: config.as_ptr().cast(),
+                gpu_id: GPU,
+            };
+            unsafe { Vship_InitHandler(&raw mut handler, (&raw const init).cast()) }
+        } else if use_butter {
+            let init = VshipInitButter {
+                struct_type: InitButter,
+                src,
+                dis,
+                qnorm: 5,
+                intensity: 203.0,
+                gpu_id: GPU,
+            };
+            unsafe { Vship_InitHandler(&raw mut handler, (&raw const init).cast()) }
+        } else {
+            let init = VshipInitSsimu2 {
+                struct_type: InitSsimu2,
+                src,
+                dis,
+                gpu_id: GPU,
+            };
+            unsafe { Vship_InitHandler(&raw mut handler, (&raw const init).cast()) }
+        };
+
+        if ret != 0 {
             let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-
-            let handler = if !use_cvvdp && !use_butter {
-                let mut handler = zeroed::<VshipSSIMU2Handler>();
-                let ret = Vship_SSIMU2Init(from_mut(&mut handler), src_colorspace, dis_colorspace);
-                if ret as i32 != 0 {
-                    vship_get_err(&mut errbuf);
-                    return Err(vship_err_str(&errbuf));
-                }
-                Some(handler)
-            } else {
-                None
-            };
-
-            let cvvdp_handler = if use_cvvdp {
-                let mut handler = zeroed::<VshipCVVDPHandler>();
-                let config = disp.unwrap_unchecked().json(width, height);
-                let ret = Vship_CVVDPInit2(
-                    from_mut(&mut handler),
-                    src_colorspace,
-                    dis_colorspace,
-                    fps,
-                    true,
-                    c"xav".as_ptr(),
-                    config.as_ptr().cast(),
-                );
-                if ret as i32 != 0 {
-                    vship_get_err(&mut errbuf);
-                    return Err(vship_err_str(&errbuf));
-                }
-                Some(handler)
-            } else {
-                None
-            };
-
-            let butter_handler = if use_butter {
-                let mut handler = zeroed::<VshipButteraugliHandler>();
-                let ret = Vship_ButteraugliInit(
-                    from_mut(&mut handler),
-                    src_colorspace,
-                    dis_colorspace,
-                    5,
-                    203.0,
-                );
-                if ret as i32 != 0 {
-                    vship_get_err(&mut errbuf);
-                    return Err(vship_err_str(&errbuf));
-                }
-                Some(handler)
-            } else {
-                None
-            };
-
-            Ok(Self {
-                handler,
-                cvvdp_handler,
-                butter_handler,
-            })
+            vship_get_err(&mut errbuf);
+            return Err(vship_err_str(&errbuf));
         }
+        Ok(Self(handler))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn err(&self) -> Xerr {
+        let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
+        if unsafe { Vship_GetDetailedLastErrorHandler(self.0, errbuf.as_mut_ptr().cast(), 1024) }
+            == 0
+        {
+            vship_get_err(&mut errbuf);
+        }
+        vship_err_str(&errbuf)
+    }
+
+    #[inline]
+    fn compute(
+        &self,
+        score: *mut c_void,
+        planes1: [*const u8; 3],
+        planes2: [*const u8; 3],
+        line_sizes1: [i64; 3],
+        line_sizes2: [i64; 3],
+    ) -> Result<(), Xerr> {
+        if unsafe {
+            Vship_ComputeHandler(
+                self.0,
+                score,
+                planes1.as_ptr(),
+                planes2.as_ptr(),
+                line_sizes1.as_ptr(),
+                line_sizes2.as_ptr(),
+            )
+        } != 0
+        {
+            cold_path();
+            return Err(self.err());
+        }
+        Ok(())
     }
 
     pub fn comp_ssimu2(
@@ -510,67 +574,11 @@ impl VshipProcessor {
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
     ) -> Result<f32, Xerr> {
-        unsafe {
-            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-            let mut score = 0.0;
-            let ret = Vship_ComputeSSIMU2(
-                self.handler.ok_or("SSIMULACRA2 handler not initialized")?,
-                from_mut(&mut score),
-                planes1.as_ptr(),
-                planes2.as_ptr(),
-                line_sizes1.as_ptr(),
-                line_sizes2.as_ptr(),
-            );
-
-            if ret as i32 != 0 {
-                vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf));
-            }
-
-            Ok(score as f32)
-        }
-    }
-
-    pub fn reset_cvvdp(&self) {
-        unsafe {
-            Vship_ResetCVVDP(self.cvvdp_handler.unwrap_unchecked());
-        }
-    }
-
-    pub fn reset_cvvdp_score(&self) {
-        unsafe {
-            Vship_ResetScoreCVVDP(self.cvvdp_handler.unwrap_unchecked());
-        }
-    }
-
-    pub fn comp_cvvdp(
-        &self,
-        planes1: [*const u8; 3],
-        planes2: [*const u8; 3],
-        line_sizes1: [i64; 3],
-        line_sizes2: [i64; 3],
-    ) -> Result<f32, Xerr> {
-        unsafe {
-            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-            let mut score = 0.0;
-            let ret = Vship_ComputeCVVDP(
-                self.cvvdp_handler.ok_or("CVVDP handler not initialized")?,
-                from_mut(&mut score),
-                null(),
-                0,
-                planes1.as_ptr(),
-                planes2.as_ptr(),
-                line_sizes1.as_ptr(),
-                line_sizes2.as_ptr(),
-            );
-
-            if ret as i32 != 0 {
-                vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf));
-            }
-
-            Ok(score as f32)
-        }
+        let mut score = MaybeUninit::<VshipScoreSsimu2>::uninit();
+        let p = score.as_mut_ptr();
+        unsafe { (*p).struct_type = ScoreSsimu2 };
+        self.compute(p.cast(), planes1, planes2, line_sizes1, line_sizes2)?;
+        Ok(unsafe { (*p).score } as f32)
     }
 
     pub fn comp_butter(
@@ -580,48 +588,47 @@ impl VshipProcessor {
         line_sizes1: [i64; 3],
         line_sizes2: [i64; 3],
     ) -> Result<f32, Xerr> {
+        let mut score = MaybeUninit::<VshipScoreButter>::uninit();
+        let p = score.as_mut_ptr();
         unsafe {
-            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-            let mut score = VshipButteraugliScore {
-                norm_q: 0.0,
-                norm3: 0.0,
-                norminf: 0.0,
-            };
-            let ret = Vship_ComputeButteraugli(
-                self.butter_handler
-                    .ok_or("Butteraugli handler not initialized")?,
-                from_mut(&mut score),
-                null(),
-                0,
-                planes1.as_ptr(),
-                planes2.as_ptr(),
-                line_sizes1.as_ptr(),
-                line_sizes2.as_ptr(),
-            );
-
-            if ret as i32 != 0 {
-                vship_get_err(&mut errbuf);
-                return Err(vship_err_str(&errbuf));
-            }
-
-            Ok(score.norm_q as f32)
+            (*p).struct_type = ScoreButter;
+            (*p).dstp = null();
+            (*p).dststride = 0;
         }
+        self.compute(p.cast(), planes1, planes2, line_sizes1, line_sizes2)?;
+        Ok(unsafe { (*p).norm_q } as f32)
+    }
+
+    pub fn comp_cvvdp(
+        &self,
+        planes1: [*const u8; 3],
+        planes2: [*const u8; 3],
+        line_sizes1: [i64; 3],
+        line_sizes2: [i64; 3],
+    ) -> Result<f32, Xerr> {
+        let mut score = MaybeUninit::<VshipScoreCvvdp>::uninit();
+        let p = score.as_mut_ptr();
+        unsafe {
+            (*p).struct_type = ScoreCvvdp;
+            (*p).dstp = null();
+            (*p).dststride = 0;
+        }
+        self.compute(p.cast(), planes1, planes2, line_sizes1, line_sizes2)?;
+        Ok(unsafe { (*p).score } as f32)
+    }
+
+    pub fn reset_cvvdp(&self) {
+        unsafe { Vship_Reset(self.0) };
+    }
+
+    pub fn reset_cvvdp_score(&self) {
+        unsafe { Vship_ResetScore(self.0) };
     }
 }
 
 impl Drop for VshipProcessor {
     fn drop(&mut self) {
-        unsafe {
-            if let Some(h) = self.handler {
-                Vship_SSIMU2Free(h);
-            }
-            if let Some(h) = self.cvvdp_handler {
-                Vship_CVVDPFree(h);
-            }
-            if let Some(h) = self.butter_handler {
-                Vship_ButteraugliFree(h);
-            }
-        }
+        unsafe { Vship_FreeHandler(self.0) };
     }
 }
 

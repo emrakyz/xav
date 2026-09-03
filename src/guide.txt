@@ -477,7 +477,7 @@
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {C}SVT-AV1 {P} {B}AV1 {W}({B}V_AV1{W}, {B}.obu {W}chunks)                                                                                   {P}┃
-{P}    ┃ {C}AVM {P} {B}AV2 {W}({B}V_AV2{W}, {B}.ivf {W}chunks): next-gen, research/experimental (extremely slow)                                     {P}┃
+{P}    ┃ {C}AVM {P} {B}AV2 {W}({B}V_AV2{W}, {B}.obu {W}chunks): next-gen, research/experimental (extremely slow)                                     {P}┃
 {P}    ┃ {C}VVENC {P} {B}VVC / H.266 {W}({B}.266{W})                                                                                           {P}┃
 {P}    ┃ {C}x265 {P} {B}HEVC / H.265 {W}({B}.265{W})                                                                                           {P}┃
 {P}    ┃ {C}x264 {P} {B}AVC / H.264 {W}({B}.264{W})                                                                                            {P}┃

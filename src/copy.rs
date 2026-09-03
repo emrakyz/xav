@@ -14,7 +14,8 @@ use crate::{
         AV_NOPTS_VALUE, AVCodecParameters, AVFormatContext, AVMEDIA_TYPE_AUDIO,
         AVMEDIA_TYPE_SUBTITLE, AVMEDIA_TYPE_VIDEO, AVStream, av_packet_alloc, av_packet_free,
         av_packet_unref, av_read_frame, avcodec_get_name, avformat_close_input,
-        avformat_find_stream_info, avformat_open_input, dict_get, is_matroska, stream_lang,
+        avformat_find_stream_info, avformat_open_input, dict_get, is_matroska, skip_end,
+        stream_lang,
     },
     mkv::read::{chapter_langs, track_langs},
     path::Path,
@@ -23,6 +24,9 @@ use crate::{
 };
 
 const AVDISCARD_ALL: c_int = 48;
+const STREAMINFO: usize = 34;
+const ALAC_ATOM: usize = 12;
+const FLAC_HEAD: &[u8] = b"fLaC\x80\0\0\x22";
 
 pub struct Packet {
     pub range: ByteRange,
@@ -38,10 +42,13 @@ pub struct Stream {
     pub channels: u8,
     pub sample_rate: u32,
     pub bit_depth: u8,
+    pub delay: u32,
+    pub preroll: u32,
     pub tb_num: c_int,
     pub tb_den: c_int,
     pub origin: i64,
     pub extradata: Vec<u8>,
+    pub pads: Vec<(u32, i64)>,
     pub lang: Option<Cow<'static, str>>,
 }
 
@@ -176,11 +183,14 @@ unsafe fn describe(st: *mut AVStream, par: &AVCodecParameters, origin_us: i64) -
             channels: par.ch_layout.nb_channels as u8,
             sample_rate: par.sample_rate as u32,
             bit_depth: par.bits_per_raw_sample as u8,
+            delay: par.initial_padding.max(0) as u32,
+            preroll: par.seek_preroll.max(0) as u32,
             tb_num: tb.num,
             tb_den: tb.den,
             origin: (i128::from(origin_us) * i128::from(tb.den) / (i128::from(tb.num) * 1_000_000))
                 as i64,
             extradata,
+            pads: Vec::new(),
             lang: None,
         }
     }
@@ -204,6 +214,13 @@ unsafe fn read_packets(
                 let len = (*pkt).size as usize;
                 let off = s.data.len();
                 s.data.extend_from_slice(from_raw_parts((*pkt).data, len));
+                let skip = skip_end(pkt);
+                if skip != 0 && s.sample_rate != 0 {
+                    s.pads.push((
+                        s.packets.len() as u32,
+                        i64::from(skip) * 1_000_000_000 / i64::from(s.sample_rate),
+                    ));
+                }
                 s.packets.push(Packet {
                     range: ByteRange { offset: off, len },
                     pts: (*pkt).pts,
@@ -257,6 +274,28 @@ pub fn codec_map(codec_id: c_int) -> Option<(&'static str, &'static str)> {
         _ => return pcm_pair(name),
     };
     Some(pair)
+}
+
+pub fn codec_private(codec_id: &str, mut extradata: Vec<u8>) -> Vec<u8> {
+    match codec_id {
+        "A_FLAC" => flac_private(extradata),
+        "A_ALAC" if extradata.len() > ALAC_ATOM => {
+            extradata.drain(..ALAC_ATOM);
+            extradata
+        }
+        "A_TTA1" => Vec::new(),
+        _ => extradata,
+    }
+}
+
+fn flac_private(extradata: Vec<u8>) -> Vec<u8> {
+    if extradata.len() < STREAMINFO || extradata.starts_with(b"fLaC") {
+        return extradata;
+    }
+    let mut out = Vec::with_capacity(FLAC_HEAD.len() + STREAMINFO);
+    out.extend_from_slice(FLAC_HEAD);
+    out.extend_from_slice(unsafe { extradata.get_unchecked(..STREAMINFO) });
+    out
 }
 
 fn pcm_pair(name: &str) -> Option<(&'static str, &'static str)> {

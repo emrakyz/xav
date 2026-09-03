@@ -854,6 +854,22 @@ BRANCH_INSTR jz, je, jnz, jne, jl, jle, jnl, jnle, jg, jge, jng, jnge, ja, jae, 
     %undef %1%2
 %endmacro
 
+; win64 xmm6-15 are callee-saved. Alias raw regs %1..%3 on volatile regs
+; start at %2 so x86inc wont spill: No-op SysV
+; invoke only in %if WIN64; expanding it on unix64 advance nasm
+; macro counter and rename the link-local @N labels.
+%macro WIN64_MMMAP 2-3 15 ; first_low, first_volatile, [last_low]
+    %assign %%i %1
+    %assign %%j %2
+    %rep %3-%1+1
+        CAT_XDEFINE xmm, %%i, xmm %+ %%j
+        CAT_XDEFINE ymm, %%i, ymm %+ %%j
+        CAT_XDEFINE zmm, %%i, zmm %+ %%j
+        %assign %%i %%i+1
+        %assign %%j %%j+1
+    %endrep
+%endmacro
+
 %macro DEFINE_MMREGS 1 ; mmtype
     %assign %%prev_mmregs 0
     %ifdef num_mmregs

@@ -14,14 +14,14 @@ use crate::{
     audio::AuStream,
     byte_range::ByteRange,
     clk::realtime,
-    copy::{Chapter, Stream, codec_map},
+    copy::{Chapter, Stream, codec_map, codec_private},
     encoder::Encoder::{self, Vvenc, X264, X265},
     error::Xerr,
     ffms::{AVMEDIA_TYPE_AUDIO, AVMEDIA_TYPE_SUBTITLE, VidInf},
     io::print_fmt,
     lang::lang_name,
     mkv::{
-        block_group::build_block_group,
+        block_group::{build_block_group, build_pad_group},
         chapters::{ChapterEntry, chapters_size, write_chapters},
         cluster::build_cluster_header,
         crc32::{Crc32, crc32_combine, patch_crc},
@@ -530,8 +530,9 @@ impl AudioData {
 struct AudioTrack {
     data: AudioData,
     packets: Vec<ByteRange>,
-    ts_ms: Vec<u64>,    // per-packet start ms
-    bounds: Vec<usize>, // per-cluster packet split points (len = n_clusters + 1)
+    ts_ms: Vec<u64>,       // per-packet start ms
+    bounds: Vec<usize>,    // per-cluster packet split points (len = n_clusters + 1)
+    pads: Vec<(u32, i64)>, // (packet, DiscardPadding ns), ascending; empty for most tracks
     number: u64,
 }
 
@@ -583,7 +584,7 @@ fn build_audio_tracks(
             cum += u64::from(p.samples);
             n_bytes += p.range.len as u64;
         }
-        let bounds = assign_audio(plans, &ts_ms, &lens, number);
+        let bounds = assign_audio(plans, &ts_ms, &lens, &[], number);
         let duration_ns = cum * 1_000_000_000 / 48_000;
         let bps = (u128::from(n_bytes) * 8 * 1_000_000_000)
             .checked_div(u128::from(duration_ns))
@@ -621,6 +622,7 @@ fn build_audio_tracks(
             packets,
             ts_ms,
             bounds,
+            pads: Vec::new(),
             number,
         });
     }
@@ -647,10 +649,13 @@ fn build_copy_audio(
             channels,
             sample_rate,
             bit_depth,
+            delay,
+            preroll,
             tb_num,
             tb_den,
             origin,
             extradata,
+            pads,
             lang,
             ..
         } = s;
@@ -658,6 +663,11 @@ fn build_copy_audio(
         let default = ainfos.is_empty();
         let tb_num = i64::from(tb_num);
         let tb_den = i64::from(tb_den);
+        // demuxer pulls CodecDelay out of timestamps; put it back with element
+        let rate = u64::from(sample_rate).max(1);
+        let ns = |samples: u32| u64::from(samples) * 1_000_000_000 / rate;
+        let scale = rate as i64 * tb_num;
+        let origin = origin - (i64::from(delay) * tb_den + scale / 2) / scale;
         let mut ts_ms = Vec::with_capacity(packets.len());
         let mut lens = Vec::with_capacity(packets.len());
         let mut n_bytes = 0u64;
@@ -671,7 +681,7 @@ fn build_copy_audio(
             min_start = min_start.min(p.pts);
             max_end = max_end.max(p.pts + p.duration);
         }
-        let bounds = assign_audio(plans, &ts_ms, &lens, number);
+        let bounds = assign_audio(plans, &ts_ms, &lens, &pads, number);
         // span (first start -> last end) stays right when per-packet durations are 0 (TrueHD)
         let span_tb = (max_end - min_start).max(0);
         let duration_ns =
@@ -693,12 +703,12 @@ fn build_copy_audio(
             encoder: String::new(),
             codec_id: codec_id.as_bytes(),
             codec_name: codec_name.as_bytes(),
-            codec_private: extradata,
+            codec_private: codec_private(codec_id, extradata),
             sample_rate,
             channels,
             bit_depth: (bit_depth > 0).then_some(bit_depth),
-            codec_delay_ns: 0,
-            seek_preroll_ns: 0,
+            codec_delay_ns: ns(delay),
+            seek_preroll_ns: ns(preroll),
             default_duration_ns,
             bps,
             duration_ns,
@@ -711,6 +721,7 @@ fn build_copy_audio(
             packets: block_ranges,
             ts_ms,
             bounds,
+            pads,
             number,
         });
     }
@@ -975,9 +986,16 @@ impl Mux<'_> {
         if nthr <= 1 {
             let mut vf = 0;
             let mut cursors = Vec::new();
+            let mut p_cursors = Vec::new();
             let mut s_cursors = Vec::new();
             for (r, ci) in regions {
-                self.build_cluster::<HAS_SUBS, IS_NAL>(r, ci, &mut cursors, &mut s_cursors);
+                self.build_cluster::<HAS_SUBS, IS_NAL>(
+                    r,
+                    ci,
+                    &mut cursors,
+                    &mut p_cursors,
+                    &mut s_cursors,
+                );
                 vf += unsafe { self.clusters.get_unchecked(ci) }.len();
                 if let Some(p) = progs.as_deref_mut() {
                     p.up_frames(vf, total, 0, "MUX");
@@ -1009,9 +1027,16 @@ impl Mux<'_> {
                 let done = &done;
                 s.spawn(move || {
                     let mut cursors = Vec::new();
+                    let mut p_cursors = Vec::new();
                     let mut s_cursors = Vec::new();
                     for (r, ci) in batch {
-                        self.build_cluster::<HAS_SUBS, IS_NAL>(r, ci, &mut cursors, &mut s_cursors);
+                        self.build_cluster::<HAS_SUBS, IS_NAL>(
+                            r,
+                            ci,
+                            &mut cursors,
+                            &mut p_cursors,
+                            &mut s_cursors,
+                        );
                         done.fetch_add(
                             unsafe { self.clusters.get_unchecked(ci) }.len(),
                             Ordering::Relaxed,
@@ -1041,6 +1066,7 @@ impl Mux<'_> {
         region: &mut [u8],
         ci: usize,
         cursors: &mut Vec<usize>,
+        p_cursors: &mut Vec<usize>,
         s_cursors: &mut Vec<usize>,
     ) {
         // ci < plans.len(); per-cluster vecs are parallel
@@ -1126,11 +1152,12 @@ impl Mux<'_> {
         }
 
         cursors.clear();
-        cursors.extend(
-            self.audio
-                .iter()
-                .map(|a| unsafe { *a.bounds.get_unchecked(ci) }),
-        );
+        p_cursors.clear();
+        for a in self.audio {
+            let start = unsafe { *a.bounds.get_unchecked(ci) };
+            cursors.push(start);
+            p_cursors.push(next_pad(&a.pads, start));
+        }
         if HAS_SUBS {
             s_cursors.clear();
             s_cursors.extend(
@@ -1198,14 +1225,13 @@ impl Mux<'_> {
                 let a = unsafe { self.audio.get_unchecked(best_a) };
                 let cur = unsafe { cursors.get_unchecked_mut(best_a) };
                 let rel = (best_a_ts - plan.ts) as i16;
-                emit_simple_block(
-                    &mut sink,
-                    region,
-                    a.number,
-                    unsafe { *a.packets.get_unchecked(*cur) },
-                    a.data.slice(),
-                    rel,
-                );
+                let pkt = unsafe { *a.packets.get_unchecked(*cur) };
+                let pk = unsafe { p_cursors.get_unchecked_mut(best_a) };
+                if *pk == *cur {
+                    emit_pad_block(&mut sink, region, a, pkt, rel, pk);
+                } else {
+                    emit_simple_block(&mut sink, region, a.number, pkt, a.data.slice(), rel);
+                }
                 *cur += 1;
             } else if HAS_SUBS && best_s != usize::MAX {
                 let s = unsafe { self.subs.get_unchecked(best_s) };
@@ -1352,4 +1378,51 @@ fn emit_simple_block(
     unsafe { c.copy_nt(asrc.as_ptr().add(pkt.offset), dp, pkt.len) };
     sink.crc = crc32_combine(sink.crc, c.finalize(), (off + pkt.len) as u64);
     sink.p = base + off + pkt.len;
+}
+
+// packet index for first pad at or after `from`, MAX if none
+#[inline]
+fn next_pad(pads: &[(u32, i64)], from: usize) -> usize {
+    pads.get(pads.partition_point(|p| (p.0 as usize) < from))
+        .map_or(usize::MAX, |p| p.0 as usize)
+}
+
+// audio packet with trimmed tail: BlockGroup + DiscardPadding
+#[cold]
+fn emit_pad_block(
+    sink: &mut ClusterSink,
+    region: &mut [u8],
+    a: &AudioTrack,
+    pkt: ByteRange,
+    rel: i16,
+    pk: &mut usize,
+) {
+    let at = a.pads.partition_point(|p| (p.0 as usize) < *pk);
+    let pad = unsafe { a.pads.get_unchecked(at) }.1;
+    *pk = next_pad(&a.pads, *pk + 1);
+    let base = sink.p;
+    let flen = pkt.len;
+    let bg = build_pad_group(
+        unsafe { region.get_unchecked_mut(base..) },
+        a.number,
+        flen,
+        rel,
+        pad,
+    );
+    let (bf, af) = (bg.before_frame_len, bg.after_frame_len);
+
+    let mut c = Crc32::new();
+    c.update(unsafe { region.get_unchecked(base + bg.crc_offset + 4..base + bf) }); // block header
+    let dp = unsafe { region.as_mut_ptr().add(base + bf) };
+    unsafe { c.copy_nt(a.data.slice().as_ptr().add(pkt.offset), dp, flen) };
+    c.update(unsafe { region.get_unchecked(base + bf + flen..base + bf + flen + af) }); // DiscardPadding
+    let frame_crc = c.finalize();
+    patch_crc(region, base + bg.crc_offset, frame_crc);
+    sink.p = base + bf + flen + af;
+
+    let pre = bg.crc_offset + 4;
+    let mut pc = Crc32::new();
+    pc.update(unsafe { region.get_unchecked(base..base + pre) }); // BlockGroup header + the patched CRC
+    sink.crc = crc32_combine(sink.crc, pc.finalize(), pre as u64);
+    sink.crc = crc32_combine(sink.crc, frame_crc, ((bf - pre) + flen + af) as u64);
 }

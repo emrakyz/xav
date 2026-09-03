@@ -1,4 +1,7 @@
-use core::{arch::asm, ffi::c_void};
+use core::{
+    arch::{asm, naked_asm},
+    ffi::c_void,
+};
 
 macro_rules! syscall {
     ($nr:expr) => { syscall!(@ $nr,) };
@@ -126,14 +129,26 @@ struct Sigaction {
     mask: u64,
 }
 
-pub fn sigaction(sig: i32, handler: usize) {
+#[unsafe(naked)]
+unsafe extern "C" fn sigreturn() {
+    naked_asm!("mov eax, 15", "syscall")
+}
+
+pub fn sigactions(sigs: &[i32], handler: usize) {
     let act = Sigaction {
         handler,
-        flags: 0,
-        restorer: 0,
+        flags: 0xc400_0000,
+        restorer: sigreturn as *const () as usize,
         mask: 0,
     };
-    syscall!(13, sig, &raw const act, 0usize, 8usize);
+    for &sig in sigs {
+        syscall!(13, sig, &raw const act, 0usize, 8usize);
+    }
+}
+
+pub fn reraise(sig: i32) {
+    let pid = syscall!(39);
+    syscall!(62, pid, sig);
 }
 
 #[repr(C)]

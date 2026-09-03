@@ -18,17 +18,23 @@ cextern scd_pred
 %define W_STR  128
 %define W_HEAD 192
 %define LOOK   5
+%if WIN64
+%define SHD 48
+%else
+%define SHD 0
+%endif
+%define FRM (56+SHD)
 
 %macro STEP 2
 cglobal %1, 5, 15, 0, dq, wn, sl, fn, wt, t0, ax, t1, t2, dqb, wnb, xi, cn, fnb, wtb
-    sub          rsp, 56
+    sub          rsp, FRM
     cmp          slq, LOOK
     jbe          .zero
     mov          dqbq, dqq
     mov          wnbq, wnq
     mov          fnbq, fnq
     mov          wtbq, wtq
-    mov          [rsp+24], slq
+    mov          [rsp+SHD+24], slq
     cmp          qword [dqbq+D_LEN], 0
     jne          .step
     mov          t1q, [dqbq+D_OFF]
@@ -49,29 +55,35 @@ cglobal %1, 5, 15, 0, dq, wn, sl, fn, wt, t0, ax, t1, t2, dqb, wnb, xi, cn, fnb,
     mov          t0q, xiq
     call         .cost
     mov          dqq, dqbq
-    mov          wnq, [rsp+0]
-    mov          slq, [rsp+8]
-    mov          fnq, [rsp+16]
+    mov          wnq, [rsp+SHD+0]
+    mov          slq, [rsp+SHD+8]
+    mov          fnq, [rsp+SHD+16]
     lea          wtq, [fnbq+xiq]
+%if WIN64
+    mov          [rsp+32], wtq
+%endif
     call         xav_scd_fill
     inc          xiq
     cmp          xiq, cnq
     jb           .floop
 .step:
     mov          t1q, [dqbq+D_OFF]
-    mov          slq, [rsp+24]
+    mov          slq, [rsp+SHD+24]
     lea          t2q, [t1q+1]
     cmp          slq, t2q
     jbe          .pred
-    mov          [rsp+32], t1q
+    mov          [rsp+SHD+32], t1q
     mov          t0q, t1q
     call         .cost
     mov          dqq, dqbq
-    mov          wnq, [rsp+0]
-    mov          slq, [rsp+8]
-    mov          fnq, [rsp+16]
-    mov          wtq, [rsp+32]
+    mov          wnq, [rsp+SHD+0]
+    mov          slq, [rsp+SHD+8]
+    mov          fnq, [rsp+SHD+16]
+    mov          wtq, [rsp+SHD+32]
     add          wtq, fnbq
+%if WIN64
+    mov          [rsp+32], wtq
+%endif
     call         xav_scd_frame
     jmp          .out
 .pred:
@@ -84,11 +96,11 @@ cglobal %1, 5, 15, 0, dq, wn, sl, fn, wt, t0, ax, t1, t2, dqb, wnb, xi, cn, fnb,
     shr          t1q, 32
     mov          [wtbq+fnbq*4], t1d
     and          axq, 1
-    add          rsp, 56
+    add          rsp, FRM
     RET
 .zero:
     xor          eax, eax
-    add          rsp, 56
+    add          rsp, FRM
     RET
 .cost:
     mov          t1q, [wnbq+W_HEAD]
@@ -101,7 +113,11 @@ cglobal %1, 5, 15, 0, dq, wn, sl, fn, wt, t0, ax, t1, t2, dqb, wnb, xi, cn, fnb,
     mov          slq, [wnbq+W_STR+t2q*8]
     mov          fnq, [dqbq+D_WB]
     mov          wtq, [dqbq+D_HB]
-    lea          t0q, [rsp+8]
+    lea          t0q, [rsp+SHD+8]
+%if WIN64
+    mov          [rsp+40], wtq
+    mov          [rsp+48], t0q
+%endif
     jmp          %2
 %endmacro
 

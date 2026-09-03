@@ -2,7 +2,7 @@
 use alloc::vec::Vec;
 
 use super::{
-    block_group::block_group_size,
+    block_group::{block_group_size, pad_group_size},
     cluster::cluster_size,
     cues::cues_size,
     ebml_header::EBML_HEADER,
@@ -17,7 +17,7 @@ pub struct ClusterPlan {
     pub base_frame: u64,
     pub ts: u64,
     pub bg_total: usize,
-    pub sb_total: usize,  // audio SimpleBlock octets; 0 until assign_audio
+    pub sb_total: usize,  // audio block octets; 0 until assign_audio
     pub sub_total: usize, // subtitle BlockGroup octets; 0 until assign_subs
     pub size: usize,      // full octets; filled by layout
     pub position: u64,    // Segment Position; filled by layout
@@ -89,18 +89,27 @@ pub fn assign_audio(
     plans: &mut [ClusterPlan],
     ts_ms: &[u64],
     lens: &[usize],
+    pads: &[(u32, i64)],
     track: u64,
 ) -> Vec<usize> {
     let n = plans.len();
     let mut bounds = vec![0usize; n + 1];
     let mut ci = 0;
+    let mut pk = 0;
     // ci+1 < n guards plans/bounds[ci+1]; ci stays < n; bounds.len() == n+1
     for (pi, (&ts, &len)) in ts_ms.iter().zip(lens).enumerate() {
         while ci + 1 < n && ts >= unsafe { plans.get_unchecked(ci + 1) }.ts {
             unsafe { *bounds.get_unchecked_mut(ci + 1) = pi };
             ci += 1;
         }
-        unsafe { plans.get_unchecked_mut(ci) }.sb_total += simple_block_size(track, len);
+        let octets = match pads.get(pk) {
+            Some(&(at, pad)) if at as usize == pi => {
+                pk += 1;
+                pad_group_size(track, len, pad)
+            }
+            _ => simple_block_size(track, len),
+        };
+        unsafe { plans.get_unchecked_mut(ci) }.sb_total += octets;
     }
     for b in unsafe { bounds.get_unchecked_mut(ci + 1..=n) } {
         *b = ts_ms.len();

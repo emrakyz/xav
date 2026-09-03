@@ -101,6 +101,11 @@ pub struct AVCodecParameters {
     pub video_delay: c_int,
     pub ch_layout: AVChannelLayout,
     pub sample_rate: c_int,
+    _block_align: c_int,
+    _frame_size: c_int,
+    pub initial_padding: c_int,
+    _trailing_padding: c_int,
+    pub seek_preroll: c_int,
 }
 
 #[repr(C)]
@@ -230,9 +235,43 @@ pub struct AVPacket {
     pub size: c_int,
     pub stream_index: c_int,
     pub flags: c_int,
-    _side_data: *mut c_void,
-    _side_data_elems: c_int,
+    side_data: *mut AVPacketSideData,
+    side_data_elems: c_int,
     pub duration: i64,
+}
+
+#[repr(C)]
+struct AVPacketSideData {
+    data: *const u8,
+    size: usize,
+    type_: c_int,
+}
+
+const AV_PKT_DATA_SKIP_SAMPLES: c_int = 11;
+
+// trailing samples the source trims off this packet (encoder padding)
+#[inline]
+#[must_use]
+pub unsafe fn skip_end(pkt: *const AVPacket) -> u32 {
+    unsafe {
+        if (*pkt).side_data_elems == 0 {
+            return 0;
+        }
+        skip_end_scan(pkt)
+    }
+}
+
+#[cold]
+unsafe fn skip_end_scan(pkt: *const AVPacket) -> u32 {
+    unsafe {
+        for i in 0..(*pkt).side_data_elems as usize {
+            let e = &*(*pkt).side_data.add(i);
+            if e.type_ == AV_PKT_DATA_SKIP_SAMPLES && e.size >= 10 {
+                return u32::from_le(e.data.cast::<u32>().add(1).read_unaligned());
+            }
+        }
+        0
+    }
 }
 
 #[repr(C)]

@@ -1,30 +1,33 @@
+use alloc::sync::Arc;
 #[cfg(target_os = "linux")]
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 #[cfg(target_os = "linux")]
 use core::ffi::c_void;
 #[cfg(not(target_os = "linux"))]
 use core::ptr::from_ref;
-use core::time::Duration;
+use core::{
+    cell::Cell,
+    ptr::null,
+    sync::atomic::{AtomicU32, Ordering::Release},
+    time::Duration,
+};
 #[cfg(target_os = "linux")]
 use core::{
-    cell::{Cell, UnsafeCell},
+    cell::UnsafeCell,
     marker::PhantomData,
     mem::MaybeUninit,
-    ptr::{null, null_mut},
-    sync::atomic::{
-        AtomicU32, AtomicUsize,
-        Ordering::{Relaxed, Release},
-    },
+    ptr::null_mut,
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
 };
 #[cfg(not(target_os = "linux"))]
 use std::thread::{available_parallelism as std_ap, sleep as std_sleep};
 
+#[cfg(not(target_os = "linux"))]
+use crate::plat::xav_plat_wake as futex_wake;
 #[cfg(target_os = "linux")]
 use crate::sys::{futex_wake, nanosleep, sched_getaffinity};
 
-#[cfg(target_os = "linux")]
 const PARKED: u32 = u32::MAX;
-#[cfg(target_os = "linux")]
 const NOTIFIED: u32 = 1;
 
 #[cfg(target_os = "linux")]
@@ -38,7 +41,6 @@ unsafe extern "C" {
     fn pthread_join(t: u64, ret: *mut *mut c_void) -> i32;
 }
 
-#[cfg(target_os = "linux")]
 #[thread_local]
 static CUR: Cell<*const AtomicU32> = Cell::new(null());
 
@@ -61,12 +63,10 @@ extern "C" fn start<F: FnOnce() -> T, T>(arg: *mut c_void) -> *mut c_void {
     null_mut()
 }
 
-#[cfg(target_os = "linux")]
 pub struct Thread {
     park: Arc<AtomicU32>,
 }
 
-#[cfg(target_os = "linux")]
 impl Thread {
     pub fn unpark(&self) {
         unpark_on(&self.park);
@@ -133,12 +133,10 @@ impl PHandle {
     }
 }
 
-#[cfg(target_os = "linux")]
 pub fn park_state() -> *const u8 {
     CUR.get().cast()
 }
 
-#[cfg(target_os = "linux")]
 fn unpark_on(s: &AtomicU32) {
     if s.swap(NOTIFIED, Release) == PARKED {
         futex_wake(s.as_ptr());
@@ -307,19 +305,12 @@ pub fn sleep(dur: Duration) {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub type Thread = std::thread::Thread;
-
-#[cfg(not(target_os = "linux"))]
 pub struct JoinHandle<T>(std::thread::JoinHandle<T>);
 
 #[cfg(not(target_os = "linux"))]
 impl<T> JoinHandle<T> {
     pub fn join(self) -> T {
         self.0.join().unwrap()
-    }
-
-    pub fn thread(&self) -> Thread {
-        self.0.thread().clone()
     }
 }
 
@@ -328,16 +319,21 @@ impl<T> JoinHandle<T> {
 pub struct Scope<'scope, 'env: 'scope>(std::thread::Scope<'scope, 'env>);
 
 #[cfg(not(target_os = "linux"))]
-pub struct ScopedJoinHandle<'scope, T>(std::thread::ScopedJoinHandle<'scope, T>);
+pub struct ScopedJoinHandle<'scope, T> {
+    h: std::thread::ScopedJoinHandle<'scope, T>,
+    park: Arc<AtomicU32>,
+}
 
 #[cfg(not(target_os = "linux"))]
 impl<T> ScopedJoinHandle<'_, T> {
     pub fn join(self) -> T {
-        self.0.join().unwrap()
+        self.h.join().unwrap()
     }
 
     pub fn thread(&self) -> Thread {
-        self.0.thread().clone()
+        Thread {
+            park: Arc::clone(&self.park),
+        }
     }
 }
 
@@ -348,7 +344,15 @@ impl<'scope> Scope<'scope, '_> {
         F: FnOnce() -> T + Send + 'scope,
         T: Send + 'scope,
     {
-        ScopedJoinHandle(self.0.spawn(f))
+        let park = Arc::new(AtomicU32::new(0));
+        let cur = Arc::clone(&park);
+        ScopedJoinHandle {
+            h: self.0.spawn(move || {
+                CUR.set(Arc::as_ptr(&cur));
+                f()
+            }),
+            park,
+        }
     }
 }
 
@@ -358,7 +362,11 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    JoinHandle(std::thread::spawn(f))
+    JoinHandle(std::thread::spawn(move || {
+        let park = Arc::new(AtomicU32::new(0));
+        CUR.set(Arc::as_ptr(&park));
+        f()
+    }))
 }
 
 #[cfg(all(not(target_os = "linux"), feature = "vship"))]

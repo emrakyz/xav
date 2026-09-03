@@ -330,10 +330,6 @@ pub struct ChildStdout(i32);
 pub struct ChildStderr(i32);
 #[cfg(not(target_os = "linux"))]
 pub type ChildStdin = std::process::ChildStdin;
-#[cfg(not(target_os = "linux"))]
-pub type ChildStdout = std::process::ChildStdout;
-#[cfg(not(target_os = "linux"))]
-pub type ChildStderr = std::process::ChildStderr;
 
 #[cfg(target_os = "linux")]
 impl Write for ChildStdin {
@@ -407,8 +403,6 @@ impl Drop for ChildStderr {
 
 #[cfg(target_os = "linux")]
 pub struct ExitStatus(i32);
-#[cfg(not(target_os = "linux"))]
-pub type ExitStatus = std::process::ExitStatus;
 
 #[cfg(target_os = "linux")]
 impl ExitStatus {
@@ -425,16 +419,9 @@ pub struct Output {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
-#[cfg(not(target_os = "linux"))]
-pub type Output = std::process::Output;
 
 #[cfg(target_os = "linux")]
 #[inline]
 pub fn id() -> u32 {
     getpid() as u32
-}
-#[cfg(not(target_os = "linux"))]
-#[inline]
-pub fn id() -> u32 {
-    std::process::id()
 }

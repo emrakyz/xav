@@ -932,9 +932,14 @@ cglobal pb_fin, 2, 4, 0, sl, pc, t1, t2
     PAD3T
 %endmacro
 
-%define M_PB    0
-%define M_TS    56
-%define MONSZ   72
+%if WIN64
+%define SHD 48
+%else
+%define SHD 0
+%endif
+%define M_PB    (SHD+0)
+%define M_TS    (SHD+56)
+%define MONSZ   (72+SHD)
 %define NOTIF   1
 %define PARKED  -1
 %define IVAL_NS 512000000
@@ -974,6 +979,10 @@ cglobal pb_mon, 6, 15, 0, dn, st, pk, tv, ln, pi, ax, t1, t2, s0, s1, s2, s3, s4
     movzx        lnq, s4b
     mov          piq, s4q
     shr          piq, 8
+%if WIN64
+    mov          [rsp+32], lnq
+    mov          [rsp+40], piq
+%endif
     call         xav_pb_au_f
     jmp          .loop
 .fin:
@@ -984,6 +993,10 @@ cglobal pb_mon, 6, 15, 0, dn, st, pk, tv, ln, pi, ax, t1, t2, s0, s1, s2, s3, s4
     movzx        lnq, s4b
     mov          piq, s4q
     shr          piq, 8
+%if WIN64
+    mov          [rsp+32], lnq
+    mov          [rsp+40], piq
+%endif
     call         xav_pb_au_f
     add          rsp, MONSZ
     RET

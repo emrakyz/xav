@@ -20,6 +20,12 @@ cextern split
 %define M300 0xda740da740da740e
 %define M100 1374389535
 %define BIG  100000000
+%if WIN64
+%define SHD 32
+%else
+%define SHD 0
+%endif
+%define FRM (40+SHD)
 
 %macro ITOA 1
     mov          axq, %1
@@ -48,10 +54,10 @@ cextern split
     mov          axq, t0q
     jmp          %%p
 %%big:
-    xor          totd, totd
+    xor          edx, edx
     mov          t0d, 100
     div          t0q
-    movzx        t1d, word [d100+totq*2]
+    movzx        t1d, word [d100+rdx*2]
     mov          [t2q-2], t1w
     sub          t2q, 2
     cmp          axq, BIG
@@ -75,10 +81,10 @@ cextern split
     sub          t2q, %1
     mov          axq, M300
     mul          t2q
-    shr          totq, 8
-    lea          t0q, [totq+1]
+    shr          rdx, 8
+    lea          t0q, [rdx+1]
     mov          axq, t2q
-    xor          totd, totd
+    xor          edx, edx
     div          t0q
     mov          midq, axq
     shr          axd, 1
@@ -87,8 +93,8 @@ cextern split
     cmp          t1d, midd
     cmova        t1d, midd
     lea          t2d, [t1d+1]
-    mov          [rsp+8], t2d
-    mov          t0q, [rsp+0]
+    mov          [rsp+SHD+8], t2d
+    mov          t0q, [rsp+SHD+0]
     lea          scq, [%1+axq]
     lea          scq, [t0q+scq*4]
     mov          nd, t2d
@@ -99,7 +105,7 @@ cextern split
     mov          t0d, midd
     shr          t0d, 1
     add          t0d, eax
-    cmp          eax, [rsp+8]
+    cmp          eax, [rsp+SHD+8]
     cmove        t0d, midd
     add          %1, t0q
     ITOA         %1
@@ -110,9 +116,9 @@ cextern split
 %endmacro
 
 cglobal refine, 5, 15, 0, sc, n, tot, scr, out, t0, ax, t1, t2, op, cs, e, mid, ix, sl
-    sub          rsp, 40
-    mov          [rsp+0], scrq
-    mov          [rsp+24], outq
+    sub          rsp, FRM
+    mov          [rsp+SHD+0], scrq
+    mov          [rsp+SHD+24], outq
     mov          opq, outq
     mov          word [opq], 0x0A30
     add          opq, 2
@@ -122,7 +128,7 @@ cglobal refine, 5, 15, 0, sc, n, tot, scr, out, t0, ax, t1, t2, op, cs, e, mid, 
     cmovz        opq, outq
     jmp          .fin
 .go:
-    mov          [rsp+16], totq
+    mov          [rsp+SHD+16], totq
     lea          slq, [scq+nq*8-8]
     mov          ixq, scq
     sub          ixq, slq
@@ -156,14 +162,14 @@ cglobal refine, 5, 15, 0, sc, n, tot, scr, out, t0, ax, t1, t2, op, cs, e, mid, 
     jnz          .scene
 .last:
     lea          t2q, [eq+MAXD]
-    mov          csq, [rsp+16]
+    mov          csq, [rsp+SHD+16]
     cmp          csq, t2q
     ja           .splitL
 .endL:
 .fin:
     mov          axq, opq
-    sub          axq, [rsp+24]
-    add          rsp, 40
+    sub          axq, [rsp+SHD+24]
+    add          rsp, FRM
     RET
 .splitO:
     SPLIT eq, csq, .endO

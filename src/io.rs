@@ -1,14 +1,17 @@
 use alloc::{string::String, vec::Vec};
+#[cfg(feature = "vvenc")]
+use core::hint::cold_path;
 use core::{
-    fmt::{
-        Arguments, Display, Error as FmtErr, Formatter, Result as FmtResult, Write as FmtWrite,
-        write as fmt_write,
-    },
+    fmt::{Arguments, Error as FmtErr, Result as FmtResult, Write as FmtWrite, write as fmt_write},
+    result::Result as CoreResult,
+    str::from_utf8,
+};
+#[cfg(target_os = "linux")]
+use core::{
+    fmt::{Display, Formatter},
     mem::MaybeUninit,
     ptr::copy_nonoverlapping,
-    result::Result as CoreResult,
     slice::from_raw_parts_mut,
-    str::from_utf8,
 };
 #[cfg(not(target_os = "linux"))]
 use std::fs::File as StdFile;
@@ -27,6 +30,8 @@ use std::process::{
 
 #[cfg(target_os = "linux")]
 use crate::sys::{isatty, read as sys_read, write as sys_write};
+#[cfg(feature = "vvenc")]
+use crate::util::assume_unreachable;
 
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
@@ -99,6 +104,7 @@ pub trait Read {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> {
         let start = buf.len();
         loop {
@@ -114,6 +120,7 @@ pub trait Read {
         }
     }
 
+    #[cfg(target_os = "linux")]
     fn read_to_string(&mut self, buf: &mut String) -> Result<usize> {
         let mut bytes = Vec::new();
         let n = self.read_to_end(&mut bytes)?;
@@ -125,6 +132,18 @@ pub trait Read {
 pub trait Write {
     fn write(&mut self, buf: &[u8]) -> Result<usize>;
     fn flush(&mut self) -> Result<()>;
+
+    // folding two halves into one call keeps a chunk worth of
+    // indirect calls off the per frame path. only encoder sinks see these
+    #[cfg(feature = "vvenc")]
+    fn spare(&mut self, _prev: usize, _need: usize) -> *mut u8 {
+        assume_unreachable()
+    }
+
+    #[cfg(feature = "vvenc")]
+    fn commit(&mut self, _n: usize) {
+        assume_unreachable()
+    }
 
     fn write_all(&mut self, mut buf: &[u8]) -> Result<()> {
         while !buf.is_empty() {
@@ -170,6 +189,20 @@ impl Write for Vec<u8> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         self.extend_from_slice(buf);
         Ok(buf.len())
+    }
+
+    #[cfg(feature = "vvenc")]
+    #[inline]
+    fn spare(&mut self, prev: usize, need: usize) -> *mut u8 {
+        unsafe { self.set_len(self.len() + prev) };
+        self.reserve(need);
+        unsafe { self.as_mut_ptr().add(self.len()) }
+    }
+
+    #[cfg(feature = "vvenc")]
+    #[inline]
+    fn commit(&mut self, n: usize) {
+        unsafe { self.set_len(self.len() + n) };
     }
 
     #[inline]
@@ -251,6 +284,24 @@ impl<W: Write> Write for BufWriter<W> {
             self.buf.extend_from_slice(buf);
             Ok(buf.len())
         }
+    }
+
+    #[cfg(feature = "vvenc")]
+    #[inline]
+    fn spare(&mut self, prev: usize, need: usize) -> *mut u8 {
+        unsafe { self.buf.set_len(self.buf.len() + prev) };
+        if self.buf.capacity() - self.buf.len() < need {
+            cold_path();
+            _ = self.drain();
+            self.buf.reserve(need + BUF);
+        }
+        unsafe { self.buf.as_mut_ptr().add(self.buf.len()) }
+    }
+
+    #[cfg(feature = "vvenc")]
+    #[inline]
+    fn commit(&mut self, n: usize) {
+        unsafe { self.buf.set_len(self.buf.len() + n) };
     }
 
     fn flush(&mut self) -> Result<()> {
