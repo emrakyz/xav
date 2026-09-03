@@ -3,6 +3,7 @@ AR := llvm-ar
 
 CXXFLAGS := -std=c++17 -DNDEBUG -O3 -I include -DVSHIP_VERSION_MAJOR=5 -DVSHIP_VERSION_MINOR=1 -DVSHIP_VERSION_MINORMINOR=0
 HOSTFLAGS := -march=native -mtune=native -pipe -ffast-math -fno-math-errno -ffp-contract=fast -fomit-frame-pointer -fno-semantic-interposition -fno-stack-protector -fno-stack-clash-protection -fno-sanitize=all -fno-dwarf2-cfi-asm -fno-pic -fno-pie -fno-plt -fno-stack-check -fno-threadsafe-statics -fno-use-cxa-atexit -fno-unwind-tables -fno-asynchronous-unwind-tables -ftls-model=local-exec -mno-vzeroupper -mharden-sls=none -mno-retpoline -mno-lvi-cfi -mno-lvi-hardening -stdlib=libstdc++ -D_FORTIFY_SOURCE=0
+CUDAFLAGS := -D_GLIBCXX_DO_NOT_USE_BUILTIN_TRAITS -U__cpp_structured_bindings -Xcompiler -Wno-builtin-macro-redefined
 LTOFLAGS := -flto=thin
 LDFLAGS := -fuse-ld=lld -no-pie -Wl,-O3,--lto-O3,--as-needed,--gc-sections,--icf=safe,--relax,--strip-all,--discard-all,--build-id=none,-z,norelro,-z,noseparate-code,-znow
 VULKANFLAGS := -Wno-ignored-attributes -Wno-unused-variable -Wno-nullability-completeness -Wno-unused-private-field
@@ -14,7 +15,7 @@ endif
 
 buildcuda:
 	rm -f libvship.a
-	nvcc -x cu src/VshipLib.cpp -ccbin $(CXX) -allow-unsupported-compiler $(CXXFLAGS) -arch=native --use_fast_math --extra-device-vectorization $(addprefix -Xcompiler ,$(HOSTFLAGS)) -lib -o libvship.a
+	nvcc -x cu src/VshipLib.cpp -ccbin $(CXX) -allow-unsupported-compiler $(CXXFLAGS) $(CUDAFLAGS) -arch=native --use_fast_math --extra-device-vectorization $(addprefix -Xcompiler ,$(HOSTFLAGS)) -lib -o libvship.a
 
 buildvulkan:
 	$(CXX) src/Vulkan/spvFileToCppHeader.cpp $(CXXFLAGS) $(HOSTFLAGS) $(LTOFLAGS) $(LDFLAGS) -o shaderEmbedder
