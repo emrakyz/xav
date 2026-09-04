@@ -202,10 +202,11 @@ macro_rules! calc_metric_impl {
             metric_mode: &str,
             unpacked_buf: &mut [u8],
             mp: &MetricProgs,
+            mi: usize,
         ) -> Vec<f32> {
             let cvvdp_per_frame =
-                pipe.reset_cvvdp && (metric_mode.starts_with('p') || metric_mode == "min");
-            if pipe.reset_cvvdp {
+                pipe.reset_cvvdp[mi] && (metric_mode.starts_with('p') || metric_mode == "min");
+            if pipe.reset_cvvdp[mi] {
                 vship.reset_cvvdp();
             }
 
@@ -274,11 +275,12 @@ pub fn aggregate_scores(
     scores: &mut [f32],
     pipe: &Pipeline,
     metric_mode: &str,
+    mi: usize,
     sorted: bool,
 ) -> f32 {
     let cvvdp_per_frame =
-        pipe.reset_cvvdp && (metric_mode.starts_with('p') || metric_mode == "min");
-    if pipe.reset_cvvdp && !cvvdp_per_frame {
+        pipe.reset_cvvdp[mi] && (metric_mode.starts_with('p') || metric_mode == "min");
+    if pipe.reset_cvvdp[mi] && !cvvdp_per_frame {
         scores.last().copied().unwrap_or(0.0)
     } else if cvvdp_per_frame {
         if metric_mode.starts_with('p') {
@@ -306,7 +308,7 @@ pub fn aggregate_scores(
         scores.iter().sum::<f32>() / scores.len() as f32
     } else if metric_mode == "min" {
         if !sorted {
-            if pipe.sort_descending {
+            if pipe.sort_descending[mi] {
                 scores.sort_unstable_by(|a, b| b.total_cmp(a));
             } else {
                 scores.sort_unstable_by(f32::total_cmp);
@@ -316,7 +318,7 @@ pub fn aggregate_scores(
     } else if let Some(p) = metric_mode.strip_prefix('p') {
         let percentile: f32 = unsafe { p.parse().unwrap_unchecked() };
         if !sorted {
-            if pipe.sort_descending {
+            if pipe.sort_descending[mi] {
                 scores.sort_unstable_by(|a, b| b.total_cmp(a));
             } else {
                 scores.sort_unstable_by(f32::total_cmp);

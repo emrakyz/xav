@@ -167,7 +167,7 @@ pub struct Args {
     #[cfg(feature = "vship")]
     pub metric_worker: usize,
     #[cfg(feature = "vship")]
-    pub tq: Option<String>,
+    pub tq: Option<Vec<(f32, f32)>>,
     #[cfg(feature = "vship")]
     pub metric_mode: String,
     #[cfg(feature = "vship")]
@@ -234,7 +234,7 @@ fn print_help() {
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     #[cfg(feature = "vship")]
     {
-        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Ranges: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
         println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}, pN% or min");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
@@ -322,6 +322,35 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
     Ok(r)
 }
 
+fn parse_tq(s: &str) -> Result<Vec<(f32, f32)>, Xerr> {
+    let r: Vec<(f32, f32)> = s
+        .split(',')
+        .map(|p| {
+            let (a, b) = unsafe { p.split_once('-').or(Some((p, ""))).unwrap_unchecked() };
+            let b = b.trim();
+            let a = a.trim().parse()?;
+            let b = if b.is_empty() {
+                if a < 8.0 {
+                    return Err("butteraugli TQ metric mode requires specifying both values in the ranges".into());
+                } else if is_cvvdp(a) {
+                    10.0
+                } else {
+                    100.0
+                }
+            } else {
+                b.parse()?
+            };
+            if b < a {
+                return Err("the second value in TQ ranges must be higher than the first".into());
+            }
+            Ok((
+                a, b,
+            ))
+        })
+        .collect::<Result<_, Xerr>>()?;
+    Ok(r)
+}
+
 fn apply_defaults(args: &mut Args) {
     if args.out == PathBuf::new() {
         let stem = unsafe { args.inp.file_stem().unwrap_unchecked() }.to_string_lossy();
@@ -370,24 +399,6 @@ fn val_range(s: &str, name: &str) -> Result<(), Xerr> {
     Ok(())
 }
 
-#[cfg(feature = "vship")]
-fn val_ranges(s: &str, name: &str) -> Result<(), Xerr> {
-    let ranges: Vec<&str> = s.split(',').collect();
-    for (i, range) in ranges.iter().enumerate() {
-        let mut parts: Vec<f32> = s.split('-').filter_map(|v| v.parse().ok()).collect();
-        if parts.len() > 2 {
-            return Err(format!("Part {i} in {name} requires a range: <min>-[max]").into());
-        }
-        else if parts.len() == 1 {
-            parts.push(100.0);
-        }
-        if parts[0] >= parts[1] {
-            return Err(format!("Part {i} in {name} min must be less than max: {range}").into());
-        }
-    }
-    Ok(())
-}
-
 macro_rules! arg {
     (str $a:ident, $i:ident, $v:expr) => {
         if let Some(v) = next_arg($a, &mut $i) {
@@ -423,7 +434,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut au, mut ranges) = (None, None);
     #[cfg(feature = "vship")]
     let (mut tq, mut qp_range, mut cvvdp_conf, mut alt_param) = (
-        None::<String>,
+        None::<Vec<(f32, f32)>>,
         None::<String>,
         None::<String>,
         None::<String>,
@@ -455,7 +466,11 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
                 }
             }
             #[cfg(feature = "vship")]
-            "-t" | "--tq" => arg!(opt args, i, tq),
+            "-t" | "--tq" => {
+                if let Some(v) = next_arg(args, &mut i) {
+                    tq = Some(parse_tq(v)?);
+                }
+            }
             #[cfg(feature = "vship")]
             "-m" | "--mode" => arg!(str args, i, metric_mode),
             #[cfg(feature = "vship")]
@@ -539,12 +554,11 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     apply_defaults(&mut result);
 
     #[cfg(feature = "vship")]
-    if let Some(ref tq) = result.tq {
+    if result.tq.is_some() {
         #[cfg(feature = "avm")]
         if result.encoder == Avm {
             return Err("Target quality is not supported by avm".into());
         }
-        val_ranges(tq, "-t/--tq")?;
         val_range(
             unsafe { result.qp_range.as_ref().unwrap_unchecked() },
             "-f/--qp",
@@ -745,10 +759,11 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         }
     }
     #[cfg(feature = "vship")]
-    if let Some(ref t) = args.tq
-        && is_cvvdp(tq_target(t))
-    {
-        args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?);
+    if let Some(ref t) = args.tq {
+        let is_cvvdp = t.iter().any(|tq| is_cvvdp(tq_target(tq)));
+        if is_cvvdp {
+            args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?)
+        }
     }
 
     let thr = available_parallelism() as i32;

@@ -97,14 +97,18 @@ pub struct Pipeline {
     pub unpack_buf_sz: usize,
     pub write_frames: WriteFn,
     #[cfg(feature = "vship")]
-    pub reset_cvvdp: bool,
+    pub reset_cvvdp: Vec<bool>,
     #[cfg(feature = "vship")]
-    pub sort_descending: bool,
+    pub sort_descending: Vec<bool>,
 }
 
 impl Pipeline {
     #[must_use]
-    pub fn new(inf: &VidInf, strat: DecStrat, #[cfg(feature = "vship")] tq: Option<&str>) -> Self {
+    pub fn new(
+        inf: &VidInf,
+        strat: DecStrat,
+        #[cfg(feature = "vship")] tq: Option<&[(f32, f32)]>,
+    ) -> Self {
         let (final_w, final_h) = match strat {
             B10Crop { cc }
             | B10CropRem { cc }
@@ -202,11 +206,17 @@ impl Pipeline {
 
 #[cfg(feature = "vship")]
 #[cold]
-fn resolve_metric(tq: Option<&str>) -> (bool, bool) {
-    tq.map_or((false, false), |tq| {
-        let tq_parts: Vec<f32> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-        let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
-        (tq_target > 8.0 && tq_target <= 10.0, tq_target < 8.0)
+fn resolve_metric(tq: Option<&[(f32, f32)]>) -> (Vec<bool>, Vec<bool>) {
+    tq.map_or((vec![false], vec![false]), |tqs| {
+        let mut are_butter = Vec::with_capacity(tqs.len());
+        let mut are_cvvdp = Vec::with_capacity(tqs.len());
+        for &(min, max) in tqs.iter() {
+            let tq_target = f32::midpoint(min, max);
+            are_cvvdp.push(tq_target > 8.0 && tq_target <= 10.0);
+            are_butter.push(tq_target < 8.0);
+        }
+
+        (are_cvvdp, are_butter)
     })
 }
 

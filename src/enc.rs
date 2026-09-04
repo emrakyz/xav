@@ -1009,9 +1009,15 @@ macro_rules! make_metric_loop {
                     &ctx.metric_mode[tq_idx],
                     &mut unpacked_buf,
                     &mp,
+                    tq_idx,
                 );
-                let mut score =
-                    aggregate_scores(&mut scores, &ctx.pipe, &ctx.metric_mode[tq_idx], false);
+                let mut score = aggregate_scores(
+                    &mut scores,
+                    &ctx.pipe,
+                    &ctx.metric_mode[tq_idx],
+                    tq_idx,
+                    false,
+                );
                 ($retain)(&mut pkg, score);
 
                 let mut last_tq_converged = tq_ctxs[tq_idx].converged(score);
@@ -1032,12 +1038,14 @@ macro_rules! make_metric_loop {
                                 new_metric,
                                 &mut unpacked_buf,
                                 &mp,
+                                tq_idx,
                             );
                         }
                         score = aggregate_scores(
                             &mut scores,
                             &ctx.pipe,
                             new_metric,
+                            converged,
                             old_metric == new_metric,
                         );
                         last_tq_converged = tq_ctxs[converged].converged(score);
@@ -1329,10 +1337,8 @@ fn resolve_metric_loop(
 
 #[cfg(feature = "vship")]
 #[must_use]
-pub fn tq_target(tq: &str) -> f32 {
-    let mut p = tq.split('-').filter_map(|s| s.parse().ok());
-    let a = unsafe { p.next().unwrap_unchecked() };
-    f32::midpoint(a, unsafe { p.next().unwrap_unchecked() })
+pub fn tq_target(tq: &(f32, f32)) -> f32 {
+    f32::midpoint(tq.0, tq.1)
 }
 
 #[cfg(feature = "vship")]
@@ -1346,14 +1352,13 @@ fn parse_tq_ctx(args: &Args) -> Vec<TQCtx> {
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
     let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
 
-    let tqs_str = unsafe { args.tq.as_ref().unwrap_unchecked() };
+    let tq_ranges = unsafe { args.tq.as_ref().unwrap_unchecked() };
     let mut tqs = Vec::new();
-    for tq_str in tqs_str.split(',') {
-        let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
-        let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
+    for &(min, max) in tq_ranges.iter() {
+        let tq_target = f32::midpoint(min, max);
         tqs.push(TQCtx {
             target: tq_target,
-            tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
+            tolerance: (max - min) / 2.0,
             qp_min: qp_parts[0],
             qp_max: qp_parts[1],
             use_butter: tq_target < 8.0,

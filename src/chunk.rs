@@ -237,7 +237,12 @@ pub fn merge_out(
     #[cfg(feature = "vship")]
     let dtag = args.disp.map(|d| d.tag(enc_w, enc_h));
     #[cfg(feature = "vship")]
-    let cvvdp = args.tq.as_deref().zip(dtag.as_deref());
+    // HACK: Only the first TQ is used to construct the TQ MKV tag. Rationale: it is considered
+    // the "main" TQ. (Specifying the metric mode in MKV tags is not supported anyway.)
+    let first_tq_str = args.tq.as_deref().map(|tq| {
+        format!("{}-{}", tq[0].0, tq[0].1)
+    });
+    let cvvdp = first_tq_str.as_deref().zip(dtag.as_deref());
     #[cfg(not(feature = "vship"))]
     let cvvdp: Option<(&str, &str)> = None;
     let want_extras = args.ranges.is_none();
