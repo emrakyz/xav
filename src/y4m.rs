@@ -5,7 +5,6 @@ use alloc::{
 };
 use core::hint::cold_path;
 
-use crate::io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin};
 #[cfg(target_os = "linux")]
 use crate::sys::dup2;
 #[cfg(target_os = "linux")]
@@ -14,6 +13,10 @@ use crate::{
     fs::{read, read_dir, read_link},
     path::Path,
     process::{Command, Stdio, id},
+};
+use crate::{
+    error::fatal,
+    io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin},
 };
 
 #[cold]
@@ -65,6 +68,10 @@ pub fn init_pipe(start_idx: usize) -> Option<(Y4mInfo, PipeReader)> {
     let mut header = String::new();
     _ = reader.read_line(&mut header);
 
+    if !header.starts_with("YUV4MPEG2") {
+        return None;
+    }
+
     let mut width = 0;
     let mut height = 0;
     let mut is_10b = false;
@@ -77,6 +84,10 @@ pub fn init_pipe(start_idx: usize) -> Option<(Y4mInfo, PipeReader)> {
         } else if let Some(c) = part.strip_prefix('C') {
             is_10b = c.contains("p10");
         }
+    }
+
+    if width == 0 || height == 0 {
+        fatal("y4m: header has no frame size");
     }
 
     let frame_sz = width as usize * height as usize * 3 / 2 * if is_10b { 2 } else { 1 };
