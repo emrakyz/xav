@@ -134,7 +134,7 @@ use enc::enc_all;
 #[cfg(feature = "vship")]
 use enc::{is_cvvdp, tq_target};
 use encoder::Encoder;
-use error::{IN_ALT_SCREEN, Xerr, eprint, exit, fatal, reraise, signals};
+use error::{IN_ALT_SCREEN, Xerr, eprint, exit, fatal, reraise, signals, winch_hook};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
 use paramerr::val;
 use scd::fd_scenes;
@@ -701,6 +701,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     IN_ALT_SCREEN.store(true, Relaxed);
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     _ = stdout().flush();
+    winch_hook();
 
     let canon_inp = args.inp.canonicalize()?;
     let hash = hash_inp(&canon_inp);

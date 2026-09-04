@@ -376,8 +376,7 @@ build_vulkan() {
                 -DBUILD_WSI_WAYLAND_SUPPORT=OFF \
                 -DBUILD_WSI_DIRECTFB_SUPPORT=OFF \
                 -DVULKAN_HEADERS_INSTALL_DIR="${install_dir}" \
-                -DCMAKE_ASM_COMPILER="${CC}" \
-                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE >> "${logfile}" 2>&1
+                -DCMAKE_ASM_COMPILER="${CC}" >> "${logfile}" 2>&1
         ninja -C "${BUILD_DIR}/vulkan/Vulkan-Loader/build" >> "${logfile}" 2>&1
         mkdir -p "${install_dir}/lib/pkgconfig"
         cp "${BUILD_DIR}/vulkan/Vulkan-Loader/build/loader/libvulkan.a" "${install_dir}/lib/"
@@ -622,8 +621,7 @@ build_opus() {
                 -DOPUS_BUILD_TESTING=OFF \
                 -DOPUS_BUILD_SHARED_LIBRARY=OFF \
                 -DOPUS_BUILD_PROGRAMS=OFF \
-                -DOPUS_ENABLE_FLOAT_API=ON \
-                -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=TRUE >> "${logfile}" 2>&1
+                -DOPUS_ENABLE_FLOAT_API=ON >> "${logfile}" 2>&1
         ninja -C build >> "${logfile}" 2>&1
         ninja -C build install >> "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
@@ -734,11 +732,11 @@ static EbErrorType svt_shared_setup(SequenceControlSet *scs) {\
         grep -q avx512f /proc/cpuinfo && HAS_512="enable-avx512" || HAS_512="disable-avx512"
         export LLVM_PROFILE_FILE="${pgo_dir}/%p.profraw"
         loginf b "SVT-AV1 PGO generate"
-        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo pgo-dir="${pgo_dir}" pgo-compile-gen >> "${logfile}" 2>&1
+        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo pgo-dir="${pgo_dir}" pgo-compile-gen -- -DCMAKE_C_FLAGS="${CFLAGS}" >> "${logfile}" 2>&1
         loginf b "Running PGO training encode"
         "${BUILD_DIR}/SVT-AV1/Bin/Release/SvtAv1EncApp" -i "${pgo_dir}/i.yuv" -b /dev/null "${pgo_params[@]}" >> "${logfile}" 2>&1
         loginf b "SVT-AV1 PGO use"
-        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo pgo-dir="${pgo_dir}" pgo-compile-use >> "${logfile}" 2>&1 && {
+        ./build.sh asm=nasm static enable-lto "${HAS_512}" native jobs="$(nproc)" release verbose log-quiet enable-pgo pgo-dir="${pgo_dir}" pgo-compile-use -- -DCMAKE_C_FLAGS="${CFLAGS}" >> "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
                 loginf g "SVT-AV1 built successfully"
                 rm -f "${pgo_dir}/i.yuv"
@@ -788,7 +786,6 @@ extern "C" void intra_dip_mode_prune_close(void **context) { *context = nullptr;
                 -DCMAKE_CXX_COMPILER="${CXX}" \
                 -DCMAKE_C_FLAGS="${CFLAGS}" \
                 -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
-                -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld -flto=thin" \
                 -DBUILD_SHARED_LIBS=OFF \
                 -DENABLE_APPS=0 \
                 -DENABLE_EXAMPLES=0 \
@@ -966,10 +963,10 @@ setup_toolchain() {
 	-fno-asynchronous-unwind-tables -fno-plt -fno-stack-check \
 	-fno-threadsafe-statics -mno-vzeroupper -mno-retpoline -mno-lvi-cfi \
 	-mharden-sls=none -mno-lvi-hardening -ftls-model=local-exec \
-	-fno-use-cxa-atexit -D_FORTIFY_SOURCE=0"
+	-fno-use-cxa-atexit -D_FORTIFY_SOURCE=0 -fvisibility=hidden -fvisibility-inlines-hidden -fwhole-program-vtables"
         export CFLAGS="${COMMON_FLAGS}"
         export CXXFLAGS="${COMMON_FLAGS} -stdlib=libstdc++"
-        export LDFLAGS="-fuse-ld=lld"
+        export LDFLAGS="-fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=all -Wl,--strip-all -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all"
 }
 
 ENCODER_NAMES=("AVM" "VVenC")
@@ -1152,8 +1149,8 @@ main() {
 
         cargo build --release ${cargo_features} > "${logfile}" 2>&1 && {
                 rm -f "${logfile}"
-                loginf g "Build complete: ${XAV_DIR}/target/release/xav"
-                ls -la "${XAV_DIR}/target/release/xav" --color=always
+                loginf g "Build complete: ${XAV_DIR}/target/x86_64-unknown-linux-gnu/release/xav"
+                ls -la "${XAV_DIR}/target/x86_64-unknown-linux-gnu/release/xav" --color=always
         } || {
                 echo -e "\n${R}Build failed! Output:${N}\n"
                 cat "${logfile}"

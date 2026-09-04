@@ -134,10 +134,10 @@ unsafe extern "C" fn sigreturn() {
     naked_asm!("mov eax, 15", "syscall")
 }
 
-pub fn sigactions(sigs: &[i32], handler: usize) {
+pub fn sigactions(sigs: &[i32], handler: usize, flags: usize) {
     let act = Sigaction {
         handler,
-        flags: 0xc400_0000,
+        flags,
         restorer: sigreturn as *const () as usize,
         mask: 0,
     };

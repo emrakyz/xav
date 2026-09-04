@@ -28,7 +28,7 @@ codegen-units = 1
 strip = "symbols"
 debug = 0
 panic = "abort"
-lto = "fat"
+lto = "thin"
 
 [lints.rust]
 warnings = "deny"

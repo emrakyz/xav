@@ -10,7 +10,7 @@ use core::{
 use crate::{Xerr, error::fatal, nal_scan::find_start_code, vship::PinPool};
 
 // VVDEC_MAX_NUM_COMPONENT; 1 pool class per plane tagged in handle low bits
-// pinned alloc page alignment leaves free
+// pinned alloc 64B alignment leaves free
 const PLANES: usize = 3;
 const PLANE_TAG: usize = PLANES.next_power_of_two() - 1;
 

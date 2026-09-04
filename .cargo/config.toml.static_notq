@@ -1,21 +1,27 @@
 [env]
-RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=abort -C linker=clang -C lto=fat -C embed-bitcode=yes -C target-feature=+crt-static -C relocation-model=static -Z panic_abort_tests -Z dylib-lto -C default-linker-libraries=yes -C link-args=-static,-no-pie,-fno-pic,-fuse-ld=lld,-Wl,-O3,-Wl,--lto-O3,-Wl,--as-needed,-Wl,--gc-sections,-Wl,--icf=safe,-Wl,-z,norelro,-Wl,--build-id=none,-Wl,--relax,-Wl,-z,noseparate-code,-Wl,-znow,-Wl,--discard-all,-Wl,--strip-all"
+RUSTFLAGS = "-C debuginfo=0 -C target-cpu=native -C opt-level=3 -C codegen-units=1 -C strip=symbols -C panic=immediate-abort -Z unstable-options -C linker=clang -C lto=fat -C embed-bitcode=yes -C target-feature=+crt-static -C relocation-model=static -Z panic_abort_tests -Z location-detail=none -Z fmt-debug=none -C default-linker-libraries=yes -C link-args=-static,-no-pie,-fno-pic,-fuse-ld=lld,-Wl,-O3,-Wl,--lto-O3,-Wl,--lto-whole-program-visibility,-Wl,--as-needed,-Wl,--gc-sections,-Wl,--icf=all,-Wl,-z,norelro,-Wl,--no-rosegment,-Wl,--build-id=none,-Wl,--relax,-Wl,-z,noseparate-code,-Wl,-znow,-Wl,--discard-all,-Wl,--strip-all"
 
 [build]
+target = "x86_64-unknown-linux-gnu"
 rustflags = [
     "-C", "debuginfo=0",
     "-C", "target-cpu=native",
     "-C", "opt-level=3",
     "-C", "codegen-units=1",
     "-C", "strip=symbols",
-    "-C", "panic=abort",
+    "-C", "panic=immediate-abort",
+    "-Z", "unstable-options",
     "-Z", "panic_abort_tests",
-    "-Z", "dylib-lto",
+    "-Z", "location-detail=none",
+    "-Z", "fmt-debug=none",
     "-C", "linker=clang",
     "-C", "lto=fat",
     "-C", "embed-bitcode=yes",
     "-C", "default-linker-libraries=yes",
-    "-C", "link-args=-static -no-pie -fno-pic -fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=safe -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all -Wl,--strip-all",
+    "-C", "link-args=-static -no-pie -fno-pic -fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--lto-whole-program-visibility -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=all -Wl,-z,norelro -Wl,--no-rosegment -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all -Wl,--strip-all",
     "-C", "target-feature=+crt-static",
     "-C", "relocation-model=static",
 ]
+
+[unstable]
+build-std = ["core", "alloc"]

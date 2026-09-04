@@ -320,6 +320,8 @@ struct VshipColorspace {
 }
 
 const GPU: i32 = 0;
+const PIN_ALIGN: usize = 64;
+const PIN_SLACK: usize = PIN_ALIGN + 7;
 
 unsafe extern "C" {
     fn Vship_GPUFullCheck(gpu_id: i32) -> i32;
@@ -354,14 +356,8 @@ impl PinnedBuf {
                 len: 0,
             });
         }
-        let mut ptr: *mut c_void = null_mut();
-        if unsafe { Vship_PinnedMalloc2(&raw mut ptr, len as u64, GPU) } != 0 {
-            let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-            vship_get_err(&mut errbuf);
-            return Err(vship_err_str(&errbuf));
-        }
         Ok(Self {
-            ptr: ptr.cast(),
+            ptr: pin_new(len)?,
             len,
         })
     }
@@ -412,14 +408,33 @@ impl<const N: usize> PinPool<N> {
 
 #[cold]
 #[inline(never)]
-fn pin_alloc(sz: usize) -> *mut u8 {
-    let mut ptr: *mut c_void = null_mut();
-    if unsafe { Vship_PinnedMalloc2(&raw mut ptr, sz as u64, GPU) } != 0 {
-        let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
-        vship_get_err(&mut errbuf);
-        fatal(vship_err_str(&errbuf));
+fn pin_err() -> Xerr {
+    let mut errbuf = MaybeUninit::<[u8; 1024]>::uninit();
+    vship_get_err(&mut errbuf);
+    vship_err_str(&errbuf)
+}
+
+// vulkan gives 16B vma suballocations
+// head puts raw one qword under the aligned base; freeHost needs exact ptr
+fn pin_new(sz: usize) -> Result<*mut u8, Xerr> {
+    let mut ptr = MaybeUninit::<*mut u8>::uninit();
+    if unsafe { Vship_PinnedMalloc2(ptr.as_mut_ptr().cast(), (sz + PIN_SLACK) as u64, GPU) } != 0 {
+        return Err(pin_err());
     }
-    ptr.cast()
+    let raw = unsafe { ptr.assume_init() };
+    let p = raw.map_addr(|a| (a + PIN_SLACK) & !(PIN_ALIGN - 1));
+    unsafe { p.cast::<*mut u8>().sub(1).write(raw) };
+    Ok(p)
+}
+
+#[cold]
+#[inline(never)]
+fn pin_alloc(sz: usize) -> *mut u8 {
+    pin_new(sz).unwrap_or_else(|e| fatal(e))
+}
+
+fn pin_free(p: *mut u8) {
+    unsafe { Vship_PinnedFree2(p.cast::<*mut u8>().sub(1).read().cast(), GPU) };
 }
 
 impl<const N: usize> Drop for PinPool<N> {
@@ -432,7 +447,7 @@ impl<const N: usize> Drop for PinPool<N> {
             ] {
                 while !h.is_null() {
                     let next = unsafe { h.cast::<*mut u8>().read() };
-                    unsafe { Vship_PinnedFree2(h.cast(), GPU) };
+                    pin_free(h);
                     h = next;
                 }
             }
@@ -459,7 +474,7 @@ impl DerefMut for PinnedBuf {
 impl Drop for PinnedBuf {
     fn drop(&mut self) {
         if self.len != 0 {
-            unsafe { Vship_PinnedFree2(self.ptr.cast(), GPU) };
+            pin_free(self.ptr);
         }
     }
 }

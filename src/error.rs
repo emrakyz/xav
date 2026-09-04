@@ -1,6 +1,8 @@
 use alloc::ffi::NulError;
 #[cfg(target_os = "linux")]
 use alloc::string::String;
+#[cfg(target_os = "linux")]
+use core::mem::transmute_copy;
 #[cfg(all(target_os = "linux", not(test)))]
 use core::panic::PanicInfo;
 use core::{
@@ -114,8 +116,27 @@ const TERM_SIGS: [i32; 6] = [2, 4, 8, 11, 15, 22];
 
 #[cfg(target_os = "linux")]
 pub fn signals(handler: usize) {
-    sigactions(&TERM_SIGS, handler);
+    sigactions(&TERM_SIGS, handler, 0xc400_0000);
 }
+
+// \x1b[2K clears one physical row; resize strands wrapped rows
+// and \x1b[s anchor; reset both
+#[cfg(target_os = "linux")]
+extern "C" fn winch(_: i32) {
+    if IN_ALT_SCREEN.load(Relaxed) {
+        const R: &[u8; 10] = b"\x1b[H\x1b[2J\x1b[s";
+        _ = sys::write(1, R.as_ptr(), R.len());
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn winch_hook() {
+    let h: usize = unsafe { transmute_copy(&(winch as extern "C" fn(i32))) };
+    sigactions(&[28], h, 0x1400_0000);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub const fn winch_hook() {}
 
 #[cfg(not(target_os = "linux"))]
 pub fn signals(handler: usize) {
