@@ -23,6 +23,7 @@ pub struct TQState {
     pub probe_szs: Vec<(f32, u64)>,
     pub search_min: f32,
     pub search_max: f32,
+    pub search_init: f32,
     pub round: u8,
     pub target: f32,
     pub last_crf: f32,

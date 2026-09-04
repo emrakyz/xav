@@ -740,6 +740,7 @@ struct TQCtx {
     tolerance: f32,
     qp_min: f32,
     qp_max: f32,
+    qp_init: f32,
     use_butter: bool,
     use_cvvdp: bool,
 }
@@ -1352,6 +1353,8 @@ fn parse_tq_ctx(args: &Args) -> Vec<TQCtx> {
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
     let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
 
+    let qp_init = args.initial_qp.unwrap_or(bisect(qp_parts[0], qp_parts[1]));
+
     let tq_ranges = unsafe { args.tq.as_ref().unwrap_unchecked() };
     let mut tqs = Vec::new();
     for &(min, max) in tq_ranges.iter() {
@@ -1361,6 +1364,7 @@ fn parse_tq_ctx(args: &Args) -> Vec<TQCtx> {
             tolerance: (max - min) / 2.0,
             qp_min: qp_parts[0],
             qp_max: qp_parts[1],
+            qp_init,
             use_butter: tq_target < 8.0,
             use_cvvdp: is_cvvdp(tq_target),
         });
@@ -1387,7 +1391,9 @@ fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphor
 #[inline]
 fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f32 {
     tq.round += 1;
-    let c = if tq.round <= 2 {
+    let c = if tq.round == 1 {
+        tq.search_init
+    } else if tq.round <= 2 {
         bisect(tq.search_min, tq.search_max)
     } else {
         interpolate_crf(&tq.probes, tq.target, tq.round)
@@ -1450,6 +1456,7 @@ macro_rules! make_tq_loop {
                     probe_szs: Vec::new(),
                     search_min: tq_ctx.qp_min,
                     search_max: tq_ctx.qp_max,
+                    search_init: tq_ctx.qp_init,
                     round: 0,
                     target: tq_ctx.target,
                     last_crf: 0.0,
@@ -3417,14 +3424,6 @@ pub mod test_access {
         inf: &VidInf,
         pipe: &Pipeline,
     ) -> usize {
-        let tq = TQCtx {
-            target: 0.0,
-            tolerance: 0.0,
-            qp_min: 0.0,
-            qp_max: 0.0,
-            use_butter: false,
-            use_cvvdp: cvvdp,
-        };
         resolve_metric_loop(if dav1d { SvtAv1 } else { X265 }, use_alt, inf, pipe) as usize
     }
 

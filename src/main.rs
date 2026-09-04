@@ -165,6 +165,8 @@ pub struct Args {
     #[cfg(feature = "vship")]
     pub qp_range: Option<String>,
     #[cfg(feature = "vship")]
+    pub initial_qp: Option<f32>,
+    #[cfg(feature = "vship")]
     pub metric_worker: usize,
     #[cfg(feature = "vship")]
     pub tq: Option<Vec<(f32, f32)>>,
@@ -237,6 +239,7 @@ fn print_help() {
         println!("{C}-t {P}┃ {C}--tq         {W}TQ Ranges: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
         println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}, pN% or min");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
+        println!("{C}-F {P}┃ {C}--qpi        {W}Initial CRF: {G}crf{W}");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
         println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for probes ({R}NOT RECOMMENDED{W}; expert-only)");
@@ -433,9 +436,10 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut encoder, mut params) = (Encoder::default(), String::new());
     let (mut au, mut ranges) = (None, None);
     #[cfg(feature = "vship")]
-    let (mut tq, mut qp_range, mut cvvdp_conf, mut alt_param) = (
+    let (mut tq, mut qp_range, mut initial_qp, mut cvvdp_conf, mut alt_param) = (
         None::<Vec<(f32, f32)>>,
         None::<String>,
+        None::<f32>,
         None::<String>,
         None::<String>,
     );
@@ -475,6 +479,12 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
             "-m" | "--mode" => arg!(str args, i, metric_mode),
             #[cfg(feature = "vship")]
             "-f" | "--qp" => arg!(opt args, i, qp_range),
+            #[cfg(feature = "vship")]
+            "-F" | "--qpi" => {
+                if let Some(v) = next_arg(args, &mut i) {
+                    initial_qp = Some(v.parse()?);
+                }
+            }
             #[cfg(feature = "vship")]
             "-v" | "--vship" => arg!(parse args, i, metric_worker),
             #[cfg(feature = "vship")]
@@ -522,6 +532,8 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         metric_mode,
         #[cfg(feature = "vship")]
         qp_range,
+        #[cfg(feature = "vship")]
+        initial_qp,
         #[cfg(feature = "vship")]
         metric_worker,
         #[cfg(feature = "vship")]
