@@ -1671,9 +1671,15 @@ fn enc_tq(
     unsafe { mpmc_close(Arc::as_ptr(&met)) };
     metric_workers.into_iter().for_each(PHandle::join);
 
-    // TODO: The current implementation of multi-TQ breaks the log.
-    // Find a way of logging the information of all the TQs.
-    write_tq_log(&args.inp, work_dir, inf, sc.tq_ctx[0].metric_name());
+    write_tq_log(
+        &args.inp,
+        work_dir,
+        inf,
+        &sc.tq_ctx
+            .iter()
+            .map(|tq| tq.metric_name())
+            .collect::<Vec<&str>>(),
+    );
     drop(prog);
     join_one(display_handle);
 }
@@ -2090,7 +2096,7 @@ pub fn write_chnk_log(chnk_log: &ProbeLog, work_dir: &Path) {
 fn form_tq_json(
     all_logs: &[TqChunkLine],
     tri: &[(f32, f32, u64)],
-    metric_name: &str,
+    metric_names: &[&str],
     fps: f32,
     round_cnts: &BTreeMap<usize, usize>,
     crf_cnts: &BTreeMap<u64, usize>,
@@ -2110,7 +2116,44 @@ fn form_tq_json(
 
     let mut out = String::new();
     _ = writeln!(out, "{{");
-    _ = writeln!(out, "  \"chunks_{metric_name}\": [");
+    _ = writeln!(out, "  \"metrics\": [");
+    let (mut ssimu2_idx, mut butter_idx, mut cvvdp_idx) = (0, 0, 0);
+    for (i, &name) in metric_names.iter().enumerate() {
+        if name == "ssimulacra2" {
+            if ssimu2_idx == 0 {
+                ssimu2_idx = i + 1;
+            }
+        } else if name == "butteraugli" {
+            if butter_idx == 0 {
+                butter_idx = i + 1;
+            }
+        } else {
+            if cvvdp_idx == 0 {
+                cvvdp_idx = i + 1;
+            }
+        }
+    }
+    let mut metric_occurence: Vec<(usize, &str)> = [
+        (ssimu2_idx, "ssimulacra2"),
+        (butter_idx, "butteraugli"),
+        (cvvdp_idx, "cvvdp"),
+    ]
+    .into_iter()
+    .filter(|e| e.0 > 0)
+    .collect();
+    metric_occurence.sort_by_key(|e| e.0);
+    for (i, name) in metric_occurence.iter().map(|e| e.1).enumerate() {
+        let comma = if i + 1 < metric_occurence.len() {
+            ","
+        } else {
+            ""
+        };
+        _ = writeln!(out, "    \"{name}\"{comma}");
+    }
+    _ = writeln!(out, "  ],");
+    _ = writeln!(out);
+
+    _ = writeln!(out, "  \"chunks\": [");
 
     for (i, l) in all_logs.iter().enumerate() {
         let mut sp: Vec<_> = tri[l.po..l.po + l.pn].iter().collect();
@@ -2182,7 +2225,7 @@ fn form_tq_json(
 }
 
 #[cfg(feature = "vship")]
-fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
+fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_names: &[&str]) {
     let log_path = inp.with_extension("json");
     let chnks_path = work_dir.join("chunks.json");
     let fps = inf.fps_num as f32 / inf.fps_den as f32;
@@ -2204,7 +2247,7 @@ fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
     }
     all_logs.sort_by_key(|l| l.id);
 
-    let out = form_tq_json(&all_logs, &tri, metric_name, fps, &round_cnts, &crf_cnts);
+    let out = form_tq_json(&all_logs, &tri, metric_names, fps, &round_cnts, &crf_cnts);
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .write(true)
