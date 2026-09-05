@@ -1030,7 +1030,7 @@ macro_rules! make_metric_loop {
                         // Compute first score of new TQ:
                         let old_metric = &ctx.metric_mode[tq_idx];
                         let new_metric = &ctx.metric_mode[converged];
-                        if old_metric == new_metric {
+                        if old_metric != new_metric {
                             scores = (calc)(
                                 &pkg,
                                 d,
@@ -1059,11 +1059,20 @@ macro_rules! make_metric_loop {
 
                 if convergence_occurred && converged < tq_ctxs.len() {
                     // Prepare TQState for next TQ; partial reset,
-                    // similar to "startin again" in some aspects:
+                    // sort of like "startin again" with a more limited CRF search range.
                     tq_state.probes = Vec::new();
                     tq_state.probe_szs = Vec::new();
+                    if tq_state.last_crf < tq_state.search_init {
+                        tq_state.search_max = tq_state.last_crf;
+                    } else {
+                        tq_state.search_min = tq_state.last_crf;
+                    }
+                    tq_state.search_init = bisect(tq_state.search_min, tq_state.search_max);
+                    tq_state.round = 0;
                     tq_state.target = tq_ctxs[converged].target;
                     tq_state.best_diff = f32::INFINITY;
+                    // I am not sure if pkg.probe and/or tq_state.best_probe should be
+                    // reset here...
                 }
 
                 let should_complete = (converged == tq_ctxs.len())
@@ -1412,7 +1421,7 @@ struct TqEncParams<'a> {
 }
 
 #[cfg(feature = "vship")]
-type TqLoopFn = fn(&SeqRing, &SeqRing, &EncWorkerCtx, &TqEncParams, &Vec<TQCtx>, usize);
+type TqLoopFn = fn(&SeqRing, &SeqRing, &EncWorkerCtx, &TqEncParams, &TQCtx, usize);
 
 #[cfg(feature = "vship")]
 macro_rules! make_tq_loop {
@@ -1425,7 +1434,7 @@ macro_rules! make_tq_loop {
             tx: &SeqRing,
             ctx: &EncWorkerCtx,
             enc: &TqEncParams,
-            tq_ctxs: &Vec<TQCtx>,
+            init_tq_ctx: &TQCtx,
             worker_id: usize,
         ) {
             let &TqEncParams {
@@ -1448,17 +1457,14 @@ macro_rules! make_tq_loop {
                     break;
                 }
                 let mut $pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
-                let tq_ctx = tq_ctxs[0];
-                // TODO: This ^ results in constructing the TQState with the first TQ's target, not
-                // the "current" TQ's.
                 let tq = $pkg.tq_state.get_or_insert_with(|| TQState {
                     probes: Vec::new(),
                     probe_szs: Vec::new(),
-                    search_min: tq_ctx.qp_min,
-                    search_max: tq_ctx.qp_max,
-                    search_init: tq_ctx.qp_init,
+                    search_min: init_tq_ctx.qp_min,
+                    search_max: init_tq_ctx.qp_max,
+                    search_init: init_tq_ctx.qp_init,
                     round: 0,
-                    target: tq_ctx.target,
+                    target: init_tq_ctx.target,
                     last_crf: 0.0,
                     final_enc: false,
                     best_probe: Vec::new(),
@@ -1805,7 +1811,7 @@ fn spawn_tq_encoders(
                     params: &params,
                     alt_param: alt_param.as_deref(),
                 },
-                &tq_ctx,
+                &tq_ctx[0],
                 worker_id,
             );
         }));
