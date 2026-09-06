@@ -19,6 +19,7 @@ use core::{
     mem::transmute_copy,
     sync::atomic::Ordering::Relaxed,
     time::Duration as Durat,
+    fmt::Write,
 };
 #[cfg(any(not(target_os = "linux"), test))]
 use std::{env::args as env_args, panic::set_hook};
@@ -143,12 +144,14 @@ use vship::{Disp, load_disp};
 #[cfg(target_os = "linux")]
 use y4m::vspipe_resume;
 use y4m::{PipeReader, init_pipe, is_pipe};
+#[cfg(feature = "vship")]
+use fmath::{Sqrtf as _};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
-use util::{B, C, Fnv, G, N, P, R, W, Y};
+use util::{B, C, Fnv, G, N, P, R, W, Y, assume_unreachable};
 
 #[derive(Clone)]
 pub struct Args {
@@ -848,6 +851,8 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
 
     print_sum(&args, &inf, &chnks, crop, enc_time);
+    #[cfg(feature = "vship")]
+    print_scores(&args.inp, chnks.len())?;
     rm_dir_all(&work_dir)?;
     Ok(())
 }
@@ -923,6 +928,106 @@ fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_t
         enc_spd,
         ""
     );
+}
+
+#[cfg(feature = "vship")]
+fn print_scores(inp: &Path, tot: usize) -> Result<(), Xerr> {
+    let scores_file = inp.with_extension("scores.txt");
+    if let Ok(s) = read_to_str(scores_file) {
+        let mut line_iter = s.trim().split('\n');
+
+        let mut ssimu2 = Vec::<f32>::new();
+        let mut butter = Vec::<f32>::new();
+        let mut cvvdp = Vec::<f32>::new();
+        let (mut nssimu2, mut nbutter, mut ncvvdp) = (0, 0, 0);
+        while let Some(line) = line_iter.next() {
+            let header: Vec<&str> = line.split(',').collect();
+            let nfr: u32 = header[2].parse()?;
+            let scores = match header[1] {
+                "ssimulacra2" => {
+                    nssimu2 += 1;
+                    &mut ssimu2
+                },
+                "butteraugli" => {
+                    nbutter += 1;
+                    &mut butter
+                },
+                "cvvdp" => {
+                    ncvvdp += 1;
+                    &mut cvvdp
+                },
+                _ => assume_unreachable(),
+            };
+            for _ in 0..nfr {
+                scores.push(line_iter.next().ok_or("scores file ended prematurely")?.parse()?);
+            }
+        }
+
+        ssimu2.sort_unstable_by(f32::total_cmp);
+        butter.sort_unstable_by(|a, b| b.total_cmp(a));
+        cvvdp.sort_unstable_by(f32::total_cmp);
+
+        macro_rules!  print_metric {
+            ($scores:ident, $name:literal, $cnt:ident) => {
+                if !$scores.is_empty() {
+                    let mut summary = String::new();
+                    let mut title = String::new();
+                    if $cnt == tot {
+                        _ = write!(title, "{}", $name);
+                    } else {
+                        _ = write!(title, "{} ({}/{})", $name, $cnt, tot);
+                    }
+                    let dashes = 33 - title.len();
+                    for _ in 0..dashes / 2 {
+                        _ = write!(summary, "-");
+                    }
+                    _ = write!(summary, "{}", title);
+                    for _ in 0..dashes / 2 + dashes % 2 {
+                        _ = write!(summary, "-");
+                    }
+
+                    let n = $scores.len();
+                    let mean = $scores.iter().sum::<f32>() / n as f32;
+                    let stdev = ($scores.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n as f32).sqrtf();
+                    let median = if n % 2 == 1 {
+                        $scores[n / 2]
+                    } else {
+                        ($scores[n / 2 - 1] + $scores[n / 2]) / 2.0
+                    };
+                    let p5 = if (n * 5) % 100 == 1 {
+                        $scores[n * 5 / 100]
+                    } else {
+                        ($scores[n * 5 / 100 - 1] + $scores[n * 5 / 100]) / 2.0
+                    };
+                    let p95 = if (n * 95) % 100 == 1 {
+                        $scores[n * 95 / 100]
+                    } else {
+                        ($scores[n * 95 / 100 - 1] + $scores[n * 95 / 100]) / 2.0
+                    };
+                    let min = $scores[0];
+                    let max = $scores[n - 1];
+
+                    _ = write!(summary, "
+           Average : {:>12.6}
+Standard Deviation : {:>12.6}
+            Median : {:>12.6}
+    5th percentile : {:>12.6}
+   95th percentile : {:>12.6}
+           Minimum : {:>12.6}
+           Maximum : {:>12.6}\n",
+                        mean, stdev, median, p5, p95, min, max);
+                    println!("{}", summary);
+
+                }
+            }
+        }
+
+        print_metric!(ssimu2, "SSIMULACRA2", nssimu2);
+        print_metric!(butter, "5-Norm", nbutter);
+        print_metric!(cvvdp, "CVVDP", ncvvdp);
+    }
+
+    Ok(())
 }
 
 fn run() -> Result<(), Xerr> {

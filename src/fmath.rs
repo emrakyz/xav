@@ -3,7 +3,7 @@ use core::arch::x86_64::{
     _mm_fmadd_ss, _mm_round_sd, _mm_round_ss, _mm_set_sd, _mm_set_ss,
 };
 #[cfg(feature = "vship")]
-use core::arch::x86_64::{_mm_ceil_sd, _mm_ceil_ss};
+use core::arch::x86_64::{_mm_ceil_sd, _mm_ceil_ss, _mm_sqrt_ss};
 
 const F64_SIGN: u64 = 1 << 63;
 const F32_SIGN: u32 = 1 << 31;
@@ -25,6 +25,11 @@ pub trait Powf {
     fn powf(self, n: Self) -> Self;
 }
 
+#[cfg(feature = "vship")]
+pub trait Sqrtf {
+    fn sqrtf(self) -> Self;
+}
+
 pub trait Log10 {
     fn log10(self) -> Self;
 }
@@ -33,6 +38,14 @@ impl Powf for f32 {
     #[inline]
     fn powf(self, n: Self) -> Self {
         unsafe { xav_powf32(self, n) }
+    }
+}
+
+#[cfg(feature = "vship")]
+impl Sqrtf for f32 {
+    #[inline]
+    fn sqrtf(self) -> Self {
+        unsafe { _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(self))) }
     }
 }
 

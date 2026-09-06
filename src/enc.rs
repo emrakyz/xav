@@ -70,7 +70,7 @@ use crate::{
     sync::{Mutex, OnceLock},
     thread::{JoinHandle, spawn},
     util::assume_unreachable,
-    worker::WorkPkg,
+    worker::{MetricType, TqCoordPkg, WorkPkg, WritePkg},
     y4m::PipeReader,
 };
 #[cfg(feature = "vship")]
@@ -804,8 +804,24 @@ fn complete_chnk(
     ctx: &TQWorkerCtx,
     tq_state: &TQState,
     best: &Probe,
+    scores: &Vec<f32>,
+    is_cvvdp: bool,
+    is_butter: bool,
 ) {
-    unsafe { mpsc_send(ctx.done_tx, 1) };
+    let metric = if is_cvvdp {
+        MetricType::CVVDP
+    } else if is_butter {
+        MetricType::BUTTERAUGLI
+    } else {
+        MetricType::SSIMULACRA2
+    };
+    let pkg = TqCoordPkg::Done(WritePkg {
+        chnk_idx,
+        metric,
+        scores: scores.clone(),
+    });
+
+    unsafe { mpsc_send(ctx.done_tx, Box::into_raw(Box::new(pkg)) as u64) };
 
     let comp = ChunkComp {
         idx: chnk_idx,
@@ -951,7 +967,17 @@ macro_rules! make_metric_loop {
                         best.crf,
                         pkg.probe.len(),
                     );
-                    complete_chnk(pkg.chnk.idx, pkg.frame_cnt, sz, ctx, tq_st, best);
+                    complete_chnk(
+                        pkg.chnk.idx,
+                        pkg.frame_cnt,
+                        sz,
+                        ctx,
+                        tq_st,
+                        best,
+                        &vec![],
+                        tq_ctxs[tq_idx].use_cvvdp,
+                        tq_ctxs[tq_idx].use_butter,
+                    );
                     continue;
                 }
 
@@ -1013,11 +1039,10 @@ macro_rules! make_metric_loop {
                     tq_idx,
                 );
                 let mut score = aggregate_scores(
-                    &mut scores,
+                    &mut scores.clone(),
                     &ctx.pipe,
                     &ctx.metric_mode[tq_idx],
                     tq_idx,
-                    false,
                 );
                 ($retain)(&mut pkg, score);
 
@@ -1042,13 +1067,8 @@ macro_rules! make_metric_loop {
                                 tq_idx,
                             );
                         }
-                        score = aggregate_scores(
-                            &mut scores,
-                            &ctx.pipe,
-                            new_metric,
-                            converged,
-                            old_metric == new_metric,
-                        );
+                        score =
+                            aggregate_scores(&mut scores.clone(), &ctx.pipe, new_metric, converged);
                         last_tq_converged = tq_ctxs[converged].converged(score);
                     } else {
                         break;
@@ -1092,7 +1112,12 @@ macro_rules! make_metric_loop {
                     if ctx.use_alt_param {
                         tq_state.final_enc = true;
                         tq_state.last_crf = best.crf;
-                        unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
+                        unsafe {
+                            mpsc_send(
+                                work_tx,
+                                Box::into_raw(Box::new(TqCoordPkg::Fwd(*pkg))) as u64,
+                            )
+                        };
                     } else {
                         let sz = ($output)(
                             enc_path.set(pkg.chnk.idx),
@@ -1102,10 +1127,25 @@ macro_rules! make_metric_loop {
                             best.crf,
                             pkg.probe.len(),
                         );
-                        complete_chnk(pkg.chnk.idx, pkg.frame_cnt, sz, ctx, tq_state, best);
+                        complete_chnk(
+                            pkg.chnk.idx,
+                            pkg.frame_cnt,
+                            sz,
+                            ctx,
+                            tq_state,
+                            best,
+                            &scores,
+                            tq_ctxs[tq_idx].use_cvvdp,
+                            tq_ctxs[tq_idx].use_butter,
+                        );
                     }
                 } else {
-                    unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
+                    unsafe {
+                        mpsc_send(
+                            work_tx,
+                            Box::into_raw(Box::new(TqCoordPkg::Fwd(*pkg))) as u64,
+                        )
+                    };
                 }
             }
         }
@@ -1382,15 +1422,42 @@ fn parse_tq_ctx(args: &Args) -> Vec<TQCtx> {
 }
 
 #[cfg(feature = "vship")]
-fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphore) {
+fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphore, inp: &Path) {
     let mut completed = 0;
     while completed < tot_chnks {
-        let m = unsafe { mpsc_recv(coord) };
-        if m == 1 {
-            sem_release(permits);
-            completed += 1;
-        } else {
-            unsafe { spmc_send(enc, m) };
+        let m = unsafe { Box::from_raw(mpsc_recv(coord) as *mut TqCoordPkg) };
+        match *m {
+            TqCoordPkg::Done(pkg) => {
+                sem_release(permits);
+                completed += 1;
+
+                // Write scores to disk:
+                if !pkg.scores.is_empty() {
+                    let path = inp.with_extension("scores.txt");
+                    let mut out = String::new();
+                    let metric = match pkg.metric {
+                        MetricType::SSIMULACRA2 => "ssimulacra2",
+                        MetricType::BUTTERAUGLI => "butteraugli",
+                        MetricType::CVVDP => "cvvdp",
+                    };
+                    _ = writeln!(out, "{},{},{}", pkg.chnk_idx, metric, pkg.scores.len());
+                    for score in pkg.scores.iter() {
+                        _ = writeln!(out, "{}", score);
+                    }
+
+                    if let Ok(mut file) = OpenOptions::new()
+                        .create(true)
+                        .truncate(completed == 1)
+                        .append(true)
+                        .open(path)
+                    {
+                        _ = file.write_all(out.as_bytes());
+                    }
+                }
+            }
+            TqCoordPkg::Fwd(pkg) => {
+                unsafe { spmc_send(enc, Box::into_raw(Box::new(pkg)) as u64) };
+            }
         }
     }
     unsafe { spmc_close(enc) };
@@ -1574,6 +1641,7 @@ fn spawn_tq_dec(
     strat: DecStrat,
     permits: &Arc<Semaphore>,
     pipe_reader: Option<PipeReader>,
+    inp: &Path,
 ) -> TQDecodeResult {
     let tot = chnks.iter().filter(|c| !skip.contains(&c.idx)).count();
     let enc = Arc::new(SeqRing::new());
@@ -1587,12 +1655,13 @@ fn spawn_tq_dec(
     let coord_dec = Arc::clone(&coord);
     let permits_dec = Arc::clone(permits);
     let permits_done = Arc::clone(permits);
+    let inp = inp.to_path_buf();
     let handle = spawn(move || {
         let inf2 = inf.clone();
         let dec = pspawn(move || {
             let rp = Arc::as_ptr(&coord_dec);
             let send = move |p: WorkPkg| unsafe {
-                mpsc_send(rp, Box::into_raw(Box::new(p)) as u64);
+                mpsc_send(rp, Box::into_raw(Box::new(TqCoordPkg::Fwd(p))) as u64);
             };
             if let Some(mut r) = pipe_reader {
                 dec_pipe(&chnks, &mut r, &inf2, &send, &skip, strat, &permits_dec);
@@ -1600,7 +1669,7 @@ fn spawn_tq_dec(
                 dec_chnks(&chnks, &path, &inf2, &send, &skip, strat, &permits_dec);
             }
         });
-        tq_coord(&coord2, &enc2, tot, &permits_done);
+        tq_coord(&coord2, &enc2, tot, &permits_done, &inp);
         dec.join();
     });
     TQDecodeResult { enc, coord, handle }
@@ -1626,7 +1695,16 @@ fn enc_tq(
     let zones = build.map_or_else(Vec::new, |_| zone_tmpls(&mut chnks));
     let chnks = &chnks;
 
-    let dec = spawn_tq_dec(chnks, path, inf, skip_indices, strat, &permits, pipe_reader);
+    let dec = spawn_tq_dec(
+        chnks,
+        path,
+        inf,
+        skip_indices,
+        strat,
+        &permits,
+        pipe_reader,
+        &args.inp,
+    );
     let met = Arc::new(SeqRing::new());
 
     let resume_state = Arc::new(Mutex::new(resume_data.clone()));

@@ -18,6 +18,26 @@ pub struct WorkPkg {
 }
 
 #[cfg(feature = "vship")]
+pub enum MetricType {
+    SSIMULACRA2,
+    BUTTERAUGLI,
+    CVVDP,
+}
+
+#[cfg(feature = "vship")]
+pub struct WritePkg {
+    pub chnk_idx: u16,
+    pub metric: MetricType,
+    pub scores: Vec<f32>,
+}
+
+#[cfg(feature = "vship")]
+pub enum TqCoordPkg {
+    Fwd(WorkPkg),
+    Done(WritePkg),
+}
+
+#[cfg(feature = "vship")]
 pub struct TQState {
     pub probes: Vec<Probe>,
     pub probe_szs: Vec<(f32, u64)>,

@@ -271,13 +271,7 @@ macro_rules! calc_metric_impl {
     };
 }
 
-pub fn aggregate_scores(
-    scores: &mut [f32],
-    pipe: &Pipeline,
-    metric_mode: &str,
-    mi: usize,
-    sorted: bool,
-) -> f32 {
+pub fn aggregate_scores(scores: &mut [f32], pipe: &Pipeline, metric_mode: &str, mi: usize) -> f32 {
     let cvvdp_per_frame =
         pipe.reset_cvvdp[mi] && (metric_mode.starts_with('p') || metric_mode == "min");
     if pipe.reset_cvvdp[mi] && !cvvdp_per_frame {
@@ -291,38 +285,30 @@ pub fn aggregate_scores(
                     .unwrap_unchecked()
             };
             let mut q: Vec<f32> = scores.iter().map(|&s| inverse_jod(s)).collect();
-            if !sorted {
-                q.sort_unstable_by(|a, b| b.total_cmp(a));
-            }
+            q.sort_unstable_by(|a, b| b.total_cmp(a));
             let cutoff = ((q.len() as f32 * percentile / 100.0).ceil() as usize).min(q.len());
             jod(q[..cutoff].iter().sum::<f32>() / cutoff as f32)
         } else {
             // "min" metric mode:
             let mut q: Vec<f32> = scores.iter().map(|&s| inverse_jod(s)).collect();
-            if !sorted {
-                q.sort_unstable_by(|a, b| b.total_cmp(a));
-            }
+            q.sort_unstable_by(|a, b| b.total_cmp(a));
             jod(q[0])
         }
     } else if metric_mode == "mean" {
         scores.iter().sum::<f32>() / scores.len() as f32
     } else if metric_mode == "min" {
-        if !sorted {
-            if pipe.sort_descending[mi] {
-                scores.sort_unstable_by(|a, b| b.total_cmp(a));
-            } else {
-                scores.sort_unstable_by(f32::total_cmp);
-            }
+        if pipe.sort_descending[mi] {
+            scores.sort_unstable_by(|a, b| b.total_cmp(a));
+        } else {
+            scores.sort_unstable_by(f32::total_cmp);
         }
         scores[0]
     } else if let Some(p) = metric_mode.strip_prefix('p') {
         let percentile: f32 = unsafe { p.parse().unwrap_unchecked() };
-        if !sorted {
-            if pipe.sort_descending[mi] {
-                scores.sort_unstable_by(|a, b| b.total_cmp(a));
-            } else {
-                scores.sort_unstable_by(f32::total_cmp);
-            }
+        if pipe.sort_descending[mi] {
+            scores.sort_unstable_by(|a, b| b.total_cmp(a));
+        } else {
+            scores.sort_unstable_by(f32::total_cmp);
         }
         let cutoff = ((scores.len() as f32 * percentile / 100.0).ceil() as usize).min(scores.len());
         scores[..cutoff].iter().sum::<f32>() / cutoff as f32
