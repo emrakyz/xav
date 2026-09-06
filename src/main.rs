@@ -19,8 +19,10 @@ use core::{
     mem::transmute_copy,
     sync::atomic::Ordering::Relaxed,
     time::Duration as Durat,
-    fmt::Write,
 };
+#[cfg(feature = "vship")]
+use core::fmt::Write;
+
 #[cfg(any(not(target_os = "linux"), test))]
 use std::{env::args as env_args, panic::set_hook};
 
@@ -151,7 +153,9 @@ use fmath::{Sqrtf as _};
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
-use util::{B, C, Fnv, G, N, P, R, W, Y, assume_unreachable};
+use util::{B, C, Fnv, G, N, P, R, W, Y};
+#[cfg(feature = "vship")]
+use util::assume_unreachable;
 
 #[derive(Clone)]
 pub struct Args {
@@ -328,6 +332,7 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
     Ok(r)
 }
 
+#[cfg(feature = "vship")]
 fn parse_tq(s: &str) -> Result<Vec<(f32, f32)>, Xerr> {
     let r: Vec<(f32, f32)> = s
         .split(',')

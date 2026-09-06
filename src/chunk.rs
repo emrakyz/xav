@@ -242,6 +242,7 @@ pub fn merge_out(
     let first_tq_str = args.tq.as_deref().map(|tq| {
         format!("{}-{}", tq[0].0, tq[0].1)
     });
+    #[cfg(feature = "vship")]
     let cvvdp = first_tq_str.as_deref().zip(dtag.as_deref());
     #[cfg(not(feature = "vship"))]
     let cvvdp: Option<(&str, &str)> = None;

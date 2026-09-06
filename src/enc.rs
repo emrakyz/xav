@@ -70,7 +70,7 @@ use crate::{
     sync::{Mutex, OnceLock},
     thread::{JoinHandle, spawn},
     util::assume_unreachable,
-    worker::{MetricType, TqCoordPkg, WorkPkg, WritePkg},
+    worker::WorkPkg,
     y4m::PipeReader,
 };
 #[cfg(feature = "vship")]
@@ -88,7 +88,7 @@ use crate::{
         interpolate_crf, make_dav1d, make_ff, prep_dav1d, prep_ff,
     },
     vship::{Disp, PinnedBuf, VshipProcessor, init_device},
-    worker::TQState,
+    worker::{MetricType, TQState, TqCoordPkg, WritePkg},
 };
 #[cfg(feature = "vship")]
 use crate::{encoder::set_svt_crf, interp::bisect};
