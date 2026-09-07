@@ -13,7 +13,7 @@ The planned features are the following:
   - Currently not supported for butteraugli, as the higher the score, the lower the quality (the higher the distortion), and that is misleading with this mode.
 - [x] Allow setting a "default" or "initial" CRF value, instead of using the midpoint in the specified range. Useful if you want to stay closer to one of the extremes not to overuse/underuse bitrate, but also want to allow deviating from the usual CRF values significantly in tricky scenes that cannot reach the target quality near them. Example use case: "allow CRFs ranging from 20 to 40, but stay near 35 as much as possible".
   - [ ] Update guide with initial CRF usage documentation.
-- [ ] Make mutli-TQ a compilation feature instead of forcing it to all the users.
+- [x] Make mutli-TQ a compilation feature instead of forcing it to all the users.
 - [x] Add feature to output final metric scores to a specific JSON file and a summary to stdout, saving an additional execution of VSHip, or additional postprocessing of log files.
   - [ ] Maybe make it toggeable with an argument? (Currently always shown when using TQ).
 

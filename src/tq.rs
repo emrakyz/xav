@@ -202,11 +202,15 @@ macro_rules! calc_metric_impl {
             metric_mode: &str,
             unpacked_buf: &mut [u8],
             mp: &MetricProgs,
-            mi: usize,
+            #[cfg(feature = "multi-tq")] mi: usize,
         ) -> Vec<f32> {
+            #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+            let reset_cvvdp = pipe.reset_cvvdp;
+            #[cfg(feature = "multi-tq")]
+            let reset_cvvdp = pipe.reset_cvvdp[mi];
             let cvvdp_per_frame =
-                pipe.reset_cvvdp[mi] && (metric_mode.starts_with('p') || metric_mode == "min");
-            if pipe.reset_cvvdp[mi] {
+                reset_cvvdp && (metric_mode.starts_with('p') || metric_mode == "min");
+            if reset_cvvdp {
                 vship.reset_cvvdp();
             }
 
@@ -271,10 +275,18 @@ macro_rules! calc_metric_impl {
     };
 }
 
-pub fn aggregate_scores(scores: &mut [f32], pipe: &Pipeline, metric_mode: &str, mi: usize) -> f32 {
-    let cvvdp_per_frame =
-        pipe.reset_cvvdp[mi] && (metric_mode.starts_with('p') || metric_mode == "min");
-    if pipe.reset_cvvdp[mi] && !cvvdp_per_frame {
+pub fn aggregate_scores(
+    scores: &mut [f32],
+    pipe: &Pipeline,
+    metric_mode: &str,
+    #[cfg(feature = "multi-tq")] mi: usize,
+) -> f32 {
+    #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+    let (reset_cvvdp, sort_descending) = (pipe.reset_cvvdp, pipe.sort_descending);
+    #[cfg(feature = "multi-tq")]
+    let (reset_cvvdp, sort_descending) = (pipe.reset_cvvdp[mi], pipe.sort_descending[mi]);
+    let cvvdp_per_frame = reset_cvvdp && (metric_mode.starts_with('p') || metric_mode == "min");
+    if reset_cvvdp && !cvvdp_per_frame {
         scores.last().copied().unwrap_or(0.0)
     } else if cvvdp_per_frame {
         if metric_mode.starts_with('p') {
@@ -297,7 +309,7 @@ pub fn aggregate_scores(scores: &mut [f32], pipe: &Pipeline, metric_mode: &str, 
     } else if metric_mode == "mean" {
         scores.iter().sum::<f32>() / scores.len() as f32
     } else if metric_mode == "min" {
-        if pipe.sort_descending[mi] {
+        if sort_descending {
             scores.sort_unstable_by(|a, b| b.total_cmp(a));
         } else {
             scores.sort_unstable_by(f32::total_cmp);
@@ -305,7 +317,7 @@ pub fn aggregate_scores(scores: &mut [f32], pipe: &Pipeline, metric_mode: &str, 
         scores[0]
     } else if let Some(p) = metric_mode.strip_prefix('p') {
         let percentile: f32 = unsafe { p.parse().unwrap_unchecked() };
-        if pipe.sort_descending[mi] {
+        if sort_descending {
             scores.sort_unstable_by(|a, b| b.total_cmp(a));
         } else {
             scores.sort_unstable_by(f32::total_cmp);

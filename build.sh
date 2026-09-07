@@ -1002,6 +1002,7 @@ main() {
         BUILD_MODES=(
                 "With TQ"
                 "Without TQ"
+				"With multi-TQ (experimental)"
         )
 
         [[ "${preset}" ]] && detect_deps || {
@@ -1010,7 +1011,7 @@ main() {
                 while true; do
                         echo -ne "${C}Build Mode: ${N}"
                         read -r mode_choice
-                        [[ "${mode_choice}" =~ ^[1-2]$ ]] && {
+                        [[ "${mode_choice}" =~ ^[1-3]$ ]] && {
                                 loginf g "Mode: ${BUILD_MODES[mode_choice - 1]}"
                                 break
                         }
@@ -1036,6 +1037,9 @@ main() {
                         ;;
                 2)
                         [[ "${HW}" == cuda ]] && feats="cuda" || feats=""
+                        ;;
+				3)
+                        [[ "${HW}" == cuda ]] && feats="vship,multi-tq,cuda" || feats="vship,multi-tq"
                         ;;
         esac
         cargo_features="--no-default-features${feats:+ --features ${feats}}"

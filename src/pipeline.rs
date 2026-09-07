@@ -1,4 +1,4 @@
-#[cfg(all(target_os = "linux", feature = "vship"))]
+#[cfg(all(target_os = "linux", feature = "multi-tq"))]
 use alloc::vec::Vec;
 use core::slice::from_raw_parts;
 
@@ -96,9 +96,13 @@ pub struct Pipeline {
     #[cfg(feature = "vship")]
     pub unpack_buf_sz: usize,
     pub write_frames: WriteFn,
-    #[cfg(feature = "vship")]
+    #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+    pub reset_cvvdp: bool,
+    #[cfg(feature = "multi-tq")]
     pub reset_cvvdp: Vec<bool>,
-    #[cfg(feature = "vship")]
+    #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+    pub sort_descending: bool,
+    #[cfg(feature = "multi-tq")]
     pub sort_descending: Vec<bool>,
 }
 
@@ -107,7 +111,8 @@ impl Pipeline {
     pub fn new(
         inf: &VidInf,
         strat: DecStrat,
-        #[cfg(feature = "vship")] tq: Option<&[(f32, f32)]>,
+        #[cfg(all(feature = "vship", not(feature = "multi-tq")))] tq: Option<(f32, f32)>,
+        #[cfg(feature = "multi-tq")] tq: Option<&[(f32, f32)]>,
     ) -> Self {
         let (final_w, final_h) = match strat {
             B10Crop { cc }
@@ -204,12 +209,20 @@ impl Pipeline {
     }
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+#[cold]
+fn resolve_metric(tq: Option<(f32, f32)>) -> (bool, bool) {
+    tq.map_or((false, false), |(min, max)| {
+        let tq_target = f32::midpoint(min, max);
+        (tq_target > 8.0 && tq_target <= 10.0, tq_target < 8.0)
+    })
+}
+#[cfg(feature = "multi-tq")]
 #[cold]
 fn resolve_metric(tq: Option<&[(f32, f32)]>) -> (Vec<bool>, Vec<bool>) {
     tq.map_or((vec![false], vec![false]), |tqs| {
-        let mut are_butter = Vec::with_capacity(tqs.len());
         let mut are_cvvdp = Vec::with_capacity(tqs.len());
+        let mut are_butter = Vec::with_capacity(tqs.len());
         for &(min, max) in tqs.iter() {
             let tq_target = f32::midpoint(min, max);
             are_cvvdp.push(tq_target > 8.0 && tq_target <= 10.0);

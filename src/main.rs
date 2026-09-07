@@ -175,7 +175,9 @@ pub struct Args {
     pub initial_qp: Option<f32>,
     #[cfg(feature = "vship")]
     pub metric_worker: usize,
-    #[cfg(feature = "vship")]
+    #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+    pub tq: Option<(f32, f32)>,
+    #[cfg(feature = "multi-tq")]
     pub tq: Option<Vec<(f32, f32)>>,
     #[cfg(feature = "vship")]
     pub metric_mode: String,
@@ -243,7 +245,10 @@ fn print_help() {
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     #[cfg(feature = "vship")]
     {
-        println!("{C}-t {P}┃ {C}--tq         {W}TQ Ranges: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
+        #[cfg(not(feature = "multi-tq"))]
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
+        #[cfg(feature = "multi-tq")]
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Ranges: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2 ({R}multiple ranges is EXPERIMENTAL{W})");
         println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}, pN% or min");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
         println!("{C}-F {P}┃ {C}--qpi        {W}Initial CRF: {G}crf{W}");
@@ -332,7 +337,30 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
     Ok(r)
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+fn parse_tq(s: &str) -> Result<(f32, f32), Xerr> {
+    let (a, b) = unsafe { s.split_once('-').or(Some((s, ""))).unwrap_unchecked() };
+    let b = b.trim();
+    let a = a.trim().parse()?;
+    let b = if b.is_empty() {
+        if a < 8.0 {
+            return Err("butteraugli TQ metric mode requires specifying both values in the ranges".into());
+        } else if is_cvvdp(a) {
+            10.0
+        } else {
+            100.0
+        }
+    } else {
+        b.parse()?
+    };
+    if b < a {
+        return Err("the second value in TQ ranges must be higher than the first".into());
+    }
+    Ok((
+        a, b,
+    ))
+}
+#[cfg(feature = "multi-tq")]
 fn parse_tq(s: &str) -> Result<Vec<(f32, f32)>, Xerr> {
     let r: Vec<(f32, f32)> = s
         .split(',')
@@ -445,6 +473,9 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut au, mut ranges) = (None, None);
     #[cfg(feature = "vship")]
     let (mut tq, mut qp_range, mut initial_qp, mut cvvdp_conf, mut alt_param) = (
+        #[cfg(not(feature = "multi-tq"))]
+        None::<(f32, f32)>,
+        #[cfg(feature = "multi-tq")]
         None::<Vec<(f32, f32)>>,
         None::<String>,
         None::<f32>,
@@ -780,6 +811,9 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
     #[cfg(feature = "vship")]
     if let Some(ref t) = args.tq {
+        #[cfg(not(feature = "multi-tq"))]
+        let is_cvvdp = is_cvvdp(tq_target(t));
+        #[cfg(feature = "multi-tq")]
         let is_cvvdp = t.iter().any(|tq| is_cvvdp(tq_target(tq)));
         if is_cvvdp {
             args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?)
