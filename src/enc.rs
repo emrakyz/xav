@@ -1122,7 +1122,7 @@ macro_rules! make_metric_loop {
                 #[cfg(feature = "multi-tq")]
                 if convergence_occurred && converged < tq_ctxs.len() {
                     // Prepare TQState for next TQ; partial reset,
-                    // sort of like "startin again" with a more limited CRF search range.
+                    // sort of like "starting again" with a more limited CRF search range.
                     tq_state.probes = Vec::new();
                     tq_state.probe_szs = Vec::new();
                     if tq_state.last_crf < tq_state.search_init {
