@@ -1077,7 +1077,6 @@ macro_rules! make_metric_loop {
                     #[cfg(feature = "multi-tq")]
                     tq_idx,
                 );
-                ($retain)(&mut pkg, score);
 
                 let mut last_tq_converged = tq_ctx.converged(score);
                 #[cfg(feature = "multi-tq")]
@@ -1086,46 +1085,60 @@ macro_rules! make_metric_loop {
                     // Start new TQ loop:
                     while last_tq_converged {
                         converged += 1;
-                        if converged < tq_ctxs.len() {
-                            // Compute first score of new TQ:
-                            let same_metric = tq_ctx.use_cvvdp == tq_ctxs[converged].use_cvvdp
-                                && tq_ctx.use_butter == tq_ctxs[converged].use_butter;
-                            if !same_metric {
-                                // FIXME This causes dav1d to return DAV1D_ERR_AGAIN on decode.
-                                // The decoding probe has to be preaperd again (if I am not
-                                // mistaken).
-                                let calc = if tq_ctxs[converged].use_cvvdp {
-                                    $calc_cvvdp
-                                } else if tq_ctxs[converged].use_butter {
-                                    $calc_butter
-                                } else {
-                                    $calc_ssimu2
-                                };
-                                scores = (calc)(
-                                    &pkg,
-                                    d,
-                                    ctx.pipe,
-                                    unsafe { vship.as_ref().unwrap_unchecked() },
-                                    &ctx.metric_mode[converged],
-                                    &mut unpacked_buf,
-                                    &mp,
-                                    tq_idx,
-                                );
-                            }
-                            score = aggregate_scores(
-                                &mut scores.clone(),
-                                &ctx.pipe,
-                                &ctx.metric_mode[converged],
-                                converged,
-                            );
-                            last_tq_converged = tq_ctxs[converged].converged(score);
-                        } else {
+                        if converged == tq_ctxs.len() {
                             break;
                         }
+
+                        // Get this chunk's score in relation to new TQ:
+                        let same_metric = tq_ctx.use_cvvdp == tq_ctxs[converged].use_cvvdp
+                            && tq_ctx.use_butter == tq_ctxs[converged].use_butter;
+                        if !same_metric {
+                            // FIXME:
+                            // This is somewhat wasteful, since we ask the decoder to decode again
+                            // this chunk's frames: (calc)() implicitly does decoding.
+                            // (We need to feed/($prep)() the chunk's frames to the decoder again,
+                            // before calling (calc)() for the second time.)
+                            // However, we only want to compute other set of scores for already
+                            // decode frames.
+                            // In theory, the decoded frames could be cached/saved, and then tell
+                            // VSHip to compute the other scores for those frames, without any
+                            // additional decoding.
+                            // Nevertheless, implementing any caching of the frames seems very
+                            // cumbersome with the current logic flow, considering the
+                            // architecture/design of calc_metric_impl and tq.rs.
+
+                            _ = ($prep)(d, &pkg, &mut split_path, pkg.chnk.idx, crf);
+
+                            let calc = if tq_ctxs[converged].use_cvvdp {
+                                $calc_cvvdp
+                            } else if tq_ctxs[converged].use_butter {
+                                $calc_butter
+                            } else {
+                                $calc_ssimu2
+                            };
+                            scores = (calc)(
+                                &pkg,
+                                d,
+                                ctx.pipe,
+                                unsafe { vship.as_ref().unwrap_unchecked() },
+                                &ctx.metric_mode[converged],
+                                &mut unpacked_buf,
+                                &mp,
+                                tq_idx,
+                            );
+                        }
+                        score = aggregate_scores(
+                            &mut scores.clone(),
+                            &ctx.pipe,
+                            &ctx.metric_mode[converged],
+                            converged,
+                        );
+                        last_tq_converged = tq_ctxs[converged].converged(score);
                     }
 
                     convergence_occurred
                 };
+                ($retain)(&mut pkg, score);
 
                 let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
 
