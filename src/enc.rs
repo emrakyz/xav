@@ -1088,15 +1088,25 @@ macro_rules! make_metric_loop {
                         converged += 1;
                         if converged < tq_ctxs.len() {
                             // Compute first score of new TQ:
-                            let old_metric = &ctx.metric_mode[tq_idx];
-                            let new_metric = &ctx.metric_mode[converged];
-                            if old_metric != new_metric {
+                            let same_metric = tq_ctx.use_cvvdp == tq_ctxs[converged].use_cvvdp
+                                && tq_ctx.use_butter == tq_ctxs[converged].use_butter;
+                            if !same_metric {
+                                // FIXME This causes dav1d to return DAV1D_ERR_AGAIN on decode.
+                                // The decoding probe has to be preaperd again (if I am not
+                                // mistaken).
+                                let calc = if tq_ctxs[converged].use_cvvdp {
+                                    $calc_cvvdp
+                                } else if tq_ctxs[converged].use_butter {
+                                    $calc_butter
+                                } else {
+                                    $calc_ssimu2
+                                };
                                 scores = (calc)(
                                     &pkg,
                                     d,
                                     ctx.pipe,
                                     unsafe { vship.as_ref().unwrap_unchecked() },
-                                    new_metric,
+                                    &ctx.metric_mode[converged],
                                     &mut unpacked_buf,
                                     &mp,
                                     tq_idx,
@@ -1105,7 +1115,7 @@ macro_rules! make_metric_loop {
                             score = aggregate_scores(
                                 &mut scores.clone(),
                                 &ctx.pipe,
-                                new_metric,
+                                &ctx.metric_mode[converged],
                                 converged,
                             );
                             last_tq_converged = tq_ctxs[converged].converged(score);
@@ -1124,7 +1134,7 @@ macro_rules! make_metric_loop {
                     // Prepare TQState for next TQ; partial reset,
                     // sort of like "starting again" with a more limited CRF search range.
                     tq_state.probes = Vec::new();
-                    tq_state.probe_szs = Vec::new();
+                    tq_state.probe_szs = vec![(crf, probe_sz)];
                     if tq_state.last_crf < tq_state.search_init {
                         tq_state.search_max = tq_state.last_crf;
                     } else {
@@ -1134,8 +1144,6 @@ macro_rules! make_metric_loop {
                     tq_state.round = 0;
                     tq_state.target = tq_ctxs[converged].target;
                     tq_state.best_diff = f32::INFINITY;
-                    // I am not sure if pkg.probe and/or tq_state.best_probe should be
-                    // reset here...
                 }
 
                 #[cfg(not(feature = "multi-tq"))]
@@ -2254,7 +2262,7 @@ fn spawn_tq_encoders(
         #[cfg(not(feature = "multi-tq"))]
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
         #[cfg(feature = "multi-tq")]
-        let (tq_ctx, encoder) = (sc.tq_ctx.clone()[0], sc.encoder);
+        let (tq_ctx, encoder) = (sc.tq_ctx[0], sc.encoder);
         let tmpls = tmpls.clone();
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
