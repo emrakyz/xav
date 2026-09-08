@@ -552,6 +552,13 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         i += 1;
     }
 
+    #[cfg(feature = "multi-tq")]
+    if let Some(ref tq) = tq {
+        if metric_mode.bytes().filter(|&b| b == b',').count() + 1 != tq.len() {
+            return Err("tq and metric_mode must contain the same amount of elements".into());
+        }
+    }
+
     Ok(Args {
         encoder,
         worker,

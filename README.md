@@ -8,7 +8,6 @@ The planned features are the following:
   - [x] Initial implementation (proof of concept).
   - [x] Debug + optimize multi-TQ computation / make production ready.
   - [x] Add support for logging multi-TQ encodes. (Sort of: properly integrating the multi-TQ system with the probes system requires many careful considerations, and I consider I do not have yet the necessary knowledge to do it myself).
-  - [ ] Ensure `-t` and `-m` have the same number of elements specified.
   - [ ] Update guide with multi-TQ usage documentation.
 - [x] Allow not specifying the higher end of TQ ranges, which will be interpreted as the maximum quality score achievable.
   - Currently not supported for butteraugli, as the higher the score, the lower the quality (the higher the distortion), and that is misleading with this mode.
