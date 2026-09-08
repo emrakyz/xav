@@ -40,6 +40,8 @@ use crate::tq::{
     calc_cvvdp_10b_vvdec, calc_cvvdp_rem_vvdec, calc_ssimu2_8b_vvdec, calc_ssimu2_10b_vvdec,
     calc_ssimu2_rem_vvdec, make_vvdec, prep_vvdec,
 };
+#[cfg(feature = "multi-tq")]
+use crate::tq::{comp_butter, comp_cvvdp, comp_ssimu2};
 use crate::{
     Args,
     chan::{Semaphore, SeqRing, sem_release, spmc_close, spmc_recv, spmc_send},
@@ -810,7 +812,7 @@ fn complete_chnk(
     ctx: &TQWorkerCtx,
     tq_state: &TQState,
     best: &Probe,
-    scores: &Vec<f32>,
+    scores: Vec<f32>,
     is_cvvdp: bool,
     is_butter: bool,
 ) {
@@ -824,7 +826,7 @@ fn complete_chnk(
     let pkg = TqCoordPkg::Done(WritePkg {
         chnk_idx,
         metric,
-        scores: scores.clone(),
+        scores,
     });
 
     unsafe { mpsc_send(ctx.done_tx, Box::into_raw(Box::new(pkg)) as u64) };
@@ -955,21 +957,35 @@ macro_rules! make_metric_loop {
             let mut enc_path = OutPath::new(ctx.work_dir, ctx.ext);
             let mut split_path = ($mk_split)(ctx.work_dir, ctx.ext);
 
+            #[cfg(feature = "multi-tq")]
+            let copy_dec_frames = {
+                let mut metric_types = ctx.tq_ctx.iter().map(|tq| {
+                    if tq.use_butter {
+                        MetricType::BUTTERAUGLI
+                    } else if tq.use_cvvdp {
+                        MetricType::CVVDP
+                    } else {
+                        MetricType::SSIMULACRA2
+                    }
+                });
+                let first = unsafe { metric_types.next().unwrap_unchecked() };
+                metric_types.any(|m| m != first)
+            };
+
+            #[cfg(not(feature = "multi-tq"))]
+            let (tq_ctx, metric_mode) = (&ctx.tq_ctx, &ctx.metric_mode);
+            #[cfg(feature = "multi-tq")]
+            let tq_idx = converged;
+            #[cfg(feature = "multi-tq")]
+            let (tq_ctxs, mut tq_ctx, mut metric_mode) =
+                (&ctx.tq_ctx, &ctx.tq_ctx[tq_idx], &ctx.metric_mode[tq_idx]);
+
             loop {
                 let m = unsafe { mpmc_recv(rx) };
                 if m == 0 {
                     cold_path();
                     break;
                 }
-
-                // Select current TQ targetted:
-                #[cfg(not(feature = "multi-tq"))]
-                let (tq_ctx, metric_mode) = (&ctx.tq_ctx, &ctx.metric_mode);
-                #[cfg(feature = "multi-tq")]
-                let tq_idx = converged;
-                #[cfg(feature = "multi-tq")]
-                let (tq_ctxs, tq_ctx, metric_mode) =
-                    (&ctx.tq_ctx, &ctx.tq_ctx[tq_idx], &ctx.metric_mode[tq_idx]);
 
                 let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
                 let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
@@ -990,7 +1006,7 @@ macro_rules! make_metric_loop {
                         ctx,
                         tq_st,
                         best,
-                        &vec![],
+                        vec![],
                         tq_ctx.use_cvvdp,
                         tq_ctx.use_butter,
                     );
@@ -1059,7 +1075,7 @@ macro_rules! make_metric_loop {
                 } else {
                     $calc_ssimu2
                 };
-                let mut scores = (calc)(
+                let mut calc_res = (calc)(
                     &pkg,
                     d,
                     ctx.pipe,
@@ -1069,7 +1085,13 @@ macro_rules! make_metric_loop {
                     &mp,
                     #[cfg(feature = "multi-tq")]
                     tq_idx,
+                    #[cfg(feature = "multi-tq")]
+                    copy_dec_frames,
                 );
+                #[cfg(not(feature = "multi-tq"))]
+                let scores = calc_res;
+                #[cfg(feature = "multi-tq")]
+                let (mut scores, copied_framedata) = calc_res;
                 let mut score = aggregate_scores(
                     &mut scores.clone(),
                     &ctx.pipe,
@@ -1093,39 +1115,66 @@ macro_rules! make_metric_loop {
                         let same_metric = tq_ctx.use_cvvdp == tq_ctxs[converged].use_cvvdp
                             && tq_ctx.use_butter == tq_ctxs[converged].use_butter;
                         if !same_metric {
-                            // FIXME:
-                            // This is somewhat wasteful, since we ask the decoder to decode again
-                            // this chunk's frames: (calc)() implicitly does decoding.
-                            // (We need to feed/($prep)() the chunk's frames to the decoder again,
-                            // before calling (calc)() for the second time.)
-                            // However, we only want to compute other set of scores for already
-                            // decode frames.
-                            // In theory, the decoded frames could be cached/saved, and then tell
-                            // VSHip to compute the other scores for those frames, without any
-                            // additional decoding.
-                            // Nevertheless, implementing any caching of the frames seems very
-                            // cumbersome with the current logic flow, considering the
-                            // architecture/design of calc_metric_impl and tq.rs.
-
-                            _ = ($prep)(d, &pkg, &mut split_path, pkg.chnk.idx, crf);
-
-                            let calc = if tq_ctxs[converged].use_cvvdp {
-                                $calc_cvvdp
+                            let compute = if tq_ctxs[converged].use_cvvdp {
+                                comp_cvvdp
                             } else if tq_ctxs[converged].use_butter {
-                                $calc_butter
+                                comp_butter
                             } else {
-                                $calc_ssimu2
+                                comp_ssimu2
                             };
-                            scores = (calc)(
-                                &pkg,
-                                d,
-                                ctx.pipe,
-                                unsafe { vship.as_ref().unwrap_unchecked() },
-                                &ctx.metric_mode[converged],
-                                &mut unpacked_buf,
-                                &mp,
-                                tq_idx,
-                            );
+
+                            if tq_ctxs[converged].use_butter {
+                                let v = VshipProcessor::new(
+                                    pkg.width, pkg.height, ctx.inf, false, true, disp,
+                                )
+                                .unwrap_or_else(|e| fatal(e));
+                                vship = Some(v);
+                            } else if tq_ctxs[converged].use_cvvdp {
+                                let v = VshipProcessor::new(
+                                    pkg.width, pkg.height, ctx.inf, true, false, disp,
+                                )
+                                .unwrap_or_else(|e| fatal(e));
+                                vship = Some(v);
+                            } else {
+                                let v = VshipProcessor::new(
+                                    pkg.width, pkg.height, ctx.inf, false, false, disp,
+                                )
+                                .unwrap_or_else(|e| fatal(e));
+                                vship = Some(v);
+                            }
+
+                            let vsh = unsafe { vship.as_ref().unwrap_unchecked() };
+
+                            let reset_cvvdp = ctx.pipe.reset_cvvdp[converged];
+                            let new_metric_mode = &ctx.metric_mode[converged];
+                            let cvvdp_per_frame = reset_cvvdp
+                                && (new_metric_mode.starts_with('p') || new_metric_mode == "min");
+                            if reset_cvvdp {
+                                vsh.reset_cvvdp();
+                            }
+
+                            if cvvdp_per_frame {
+                                for frame_idx in 0..pkg.frame_cnt {
+                                    scores[frame_idx] = ((compute)(
+                                        vsh,
+                                        copied_framedata[frame_idx].inp_planes_ptr,
+                                        copied_framedata[frame_idx].out_planes_ptr,
+                                        copied_framedata[frame_idx].inp_strides,
+                                        copied_framedata[frame_idx].out_strides,
+                                    ));
+                                    vsh.reset_cvvdp_score();
+                                }
+                            } else {
+                                for frame_idx in 0..pkg.frame_cnt {
+                                    scores[frame_idx] = ((compute)(
+                                        vsh,
+                                        copied_framedata[frame_idx].inp_planes_ptr,
+                                        copied_framedata[frame_idx].out_planes_ptr,
+                                        copied_framedata[frame_idx].inp_strides,
+                                        copied_framedata[frame_idx].out_strides,
+                                    ));
+                                }
+                            }
                         }
                         score = aggregate_scores(
                             &mut scores.clone(),
@@ -1134,6 +1183,8 @@ macro_rules! make_metric_loop {
                             converged,
                         );
                         last_tq_converged = tq_ctxs[converged].converged(score);
+                        tq_ctx = &tq_ctxs[converged];
+                        metric_mode = &ctx.metric_mode[converged];
                     }
 
                     convergence_occurred
@@ -1150,7 +1201,7 @@ macro_rules! make_metric_loop {
                     tq_state.probe_szs = vec![(crf, probe_sz)];
                     if tq_state.last_crf < tq_state.search_init {
                         tq_state.search_max = tq_state.last_crf;
-                    } else {
+                    } else if tq_state.last_crf > tq_state.search_init {
                         tq_state.search_min = tq_state.last_crf;
                     }
                     tq_state.search_init = bisect(tq_state.search_min, tq_state.search_max);
@@ -1205,7 +1256,7 @@ macro_rules! make_metric_loop {
                             ctx,
                             tq_state,
                             best,
-                            &scores,
+                            scores,
                             tq_ctx.use_cvvdp,
                             tq_ctx.use_butter,
                         );
@@ -1742,10 +1793,10 @@ fn resolve_metric_loop(
         (_, false) => ff_loop,
         (_, true) => ff_alt_loop,
     };
-    #[cfg(not(feature = "multi-tq"))]
-    return loop_fn(tq, inf, pipe);
     #[cfg(feature = "multi-tq")]
-    loop_fn(inf, pipe)
+    return loop_fn(inf, pipe);
+    #[cfg(not(feature = "multi-tq"))]
+    loop_fn(tq, inf, pipe)
 }
 
 #[cfg(feature = "vship")]

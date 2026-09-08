@@ -18,6 +18,7 @@ pub struct WorkPkg {
 }
 
 #[cfg(feature = "vship")]
+#[derive(PartialEq, Eq)]
 pub enum MetricType {
     SSIMULACRA2,
     BUTTERAUGLI,
