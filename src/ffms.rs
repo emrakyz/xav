@@ -3,6 +3,7 @@ use alloc::{borrow::Cow, ffi::CString};
 use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use core::{
     ffi::{CStr, c_char, c_int, c_uint, c_void},
+    mem::offset_of,
     ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut},
     slice::{from_raw_parts, from_raw_parts_mut},
 };
@@ -502,6 +503,22 @@ pub struct VidDecoder {
     start_pts: i64,
 }
 
+const _: () = {
+    assert!(offset_of!(VidDecoder, fmt_ctx) == 0, "asm D_FMT");
+    assert!(offset_of!(VidDecoder, codec_ctx) == 8, "asm D_CODEC");
+    assert!(offset_of!(VidDecoder, pkt) == 16, "asm D_PKT");
+    assert!(offset_of!(VidDecoder, frame) == 24, "asm D_FRAME");
+    assert!(offset_of!(VidDecoder, sw_frame) == 32, "asm D_SW");
+    assert!(offset_of!(VidDecoder, stream_idx) == 48, "asm D_SIDX");
+    assert!(offset_of!(VidDecoder, next_frame) == 56, "asm D_NEXT");
+    assert!(offset_of!(VidDecoder, eof) == 64, "asm D_EOF");
+    assert!(offset_of!(VidDecoder, ts_mul) == 72, "asm D_TSMUL");
+    assert!(offset_of!(VidDecoder, ts_div) == 80, "asm D_TSDIV");
+    assert!(offset_of!(VidDecoder, start_pts) == 88, "asm D_SPTS");
+    assert!(offset_of!(VidFrame, data) == 0, "asm F_DATA");
+    assert!(offset_of!(VidFrame, linesize) == 64, "asm F_LINESZ");
+};
+
 unsafe impl Send for VidDecoder {}
 
 pub unsafe fn probe_streams(fmt_ctx: *mut AVFormatContext, keep_type: c_int, probesz: i64) {
@@ -716,10 +733,6 @@ impl VidDecoder {
         while self.next_frame < frame_idx && !self.eof {
             self.dec_next();
         }
-    }
-
-    pub const fn frame_ref(&self) -> *const VidFrame {
-        self.frame
     }
 }
 

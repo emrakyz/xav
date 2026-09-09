@@ -129,7 +129,7 @@ use chunk::{
     Chunk, Scene, chnkify, get_resume, init_elapsed, load_scenes, merge_out, trans_scenes,
     val_scenes,
 };
-use crop::{CropConf, detect_crop};
+use crop::detect_crop;
 use enc::enc_all;
 #[cfg(feature = "vship")]
 use enc::{is_cvvdp, tq_target};
@@ -734,11 +734,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
 
     let thr = available_parallelism() as i32;
-    let conf = CropConf {
-        sample_cnt: 13,
-        min_black_pix: 2,
-    };
-    let crop = match detect_crop(&args.inp, &inf, &conf, thr, 1) {
+    let crop = match detect_crop(&args.inp, &inf, thr, 1) {
         Ok(detected) if detected.has_crop() => detected.to_tuple(),
         _ => (0, 0),
     };

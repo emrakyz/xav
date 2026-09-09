@@ -292,6 +292,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
             b.file("asm/dec.asm");
             b.file("asm/pb.asm");
             b.file("asm/pbf.asm");
+            b.file("asm/crop_detect.asm");
             for k in [
                 "pack",
                 "unpack",
@@ -316,14 +317,8 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
             ] {
                 b.file(format!("asm/{set}/rem/{k}_rem.asm"));
             }
-            for k in [
-                "crop_row_stats_u8",
-                "crop_row_stats_u16",
-                "crop_col_stats_u8",
-                "crop_col_stats_u16",
-                "calc_samp_frames",
-            ] {
-                b.file(format!("asm/{set}/{k}.asm"));
+            for k in ["frame_u8", "frame_u16", "samp"] {
+                b.file(format!("asm/{set}/crop/{k}.asm"));
             }
             for k in ["cost", "split", "deque", "refine", "step", "run", "feed"] {
                 b.file(format!("asm/{set}/scd/{k}.asm"));

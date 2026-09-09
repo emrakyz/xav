@@ -50,29 +50,29 @@
 {P}▌ {C}1.1  {Y}Critical
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {G} {W}Accepts {B}yuv420p {W}({B}8bit{W}) or {B}yuv420p10le {W}({B}10bit{W}) vids
+  {G} {W}Only {B}yuv420p {W}({B}8bit{W}) or {B}yuv420p10le {W}({B}10bit{W}) input
   {R} {W}No RGB/YUV444/YUV422 or {B}12bit {W}input (pre-convert if needed)
-  {C} {W}Only encodes {B}yuv420p10le {W}& with full high bit depth mode decisions
-  {G} {W}Converts {B}8bit {W}videos to {B}10bit
+  {C} {W}Only encodes {B}yuv420p10le {W}& full high bit depth mode decisions
+  {G} {W}Converts {B}8bit {W} to {B}10bit
 
 
 {P}▌ {C}1.2  {Y}Why?
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {B}10bit {W}provides more levels per channel which greatly reduces banding
-  {P} {W}Modern codecs compress {B}10bit {W}better
-  {P} {W}Internal calcs have more precision; fine details survive better
-  {P} {W}Less artifacts due to increased precision
-  {P} {B}yuv420p10le {W}({B}10bit{W}) is supported by almost all hardware decoders
-  {P} {W}Motion estimation, transforms, & rate control work with higher precision
-  {P} {W}Better to micro-optimize, internally defaulting to {B}10bit
-  {P} {B}8b {W}accumulates rounding error across every forward/inverse transform round trip
-  {P} {W}Banding lives in dark, slow gradients (skies, fades, shadows), where lower range runs out
-  {P} {W}HDR needs {B}10bit {W}anyway
-  {P} {W}No benefit in encoding in low bit depth mode decisions or {B}yuv420p
-  {P} {W}Encoder math runs {B}16bit {W}for high bit depth; feeding it {B}10bit {W}keeps whole
-    {W}pipeline in its precise path instead of legacy {B}8bit {W}one
-  {P} {W}If you have to use {B}8b, {R}do not use XAV
+  {P} {B}10bit {W}has more levels per channel; reduces banding
+  {P} {W}Codecs compress {B}10bit {W}better
+  {P} {W}Internal calcs have more accuracy; details survive more
+  {P} {W}Less artifacts <-> increased precision
+  {P} {B}yuv420p10le {W}({B}10bit{W}): supported by all hardware decoders
+  {P} {W}Motion estimate, transform & rate control work better
+  {P} {W}Better to micro-optimized; internales fixed to {B}10bit
+  {P} {B}8b {W}accumulates rounding error with transform round trips
+  {P} {W}Banding is unavoidable on gradients (sky, fade, shadow), with 8b
+  {P} {W}HDR always needs {B}10bit
+  {P} {W}No benefit in encoding in LBD mode decisions or {B}8b
+  {P} {W}Math runs {B}16bit {W}for high bit depth; feeding it {B}10bit {W}keeps whole
+    {W}pipeline in precise path instead of legacy
+  {P} {W}You have to use {B}8b: {R}do not use XAV
 
 
 {P}▌ {C}1.3  {Y}Misconceptions
@@ -85,9 +85,9 @@
   {C}"10bit encodes slower"
     {P}󰘍 {R}NO{W}, speed can always be determined by encoder config
   {C}"10bit decodes slower"
-    {P}󰘍 {R}NO{W}, tiles, higher presets, fast-decode mode & some settings improve decode speed greatly
+    {P}󰘍 {R}NO{W}, tiles, presets, fast-decode, etc can speed-up decode
   {C}"Hardware AV1 decoder doesn't support 10bit"
-    {P}󰘍 {R}NO{W}, {B}10bit {W}is main profile; mandated by spec
+    {P}󰘍 {R}NO{W}, {B}10bit {W}is main profile; mandated
   {C}"Display is 8bit; it's pointless"
     {P}󰘍 {R}NO{W}, bitstream always wins
   {C}"8->10 is fake"
@@ -98,7 +98,7 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Analyzes input/output container, frame/pixel & bitstream info
-  {P} {W}Manual flags are how encodes {R}silently go wrong{W}: Reads absolute truth instead
+  {P} {W}Manual flags can induce {R}silent mistakes{W}: Reads absolute truth
   {P} {W}User doesn't have to know anything
   {P} {W}Info is used to decode, manage RAM, pixel process, encode & mux:
       {C} {W}Sample aspect ratio ({B}1:1{W})
@@ -126,67 +126,65 @@
   {P} {C}Input/Output Bit-Depth: {B}YUV420P10LE
   {P} {C}I/O color format: {B}YUV 4:2:0
   {P} {C}Full high-bit-depth mode decisions: {G}Forced ON
-  {P} {C}Framerate: {B}CFR {W}(Constant Frame Rate); no support for {B}VFR {W}(Variable Frame Rate)
-  {P} {C}Rate Control: {B}CRF {W}(Constant Rate Factor); no support for bitrate modes (worse for XAV)
-  {P} {C}Passes: {W}Single pass: 2-pass is used for non-CRF modes
+  {P} {C}Framerate: {B}CFR {W}(Constant Frame Rate)
+  {P} {C}Rate Control: {B}CRF {W}(Constant Rate Factor); {B}bitrate{W} modes worse for XAV
+  {P} {C}Passes: {W}1-pass: 2-pass is used for {B}bitrate{W} modes
   {P} {C}Open/Closed-GOP: {W}Every scene/chunk self-contained; they don't affect each other
   {P} {C}Keyint/intra-refresh: {W}Infinite = scene detect inserts keyframes
     {W}All chunks/scenes have single keyframe (I-frame); rest inter-frames
   {P} {C}Prediction: {W}Random Access as XAV = offline + high quality + high-efficiency
-    {W}Other modes used in Low Delay & RTC which XAV doesn't support
+    {W}Other modes used in Low Delay & RTC; XAV doesn't support
   {P} {W}Adaptive Quantization with TPL Beta Adjustments for AV1 (best aq-mode)
   {P} {C}SVT-AV1 threading: {G}ON {W}(determined by {C}--lp {B}[1-5] {W}param)
   {P} {C}Other enc threading: {R}OFF {W}(reduces efficiency); use Workers instead ({G}OVERRIDABLE)
-  {P} {W}Harmful concepts as overlay frames are disabled
+  {P} {W}Harmful concepts (overlays) disabled
   {P} {C}Keyframes: {B}IDR {W}(Instantaneous Decoder Refresh)
-      {C} {W}Shouldn't be confused with {B}CRA {W}(Clean Random Access) or Intra-Only Frame
+      {C} {W}Don't confuse with {B}CRA {W}(Clean Random Access) or Intra-Only Frame
       {C} {B}IDR {W}is stricter I-frame
-      {C} {W}Lets decoder (for XAV, also encoder) start cleanly from IDR frame
-      {C} {W}Invalidates references to prev frames (every chunk self-contained)
-      {C} {W}Prevents error propagation from prev corrupted frames
-      {C} {W}Prevents referencing errors from prev frames
-      {C} {B}IDR {W}I-frame is encoded as a still-image independently; all other frames in same
+      {C} {W}Decoder (for XAV, also encoder) starts cleanly on IDR frame
+      {C} {W}Invalidates references to prev frames (self-contained chunks)
+      {C} {W}Prevents error propagation / reference errors from prev frames
+      {C} {B}IDR {W}is encoded as still-image independently; all other frames in same
       {W}scene/chunk/GOP will use it as reference for encode & decode side
-      {C} {B}IDR {W}frames provide perfect & fast seek
-      {C} {W}If vid gets corrupted; will glitch. Since standard frames rely on prev frames,
-      {W} glitch will carry forward (error propagation)
-        {B}IDR {W}frames stop this. Decoder hits {B}IDR{W}; image instantly refreshed
+      {C} {B}IDR {W}provides perfect, fast seek
+      {C} {W}If vid gets corrupted; glitches. Std frames rely on prev frames, glitch will carry forward
+        {B}IDR {W}stops this. Decoder hits {B}IDR{W}; image is refreshed
   {P} {C}Self contained chunks:
       {C} {B}IDR {W}forbids looking back, XAV can safely slice vid into chunks at scene boundaries
-        {W}Each chunk is {G}100% independent{W}. Allows XAV to encode chunks in parallel using "Workers"
-	{W}without worry about chunk B needing data {W}from A & target quality to optimize per-scene
+        {W}Each chunk is {G}100% independent{W}: XAV encodes chunks in parallel using "Workers"
+	{W}no worry for chunk B needing data {W}from A & target quality to optimize per-scene
 
 
 {P}▌ {C}1.6  {Y}Init & Resume
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {W}XAV will hash input & create a tmp dir with a dot & hash
-    {W}E.g: {B}.53a4f94 {W}will be placed next to input vid
-  {P} {W}Tmp dir is linked with input file's full path so XAV can associate
-  {P} {W}Scene file (if {C}-s {W}param is not used) name is derived from input name:
-    {B}input.mkv {P} {B}input_scd.txt {W}; located next to input vid
+  {P} {W}XAV will hash input & create tmp dir with dot & hash
+    {W}E.g: {B}.53a4f94 {W}placed next to input vid
+  {P} {W}Tmp dir linked with full input path so XAV can associate
+  {P} {W}Scene file (if {C}-s {W}param not used) name derived from input:
+    {B}input.mkv {P} {B}input_scd.txt {W}; next to input vid
   {P} {W}Everything located next to input vid; no matter where you call XAV
     {W}you can resume if left unfinished, using tmp files
     {W}even if you forget which file needed to resume
   {P} {W}Inside tmp dir:
-      {C} {B}encode {W}dir: Has per-chunk encoded bitstreams ({B}.obu{W}/{B}.264{W}/{B}.265{W}/{B}.266 {W}files)
+      {C} {B}encode {W}dir: Per-chunk encoded bitstreams ({B}.obu{W}/{B}.264{W}/{B}.265{W}/{B}.266 {W}files)
       {C} {B}cmd.txt{W}: Saves your cmd inside & if you need to stop/continue on same vid
         {W}no need to remember prev cmd. Will always use same cmd
-        {W}until either encode is finished successfully or tmp dir is deleted
-      {C} {B}done.txt{W}: Has amounts of chunks finished completely, total chunks, per-chunk bitrate
-      {C} {B}chunks.json {W}(for TQ mode): Has chunk IDs, bitrate of TQ trials; CRFs associated with trials,
-        {W}final selected CRF, final size (everything related to TQ encoding)
+        {W}until either encode finished successfully or tmp dir deleted
+      {C} {B}done.txt{W}: Amounts of finished chunks, total chunks, per-chunk bitrate
+      {C} {B}chunks.json {W}(for TQ mode): Chunk IDs, TQ trial bitrates; CRFs for trials,
+        {W}final CRF & size (everything about TQ)
       {C} {W}Encoded opus audio named with lang: {B}eng.opus
   {P} {W}With TQ; new file next to video is created: {B}vidname.json
-    {W}Will have statistics related to TQ run
-    {W}Per-scene tested Q levels, bitrate/size, final CRF each scene & extras
+    {W}Has stats for TQ run
+    {W}Per-scene Q levels, bitrate/size, final CRF each scene & extras
   {P} {C}Resume = skip-whats-done: {W}On restart xav reads tmp dir, treats finished chunks as immutable
-    {W}only encodes missing ones
-  {P} {W}Partial/in-flight chunks aren't trusted: Chunks interrupted mid-write is detected & re-encoded
-    {W}from scratch (only fully-flushed & book-kept chunks count as done)
-  {P} {W}Existing {B}_scd.txt {W}is reused; scene detect does not re-run
-  {P} {W}Hash binds folder to content: If input file changes, hash changes {P} {W}fresh tmp folder
-    {W}so you never resume against wrong source
+    {W}encodes missing ones
+  {P} {W}Partial/in-flight chunks aren't trusted: Chunks interrupted mid-write are re-encoded
+    {W}from scratch (only book-kept chunks count as done)
+  {P} {W}Existing {B}_scd.txt {W}reused; scene detect does not re-run
+  {P} {W}Hash binds folder to content: Input file changes -> hash changes {P} {W}fresh tmp folder
+    {W}never resumes against wrong source
   {P} {W}If you change path of vid or rename input; all will be invalidated
   {P} {W}On completion per-chunk bitstreams (+ encoded/source audio + subs/chapters from input) are
     {W}concatenated in order & muxed into output mkv
@@ -199,51 +197,48 @@
 {P}▌ {C}1.7  {Y}Crop
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {W}Detects crop (consistent dark pixels, also called letter/pillar-boxing)
-  {P} {W}Crop makes scene-detect, memory flow, filter, process, encode faster & raises efficiency
-  {P} {W}It is instant & very robust
-  {P} {C}Content-safe by construct: {W}One bright frame's one side exposing true edge overrides
-    {W}every dark frame/sides; sampling spread exists to catch that frame
-  {P} {C}Variance tolerance:{W} Analog & mosquito noise, not-quite-black bars are absorbed by variance check
-  {P} {W}When bar size varies by scene, safest (least) crop is chosen so widest content anywhere is preserved
-  {P} {C}Skips intro/outro: {W}Channel branding, fade-ins, & all-black credit frames are common {W}false-positives
-  {P} {W}Post-crop width/height remain legal, so nothing downstream has to re-pad
-  {P} {W}Safety cautions:
+  {P} {W}Detects crop (consistent dark pixels: letter/pillar-boxing)
+  {P} {W}Makes scene-detect, memory flow, filter, process, encode faster & raises efficiency
+  {P} {W}Is instant & robust
+  {P} {C}Content-safe: {W}One bright frame's one side exposing true edge overrides
+    {W}every dark frame/sides; sampling spread catches that
+  {P} {C}Variance tolerance:{W} Analog & mosquito noise, not-quite-black bars are absorbed
+  {P} {W}Bar size varies: safest (least) crop is chosen so widest content anywhere is preserved
+  {P} {C}Skips intro/outro: {W}Channel branding, fade-ins, & all-black credit frames
+  {P} {W}Post-crop width/height remain legal; nothing downstream has to re-pad
+  {P} {W}Safety:
       {C} {W}Respects multi aspect ratio videos
-      {C} {W}Factors in variance instead of checking pure blacks
+      {C} {W}Variance instead of checking pure blacks
       {C} {R}Never {W}cuts content
-      {C} {W}Always crops evenly for format constraints & optimizations: Either left/right or top/bottom
-  {P} {W}Samples {B}13 {W}frames through vid & analyzes them skipping intro, outro
-  {P} {W}For a {B}42000-frame {W}video ({B}~29 minutes {W}at {B}23.976FPS{W}), it is:
+      {C} {W}Crops evenly for format constraints & optimizations: {B}left/right {W}or {B}top/bottom
+  {P} {W}Samples {B}13 {W}frames & analyzes skipping intro, outro
+  {P} {B}42000-frame {W}video ({B}~29 minutes {W}at {B}23.976FPS{W}), is:
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {P}[ {R}skipped  {B}3000 6000 9000 12000 15000 18000 21000 24000 27000 30000 33000 36000 39000  {R}skipped {P}]                     {P}┃
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
-  {P} {W}Lowest-detected crop (out of {B}4 {W}sides) & out of all frames is selected for safety
-  {P} {W}If result is odd; reduced by one ({B}YUV 4:2:0 {W}constraint). Reducing instead of increasing
-    {W}allows us to not delete a row of pixels which has content: If {B}241 {W}is lowest detected value
-    {W}out of all frames & is top side; will crop {B}240 {W}from top, {B}240 {W}from bottom
+  {P} {W}Single lowest-detected crop out of {B}4 {W}sides & all frames is selected for safety
+  {P} {W}Odd result reduced by 1 ({B}YUV 4:2:0 {W}constraint). Reducing keeps a row of pixels which has content
 
 
 {P}▌ {C}1.8  {Y}Why No Manual Crop
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {W}XAV focuses on determinism & knowing details explicitly beforehand
-  {P} {W}Focuses on minimalism & simplicity
-  {P} {W}Automating crop: Optimize/improve freely without user error possibility
-  {P} {W}Less user-configurable params: One of XAV goals
-  {P} {W}If it can't handle a scenario; it should be fixed instead of a workaround
-  {P} {W}Worst case scenario or rare cases; user can externally do crop themselves;
-    {W}or some scenarios, they can prefer not using XAV for that video
-  {P} {C}Manual crop is one of botched-encode causes. {W}Off-by-one offsets, wrong parity,
+  {P} {W}We focus on determinism & pre-known explicit details
+  {P} {W}Focus on minimalism & simplicity
+  {P} {W}Auto-crop = Optimize/improve freely = No user error possibility
+  {P} {W}Less configurable params = XAV goals
+  {P} {W}If it can't handle a scenario; should be fixed with no workaround
+  {P} {W}Worst case scenario or rare cases; user can externally crop themselves;
+    {W}or some scenarios, they can prefer not using XAV
+  {P} {C}Manual crop is a botched-encode cause: {W}Off-by-one offsets, wrong parity,
     {W}mismatched AR; all eliminated
-  {P} {C}Deterministic = reproducible. {W}Same input {P} {W}identical crop every run, every machine
-  {P} {C}Batch consistency for episodic content. {W}Everything crops by one rule
-  {P} {C}Auto-crop is a forcing function: {W}A failure becomes a bug fixed for everyone, instead of each user
-    {W}creating a workaround
-  {P} {C}Frees internal pipeline: {W}Nothing downstream has to respect arbitrary user geometry
-    {W}memory/SIMD/stride assumptions stay perfect
+  {P} {C}Deterministic = reproducible. {W}Same input {P} {W}same crop every run/machine
+  {P} {C}Batch consistency = {W}Everything crops by one rule
+  {P} {C}Auto-crop is forcing: {W}Failure becomes bug fixed for everyone, instead of users
+    {W}creating workaround
+  {P} {C}Frees pipeline: {W}Nothing has to respect arbitrary user geometry = memory/SIMD/stride assumptions stay perfect
   {P} {W}One less footgun = one less support question = fewer knobs = fewer ways to {R}ruin {W}an encode
 
 
@@ -251,31 +246,31 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Improves quality/efficiency
-  {P} {W}Crop happens before SCD; cuts are computed on cropped frames
+  {P} {W}Crop happens before SCD; cuts computed on cropped frames
   {P} {W}Detailed & complex scene detection with rules:
-      {C} {W}Detects based on encode heuristics (not human understanding of scenes)
-      {C} {C}Min allowed length {W}can be anything: Allows refreshing references when needed
-      {C} {C}Max allowed length {W}is {B}300 {W}frames ({B}12.5 seconds {W}for {B}23.976 FPS {W}and {B}5-sec {W}for {B}60 FPS{W})
-          {P}· {W}Over {B}300 {W}frames, encoders do not gain significant efficiency
-          {P}· {W}Decoders may have problems decoding {B}300+
-          {P}· {W}Seeking becomes harder with {B}300+
-          {P}· {W}XAV tries to use RAM/VRAM very efficiently; longer GOPs will kill your memory
-          {P}· {B}300-max: {W} Evidently absolute sweet spot
+      {C} {W}Detects based on encode heuristics (not human understanding)
+      {C} {C}Min allowed length {W}= {B}1{W}: Allows refreshing references when needed
+      {C} {C}Max allowed length {W}= {B}300 {W}frames ({B}12.5 seconds {W}for {B}23.976 FPS {W}and {B}5-sec {W}for {B}60 FPS{W})
+          {P}· {W}Over {B}300 {W}, encoders do not gain significant efficiency
+          {P}· {W}Decoders have problems decoding {B}300+
+          {P}· {W}Seeking harder with {B}300+
+          {P}· {W}RAM/VRAM efficiency: longer GOPs more expensive
+          {P}· {B}300-max = {W}Sweet spot
   {P} {W}End of SCD; redistributes scenes (called {C}enhanced-split{W}):
       {C} {C}Enhanced-split {W}is global (whole source), not greedy/local
-      {C} {W}During SCD, frames get scores (such as calculated inter, intra costs)
-        {W}Instead of cutting from boundaries, all scores are re-evaluated
+      {C} {W}During SCD, frames get scores (calculated inter, intra costs)
+        {W}Instead of cutting from boundaries, all scores re-evaluated
         {W}to pick best possible combination of cuts
-      {C} {W}a long static/slow shot that never triggers a content cut still gets split
-        {W}at {B}300 {W}(or redistributed to be cut before) but it will never exceed {B}300
+      {C} {W}long static/slow shot that never triggers a cut gets split
+        {W}at {B}300 {W}(or redistributed to be cut before); but never exceeds {B}300
   {P} {C}Cuts can be back-to-back. {W}Because min length is unconstrained, hard cuts in fast
     {W}action (flashes, rapid intercuts) each get their own keyframe instead of being smeared into one GOP
-  {P} {C}Cost model is decider. {W}A cut is placed when a fresh intra frame is cheaper than continuing to predict
+  {P} {C}Cost model is decider. {W}Cut is placed when new intra frame is cheaper than continuing to predict
     {W}frame intra cost vs inter cost; not pixel-difference thresholds
-  {P} {W}Frame 0 (first frame) of each chunk is always a keyframe
-  {P} {C}Handles gradual transitions. {W}Fades/dissolves/crossfades are caught by cost model
-    {P} {C}SCD defines parallel work units. {W}Scene boundaries are chunk boundaries, so this stage
-    {W}directly sets what workers encode, not just where keyframes go
+  {P} {W} Each chunk's Frame 0 (first frame) always a keyframe
+  {P} {W}Fades/dissolves/crossfades caught by cost model
+    {P} {C}SCD defines parallel work units. {W}Scene boundaries are chunk boundaries: this stage
+    {W}sets what workers encode, not just where keyframes go
   {P} {C}Deterministic: {W}Same input {P} {W}identical scene file, every run/machine
   {P} {C}File is inspectable & editable: {W}0-indexed, one keyframe per line, last scene runs implicitly to EOF
     {W}You can hand-tweak a boundary & re-run
@@ -291,29 +286,25 @@
 
   {P} {C}Example: {W}First scene uses all frames between frame {B}0 {W}(first frame of input vid) & frame {B}191
   {P} {W}Frame {B}192 {W}is start of an independent scene continuing towards frame {B}287
-  {P} {W}External SCD, such as TransNetV2 can be used too. You can just create
-    {W}scene file with output from external tool & let XAV use that file instead with
-    {C}-s custom_scd.txt {W}(filename can be anything)
 
 
 {P}▌ {C}1.10  {Y}Muxing
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}XAV has {B}2 {W}containers: {B}mkv{W}/{B}webm
-  {P} {W}It is hand-written EBML: No libmatroska/libebml/ffmpeg-libs: so every byte is controlled and
-    {W}output is byte-deterministic
-  {P} {C}Why custom: {W}Full byte-control, smallest overhead, zero dependency, more features, much faster
-  {P} {B}MKV {W}is recommended mode for everything. It's a customized muxing which is:
+  {P} {W}Hand-written EBML: No libmatroska/libebml/ffmpeg-libs: every byte controlled & output byte-deterministic
+  {P} {W}Full byte-control, smallest overhead, zero dependency, more features, much faster
+  {P} {B}MKV {W}recommended mode for everything; is customized muxing which is:
       {C} {G}Fully compliant
-      {C} {W}Has all additional features implemented to make it robust:
-          {P}· {W}Streamable/seekable directly through download
-          {P}· {W}Per-frame, per-level {C}CRC32 {W}error detection (corrupted frames can be detected)
-          {P}· {W}Embedded metadata as muxer/encoder libraries, encoding params, date, etc
+      {C} {W}Has all features implemented to make it robust:
+          {P}· {W}Streamable/seekable while download
+          {P}· {W}Per-frame, per-level {C}CRC32 {W}(corrupted frame detection)
+          {P}· {W}Embedded metadata as muxer/encoder libs, encoding params, date, etc
           {P}· {W}On CVVDP TQ encodes; target range & derived display model are embedded as tags
-          {P}· {W}XAV stamps itself + versions so file is self-identifying
-          {P}· {W}With all timing related information in-place (proper seeking, reverse-playback, etc)
+          {P}· {W}XAV stamps itself + versions = self-identifying files
+          {P}· {W}All timing related information in-place (proper seeking, reverse-playback, etc)
   {P} {W}Audio/subtitle streams are muxed in with language/title tags & default/forced flags
-  {P} {W}Colorimetry written at container level too; not just bitstream
+  {P} {W}Colorimetry written at container level; not just bitstream
   {P} {C}SAR/DAR {W}written so anamorphic content displays correctly without re-deriving from pixels
   {P} {C}Cues / SeekHead: {W}Explicit index so seeking is {B}O(1) {W}(constant time complexity), not a linear scan
   {P} {C}Minimal overhead: {W}No wasted lacing/padding; container bloat is measured against bitstream
@@ -322,62 +313,57 @@
   {P} {W}Final assembly produces same container bytes regardless of chunk encode order
   {P} {W}Every player/parser/editor resolves timestamps identically, no exotic-tick edge cases
   {P} {C}Total Duration & number of frames written up front {W}(in Info): players know full length when
-    {W}they open header. Scrubber, end-time, & remaining-time are correct before a single cluster is read,
+    {W}they open header. Scrubber, end-time & remaining-time are correct before a cluster is read,
     {W}not estimated by scanning to EOF
-  {P} {C}Cluster-per-scene = every seek target is a keyframe {W}; clusters are aligned to scene/GOP boundaries
-    {W}a seek can only ever land on a clean random-access point; never mid-GOP, never decoding from a
+  {P} {C}Cluster-per-scene = every seek target is keyframe {W}; clusters aligned to scene/GOP boundaries
+    {W}seek can only ever land on a clean random-access point; never mid-GOP, never decoding from a
     {W}non-keyframe into garbage
   {P} {C}Has complete Cues, not simple ones. {W}Each {C}CuePoint {W}carries full set:
       {C} {C}CueTime{W}: exact timestamp of seek point
       {C} {C}CueClusterPosition{W}: Segment-relative byte offset of cluster (jump straight there, zero scan)
-      {C} {C}CueRelativePosition{W}: Offset of block within cluster, so demuxer lands on exact frame,
+      {C} {C}CueRelativePosition{W}: Offset of block within cluster; demuxer lands on exact frame,
         {W}not just cluster start
       {C} {C}CueDuration{W}: How long cue point covers
       {C} {C}CueBlockNumber / CueTrack{W}: Deliberate block + track identity
-  {P} {W}Many muxers omit {C}CueRelativePosition {W}and {C}CueDuration{W}; without them a seek resolves to "somewhere in
+  {P} {W}Many muxers omit {C}CueRelativePosition {W}& {C}CueDuration{W}; causing seek to resolve to "somewhere in
     {W}this cluster" & player re-parses to find frame. XAV's cues resolve to exact block in one jump
-  {P} {W}Inherits explicit per-frame {C}BlockDuration {W}(via {C}BlockGroup{W}). Every frame states its own duration instead of
-    {W}being inferred from next frame's timestamp. Last frame of a file, or a frame before a gap still has a correct,
+  {P} {W}Inherits explicit per-frame {C}BlockDuration {W}(via {C}BlockGroup{W}). Every frame states its duration instead of
+    {W}being inferred from next frame's timestamp. Last frame of a file, or frame before a gap still has correct,
     non-mistakable duration
   {P} {C}ReferenceBlock {W}reference structure where p-frames declare what they reference; keyframes declare none
-    {W}so a demuxer knows exact GOP dependency graph & can drop cleanly to nearest keyframe on seek
-    {W}without speculative decoding
+    {W}demuxer knows exact GOP dependency graph; can drop cleanly to nearest keyframe on seek = no speculative decode
   {P} {C}Backward PrevSize chain {W}allows every non-first cluster records its predecessor's size to form
-    {W}a doubly-linked cluster list. This is what makes smooth reverse playback & resync after a damaged
-    {W}cluster possible; a parser that loses its place can walk backward to a known boundary instead of giving up
-  {P} {C}Self-locating clusters {W}store their own Segment-relative Position; file can be
+    {W}doubly-linked cluster list = smooth reverse playback & resync after damaged
+    {W}cluster. Parser that loses its place can walk backward to known boundary, not giving up
+  {P} {C}Self-locating clusters {W}store their Segment-relative Position; file can be
     {W}re-indexed from any point even if Cues element is lost or truncated
-  {P} {W}File carries a unique segment identity;external tools can reference it reliably across renames/moves
-  {P} {W}Secondly, {B}webm {W}can be used as an experimental minimal muxer which has almost nothing
-      {C} {W}It does not aim for full compliance & it is barely playable
-      {C} {W}It can be handy for {B}<1MB {W}challenges
-      {C} {W}Will still work on Discord/Browsers/Apps. It just does not have advanced features
-  {P} {W}A future projection to allow more flexibility for muxing, exists (adding attachments, etc)
+  {P} {W}File carries unique segment identity; external tools can reference reliably across renames/moves
+  {P} {B}webm {W}can be used as experimental minimal muxer:
+      {C} {W}Not fully compliant & is barely playable
+      {C} {W}Can be handy for {B}<1MB {W}challenge
+      {C} {W}Will still work on Discord/Browsers/Apps but no advanced features
+  {P} {W}Future projection to allow more flexibility for muxing, exists (adding attachments, etc)
 
 
 {P}▌ {C}1.11  {Y}Zoning
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}User can do a scene-detect-only run to create SCD file
-  {P} {W}Then use this file to force per-scene flags/params
-  {P} {W}This way, every scene can be encoded independently with different flags
-  {P} {W}This mode can be used for different purposes:
-      {C} {C}Important & short content {W}can be completely hand tuned using a specific set of params for dark
+  {P} {W}Then use it to force per-scene flags/params
+  {P} {W}Every scene can be encoded independently with different flags
+  {P} {W}Can be used for different purposes:
+      {C} {C}Important & short content {W}can be hand tuned using a specific set of params for dark
         {W}scenes; params to improve shadows; spending more bits into more important parts; less bits into less
         {W}important parts
-      {C} {W}An external logic/algorithm/script can be used to determine params or per-chunk CRF beforehand
-        {W}doing a type of analysis (motion/picture/content analysis; multi-pass runs, etc)
-      {C} {C}Boosting {W}(a method similar to target quality encoding aiming to improve consistency) is one of most
-        {W}common use-cases for zoning
-  {P} {W}You only need to indicate varying params here. You don't have to re-state XAV defaults, encoder defaults,
-    {W}and/or params you already indicated for yourself
-  {P} {W}Target-quality writes a per-scene CRF into {B}chunks.json{W}; that output is itself a zone map you can lift,
-    {W}inspect, or hand-edit & re-feed (it has tons of information already)
-  {P} {W}Scene+params file is plain text to ship it next to source & anyone reproduces your exact zoned
-    {W}encode, bit-for-bit
-  {P} {C}External workflows completely respected: {W}One tool writes cut points (TransNetV2), a second analysis pass
-    {W}annotates each line with params. XAV just consumes final file, agnostic to how it was produced
-  {P} {C}Deterministic regardless of worker order: {W}Zones are bound to frame ranges, not encode order, so
+      {C} {W}External logic/algorithm/script can be used to determine params or per-chunk CRF
+        {W}with pre-analysis (motion/picture/content analysis; multi-pass runs, etc)
+      {C} {C}Boosting {W}(method similar to TQ aiming to improve consistency): most common zoning usecase
+  {P} {W}Indicate varying params here. You don't have to re-state XAV & encoder defaults & params you already indicated
+  {P} {W}TQ writes a per-scene CRF into {B}chunks.json{W}; that is itself a zone map you can inspect, edit & re-feed
+  {P} {W}Scene+params file is plain text to ship it next to source & anyone reproduces your exact zoned encode, bit-for-bit
+  {P} {C}External workflows: {W}One tool writes cut scenes (E.g TransNetV2), a second analysis pass
+    {W}annotates each line with params. XAV is agnostic to how it was produced
+  {P} {C}Deterministic regardless of worker order: {W}Zones are bound to frame ranges, not encode order;
     {W}parallel workers produce same result every run
 
 {P}    ╭━ {Y}Example {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
@@ -411,30 +397,30 @@
   {P} {W}This process continues until requested range is reached for that scene
   {P} {W}TQ encoding takes {B}2.0x {W}to {B}3.5x {W}total encoding time (depending on your config)
   {P} {W}Main usecases:
-      {C} {C}Testing purposes: {W}You can compare params and/or encoders on certain scenes or full content by
-        {W}normalizing on an objective quality level. Based on output bitrate; you can determine winners on your
+      {C} {C}Testing: {W}Compare params and/or encoders on certain scenes or full content by
+        {W}normalizing on an objective quality level. Based on output bitrate; determine winners on that
         {W}quality range/target
       {C} {C}Automation: {W}You don't have to know what CRF to use; system will pick correct one each scene
       {C} {C}Normalizing/Consistency: {W}Plain CRF is naive. Every scene will have different quality
         {W}creating inconsistencies. TQ improves consistency greatly
         {W}Internal encoder metrics are too simple, that no known encoder can create consistent/robust quality
         {W}throughout a whole movie without relying on external pipelines
-      {C} {W}You don't want to visually analyze every content you encode; OR you don't trust your eyes as sole
+      {C} {W}Don't want to visually analyze every content you encode; OR don't trust your eyes as sole
         {W}determiner. A metric score is generalizable
-      {C} {C}To create advertisable encodes: {W}You can show that your video has a {C}CVVDP {W}score of {B}9.9
-        {W}which will make your video objectively relevant even before viewing it
-      {C} {C}To save bitrate: {W}Some people want very high quality but using a safe-enough CRF will bloat many
+      {C} {C}Create advertisable encodes: {W}Show that your video has a {C}CVVDP {W}score of {B}9.9
+        {W}make your video objectively relevant before a watch
+      {C} {C}Save bitrate: {W}Want very high quality but using a safe-enough CRF will bloat many
         {W}scenes' bitrate when those scenes don't need that high of a bitrate. TQ will clamp them
         {W}where it will also boost scenes that still sit in lower quality side even with that safe-enough CRF
   {P} {W}Plain CRF fixes effort & lets quality float. TQ fixes quality & lets bitrate float
   {P} {C}TQ is Encoder/Param agnostic. {W}Target is output quality, not encoder settings. Change presets,
-    {W}upgrade encoder, or even change codecs; delivered "objective" quality stays
+    {W}upgrade encoder, or even change codecs; "objective" quality stays
   {P} {C}Provides reproducible quality. {W}Same source + same target = same result on any machine, by any operator
     {W}Quality becomes a documented number you can defend, reproduce months later, or hand to
     {W}someone else; instead of "trust me, it looked fine on my screen to my eyes"
-  {P} {W}Despite all; you should not "worship" TQ as ground truth; try to understand it better
-    {W}through experience & research if you want to get a better feel of it
-  {P} {W}Actual related params will be explained later in params section
+  {P} {W}Despite all; you should not "worship" TQ as ground truth; try to understand better
+    {W}through experience & research to get better feel
+  {P} {W}Actual related params are explained later in {B}params
 
 
 
@@ -446,16 +432,16 @@
 {P}▌ {C}2.1  {C}input {P}┃ {C}output
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {W}A simple command works: {G}xav i.mkv
-  {P} {W}Input vid can be a real or a relapath
-  {P} {W}Input is container/codec-agnostic via demuxer
-  {P} {W}Better to indicate path in quotes: {G}"/path/to/i.mkv"
-      {C} {W}This will eliminate shell splitting errors
-      {C} {W}You won't have to add escape characters for filenames with spaces
-      {C} {W}If you ever use {G}xav {W}in external scripts; you will have less issues & more robust filename handling
-  {P} {W}You can also indicate an output path: {G}xav i.mkv o.mkv
-    {W}If not given, output name is auto-derived from input: {B}i_xav.mkv
-  {P} {W}Default output lands next to input, named {B}{input}_xav.mkv
+  {P} {W}Simple command works: {G}xav i.mkv
+  {P} {W}Input path = absolute or relative
+  {P} {W}Input = container/codec-agnostic via demuxer
+  {P} {W}Showing path in quotes: {G}"/path/to/i.mkv"
+      {C} {W}Eliminates shell splitting errors
+      {C} {W}No need to add escape chars for filenames with spaces
+      {C} {W}Using {G}xav {W}in scripts; have less issues & more robust filename handling
+  {P} {W}[Optional] output path: {G}xav i.mkv o.mkv
+    {W}Not given -> name auto-derived from input: {B}i_xav.mkv
+  {P} {W}Default output is next to input, named {B}{input}_xav.mkv
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Example:                                                                                                             {P}┃
@@ -469,10 +455,7 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Select encoder to use
-  {P} {W}Currently SVT-AV1 relies on library & is more optimized
-  {P} {W}Other encoders (for now) will rely on encoder binary in your PATH
   {P} {W}SVT-AV1 is {G}default
-  {P} {W}AV2 is an ongoing research {P} {W}Currently can not be muxed into mkv {P} {W}Can not be combined with audio
   {P} {W}Encoder mappings (codec_id bitstream_extension):
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
@@ -491,28 +474,25 @@
 {P}▌ {C}2.3  {C}-w {P}┃ {C}--worker     {W}Encoder count
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {W}How many worker units we run in parallel
-  {P} {W}Worker units are encoder instances
+  {P} {W}Worker units (encoder instances) run in parallel
   {P} {W}Workers: Separate encoders running on input video chunks
-  {P} {W}BEST worker count is determined by {Y}MANY {W}different variables:
-      {C} {C}Input resolution: {W}You can't run many workers on {B}8K {W}vids
-        {W}Every worker is extra RAM usage; you will run out of memory
-      {C} {C}System memory: {W}A system with {B}8GB {W}RAM can not run as many workers as a system with {B}64G {W}RAM
+  {P} {W}BEST worker count is determined by {Y}MANY {W}variables:
+      {C} {C}Input resolution: {W}Can't run many workers on {B}8K {W}vids
+        {W}A worker is extra RAM usage; will run out of memory
+      {C} {C}System memory: {B}8GB {W}RAM can not run as many workers as {B}64G {W}RAM
       {C} {C}Bit-depth: {W}Input vid being {B}8bit {W}or {B}10bit {W}affects buffered RAM usage (if ${G}-b {W}is used)
-        {W}XAV applies some tricks to lower {B}10bit {W}RAM usage but it is still heavier than {B}8b
-      {C} {C}Encoder params: {W}Some can increase memory usage due to extra internal buffers
-      {C} {C}Encoder used: {W}Many encoders until SVT-AV1 had threading models with penalties
-        {W}You lost efficiency with increased parallelism. Additionally, parallelism was always under-performing
-	{W}For H26* encoders; XAV forces internal threading {R}OFF{W}; use XAV workers to make them run faster
-        {W}For SVT-AV1, things are different. Internal parallelism is completely free,
-        {W}encoder is deterministic & is quite good & fast already. Chunking still helps, but
-        {W}we combine internal encoder parallelism with external chunking
+        {W}XAV applies tricks to lower {B}10bit {W}RAM usage but still heavier than {B}8b
+      {C} {C}Encoder params: {W}Some can increase memory usage due to internal buffers
+      {C} {C}Encoder used: {W}Many encoders have threading models with penalties unlike SVT:
+        {W}Lost efficiency with more parallelism and it was always under-performing
+	{W}For H26*/AVM encoders; XAV forces internal threading {R}OFF{W}; use XAV workers to make them run faster
+        {W}For SVT-AV1, it is more complex and we combine internal/external threading
         {W}A lower ({B}3 to 8{W}) worker count is used with high internal parallelism. However, systems with
         {W}enough memory (or people encoding low resolution content) can experiment with high workers
         {W}Encoders can also create different buffers (avm/vvenc can use more RAM than others)
       {C} {C}Input codec: {W}A complex HEVC file will require more RAM to decode compared to simple AVC
-  {P} {W}Most important part of memory usage is determined by input frames. Since we have
-    {W}2 different input types ({B}yuv420p {W}and {B}yuv420p10le{W}), we can calculate them
+  {P} {W}Most important part of memory usage is determined by input frames. We have
+    {W}2 different input types ({B}yuv420p {W}and {B}yuv420p10le{W}):
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {W}For {B}YUV420P {W}per-frame it is = {B}1.5 x Width x Height                                                                   {P}┃
@@ -523,29 +503,26 @@
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
   {P} {W}For {B}4K/10bit {W}blu-rays; even in best, most optimized scenario (ignoring all other RAM usage),
-    {W}you can't run {B}5 {W}workers in parallel having {B}32GB {W}memory ({B}5 x 7465 {W}= {R}out-of-memory{W})
-  {P} {W}Even if RAM is eliminated (let's say you run as many workers as you want):
+    {W}can't run {B}5 {W}workers in parallel having {B}32GB {W}memory ({B}5 x 7465 {W}= {R}out-of-memory{W})
+  {P} {W}If RAM is eliminated (running as many workers):
       {C} {W}More workers doesn't always mean more perf
-      {C} {W}Especially for SVT-AV1; different combinations of {C}--worker{W}, {C}--buff {W}, and
+      {C} {W}SVT-AV1; different combinations of {C}--worker{W}, {C}--buff {W}, and
         {C}--lp {W}will be optimal on different systems depending on input content, resolution,
 	{W}bit-depth, cpu/gpu decode, memory speed, CPU used, params, and other variables
 	{W}Experimentation needed to find sweet spot
   {P} {W}Default value is {B}1 {W}to indicate: {G}"You should change this yourself"
-  {P} {W}If not changed, xav will act like a simple encoder with a single instance but it will
-    {W}still encode scene-by-scene similarly
-  {P} {W}All above info was given for educational purposes. You don't have to min-max every
-    {W}aspect; if you want to do it, above info will help you understand
-    {W}Otherwise even starting with {B}2 {W}workers & using {C}--lp 4 {W}(or {B}5{W}) in encoder params will behave
-    {W}quite well. For H26* encoders, memory management is more important (because more workers = better)
+  {P} {W}If not changed, xav will use a single worker but still encode scene-by-scene similarly
+  {P} {W}All above info was given for educational purpose: No need to min-max every aspect
+    {W}Even starting with {B}2 {W}workers & using {C}--lp 4 {W}(or {B}5{W}) in encoder params will behave
+    {W}quite well. For H26*/AVM encoders, memory is more important (because more workers = better)
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Example: {G}-w 3 -p {G}"--lp 5"   {P}# {B}using 3 XAV workers & maximum svt-av1 internal paralellism                             {P}┃
 {P}    ┃ {Y}Example: {G}-w 32 -p {G}"--lp 1"  {P}# {B}using max XAV workers (for 32-thread CPUs) & single-threaded SVT-AV1                   {P}┃
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
-  {P} {W}Any other combination can also be valid: Needs to be thoroughly tested to know
-  {P} {W}For H26* encoders; you should only change worker: More workers = better -> always
-    {W}as long as you have RAM
+  {P} {W}Any other combination can be valid: Needs to be thoroughly tested to know
+  {P} {W}For H26*/AVM encoders; only change worker: More workers = better -> always as long as you have RAM
 
 
 {P}▌ {C}2.4  {C}-b {P}┃ {C}--buff       {W}Extra chunks to pre-decode
@@ -561,8 +538,6 @@
   {P} {W}Additional chunks require extra processing but can be beneficial for perf
   {P} {W}You need to test: Additional buffers may or may not help
   {P} {W}For some setups, waiting on decoder creates a significant dead waiting sequence. {C}-b {W}eliminates that
-  {P} {W}If I encode {B}1080p/8bit {W}input content (trivial), I use many buffers ({B}64GB {W}memory) since using {B}0 {W}doesn't
-    {W}have any benefits & encoder workers never wait for decoder to process; there is always a chunk ready to process
   {P} {W}Fastest setting depends on input vid, encoder, params, hardware & other variables
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
@@ -574,23 +549,21 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Indicate encoder params next to encoder + XAV defaults
-  {P} {W}Write them in double quotes
+  {P} {W}Must be in quotes
   {P} {W}Params are indicated with {C}-- {W}prefixes on SVT-AV1. Other encoders accept single dash {C}-key
   {P} {W}Every param is a {C}--key {Y}value {W}pair; no bare flags
     {W}Even on/off switches take an explicit value for SVT: {C}--enable-qm {Y}1
-  {P} {W}It is space-separated only; {C}--key={Y}value {W}/ {C}key={Y}value {W}/ {C}key:{Y}value {W}are not supported
-  {P} {W}Values in {C}-p {W}can override encoder defaults; they can't override XAV defaults
+  {P} {W}Space-separated only; {C}--key={Y}value {W}/ {C}key={Y}value {W}/ {C}key:{Y}value {W}not supported
+  {P} {W}Values in {C}-p {W}override encoder defaults; can't override XAV defaults
     {W}XAV only applies structural defaults (input metadata, encoding modes, etc)
     {W}What XAV applies ensures proper chunked encoding behavior & high quality, high efficiency
     {W}Actual encoder coding tools; modifiable by user ({C}--tf-strength{W})
-  {P} {W}Users are advised to not duplicate params already indicated by XAV (will error out)
-  {P} {W}Also advised to not duplicate params used as a default on encoders
+  {P} {W}Do not duplicate params already indicated by XAV (will error out) & params used as defaults on encoders
   {P} {W}Params used are added in output container metadata; you may want
-    {W}to keep what's relevant there by only keeping varying options on your end instead of
-    {W}duplication (Eg. {C}--enable-cdef 1 {W}is already a default; you should not add)
+    {W}to keep what's relevant (varying opts) on your end instead of duplication
+    {W}(Eg. {C}--enable-cdef 1 {W}already default; should not add)
   {P} {W}Novice users should only indicate {C}--preset {W}(param showing encode complexity/speed) here
-    {W}and if TQ is not used, they can also indicate {C}--crf
-  {P} {W}In TQ mode CRF should not be indicated in {C}-p {W}because it is AUTO; can cause errors
+    {W}and if TQ not used, indicate {C}--crf
   {P} {W}Params are saved to {B}cmd.txt {W}in tmp folder; resume reuses exact params without retyping
   {P} {W}If you use encoder forks such as svt-av1-Essential; you may not even need this
     {W}Both xav & -Essential modify defaults with tested tuned params
@@ -605,18 +578,17 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Instead of using default name derivation ({B}input.mkv {W}produces {B}input_scd.txt{W}), you can
-    {W}name scenes file; scene-list will be in that file
-  {P} {W}OR you have a scenes txt file & you want to use that instead of re-computing
-  {P} {W}OR you produced scenes using external utility: TransNetV2
-  {P} {W}OR you created scenes file for zoning purposes & you want to use that zones list
+    {W}name scenes file; list will be in that
+  {P} {W}Have scenes txt file & use that instead of re-computing
+  {P} {W}You produced scenes using external utility
+  {P} {W}Created scenes file for zoning purposes to be re-used
   {P} {R}Rule: {W}every scene must be {B}1 to 300 {W}frames or XAV rejects
   {P} {W}File is 0-indexed (starts from first frame as frame 0)
   {P} {W}Lines are auto-sorted by frame number. Order in file doesn't matter, you can append out of order
-  {P} {W}Non-numeric lines are silently skipped. A line whose first token isn't a number is dropped,
-    {W}stray blank lines won't break parsing
-  {P} {W}If you did not use this param & if there is a file named {B}{inputname}_scd.txt {W},
-    {W}SCD is skipped. Instead file is re-used. If file absent, then SCD runs
-  {P} {W}Resume auto-reuses it
+  {P} {W}Non-numeric lines silently skipped. A line whose first token isn't a number is dropped,
+    {W}blank lines won't break parsing
+  {P} {W}If you did not use this param & if there is file named {B}{inputname}_scd.txt {W}, SCD skipped; file re-used
+  {P} {W}Resume auto-reuses scenes file
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Example: {G}-s my_scenes.txt                                                                                            {P}┃
@@ -626,17 +598,17 @@
 {P}▌ {C}2.7  {P}┃ {C}--sc-only    {W}Exit after SCD
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  {P} {W}You can scene detect with XAV then exit
+  {P} {W}Scene detect with XAV then exit
   {P} {W}Create scenes file & do nothing else
-  {P} {W}You can use it with {C}-s | --sc {W}param or alone
-  {P} {W}If you use it alone, scenes file will be named being derived from input as explained above
-  {P} {W}Useful when you want to:
+  {P} {W}Use it with {C}-s | --sc {W}param or alone
+  {P} {W}If used alone, scenes file will be named derived from input as explained above
+  {P} {W}Useful when:
       {C} {W}Use scenes list for external reasons
       {C} {W}Investigate scene cuts
       {C} {W}Modify / hand-tune scenes list
-      {C} {W}Create a zones file to encode each scene differently
+      {C} {W}Create zones file to encode each scene differently
       {C} {W}Create scenes file before & then re-use many times
-  {P} {W}Another very popular use is Hardware Decode (GPU decode)
+  {P} {W}Hardware Decode (GPU decode):
     {W}Sometimes you want to decode video with CPU since that specific codec decodes faster with CPU
     {W}However offloading decode to GPU during encoding might still be beneficial
     {W}In that case, you can create scenes file without GPU decoding & then re-enter an XAV command with
@@ -644,8 +616,8 @@
   {P} {W}Cuts are stable across decode paths
 
 {R}╭━  {R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╮
-{R}┃ {R}IMPORTANT: {W}It refuses to overwrite an existing scene file. If corresponding SCD file exist, it will exit                 {R}┃
-{R}┃ {W}To re-create, either delete it first or use a different name with {C}-s                                                     {R}┃
+{R}┃ {R}IMPORTANT: {W}Refuses to overwrite an existing scene file. If corresponding SCD file exist, it will exit                    {R}┃
+{R}┃ {W}To re-create, delete it first or use a different name with {C}-s                                                            {R}┃
 {R}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╯
 
 
