@@ -1002,7 +1002,7 @@ main() {
         BUILD_MODES=(
                 "With TQ"
                 "Without TQ"
-				"With multi-TQ (experimental)"
+                "With multi-TQ (experimental)"
         )
 
         [[ "${preset}" ]] && detect_deps || {
@@ -1038,7 +1038,7 @@ main() {
                 2)
                         [[ "${HW}" == cuda ]] && feats="cuda" || feats=""
                         ;;
-				3)
+                3)
                         [[ "${HW}" == cuda ]] && feats="vship,multi-tq,cuda" || feats="vship,multi-tq"
                         ;;
         esac
