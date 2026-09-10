@@ -28,9 +28,10 @@
 {P}┃       {C}2.11  {C}-t {P}┃ {C}--tq                                                                                                    {P}┃
 {P}┃       {C}2.12  {C}-m {P}┃ {C}--mode                                                                                                  {P}┃
 {P}┃       {C}2.13  {C}-f {P}┃ {C}--qp                                                                                                    {P}┃
-{P}┃       {C}2.14  {C}-v {P}┃ {C}--vship                                                                                                 {P}┃
-{P}┃       {C}2.15  {C}-d {P}┃ {C}--display                                                                                               {P}┃
-{P}┃       {C}2.16  {C}-P {P}┃ {C}--alt-param                                                                                             {P}┃
+{P}┃       {C}2.14  {C}-F {P}┃ {C}--qpi                                                                                                   {P}┃
+{P}┃       {C}2.15  {C}-v {P}┃ {C}--vship                                                                                                 {P}┃
+{P}┃       {C}2.16  {C}-d {P}┃ {C}--display                                                                                               {P}┃
+{P}┃       {C}2.17  {C}-P {P}┃ {C}--alt-param                                                                                             {P}┃
 {P}┃                                                                                                                          {P}┃
 {P}┃   {C}3   {Y}Encoder Defaults                                                                                                   {P}┃
 {P}┃       {C}3.1   {W}SVT-AV1                                                                                                      {P}┃
@@ -136,7 +137,7 @@
     {W}Other modes used in Low Delay & RTC; XAV doesn't support
   {P} {W}Adaptive Quantization with TPL Beta Adjustments for AV1 (best aq-mode)
   {P} {C}SVT-AV1 threading: {G}ON {W}(determined by {C}--lp {B}[1-5] {W}param)
-  {P} {C}Other enc threading: {R}OFF {W}(reduces efficiency); use Workers instead ({G}OVERRIDABLE)
+  {P} {C}Other enc threading: {R}OFF {W}(reduces efficiency); use Workers instead ({G}OVERRIDABLE{W})
   {P} {W}Harmful concepts (overlays) disabled
   {P} {C}Keyframes: {B}IDR {W}(Instantaneous Decoder Refresh)
       {C} {W}Don't confuse with {B}CRA {W}(Clean Random Access) or Intra-Only Frame
@@ -786,11 +787,11 @@
     {W}it is fine to play around
 
 
-{P}▌ {C}2.11  {C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2
+{P}▌ {C}2.11  {C}-t {P}┃ {C}--tq         {W}TQ Range(s): {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Only for Target Quality; not plain chunk-encoding
-  {P} {W}Only exists for builds compiled with Vship (TQ) support
+  {P} {W}Only exists for builds compiled with VSHip (TQ) support
   {P} {W}Value you use for key is a range; not a single number: {B}78-82
   {P} {W}Middle range {B}80 {W}becomes your target; however you accept any score
     {W}for each scene if they sit between {B}78 {W}and {B}82
@@ -810,12 +811,37 @@
   {P} {W}For {C}CVVDP {W}it's even more granular. {B}9.50 {W}can look good while {B}9.48 {W}can look bad
     {W}(Example scores are completely random; don't put value on them)
   {P} {C}CVVDP {W} will REQUIRE a display file that will be explained later
+  {P} {W}For {C}SSIMULACRA2 {W}and {C}CVVDP{W}, you may specify just one value in the range, which will be interpreted
+    {W}as the lower end. The maximum quality value for the metric (100 or 10) will be used as the higher end
+      {C} {W}This is not enabled for {C}Butteraugli {W}to avoid confusions (the lower the score, the higher the quality)
+  {P} {W}If TQ is used, a file with the name of the input and extension .scores.txt will be generated, containing the
+    {W}final metric scores for all the encoded scenes. A metric score summary will also be printed at the end of
+    {W}execution, equivalent to those of VSHip
+      {C} {W}The .scores.txt file will contain a header for each scene, with:
+        {W}"scene_number,metric_used_for_scoring,frames_in_scene"
+      {C} {W}The .scores.txt will have the scenes unsorted (in the order they finished encoding)
+
+  {P} {W}If {C}multi-tq {W}support is enabled ta compile time, this parameter accepts a comma-separeted list of
+    {W}ranges, and all of them will be used for Target Quality encoding
+  {P} {W}Meant to be used mainly with different metric modes (see below)
+  {P} {W}Different metrics can be mixed together, but the search process will be slower than using the same metric
+    {W}in all TQs
+  {P} {W}Multi-TQ treats each TQ is sequentially, in the order specified:
+      {C} {W}First, the first TQ will be searched; when reached, the next TQ will be considered, and so on
+      {C} {W}If a TQ can't be reached for a scene with the specified CRF range, the next TQs will NOT be searched
+  {P} {Y}WARNING: {W}This is an {B}experimental {W}feature, and should be used very carefully
+      {C} {W}Multiple TQ ranges may be exclusive; it is the {B}user's responsibility {W}to specify ranges that make
+          {W}sense together
+      {C} {W}This feature might increase encoding time even more than single TQ
+      {C} {W}Specifying many TQs may be counterproductive; it is better to keep the amount low
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Examples:                                                                                                            {P}┃
 {P}    ┃ {G}-t 9.9000-9.9001 {P}# {B}very strict range for CVVDP                                                                       {P}┃
 {P}    ┃ {G}-t 78.00-82.00   {P}# {B}relaxed range for SSIMULACRA2                                                                     {P}┃
 {P}    ┃ {G}-t 1.000-1.080   {P}# {B}random range for Butteraugli-5pNorm                                                               {P}┃
+{P}    ┃ {G}-t 80            {P}# {B}very relaxed range for SSIMULACRA2, equivalent to 80.00-100.00                                    {P}┃
+{P}    ┃ {G}-t 78-82,65-70   {P}# {B}multi-TQ mode, makes sense if using different --mode                                              {P}┃
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
 
@@ -827,7 +853,7 @@
   {P} {W}Default is {G}mean{W}: Average score of each scene is used
   {P} {W}Another option is to use a percentage value such as {B}p25
   {P} {W}Lastly, the minimum score of each scene (i.e. the score for the worst looking frame)
-       {W}can be used
+    {W}can be used
   {P} {W}Perc option takes mean score of worst values under given percentile value
     {W}For {B}p25{W}, worst {B}25th {W}percentile is found. That value & all values under that
     {W}will be averaged. Best {B}75% {W}of scores are eliminated/discarded from calculation
@@ -849,12 +875,19 @@
       {C} {W}CVVDP pN also pools in linear perceptual space, not on JOD numbers where each frame's score is un-mapped
         {W}from JOD, worst N% are averaged, then re-mapped to JOD. A CVVDP pN value is not directly comparable
         {W}to CVVDP mean scores
+  {P} {W}Min option is an extremist version of the percentage option, and the same restrictions apply
+
+  {P} {W}If {C}multi-tq {W}support is enabled ta compile time, this parameter accepts a comma-separeted list of
+    {W}modes, corresponding to the specified TQs
+      {C} {W}The amount of elements specified by {C}--tq {W}and {C}--mode {W}must be the same
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Examples:                                                                                                            {P}┃
-{P}    ┃ {G}-m mean  {P}# {B}OR do not indicate & take default                                                                         {P}┃
-{P}    ┃ {G}-m p100  {P}# {B}same as mean: p100 = mean (worst 100% = everything)                                                       {P}┃
-{P}    ┃ {G}-m p1    {P}# {B}worst 1% scores of each scene                                                                             {P}┃
+{P}    ┃ {G}-m mean      {P}# {B}OR do not indicate & take default                                                                     {P}┃
+{P}    ┃ {G}-m p100      {P}# {B}same as mean: p100 = mean (worst 100% = everything)                                                   {P}┃
+{P}    ┃ {G}-m p1        {P}# {B}worst 1% scores of each scene                                                                         {P}┃
+{P}    ┃ {G}-m min       {P}# {B}worst individual score of each scene                                                                  {P}┃
+{P}    ┃ {G}-m mean,min  {P}# {B}multi-TQ mode, must use 2 ranges in --tq                                                              {P}┃
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
 
@@ -883,11 +916,25 @@
 {P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
 
-{P}▌ {C}2.14  {C}-v {P}┃ {C}--vship      {W}Metric worker count
+{P}▌ {C}2.14  {C}-F {P}┃ {C}--qpi        {W}Initial CRF value for TQ
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Explicitly specify the initial CRF value to use in TQ search, instead of using the default
+  {P} {W}Allows for more control over the allocated bitrate
+  {P} {W}Useful with wide CRF ranges when there is a general bias towards one of the extremes
+  {P} {Y}WARNING: {W}This is an {B}experimental {W}feature and might give unexpected/adverse results
+    {W}If you are not sure, do not use it
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Example: {G}-F 25  {P}# {B}The TQ search will begin at CRF = 25                                                               {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
+{P}▌ {C}2.15  {C}-v {P}┃ {C}--vship      {W}Metric worker count
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}Only relevant under TQ runs
-  {P} {W}Used to indicate VSHIP workers (parallel workers running metric computation at same time)
+  {P} {W}Used to indicate VSHip workers (parallel workers running metric computation at same time)
   {P} {W}Used to limit VRAM usage and/or optimize overall perf
   {P} {W}Depends on CPU/GPU/RAM/VRAM, content you encode, resolution & some other variables
   {P} {W}Default is {B}1 {W}(only single metric calculation instance)
@@ -903,7 +950,7 @@
   {P} {W}Per-worker VRAM scales with resolution (no issue for SSIMU2/Butter but CVVDP will use more VRAM)
 
 
-{P}▌ {C}2.15  {C}-d {P}┃ {C}--display    {W}CVVDP display file
+{P}▌ {C}2.16  {C}-d {P}┃ {C}--display    {W}CVVDP display file
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {W}It is mandatory for CVVDP & ignored otherwise
@@ -962,7 +1009,7 @@
   {P} {B}(bright, illum, refl) {P} {W}effective black level / contrast for tonal sensitivity
 
 
-{P}▌ {C}2.16  {C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)
+{P}▌ {C}2.17  {C}-P {P}┃ {C}--alt-param  {W}Alt params for TQ probes ({R}NOT RECOMMENDED{W}; expert-only)
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   {P} {R}ONLY {W}for TQ encoding

@@ -251,7 +251,7 @@ fn print_help() {
         println!("{C}-t {P}┃ {C}--tq         {W}TQ Ranges: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2 ({R}multiple ranges is EXPERIMENTAL{W})");
         println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}, pN% or min");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
-        println!("{C}-F {P}┃ {C}--qpi        {W}Initial CRF: {G}crf{W}");
+        println!("{C}-F {P}┃ {C}--qpi        {W}Initial CRF");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
         println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for probes ({R}NOT RECOMMENDED{W}; expert-only)");
