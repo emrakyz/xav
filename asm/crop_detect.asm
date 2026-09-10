@@ -26,18 +26,24 @@ cextern crop_frame_u16
 %define F_DATA   0
 %define F_LINESZ 64
 
-%define S_BUF   0
-%define S_PB    64
-%define S_BEST  120
-%define S_DC    136
-%define S_W     144
-%define S_H     152
-%define S_10B   160
-%define S_LINE  168
-%define S_OUT   176
-%define S_N     184
+%if WIN64
+    %define SHD 48
+%else
+    %define SHD 0
+%endif
 
-cglobal crop_detect, 7, 12, 8, 192, dc, frames, w, h, is10b, line, out, a, b, i, t, k
+%define S_BUF   (SHD + 0)
+%define S_PB    (SHD + 64)
+%define S_BEST  (SHD + 120)
+%define S_DC    (SHD + 136)
+%define S_W     (SHD + 144)
+%define S_H     (SHD + 152)
+%define S_10B   (SHD + 160)
+%define S_LINE  (SHD + 168)
+%define S_OUT   (SHD + 176)
+%define S_N     (SHD + 184)
+
+cglobal crop_detect, 7, 12, 0, SHD + 192, dc, frames, w, h, is10b, line, out, a, b, i, t, k
     mov       [rsp + S_DC], dcq
     mov       [rsp + S_W], wq
     mov       [rsp + S_H], hq
@@ -46,7 +52,6 @@ cglobal crop_detect, 7, 12, 8, 192, dc, frames, w, h, is10b, line, out, a, b, i,
     mov       [rsp + S_OUT], outq
     mov       tq, -1
     mov       [rsp + S_BEST], tq
-    mov       [rsp + S_BEST + 8], tq
     cmp       framesq, 13
     ja        .many
     mov       [rsp + S_N], framesq
@@ -59,11 +64,11 @@ cglobal crop_detect, 7, 12, 8, 192, dc, frames, w, h, is10b, line, out, a, b, i,
     jmp       .fill
 .many:
     mov       qword [rsp + S_N], 13
-    mov       edi, framesd
-    lea       rsi, [rsp + S_BUF]
+    mov       dcd, framesd
+    lea       framesq, [rsp + S_BUF]
     call      calc_samp_frames
 .init:
-    lea       rdi, [rsp + S_PB]
+    lea       dcq, [rsp + S_PB]
     call      pb_init
     xor       iq, iq
 .loop:
@@ -75,25 +80,30 @@ cglobal crop_detect, 7, 12, 8, 192, dc, frames, w, h, is10b, line, out, a, b, i,
     cqo
     idiv      qword [tq + D_TSDIV]
     add       rax, [tq + D_SPTS]
-    mov       rdx, rax
-    mov       rdi, [tq + D_FMT]
-    mov       esi, [tq + D_SIDX]
-    mov       ecx, 1
+    mov       wq, rax
+    mov       dcq, [tq + D_FMT]
+    mov       framesd, [tq + D_SIDX]
+    mov       hd, 1
     call      av_seek_frame
     mov       tq, [rsp + S_DC]
-    mov       rdi, [tq + D_CODEC]
+    mov       dcq, [tq + D_CODEC]
     call      avcodec_flush_buffers
     mov       tq, [rsp + S_DC]
     mov       byte [tq + D_EOF], 0
-    mov       rdi, tq
+    mov       dcq, tq
     call      dec_next
     mov       tq, [rsp + S_DC]
     mov       kq, [tq + D_FRAME]
-    mov       rdi, [kq + F_DATA]
-    mov       rsi, [rsp + S_W]
-    mov       rdx, [rsp + S_H]
-    movsxd    rcx, dword [kq + F_LINESZ]
+    mov       dcq, [kq + F_DATA]
+    mov       framesq, [rsp + S_W]
+    mov       wq, [rsp + S_H]
+    movsxd    hq, dword [kq + F_LINESZ]
+%if WIN64
+    lea       tq, [rsp + S_BEST]
+    mov       [rsp + 32], tq
+%else
     lea       is10bq, [rsp + S_BEST]
+%endif
     cmp       qword [rsp + S_10B], 0
     jne       .hi
     call      crop_frame_u8
@@ -102,28 +112,35 @@ cglobal crop_detect, 7, 12, 8, 192, dc, frames, w, h, is10b, line, out, a, b, i,
     call      crop_frame_u16
 .after:
     test      eax, eax
-    jnz       .fin
-    lea       rdi, [rsp + S_PB]
-    lea       rsi, [iq + 1]
-    mov       rdx, [rsp + S_N]
-    mov       rcx, [rsp + S_LINE]
+    jz        .prog
+    mov       iq, [rsp + S_N]
+    dec       iq
+.prog:
+    lea       dcq, [rsp + S_PB]
+    lea       framesq, [iq + 1]
+    mov       wq, [rsp + S_N]
+    mov       hq, [rsp + S_LINE]
+%if WIN64
+    lea       tq, [rel lbl]
+    mov       [rsp + 32], tq
+    mov       qword [rsp + 40], 4
+%else
     lea       is10bq, [rel lbl]
     mov       lined, 4
+%endif
     call      pb_frames
     inc       iq
     jmp       .loop
 .fin:
     mov       aq, [rsp + S_OUT]
-    mov       ebx, [rsp + S_BEST]
-    cmp       ebx, -1
+    mov       kq, [rsp + S_BEST]
+    cmp       kd, -1
     je        .nocrop
-    vmovdqu   xmm0, [rsp + S_BEST]
-    vpcmpeqd  xmm1, xmm1, xmm1
-    vpslld    xmm1, xmm1, 1
-    vpand     xmm0, xmm0, xmm1
-    vmovdqu   [aq], xmm0
+    mov       tq, 0xFFFFFFFEFFFFFFFE
+    and       kq, tq
+    mov       [aq], kq
     RET
 .nocrop:
-    vpxor     xmm0, xmm0, xmm0
-    vmovdqu   [aq], xmm0
+    xor       kq, kq
+    mov       [aq], kq
     RET

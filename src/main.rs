@@ -734,10 +734,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
 
     let thr = available_parallelism() as i32;
-    let crop = match detect_crop(&args.inp, &inf, thr, 1) {
-        Ok(detected) if detected.has_crop() => detected.to_tuple(),
-        _ => (0, 0),
-    };
+    let crop = detect_crop(&args.inp, &inf, thr, 1).unwrap_or((0, 0));
 
     ensure_sc_file(&args, &inf, crop, 3)?;
 
