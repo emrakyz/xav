@@ -15,13 +15,9 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     lea       s3q, [strideq + strideq*2]
     lea       stepq, [strideq*8]
     vmovdqa64 zmm0, [rel c64]
-    lea       tq, [hhq + hhq*2]
-    sub       tq, wq
-    jbe       .cols
-    add       tq, 5
-    imul      tq, tq, 43691
-    shr       tq, 18
-    inc       tq
+    mov       td, [bestq]
+    test      tq, tq
+    jz        .cols
     mov       kq, 8
     cmp       tq, kq
     cmovb     tq, kq
@@ -58,7 +54,7 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     jmp       .ht
 .tp:
     cmp       cntq, limq
-    jae       .none
+    jae       .topnone
     mov       curq, limq
     sub       curq, 8
     imul      curq, strideq
@@ -70,13 +66,27 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     dec       cntq
     call      .rowgrp
     and       eax, cntd
-    jz        .none
+    jz        .topnone
     lzcnt     eax, eax
     lea       cntq, [limq + rax - 32]
 .ht:
     test      cntq, cntq
-    jz        .cols
-    vmovd     xmm30, cntd
+    jnz       .htnz
+    mov       [bestq], cntd
+    jmp       .cols
+.htnz:
+    mov       td, [bestq]
+    cmp       td, cntd
+    cmova     td, cntd
+    mov       [bestq], td
+    mov       kq, 8
+    cmp       tq, kq
+    cmovb     tq, kq
+    cmp       tq, hhq
+    cmova     tq, hhq
+    mov       limq, tq
+.dobot:
+
     mov       curq, hhq
     sub       curq, 8
     imul      curq, strideq
@@ -98,7 +108,7 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     jmp       .hb
 .bp:
     cmp       cntq, limq
-    jae       .none
+    jae       .cols
     mov       curq, hhq
     sub       curq, limq
     imul      curq, strideq
@@ -111,25 +121,18 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     and       cntd, 255
     call      .rowgrp
     and       eax, cntd
-    jz        .none
+    jz        .cols
     tzcnt     eax, eax
     lea       cntq, [limq + rax - 8]
 .hb:
-    vmovd     xmm26, cntd
-    vpunpckldq xmm26, xmm30, xmm26
-    vpxor     xmm27, xmm27, xmm27
-    vpunpcklqdq xmm26, xmm26, xmm27
-    jmp       .store
+    mov       td, [bestq]
+    cmp       td, cntd
+    cmova     td, cntd
+    mov       [bestq], td
 .cols:
-    lea       tq, [wq + wq*4]
-    lea       kq, [hhq + hhq*2]
-    add       kq, kq
-    sub       tq, kq
-    jbe       .zero
-    add       tq, 9
-    imul      tq, tq, 26215
-    shr       tq, 18
-    inc       tq
+    mov       td, [bestq + 4]
+    test      tq, tq
+    jz        .collapse
     mov       kq, 64
     cmp       tq, kq
     cmovb     tq, kq
@@ -162,7 +165,7 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     jmp       .hp
 .pp:
     cmp       cntq, limq
-    jae       .none
+    jae       .collapse
     lea       curq, [pq + limq*2 - 128]
     mov       stepq, wq
     add       stepq, 64
@@ -184,30 +187,29 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     cmp       rax, kq
     cmova     rax, kq
     cmp       rax, 64
-    jae       .none
+    jae       .collapse
     lea       cntq, [limq + rax - 64]
 .hp:
-    mov       td, 12
-    kmovb     k7, td
-    vpbroadcastd xmm26 {k7}{z}, cntd
-    jmp       .store
-.zero:
-    vpxor     xmm26, xmm26, xmm26
-.store:
-    mov       td, 2
-    vpbroadcastd xmm28, td
-    vmovdqu   xmm27, [bestq]
-    vpminud   xmm26, xmm26, xmm27
-    vmovdqu   [bestq], xmm26
-    vpcmpud   k1, xmm26, xmm28, 1
-    kmovb     eax, k1
-    cmp       al, 15
-    sete      al
+    mov       td, [bestq + 4]
+    cmp       td, cntd
+    cmova     td, cntd
+    mov       [bestq + 4], td
+    jmp       .collapse
+.collapse:
+    mov       td, [bestq]
+    mov       kd, [bestq + 4]
+    cmp       tq, kq
+    cmovb     tq, kq
+    cmp       tq, 2
+    setb      al
     movzx     eax, al
     RET
-.none:
+.topnone:
+    cmp       limq, hhq
+    jb        .dobot
     xor       eax, eax
     RET
+
 
 .rowgrp:
     vpxor     xmm2, xmm2, xmm2
@@ -660,3 +662,4 @@ cglobal crop_frame_u16, 5, 15, 16, p, w, h, stride, best, hh, mask, magic, s3, c
     kunpckdq  k2, k4, k2
     kmovq     kq, k2
     ret
+
