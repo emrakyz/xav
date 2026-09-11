@@ -46,6 +46,8 @@ pub struct TQState {
     pub search_max: f32,
     pub search_init: f32,
     pub round: u8,
+    #[cfg(feature = "multi-tq")]
+    pub accum_round: u8,
     pub target: f32,
     pub last_crf: f32,
     pub final_enc: bool,

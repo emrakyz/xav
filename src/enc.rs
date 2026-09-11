@@ -867,7 +867,10 @@ fn complete_chnk(
         final_crf: best.crf,
         final_score: best.score,
         final_sz: file_sz,
+        #[cfg(not(feature = "multi-tq"))]
         round: tq_state.round,
+        #[cfg(feature = "multi-tq")]
+        round: tq_state.accum_round,
         frames: chnk_frames,
     };
     write_chnk_log(&log_entry, ctx.work_dir);
@@ -1898,6 +1901,8 @@ fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphor
 #[inline]
 fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f32 {
     tq.round += 1;
+    #[cfg(feature = "multi-tq")]
+    tq.accum_round += 1;
     let c = if tq.round == 1 {
         tq.search_init
     } else if tq.round <= 2 {
@@ -1962,6 +1967,8 @@ macro_rules! make_tq_loop {
                     search_max: init_tq_ctx.qp_max,
                     search_init: init_tq_ctx.qp_init,
                     round: 0,
+                    #[cfg(feature = "multi-tq")]
+                    accum_round: 0,
                     target: init_tq_ctx.target,
                     last_crf: 0.0,
                     final_enc: false,
