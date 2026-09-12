@@ -1902,7 +1902,9 @@ fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphor
 fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f32 {
     tq.round += 1;
     #[cfg(feature = "multi-tq")]
-    tq.accum_round += 1;
+    {
+        tq.accum_round += 1;
+    }
     let c = if tq.round == 1 {
         tq.search_init
     } else if tq.round <= 2 {
