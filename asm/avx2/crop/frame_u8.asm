@@ -23,11 +23,21 @@ cglobal crop_frame_u8, 5, 15, 14, p, w, h, stride, best, hh, mask, magic, s3, cu
     cmp      tq, hhq
     cmova    tq, hhq
     mov      limq, tq
+%if WIN64
+    mov      kq, wq
+    mov      rax, 0x10000000000
+    add      rax, kq
+    dec      rax
+    xor      edx, edx
+    div      kq
+    mov      wq, kq
+%else
     mov      rax, 0x10000000000
     add      rax, wq
     dec      rax
     xor      edx, edx
     div      wq
+%endif
     mov      magicq, rax
     mov      curq, pq
     xor      cntq, cntq

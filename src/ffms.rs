@@ -11,7 +11,7 @@ use core::{
 use crate::{
     Xerr,
     dec::CropCalc,
-    error::Xerr::Msg,
+    error::{Xerr::Msg, fatal},
     ffms::DecStrat::{
         B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast, B10CropFastRem,
         B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem, B10Raw, B10RawCrop,
@@ -33,7 +33,7 @@ use crate::{
     progs::ProgsBar,
     sync::Mutex,
     thread::available_parallelism,
-    util::assume_unreachable,
+    util::{C, G, N, P, R, W, Y, assume_unreachable},
 };
 
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
@@ -43,6 +43,7 @@ pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 const AV_DICT_IGNORE_SUFFIX: c_int = 2;
 const AV_FRAME_DATA_MASTERING_DISPLAY_METADATA: c_int = 11;
 const AV_FRAME_DATA_CONTENT_LIGHT_LEVEL: c_int = 14;
+const AV_PIX_FMT_YUV420P: c_int = 0;
 const AV_PIX_FMT_YUV420P10LE: c_int = 62;
 #[cfg(not(feature = "cuda"))]
 const AV_HWDEVICE_TYPE_HW: c_int = 11;
@@ -1205,7 +1206,25 @@ const fn def_color(v: Option<c_int>) -> i8 {
     }
 }
 
+#[cold]
+#[inline(never)]
+pub fn bad_fmt() -> ! {
+    fatal(format_args!(
+        "{R}We {W}only accept {C}YUV420P {P}(8 bit 4:2:0) {W}and {C}YUV420P10LE {P}(10 bit 4:2:0) \
+         {W}input\n{Y}AND {W}always output {C}YUV420P10LE\n{G}YUV420P {W}is auto converted to \
+         {C}YUV420P10LE\n\n{W}If you have to process a video that is not {C}YUV420P {Y}OR \
+         {C}YUV420P10LE{W}, convert via external utilities and pipe it to {R}XAV\n{Y}OR {W}create \
+         intermediate videos{N}"
+    ))
+}
+
 unsafe fn extr_frame_meta(f: &VidFrame, par_color_space: c_int) -> FrameMeta {
+    let is_10b = match f.format {
+        AV_PIX_FMT_YUV420P => false,
+        AV_PIX_FMT_YUV420P10LE => true,
+        _ => bad_fmt(),
+    };
+
     let matrix_coeff = match if f.colorspace == 3 {
         par_color_space
     } else {
@@ -1231,7 +1250,7 @@ unsafe fn extr_frame_meta(f: &VidFrame, par_color_space: c_int) -> FrameMeta {
         },
         mastering: unsafe { extr_master_disp(f) },
         content_light_level: unsafe { extr_cont_light(f) },
-        is_10b: f.format == AV_PIX_FMT_YUV420P10LE,
+        is_10b,
         y_linesz: f.linesize[0] as usize,
     }
 }

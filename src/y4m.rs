@@ -16,6 +16,7 @@ use crate::{
 };
 use crate::{
     error::fatal,
+    ffms::bad_fmt,
     io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin},
 };
 
@@ -83,6 +84,9 @@ pub fn init_pipe(start_idx: usize) -> Option<(Y4mInfo, PipeReader)> {
             height = h.parse().unwrap_or(0);
         } else if let Some(c) = part.strip_prefix('C') {
             is_10b = c.contains("p10");
+            if !c.starts_with("420") || (!is_10b && c.contains("p1")) {
+                bad_fmt();
+            }
         }
     }
 
