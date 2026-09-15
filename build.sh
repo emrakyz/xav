@@ -517,6 +517,7 @@ build_ffmpeg() {
                 --enable-demuxer=vvc \
                 --enable-decoder=ffv1 \
                 --enable-decoder=rawvideo \
+				--enable-decoder=utvideo \
                 --enable-decoder=h264 \
                 --enable-decoder=hevc \
                 --enable-decoder=mpeg2video \
