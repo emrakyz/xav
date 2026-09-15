@@ -20,6 +20,7 @@
 - Multi-AR-safe autocrop
 - **Pipe**: `cmd - | xav i.mkv`: **Slower** than native
 - Target quality: [CVVDP](https://achapiro.github.io/Man24/man24.pdf) & [Butteraugli](https://github.com/google/butteraugli) & [SSIMU2](https://github.com/cloudinary/ssimulacra2)
+- Experimental multi-target quality
 - Opus with auto rate calc & downmix & loud-norm ([AC-4 std](https://www.etsi.org/deliver/etsi_ts/103100_103199/10319001/01.03.01_60/ts_10319001v010301p.pdf))
 
 ## How

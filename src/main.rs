@@ -20,6 +20,9 @@ use core::{
     sync::atomic::Ordering::Relaxed,
     time::Duration as Durat,
 };
+#[cfg(feature = "vship")]
+use core::fmt::Write;
+
 #[cfg(any(not(target_os = "linux"), test))]
 use std::{env::args as env_args, panic::set_hook};
 
@@ -143,12 +146,16 @@ use vship::{Disp, load_disp};
 #[cfg(target_os = "linux")]
 use y4m::vspipe_resume;
 use y4m::{PipeReader, init_pipe, is_pipe};
+#[cfg(feature = "vship")]
+use fmath::{Sqrtf as _};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests;
 
 use util::{B, C, Fnv, G, N, P, R, W, Y};
+#[cfg(feature = "vship")]
+use util::assume_unreachable;
 
 #[derive(Clone)]
 pub struct Args {
@@ -165,9 +172,13 @@ pub struct Args {
     #[cfg(feature = "vship")]
     pub qp_range: Option<String>,
     #[cfg(feature = "vship")]
-    pub metric_worker: usize,
+    pub initial_qp: Option<f32>,
     #[cfg(feature = "vship")]
-    pub tq: Option<String>,
+    pub metric_worker: usize,
+    #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+    pub tq: Option<(f32, f32)>,
+    #[cfg(feature = "multi-tq")]
+    pub tq: Option<Vec<(f32, f32)>>,
     #[cfg(feature = "vship")]
     pub metric_mode: String,
     #[cfg(feature = "vship")]
@@ -234,9 +245,13 @@ fn print_help() {
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     #[cfg(feature = "vship")]
     {
+        #[cfg(not(feature = "multi-tq"))]
         println!("{C}-t {P}┃ {C}--tq         {W}TQ Range: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2");
-        println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}or pN%");
+        #[cfg(feature = "multi-tq")]
+        println!("{C}-t {P}┃ {C}--tq         {W}TQ Ranges: {R}<8{B}={W}Butter, {R}8-10{B}={W}CVVDP, {R}>10{B}={W}SSIMU2 ({R}multiple ranges is EXPERIMENTAL{W})");
+        println!("{C}-m {P}┃ {C}--mode       {W}TQ stat: {G}mean {W}, pN% or min");
         println!("{C}-f {P}┃ {C}--qp         {W}CRF range: {G}crf-crf{W}");
+        println!("{C}-F {P}┃ {C}--qpi        {W}Initial CRF");
         println!("{C}-v {P}┃ {C}--vship      {W}Metric parallelism");
         println!("{C}-d {P}┃ {C}--display    {W}CVVDP display file");
         println!("{C}-P {P}┃ {C}--alt-param  {W}Alt params for probes ({R}NOT RECOMMENDED{W}; expert-only)");
@@ -322,6 +337,59 @@ fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>, Xerr> {
     Ok(r)
 }
 
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+fn parse_tq(s: &str) -> Result<(f32, f32), Xerr> {
+    let (a, b) = unsafe { s.split_once('-').or(Some((s, ""))).unwrap_unchecked() };
+    let b = b.trim();
+    let a = a.trim().parse()?;
+    let b = if b.is_empty() {
+        if a < 8.0 {
+            return Err("butteraugli TQ metric mode requires specifying both values in the ranges".into());
+        } else if is_cvvdp(a) {
+            10.0
+        } else {
+            100.0
+        }
+    } else {
+        b.parse()?
+    };
+    if b < a {
+        return Err("the second value in TQ ranges must be higher than the first".into());
+    }
+    Ok((
+        a, b,
+    ))
+}
+#[cfg(feature = "multi-tq")]
+fn parse_tq(s: &str) -> Result<Vec<(f32, f32)>, Xerr> {
+    let r: Vec<(f32, f32)> = s
+        .split(',')
+        .map(|p| {
+            let (a, b) = unsafe { p.split_once('-').or(Some((p, ""))).unwrap_unchecked() };
+            let b = b.trim();
+            let a = a.trim().parse()?;
+            let b = if b.is_empty() {
+                if a < 8.0 {
+                    return Err("butteraugli TQ metric mode requires specifying both values in the ranges".into());
+                } else if is_cvvdp(a) {
+                    10.0
+                } else {
+                    100.0
+                }
+            } else {
+                b.parse()?
+            };
+            if b < a {
+                return Err("the second value in TQ ranges must be higher than the first".into());
+            }
+            Ok((
+                a, b,
+            ))
+        })
+        .collect::<Result<_, Xerr>>()?;
+    Ok(r)
+}
+
 fn apply_defaults(args: &mut Args) {
     if args.out == PathBuf::new() {
         let stem = unsafe { args.inp.file_stem().unwrap_unchecked() }.to_string_lossy();
@@ -404,9 +472,13 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut encoder, mut params) = (Encoder::default(), String::new());
     let (mut au, mut ranges) = (None, None);
     #[cfg(feature = "vship")]
-    let (mut tq, mut qp_range, mut cvvdp_conf, mut alt_param) = (
+    let (mut tq, mut qp_range, mut initial_qp, mut cvvdp_conf, mut alt_param) = (
+        #[cfg(not(feature = "multi-tq"))]
+        None::<(f32, f32)>,
+        #[cfg(feature = "multi-tq")]
+        None::<Vec<(f32, f32)>>,
         None::<String>,
-        None::<String>,
+        None::<f32>,
         None::<String>,
         None::<String>,
     );
@@ -437,11 +509,21 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
                 }
             }
             #[cfg(feature = "vship")]
-            "-t" | "--tq" => arg!(opt args, i, tq),
+            "-t" | "--tq" => {
+                if let Some(v) = next_arg(args, &mut i) {
+                    tq = Some(parse_tq(v)?);
+                }
+            }
             #[cfg(feature = "vship")]
             "-m" | "--mode" => arg!(str args, i, metric_mode),
             #[cfg(feature = "vship")]
             "-f" | "--qp" => arg!(opt args, i, qp_range),
+            #[cfg(feature = "vship")]
+            "-F" | "--qpi" => {
+                if let Some(v) = next_arg(args, &mut i) {
+                    initial_qp = Some(v.parse()?);
+                }
+            }
             #[cfg(feature = "vship")]
             "-v" | "--vship" => arg!(parse args, i, metric_worker),
             #[cfg(feature = "vship")]
@@ -470,6 +552,13 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         i += 1;
     }
 
+    #[cfg(feature = "multi-tq")]
+    if let Some(ref tq) = tq {
+        if metric_mode.bytes().filter(|&b| b == b',').count() + 1 != tq.len() {
+            return Err("tq and metric_mode must contain the same amount of elements".into());
+        }
+    }
+
     Ok(Args {
         encoder,
         worker,
@@ -489,6 +578,8 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         metric_mode,
         #[cfg(feature = "vship")]
         qp_range,
+        #[cfg(feature = "vship")]
+        initial_qp,
         #[cfg(feature = "vship")]
         metric_worker,
         #[cfg(feature = "vship")]
@@ -521,12 +612,11 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     apply_defaults(&mut result);
 
     #[cfg(feature = "vship")]
-    if let Some(ref tq) = result.tq {
+    if result.tq.is_some() {
         #[cfg(feature = "avm")]
         if result.encoder == Avm {
             return Err("Target quality is not supported by avm".into());
         }
-        val_range(tq, "-t/--tq")?;
         val_range(
             unsafe { result.qp_range.as_ref().unwrap_unchecked() },
             "-f/--qp",
@@ -727,10 +817,14 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         }
     }
     #[cfg(feature = "vship")]
-    if let Some(ref t) = args.tq
-        && is_cvvdp(tq_target(t))
-    {
-        args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?);
+    if let Some(ref t) = args.tq {
+        #[cfg(not(feature = "multi-tq"))]
+        let is_cvvdp = is_cvvdp(tq_target(t));
+        #[cfg(feature = "multi-tq")]
+        let is_cvvdp = t.iter().any(|tq| is_cvvdp(tq_target(tq)));
+        if is_cvvdp {
+            args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?)
+        }
     }
 
     let thr = available_parallelism() as i32;
@@ -796,6 +890,8 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
 
     print_sum(&args, &inf, &chnks, crop, enc_time);
+    #[cfg(feature = "vship")]
+    print_scores(&args.inp, chnks.len())?;
     rm_dir_all(&work_dir)?;
     Ok(())
 }
@@ -871,6 +967,106 @@ fn print_sum(args: &Args, inf: &VidInf, chnks: &[Chunk], crop: (u32, u32), enc_t
         enc_spd,
         ""
     );
+}
+
+#[cfg(feature = "vship")]
+fn print_scores(inp: &Path, tot: usize) -> Result<(), Xerr> {
+    let scores_file = inp.with_extension("scores.txt");
+    if let Ok(s) = read_to_str(scores_file) {
+        let mut line_iter = s.trim().split('\n');
+
+        let mut ssimu2 = Vec::<f32>::new();
+        let mut butter = Vec::<f32>::new();
+        let mut cvvdp = Vec::<f32>::new();
+        let (mut nssimu2, mut nbutter, mut ncvvdp) = (0, 0, 0);
+        while let Some(line) = line_iter.next() {
+            let header: Vec<&str> = line.split(',').collect();
+            let nfr: u32 = header[2].parse()?;
+            let scores = match header[1] {
+                "ssimulacra2" => {
+                    nssimu2 += 1;
+                    &mut ssimu2
+                },
+                "butteraugli" => {
+                    nbutter += 1;
+                    &mut butter
+                },
+                "cvvdp" => {
+                    ncvvdp += 1;
+                    &mut cvvdp
+                },
+                _ => assume_unreachable(),
+            };
+            for _ in 0..nfr {
+                scores.push(line_iter.next().ok_or("scores file ended prematurely")?.parse()?);
+            }
+        }
+
+        ssimu2.sort_unstable_by(f32::total_cmp);
+        butter.sort_unstable_by(|a, b| b.total_cmp(a));
+        cvvdp.sort_unstable_by(f32::total_cmp);
+
+        macro_rules!  print_metric {
+            ($scores:ident, $name:literal, $cnt:ident) => {
+                if !$scores.is_empty() {
+                    let mut summary = String::new();
+                    let mut title = String::new();
+                    if $cnt == tot {
+                        _ = write!(title, "{}", $name);
+                    } else {
+                        _ = write!(title, "{} ({}/{})", $name, $cnt, tot);
+                    }
+                    let dashes = 33 - title.len();
+                    for _ in 0..dashes / 2 {
+                        _ = write!(summary, "-");
+                    }
+                    _ = write!(summary, "{}", title);
+                    for _ in 0..dashes / 2 + dashes % 2 {
+                        _ = write!(summary, "-");
+                    }
+
+                    let n = $scores.len();
+                    let mean = $scores.iter().sum::<f32>() / n as f32;
+                    let stdev = ($scores.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n as f32).sqrtf();
+                    let median = if n % 2 == 1 {
+                        $scores[n / 2]
+                    } else {
+                        ($scores[n / 2 - 1] + $scores[n / 2]) / 2.0
+                    };
+                    let p5 = if (n * 5) % 100 == 1 {
+                        $scores[n * 5 / 100]
+                    } else {
+                        ($scores[n * 5 / 100 - 1] + $scores[n * 5 / 100]) / 2.0
+                    };
+                    let p95 = if (n * 95) % 100 == 1 {
+                        $scores[n * 95 / 100]
+                    } else {
+                        ($scores[n * 95 / 100 - 1] + $scores[n * 95 / 100]) / 2.0
+                    };
+                    let min = $scores[0];
+                    let max = $scores[n - 1];
+
+                    _ = write!(summary, "
+           Average : {:>12.6}
+Standard Deviation : {:>12.6}
+            Median : {:>12.6}
+    5th percentile : {:>12.6}
+   95th percentile : {:>12.6}
+           Minimum : {:>12.6}
+           Maximum : {:>12.6}\n",
+                        mean, stdev, median, p5, p95, min, max);
+                    println!("{}", summary);
+
+                }
+            }
+        }
+
+        print_metric!(ssimu2, "SSIMULACRA2", nssimu2);
+        print_metric!(butter, "5-Norm", nbutter);
+        print_metric!(cvvdp, "CVVDP", ncvvdp);
+    }
+
+    Ok(())
 }
 
 fn run() -> Result<(), Xerr> {

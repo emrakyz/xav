@@ -236,8 +236,23 @@ pub fn merge_out(
     let (enc_w, enc_h) = (inf.width - crop.1 * 2, inf.height - crop.0 * 2);
     #[cfg(feature = "vship")]
     let dtag = args.disp.map(|d| d.tag(enc_w, enc_h));
+    #[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+    let tq = args.tq;
+    #[cfg(feature = "multi-tq")]
+    // HACK: Only the first TQ is used to construct the TQ MKV tag. Rationale: it is considered
+    // the "main" TQ. (Specifying the metric mode in MKV tags is not supported anyway.)
+    // BUT, maybe this should be the last TQ instead? Since the scores printed at the end of
+    // executions are those of the last computed TQ, presumably the last TQ...
+    let tq = match args.tq {
+        Some(ref tqs) => Some(tqs[0]),
+        None => None
+    };
     #[cfg(feature = "vship")]
-    let cvvdp = args.tq.as_deref().zip(dtag.as_deref());
+    let tq_str = tq.map(|tq| {
+        format!("{}-{}", tq.0, tq.1)
+    });
+    #[cfg(feature = "vship")]
+    let cvvdp = tq_str.as_deref().zip(dtag.as_deref());
     #[cfg(not(feature = "vship"))]
     let cvvdp: Option<(&str, &str)> = None;
     let want_extras = args.ranges.is_none();

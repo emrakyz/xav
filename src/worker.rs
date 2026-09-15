@@ -18,12 +18,36 @@ pub struct WorkPkg {
 }
 
 #[cfg(feature = "vship")]
+#[derive(PartialEq, Eq)]
+pub enum MetricType {
+    SSIMULACRA2,
+    BUTTERAUGLI,
+    CVVDP,
+}
+
+#[cfg(feature = "vship")]
+pub struct WritePkg {
+    pub chnk_idx: u16,
+    pub metric: MetricType,
+    pub scores: Vec<f32>,
+}
+
+#[cfg(feature = "vship")]
+pub enum TqCoordPkg {
+    Fwd(WorkPkg),
+    Done(WritePkg),
+}
+
+#[cfg(feature = "vship")]
 pub struct TQState {
     pub probes: Vec<Probe>,
     pub probe_szs: Vec<(f32, u64)>,
     pub search_min: f32,
     pub search_max: f32,
+    pub search_init: f32,
     pub round: u8,
+    #[cfg(feature = "multi-tq")]
+    pub accum_round: u8,
     pub target: f32,
     pub last_crf: f32,
     pub final_enc: bool,

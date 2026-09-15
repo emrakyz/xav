@@ -40,6 +40,8 @@ use crate::tq::{
     calc_cvvdp_10b_vvdec, calc_cvvdp_rem_vvdec, calc_ssimu2_8b_vvdec, calc_ssimu2_10b_vvdec,
     calc_ssimu2_rem_vvdec, make_vvdec, prep_vvdec,
 };
+#[cfg(feature = "multi-tq")]
+use crate::tq::{comp_butter, comp_cvvdp, comp_ssimu2};
 use crate::{
     Args,
     chan::{Semaphore, SeqRing, sem_release, spmc_close, spmc_recv, spmc_send},
@@ -80,15 +82,15 @@ use crate::{
     pipeline::MetricProgs,
     thread::{PHandle, available_parallelism, pspawn},
     tq::{
-        Probe, ProbeDec, ProbeLog, calc_butter_8b_dav1d, calc_butter_8b_ff, calc_butter_10b_dav1d,
-        calc_butter_10b_ff, calc_butter_rem_dav1d, calc_butter_rem_ff, calc_cvvdp_8b_dav1d,
-        calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff, calc_cvvdp_rem_dav1d,
-        calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff, calc_ssimu2_10b_dav1d,
-        calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff, interpolate_crf, make_dav1d,
-        make_ff, prep_dav1d, prep_ff,
+        Probe, ProbeDec, ProbeLog, aggregate_scores, calc_butter_8b_dav1d, calc_butter_8b_ff,
+        calc_butter_10b_dav1d, calc_butter_10b_ff, calc_butter_rem_dav1d, calc_butter_rem_ff,
+        calc_cvvdp_8b_dav1d, calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff,
+        calc_cvvdp_rem_dav1d, calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff,
+        calc_ssimu2_10b_dav1d, calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff,
+        interpolate_crf, make_dav1d, make_ff, prep_dav1d, prep_ff,
     },
     vship::{Disp, PinnedBuf, VshipProcessor, init_device},
-    worker::TQState,
+    worker::{MetricType, TQState, TqCoordPkg, WritePkg},
 };
 #[cfg(feature = "vship")]
 use crate::{encoder::set_svt_crf, interp::bisect};
@@ -442,13 +444,19 @@ struct TQWorkerCtx<'a> {
     inf: &'a VidInf,
     pipe: &'a Pipeline,
     work_dir: &'a Path,
+    #[cfg(not(feature = "multi-tq"))]
     metric_mode: &'a str,
+    #[cfg(feature = "multi-tq")]
+    metric_mode: &'a Vec<String>,
     prog: &'a Arc<ProgsTrack>,
     done_tx: &'a SeqRing,
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     stats: Option<&'a Arc<WorkerStats>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
+    #[cfg(not(feature = "multi-tq"))]
     tq_ctx: &'a TQCtx,
+    #[cfg(feature = "multi-tq")]
+    tq_ctx: &'a Vec<TQCtx>,
     use_alt_param: bool,
     worker_cnt: usize,
     threads: i32,
@@ -740,6 +748,7 @@ struct TQCtx {
     tolerance: f32,
     qp_min: f32,
     qp_max: f32,
+    qp_init: f32,
     use_butter: bool,
     use_cvvdp: bool,
 }
@@ -803,8 +812,24 @@ fn complete_chnk(
     ctx: &TQWorkerCtx,
     tq_state: &TQState,
     best: &Probe,
+    scores: Vec<f32>,
+    is_cvvdp: bool,
+    is_butter: bool,
 ) {
-    unsafe { mpsc_send(ctx.done_tx, 1) };
+    let metric = if is_cvvdp {
+        MetricType::CVVDP
+    } else if is_butter {
+        MetricType::BUTTERAUGLI
+    } else {
+        MetricType::SSIMULACRA2
+    };
+    let pkg = TqCoordPkg::Done(WritePkg {
+        chnk_idx,
+        metric,
+        scores,
+    });
+
+    unsafe { mpsc_send(ctx.done_tx, Box::into_raw(Box::new(pkg)) as u64) };
 
     let comp = ChunkComp {
         idx: chnk_idx,
@@ -842,7 +867,10 @@ fn complete_chnk(
         final_crf: best.crf,
         final_score: best.score,
         final_sz: file_sz,
+        #[cfg(not(feature = "multi-tq"))]
         round: tq_state.round,
+        #[cfg(feature = "multi-tq")]
+        round: tq_state.accum_round,
         frames: chnk_frames,
     };
     write_chnk_log(&log_entry, ctx.work_dir);
@@ -895,7 +923,9 @@ const fn split_unused(_: &Path, _: &str) -> SplitPath {
     SplitPath::unused()
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
+type MetricLoopFn = fn(&SeqRing, &SeqRing, &TQWorkerCtx, usize, Option<Disp>);
+#[cfg(feature = "multi-tq")]
 type MetricLoopFn = fn(&SeqRing, &SeqRing, &TQWorkerCtx, usize, Option<Disp>);
 
 #[cfg(feature = "vship")]
@@ -907,8 +937,12 @@ macro_rules! make_metric_loop {
         $retain:expr,
         $output:expr,
         $mk_split:expr,
-        $calc:expr
+        $calc:expr,
+        $calc_ssimu2:expr,
+        $calc_butter:expr,
+        $calc_cvvdp:expr
     ) => {
+        #[allow(unused_mut)]
         fn $name(
             rx: &SeqRing,
             work_tx: &SeqRing,
@@ -916,6 +950,9 @@ macro_rules! make_metric_loop {
             worker_id: usize,
             disp: Option<Disp>,
         ) {
+            #[cfg(feature = "multi-tq")]
+            let mut converged = 0;
+
             let mut vship: Option<VshipProcessor> = None;
             let mut dec: Option<ProbeDec> = None;
             let mut unpacked_buf =
@@ -923,16 +960,40 @@ macro_rules! make_metric_loop {
             let mut enc_path = OutPath::new(ctx.work_dir, ctx.ext);
             let mut split_path = ($mk_split)(ctx.work_dir, ctx.ext);
 
+            #[cfg(feature = "multi-tq")]
+            let copy_dec_frames = {
+                let mut metric_types = ctx.tq_ctx.iter().map(|tq| {
+                    if tq.use_butter {
+                        MetricType::BUTTERAUGLI
+                    } else if tq.use_cvvdp {
+                        MetricType::CVVDP
+                    } else {
+                        MetricType::SSIMULACRA2
+                    }
+                });
+                let first = unsafe { metric_types.next().unwrap_unchecked() };
+                metric_types.any(|m| m != first)
+            };
+
+            #[cfg(not(feature = "multi-tq"))]
+            let (tq_ctx, metric_mode) = (&ctx.tq_ctx, &ctx.metric_mode);
+            #[cfg(feature = "multi-tq")]
+            let tq_idx = converged;
+            #[cfg(feature = "multi-tq")]
+            let (tq_ctxs, mut tq_ctx, mut metric_mode) =
+                (&ctx.tq_ctx, &ctx.tq_ctx[tq_idx], &ctx.metric_mode[tq_idx]);
+
             loop {
                 let m = unsafe { mpmc_recv(rx) };
                 if m == 0 {
                     cold_path();
                     break;
                 }
+
                 let mut pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
                 let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
                 if tq_st.final_enc {
-                    let best = ctx.tq_ctx.best_probe(&tq_st.probes);
+                    let best = tq_ctx.best_probe(&tq_st.probes);
                     let sz = ($output)(
                         enc_path.set(pkg.chnk.idx),
                         tq_st,
@@ -941,10 +1002,21 @@ macro_rules! make_metric_loop {
                         best.crf,
                         pkg.probe.len(),
                     );
-                    complete_chnk(pkg.chnk.idx, pkg.frame_cnt, sz, ctx, tq_st, best);
+                    complete_chnk(
+                        pkg.chnk.idx,
+                        pkg.frame_cnt,
+                        sz,
+                        ctx,
+                        tq_st,
+                        best,
+                        vec![],
+                        tq_ctx.use_cvvdp,
+                        tq_ctx.use_butter,
+                    );
                     continue;
                 }
 
+                #[cfg(not(feature = "multi-tq"))]
                 if vship.is_none() {
                     let v = VshipProcessor::new(
                         pkg.width,
@@ -956,6 +1028,26 @@ macro_rules! make_metric_loop {
                     )
                     .unwrap_or_else(|e| fatal(e));
                     vship = Some(v);
+                }
+                #[cfg(feature = "multi-tq")]
+                if vship.is_none() {
+                    cold_path();
+                    if tq_ctx.use_butter {
+                        let v =
+                            VshipProcessor::new(pkg.width, pkg.height, ctx.inf, false, true, disp)
+                                .unwrap_or_else(|e| fatal(e));
+                        vship = Some(v);
+                    } else if tq_ctx.use_cvvdp {
+                        let v =
+                            VshipProcessor::new(pkg.width, pkg.height, ctx.inf, true, false, disp)
+                                .unwrap_or_else(|e| fatal(e));
+                        vship = Some(v);
+                    } else {
+                        let v =
+                            VshipProcessor::new(pkg.width, pkg.height, ctx.inf, false, false, disp)
+                                .unwrap_or_else(|e| fatal(e));
+                        vship = Some(v);
+                    }
                 }
 
                 let tq_st = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() };
@@ -975,35 +1067,182 @@ macro_rules! make_metric_loop {
                     crf,
                     last_score,
                 };
-                let score = ($calc)(
+
+                #[cfg(not(feature = "multi-tq"))]
+                let calc = $calc;
+                #[cfg(feature = "multi-tq")]
+                let calc = if tq_ctx.use_cvvdp {
+                    $calc_cvvdp
+                } else if tq_ctx.use_butter {
+                    $calc_butter
+                } else {
+                    $calc_ssimu2
+                };
+                let mut calc_res = (calc)(
                     &pkg,
                     d,
                     ctx.pipe,
                     unsafe { vship.as_ref().unwrap_unchecked() },
-                    ctx.metric_mode,
+                    metric_mode,
                     &mut unpacked_buf,
                     &mp,
+                    #[cfg(feature = "multi-tq")]
+                    tq_idx,
+                    #[cfg(feature = "multi-tq")]
+                    copy_dec_frames,
+                );
+                #[cfg(not(feature = "multi-tq"))]
+                let scores = calc_res;
+                #[cfg(feature = "multi-tq")]
+                let (mut scores, copied_framedata) = calc_res;
+                let mut score = aggregate_scores(
+                    &mut scores.clone(),
+                    &ctx.pipe,
+                    metric_mode,
+                    #[cfg(feature = "multi-tq")]
+                    tq_idx,
                 );
 
+                let mut last_tq_converged = tq_ctx.converged(score);
+                #[cfg(feature = "multi-tq")]
+                let convergence_occurred = {
+                    let convergence_occurred = last_tq_converged;
+                    // Start new TQ loop:
+                    while last_tq_converged {
+                        converged += 1;
+                        if converged == tq_ctxs.len() {
+                            break;
+                        }
+
+                        // Get this chunk's score in relation to new TQ:
+                        let same_metric = tq_ctx.use_cvvdp == tq_ctxs[converged].use_cvvdp
+                            && tq_ctx.use_butter == tq_ctxs[converged].use_butter;
+                        if !same_metric {
+                            let compute = if tq_ctxs[converged].use_cvvdp {
+                                comp_cvvdp
+                            } else if tq_ctxs[converged].use_butter {
+                                comp_butter
+                            } else {
+                                comp_ssimu2
+                            };
+
+                            if tq_ctxs[converged].use_butter {
+                                let v = VshipProcessor::new(
+                                    pkg.width, pkg.height, ctx.inf, false, true, disp,
+                                )
+                                .unwrap_or_else(|e| fatal(e));
+                                vship = Some(v);
+                            } else if tq_ctxs[converged].use_cvvdp {
+                                let v = VshipProcessor::new(
+                                    pkg.width, pkg.height, ctx.inf, true, false, disp,
+                                )
+                                .unwrap_or_else(|e| fatal(e));
+                                vship = Some(v);
+                            } else {
+                                let v = VshipProcessor::new(
+                                    pkg.width, pkg.height, ctx.inf, false, false, disp,
+                                )
+                                .unwrap_or_else(|e| fatal(e));
+                                vship = Some(v);
+                            }
+
+                            let vsh = unsafe { vship.as_ref().unwrap_unchecked() };
+
+                            let reset_cvvdp = ctx.pipe.reset_cvvdp[converged];
+                            let new_metric_mode = &ctx.metric_mode[converged];
+                            let cvvdp_per_frame = reset_cvvdp
+                                && (new_metric_mode.starts_with('p') || new_metric_mode == "min");
+                            if reset_cvvdp {
+                                vsh.reset_cvvdp();
+                            }
+
+                            if cvvdp_per_frame {
+                                for frame_idx in 0..pkg.frame_cnt {
+                                    scores[frame_idx] = ((compute)(
+                                        vsh,
+                                        copied_framedata[frame_idx].inp_planes_ptr,
+                                        copied_framedata[frame_idx].out_planes_ptr,
+                                        copied_framedata[frame_idx].inp_strides,
+                                        copied_framedata[frame_idx].out_strides,
+                                    ));
+                                    vsh.reset_cvvdp_score();
+                                }
+                            } else {
+                                for frame_idx in 0..pkg.frame_cnt {
+                                    scores[frame_idx] = ((compute)(
+                                        vsh,
+                                        copied_framedata[frame_idx].inp_planes_ptr,
+                                        copied_framedata[frame_idx].out_planes_ptr,
+                                        copied_framedata[frame_idx].inp_strides,
+                                        copied_framedata[frame_idx].out_strides,
+                                    ));
+                                }
+                            }
+                        }
+                        score = aggregate_scores(
+                            &mut scores.clone(),
+                            &ctx.pipe,
+                            &ctx.metric_mode[converged],
+                            converged,
+                        );
+                        last_tq_converged = tq_ctxs[converged].converged(score);
+                        tq_ctx = &tq_ctxs[converged];
+                        metric_mode = &ctx.metric_mode[converged];
+                    }
+
+                    convergence_occurred
+                };
                 ($retain)(&mut pkg, score);
 
                 let tq_state = unsafe { pkg.tq_state.as_mut().unwrap_unchecked() };
 
-                let should_complete = ctx.tq_ctx.converged(score)
+                #[cfg(feature = "multi-tq")]
+                if convergence_occurred && converged < tq_ctxs.len() {
+                    // Prepare TQState for next TQ; partial reset,
+                    // sort of like "starting again" with a more limited CRF search range.
+                    tq_state.probes = Vec::new();
+                    tq_state.probe_szs = vec![(crf, probe_sz)];
+                    if tq_state.last_crf < tq_state.search_init {
+                        tq_state.search_max = tq_state.last_crf;
+                    } else if tq_state.last_crf > tq_state.search_init {
+                        tq_state.search_min = tq_state.last_crf;
+                    }
+                    tq_state.search_init = bisect(tq_state.search_min, tq_state.search_max);
+                    tq_state.round = 0;
+                    tq_state.target = tq_ctxs[converged].target;
+                    tq_state.best_diff = f32::INFINITY;
+                }
+
+                #[cfg(not(feature = "multi-tq"))]
+                let is_converged = last_tq_converged;
+                #[cfg(feature = "multi-tq")]
+                let is_converged = converged == tq_ctxs.len();
+                let should_complete = is_converged
                     || tq_state
                         .probes
                         .iter()
                         .any(|p| (p.crf - crf) * (p.score - score) >= 0.0)
-                    || ctx.tq_ctx.up_bounds(tq_state, score);
+                    || tq_ctx.up_bounds(tq_state, score);
 
                 tq_state.probes.push(Probe { crf, score });
 
                 if should_complete {
-                    let best = ctx.tq_ctx.best_probe(&tq_state.probes);
+                    #[cfg(feature = "multi-tq")]
+                    {
+                        // Reset converged count for next TQ:
+                        converged = 0;
+                    }
+
+                    let best = tq_ctx.best_probe(&tq_state.probes);
                     if ctx.use_alt_param {
                         tq_state.final_enc = true;
                         tq_state.last_crf = best.crf;
-                        unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
+                        unsafe {
+                            mpsc_send(
+                                work_tx,
+                                Box::into_raw(Box::new(TqCoordPkg::Fwd(*pkg))) as u64,
+                            )
+                        };
                     } else {
                         let sz = ($output)(
                             enc_path.set(pkg.chnk.idx),
@@ -1013,10 +1252,25 @@ macro_rules! make_metric_loop {
                             best.crf,
                             pkg.probe.len(),
                         );
-                        complete_chnk(pkg.chnk.idx, pkg.frame_cnt, sz, ctx, tq_state, best);
+                        complete_chnk(
+                            pkg.chnk.idx,
+                            pkg.frame_cnt,
+                            sz,
+                            ctx,
+                            tq_state,
+                            best,
+                            scores,
+                            tq_ctx.use_cvvdp,
+                            tq_ctx.use_butter,
+                        );
                     }
                 } else {
-                    unsafe { mpsc_send(work_tx, Box::into_raw(pkg) as u64) };
+                    unsafe {
+                        mpsc_send(
+                            work_tx,
+                            Box::into_raw(Box::new(TqCoordPkg::Fwd(*pkg))) as u64,
+                        )
+                    };
                 }
             }
         }
@@ -1050,19 +1304,66 @@ macro_rules! make_metric_group {
         $cvr:ident,
         $c_cvr:expr
     ) => {
-        make_metric_loop!($ss8, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss8);
-        make_metric_loop!($ss10, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss10);
-        make_metric_loop!($ssr, $mk_dec, $prep, $retain, $output, $mk_split, $c_ssr);
-        make_metric_loop!($bu8, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu8);
-        make_metric_loop!($bu10, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu10);
-        make_metric_loop!($bur, $mk_dec, $prep, $retain, $output, $mk_split, $c_bur);
-        make_metric_loop!($cv8, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv8);
-        make_metric_loop!($cv10, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv10);
-        make_metric_loop!($cvr, $mk_dec, $prep, $retain, $output, $mk_split, $c_cvr);
+        make_metric_loop!(
+            $ss8, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss8, _, _, _
+        );
+        make_metric_loop!(
+            $ss10, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss10, _, _, _
+        );
+        make_metric_loop!(
+            $ssr, $mk_dec, $prep, $retain, $output, $mk_split, $c_ssr, _, _, _
+        );
+        make_metric_loop!(
+            $bu8, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu8, _, _, _
+        );
+        make_metric_loop!(
+            $bu10, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu10, _, _, _
+        );
+        make_metric_loop!(
+            $bur, $mk_dec, $prep, $retain, $output, $mk_split, $c_bur, _, _, _
+        );
+        make_metric_loop!(
+            $cv8, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv8, _, _, _
+        );
+        make_metric_loop!(
+            $cv10, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv10, _, _, _
+        );
+        make_metric_loop!(
+            $cvr, $mk_dec, $prep, $retain, $output, $mk_split, $c_cvr, _, _, _
+        );
+    };
+    (
+        $mk_dec:expr,
+        $prep:expr,
+        $retain:expr,
+        $output:expr,
+        $mk_split:expr,
+        $m8:ident,
+        $m10:ident,
+        $mr:ident,
+        $c_ss8:expr,
+        $c_ss10:expr,
+        $c_ssr:expr,
+        $c_bu8:expr,
+        $c_bu10:expr,
+        $c_bur:expr,
+        $c_cv8:expr,
+        $c_cv10:expr,
+        $c_cvr:expr
+    ) => {
+        make_metric_loop!(
+            $m8, $mk_dec, $prep, $retain, $output, $mk_split, _, $c_ss8, $c_bu8, $c_cv8
+        );
+        make_metric_loop!(
+            $m10, $mk_dec, $prep, $retain, $output, $mk_split, _, $c_ss10, $c_bu10, $c_cv10
+        );
+        make_metric_loop!(
+            $mr, $mk_dec, $prep, $retain, $output, $mk_split, _, $c_ssr, $c_bur, $c_cvr
+        );
     };
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
 make_metric_group!(
     make_dav1d,
     prep_dav1d,
@@ -1088,7 +1389,27 @@ make_metric_group!(
     met_d_cv_rem,
     calc_cvvdp_rem_dav1d
 );
-#[cfg(feature = "vship")]
+#[cfg(feature = "multi-tq")]
+make_metric_group!(
+    make_dav1d,
+    prep_dav1d,
+    retain_swap,
+    output_bytes,
+    split_unused,
+    met_d_8b,
+    met_d_10b,
+    met_d_rem,
+    calc_ssimu2_8b_dav1d,
+    calc_ssimu2_10b_dav1d,
+    calc_ssimu2_rem_dav1d,
+    calc_butter_8b_dav1d,
+    calc_butter_10b_dav1d,
+    calc_butter_rem_dav1d,
+    calc_cvvdp_8b_dav1d,
+    calc_cvvdp_10b_dav1d,
+    calc_cvvdp_rem_dav1d
+);
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
 make_metric_group!(
     make_dav1d,
     prep_dav1d,
@@ -1114,7 +1435,27 @@ make_metric_group!(
     met_da_cv_rem,
     calc_cvvdp_rem_dav1d
 );
-#[cfg(all(feature = "vship", feature = "vvenc"))]
+#[cfg(feature = "multi-tq")]
+make_metric_group!(
+    make_dav1d,
+    prep_dav1d,
+    retain_noop,
+    output_probe,
+    split_unused,
+    met_da_8b,
+    met_da_10b,
+    met_da_rem,
+    calc_ssimu2_8b_dav1d,
+    calc_ssimu2_10b_dav1d,
+    calc_ssimu2_rem_dav1d,
+    calc_butter_8b_dav1d,
+    calc_butter_10b_dav1d,
+    calc_butter_rem_dav1d,
+    calc_cvvdp_8b_dav1d,
+    calc_cvvdp_10b_dav1d,
+    calc_cvvdp_rem_dav1d
+);
+#[cfg(all(feature = "vvenc", feature = "vship", not(feature = "multi-tq")))]
 make_metric_group!(
     make_vvdec,
     prep_vvdec,
@@ -1140,7 +1481,27 @@ make_metric_group!(
     met_v_cv_rem,
     calc_cvvdp_rem_vvdec
 );
-#[cfg(all(feature = "vship", feature = "vvenc"))]
+#[cfg(all(feature = "vvenc", feature = "multi-tq"))]
+make_metric_group!(
+    make_vvdec,
+    prep_vvdec,
+    retain_swap,
+    output_bytes,
+    split_unused,
+    met_v_8b,
+    met_v_10b,
+    met_v_rem,
+    calc_ssimu2_8b_vvdec,
+    calc_ssimu2_10b_vvdec,
+    calc_ssimu2_rem_vvdec,
+    calc_butter_8b_vvdec,
+    calc_butter_10b_vvdec,
+    calc_butter_rem_vvdec,
+    calc_cvvdp_8b_vvdec,
+    calc_cvvdp_10b_vvdec,
+    calc_cvvdp_rem_vvdec
+);
+#[cfg(all(feature = "vvenc", feature = "vship", not(feature = "multi-tq")))]
 make_metric_group!(
     make_vvdec,
     prep_vvdec,
@@ -1166,7 +1527,27 @@ make_metric_group!(
     met_va_cv_rem,
     calc_cvvdp_rem_vvdec
 );
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vvenc", feature = "multi-tq"))]
+make_metric_group!(
+    make_vvdec,
+    prep_vvdec,
+    retain_noop,
+    output_probe,
+    split_unused,
+    met_va_8b,
+    met_va_10b,
+    met_va_rem,
+    calc_ssimu2_8b_vvdec,
+    calc_ssimu2_10b_vvdec,
+    calc_ssimu2_rem_vvdec,
+    calc_butter_8b_vvdec,
+    calc_butter_10b_vvdec,
+    calc_butter_rem_vvdec,
+    calc_cvvdp_8b_vvdec,
+    calc_cvvdp_10b_vvdec,
+    calc_cvvdp_rem_vvdec
+);
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
 make_metric_group!(
     make_ff,
     prep_ff,
@@ -1192,7 +1573,27 @@ make_metric_group!(
     met_f_cv_rem,
     calc_cvvdp_rem_ff
 );
-#[cfg(feature = "vship")]
+#[cfg(feature = "multi-tq")]
+make_metric_group!(
+    make_ff,
+    prep_ff,
+    retain_noop,
+    output_copy,
+    SplitPath::new,
+    met_f_8b,
+    met_f_10b,
+    met_f_rem,
+    calc_ssimu2_8b_ff,
+    calc_ssimu2_10b_ff,
+    calc_ssimu2_rem_ff,
+    calc_butter_8b_ff,
+    calc_butter_10b_ff,
+    calc_butter_rem_ff,
+    calc_cvvdp_8b_ff,
+    calc_cvvdp_10b_ff,
+    calc_cvvdp_rem_ff
+);
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
 make_metric_group!(
     make_ff,
     prep_ff,
@@ -1218,6 +1619,26 @@ make_metric_group!(
     met_fa_cv_rem,
     calc_cvvdp_rem_ff
 );
+#[cfg(feature = "multi-tq")]
+make_metric_group!(
+    make_ff,
+    prep_ff,
+    retain_noop,
+    output_stat,
+    SplitPath::new,
+    met_fa_8b,
+    met_fa_10b,
+    met_fa_rem,
+    calc_ssimu2_8b_ff,
+    calc_ssimu2_10b_ff,
+    calc_ssimu2_rem_ff,
+    calc_butter_8b_ff,
+    calc_butter_10b_ff,
+    calc_butter_rem_ff,
+    calc_cvvdp_8b_ff,
+    calc_cvvdp_10b_ff,
+    calc_cvvdp_rem_ff
+);
 
 #[cfg(feature = "vship")]
 #[cold]
@@ -1239,7 +1660,13 @@ fn by_shape(
 
 #[cfg(feature = "vship")]
 #[cold]
-fn dav1d_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+#[inline(always)]
+fn dav1d_loop(
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    #[cfg(not(feature = "multi-tq"))]
     if tq.use_butter {
         by_shape(inf, pipe, met_d_bu_8b, met_d_bu_10b, met_d_bu_rem)
     } else if tq.use_cvvdp {
@@ -1247,11 +1674,19 @@ fn dav1d_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     } else {
         by_shape(inf, pipe, met_d_ss_8b, met_d_ss_10b, met_d_ss_rem)
     }
+    #[cfg(feature = "multi-tq")]
+    by_shape(inf, pipe, met_d_8b, met_d_10b, met_d_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
-fn dav1d_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+#[inline(always)]
+fn dav1d_alt_loop(
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    #[cfg(not(feature = "multi-tq"))]
     if tq.use_butter {
         by_shape(inf, pipe, met_da_bu_8b, met_da_bu_10b, met_da_bu_rem)
     } else if tq.use_cvvdp {
@@ -1259,11 +1694,18 @@ fn dav1d_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     } else {
         by_shape(inf, pipe, met_da_ss_8b, met_da_ss_10b, met_da_ss_rem)
     }
+    #[cfg(feature = "multi-tq")]
+    by_shape(inf, pipe, met_da_8b, met_da_10b, met_da_rem)
 }
 
 #[cfg(all(feature = "vship", feature = "vvenc"))]
 #[cold]
-fn vvdec_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+fn vvdec_loop(
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    #[cfg(not(feature = "multi-tq"))]
     if tq.use_butter {
         by_shape(inf, pipe, met_v_bu_8b, met_v_bu_10b, met_v_bu_rem)
     } else if tq.use_cvvdp {
@@ -1271,11 +1713,18 @@ fn vvdec_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     } else {
         by_shape(inf, pipe, met_v_ss_8b, met_v_ss_10b, met_v_ss_rem)
     }
+    #[cfg(feature = "multi-tq")]
+    by_shape(inf, pipe, met_v_8b, met_v_10b, met_v_rem)
 }
 
 #[cfg(all(feature = "vship", feature = "vvenc"))]
 #[cold]
-fn vvdec_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+fn vvdec_alt_loop(
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    #[cfg(not(feature = "multi-tq"))]
     if tq.use_butter {
         by_shape(inf, pipe, met_va_bu_8b, met_va_bu_10b, met_va_bu_rem)
     } else if tq.use_cvvdp {
@@ -1283,11 +1732,19 @@ fn vvdec_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     } else {
         by_shape(inf, pipe, met_va_ss_8b, met_va_ss_10b, met_va_ss_rem)
     }
+    #[cfg(feature = "multi-tq")]
+    by_shape(inf, pipe, met_va_8b, met_va_10b, met_va_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
-fn ff_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+#[inline(always)]
+fn ff_loop(
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    #[cfg(not(feature = "multi-tq"))]
     if tq.use_butter {
         by_shape(inf, pipe, met_f_bu_8b, met_f_bu_10b, met_f_bu_rem)
     } else if tq.use_cvvdp {
@@ -1295,11 +1752,19 @@ fn ff_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     } else {
         by_shape(inf, pipe, met_f_ss_8b, met_f_ss_10b, met_f_ss_rem)
     }
+    #[cfg(feature = "multi-tq")]
+    by_shape(inf, pipe, met_f_8b, met_f_10b, met_f_rem)
 }
 
 #[cfg(feature = "vship")]
 #[cold]
-fn ff_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+#[inline(always)]
+fn ff_alt_loop(
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
+    inf: &VidInf,
+    pipe: &Pipeline,
+) -> MetricLoopFn {
+    #[cfg(not(feature = "multi-tq"))]
     if tq.use_butter {
         by_shape(inf, pipe, met_fa_bu_8b, met_fa_bu_10b, met_fa_bu_rem)
     } else if tq.use_cvvdp {
@@ -1307,6 +1772,8 @@ fn ff_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     } else {
         by_shape(inf, pipe, met_fa_ss_8b, met_fa_ss_10b, met_fa_ss_rem)
     }
+    #[cfg(feature = "multi-tq")]
+    by_shape(inf, pipe, met_fa_8b, met_fa_10b, met_fa_rem)
 }
 
 #[cfg(feature = "vship")]
@@ -1315,28 +1782,30 @@ fn ff_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
 fn resolve_metric_loop(
     encoder: Encoder,
     use_alt: bool,
-    tq: &TQCtx,
+    #[cfg(not(feature = "multi-tq"))] tq: &TQCtx,
     inf: &VidInf,
     pipe: &Pipeline,
 ) -> MetricLoopFn {
-    match (encoder, use_alt) {
+    let loop_fn = match (encoder, use_alt) {
         #[cfg(feature = "vvenc")]
-        (Vvenc, false) => vvdec_loop(tq, inf, pipe),
+        (Vvenc, false) => vvdec_loop,
         #[cfg(feature = "vvenc")]
-        (Vvenc, true) => vvdec_alt_loop(tq, inf, pipe),
-        (SvtAv1, false) => dav1d_loop(tq, inf, pipe),
-        (SvtAv1, true) => dav1d_alt_loop(tq, inf, pipe),
-        (_, false) => ff_loop(tq, inf, pipe),
-        (_, true) => ff_alt_loop(tq, inf, pipe),
-    }
+        (Vvenc, true) => vvdec_alt_loop,
+        (SvtAv1, false) => dav1d_loop,
+        (SvtAv1, true) => dav1d_alt_loop,
+        (_, false) => ff_loop,
+        (_, true) => ff_alt_loop,
+    };
+    #[cfg(feature = "multi-tq")]
+    return loop_fn(inf, pipe);
+    #[cfg(not(feature = "multi-tq"))]
+    loop_fn(tq, inf, pipe)
 }
 
 #[cfg(feature = "vship")]
 #[must_use]
-pub fn tq_target(tq: &str) -> f32 {
-    let mut p = tq.split('-').filter_map(|s| s.parse().ok());
-    let a = unsafe { p.next().unwrap_unchecked() };
-    f32::midpoint(a, unsafe { p.next().unwrap_unchecked() })
+pub fn tq_target(tq: &(f32, f32)) -> f32 {
+    f32::midpoint(tq.0, tq.1)
 }
 
 #[cfg(feature = "vship")]
@@ -1345,33 +1814,84 @@ pub const fn is_cvvdp(target: f32) -> bool {
     target > 8.0 && target <= 10.0
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", not(feature = "multi-tq")))]
 fn parse_tq_ctx(args: &Args) -> TQCtx {
-    let tq_str = unsafe { args.tq.as_ref().unwrap_unchecked() };
     let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
-    let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
+    let tq_parts = unsafe { args.tq.as_ref().unwrap_unchecked() };
     let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
-    let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
+    let tq_target = f32::midpoint(tq_parts.0, tq_parts.1);
+    let qp_init = args.initial_qp.unwrap_or(bisect(qp_parts[0], qp_parts[1]));
     TQCtx {
         target: tq_target,
-        tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
+        tolerance: (tq_parts.1 - tq_parts.0) / 2.0,
         qp_min: qp_parts[0],
         qp_max: qp_parts[1],
+        qp_init,
         use_butter: tq_target < 8.0,
         use_cvvdp: is_cvvdp(tq_target),
     }
 }
+#[cfg(feature = "multi-tq")]
+fn parse_tq_ctx(args: &Args) -> Vec<TQCtx> {
+    let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
+    let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
+
+    let qp_init = args.initial_qp.unwrap_or(bisect(qp_parts[0], qp_parts[1]));
+
+    let tq_ranges = unsafe { args.tq.as_ref().unwrap_unchecked() };
+    let mut tqs = Vec::new();
+    for &(min, max) in tq_ranges.iter() {
+        let tq_target = f32::midpoint(min, max);
+        tqs.push(TQCtx {
+            target: tq_target,
+            tolerance: (max - min) / 2.0,
+            qp_min: qp_parts[0],
+            qp_max: qp_parts[1],
+            qp_init,
+            use_butter: tq_target < 8.0,
+            use_cvvdp: is_cvvdp(tq_target),
+        });
+    }
+    tqs
+}
 
 #[cfg(feature = "vship")]
-fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphore) {
+fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphore, inp: &Path) {
     let mut completed = 0;
     while completed < tot_chnks {
-        let m = unsafe { mpsc_recv(coord) };
-        if m == 1 {
-            sem_release(permits);
-            completed += 1;
-        } else {
-            unsafe { spmc_send(enc, m) };
+        let m = unsafe { Box::from_raw(mpsc_recv(coord) as *mut TqCoordPkg) };
+        match *m {
+            TqCoordPkg::Done(pkg) => {
+                sem_release(permits);
+                completed += 1;
+
+                // Write scores to disk:
+                if !pkg.scores.is_empty() {
+                    let path = inp.with_extension("scores.txt");
+                    let mut out = String::new();
+                    let metric = match pkg.metric {
+                        MetricType::SSIMULACRA2 => "ssimulacra2",
+                        MetricType::BUTTERAUGLI => "butteraugli",
+                        MetricType::CVVDP => "cvvdp",
+                    };
+                    _ = writeln!(out, "{},{},{}", pkg.chnk_idx, metric, pkg.scores.len());
+                    for score in pkg.scores.iter() {
+                        _ = writeln!(out, "{}", score);
+                    }
+
+                    if let Ok(mut file) = OpenOptions::new()
+                        .create(true)
+                        .truncate(completed == 1)
+                        .append(true)
+                        .open(path)
+                    {
+                        _ = file.write_all(out.as_bytes());
+                    }
+                }
+            }
+            TqCoordPkg::Fwd(pkg) => {
+                unsafe { spmc_send(enc, Box::into_raw(Box::new(pkg)) as u64) };
+            }
         }
     }
     unsafe { spmc_close(enc) };
@@ -1381,7 +1901,13 @@ fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize, permits: &Semaphor
 #[inline]
 fn tq_search_crf(tq: &mut TQState, encoder: Encoder) -> f32 {
     tq.round += 1;
-    let c = if tq.round <= 2 {
+    #[cfg(feature = "multi-tq")]
+    {
+        tq.accum_round += 1;
+    }
+    let c = if tq.round == 1 {
+        tq.search_init
+    } else if tq.round <= 2 {
         bisect(tq.search_min, tq.search_max)
     } else {
         interpolate_crf(&tq.probes, tq.target, tq.round)
@@ -1413,7 +1939,7 @@ macro_rules! make_tq_loop {
             tx: &SeqRing,
             ctx: &EncWorkerCtx,
             enc: &TqEncParams,
-            tq_ctx: &TQCtx,
+            init_tq_ctx: &TQCtx,
             worker_id: usize,
         ) {
             let &TqEncParams {
@@ -1439,10 +1965,13 @@ macro_rules! make_tq_loop {
                 let tq = $pkg.tq_state.get_or_insert_with(|| TQState {
                     probes: Vec::new(),
                     probe_szs: Vec::new(),
-                    search_min: tq_ctx.qp_min,
-                    search_max: tq_ctx.qp_max,
+                    search_min: init_tq_ctx.qp_min,
+                    search_max: init_tq_ctx.qp_max,
+                    search_init: init_tq_ctx.qp_init,
                     round: 0,
-                    target: tq_ctx.target,
+                    #[cfg(feature = "multi-tq")]
+                    accum_round: 0,
+                    target: init_tq_ctx.target,
                     last_crf: 0.0,
                     final_enc: false,
                     best_probe: Vec::new(),
@@ -1552,6 +2081,7 @@ fn spawn_tq_dec(
     strat: DecStrat,
     permits: &Arc<Semaphore>,
     pipe_reader: Option<PipeReader>,
+    inp: &Path,
 ) -> TQDecodeResult {
     let tot = chnks.iter().filter(|c| !skip.contains(&c.idx)).count();
     let enc = Arc::new(SeqRing::new());
@@ -1565,12 +2095,13 @@ fn spawn_tq_dec(
     let coord_dec = Arc::clone(&coord);
     let permits_dec = Arc::clone(permits);
     let permits_done = Arc::clone(permits);
+    let inp = inp.to_path_buf();
     let handle = spawn(move || {
         let inf2 = inf.clone();
         let dec = pspawn(move || {
             let rp = Arc::as_ptr(&coord_dec);
             let send = move |p: WorkPkg| unsafe {
-                mpsc_send(rp, Box::into_raw(Box::new(p)) as u64);
+                mpsc_send(rp, Box::into_raw(Box::new(TqCoordPkg::Fwd(p))) as u64);
             };
             if let Some(mut r) = pipe_reader {
                 dec_pipe(&chnks, &mut r, &inf2, &send, &skip, strat, &permits_dec);
@@ -1578,7 +2109,7 @@ fn spawn_tq_dec(
                 dec_chnks(&chnks, &path, &inf2, &send, &skip, strat, &permits_dec);
             }
         });
-        tq_coord(&coord2, &enc2, tot, &permits_done);
+        tq_coord(&coord2, &enc2, tot, &permits_done, &inp);
         dec.join();
     });
     TQDecodeResult { enc, coord, handle }
@@ -1597,6 +2128,9 @@ fn enc_tq(
     let (skip_indices, completed_cnt, completed_frames) = build_skip_set(&resume_data);
     let tq_ctx = parse_tq_ctx(args);
     let strat = unsafe { args.dec_strat.unwrap_unchecked() };
+    #[cfg(not(feature = "multi-tq"))]
+    let pipe = Pipeline::new(inf, strat, args.tq);
+    #[cfg(feature = "multi-tq")]
     let pipe = Pipeline::new(inf, strat, args.tq.as_deref());
     let permits = Arc::new(Semaphore::new(args.chnk_buff));
     let build = resolve_build_tmpl(args.encoder);
@@ -1604,7 +2138,16 @@ fn enc_tq(
     let zones = build.map_or_else(Vec::new, |_| zone_tmpls(&mut chnks));
     let chnks = &chnks;
 
-    let dec = spawn_tq_dec(chnks, path, inf, skip_indices, strat, &permits, pipe_reader);
+    let dec = spawn_tq_dec(
+        chnks,
+        path,
+        inf,
+        skip_indices,
+        strat,
+        &permits,
+        pipe_reader,
+        &args.inp,
+    );
     let met = Arc::new(SeqRing::new());
 
     let resume_state = Arc::new(Mutex::new(resume_data.clone()));
@@ -1649,7 +2192,18 @@ fn enc_tq(
     unsafe { mpmc_close(Arc::as_ptr(&met)) };
     metric_workers.into_iter().for_each(PHandle::join);
 
+    #[cfg(not(feature = "multi-tq"))]
     write_tq_log(&args.inp, work_dir, inf, sc.tq_ctx.metric_name());
+    #[cfg(feature = "multi-tq")]
+    write_tq_log(
+        &args.inp,
+        work_dir,
+        inf,
+        &sc.tq_ctx
+            .iter()
+            .map(|tq| tq.metric_name())
+            .collect::<Vec<&str>>(),
+    );
     drop(prog);
     join_one(display_handle);
 }
@@ -1664,7 +2218,10 @@ struct TQSpawnCtx<'a> {
     stats: Option<Arc<WorkerStats>>,
     resume_state: &'a Arc<Mutex<ResumeInf>>,
     tq_logger: &'a Arc<Mutex<Vec<ProbeLog>>>,
+    #[cfg(not(feature = "multi-tq"))]
     tq_ctx: TQCtx,
+    #[cfg(feature = "multi-tq")]
+    tq_ctx: Vec<TQCtx>,
     zones: &'a [Box<str>],
     build: Option<BuildTmpl>,
     encoder: Encoder,
@@ -1679,8 +2236,11 @@ fn spawn_tq_metric(
     coord: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<PHandle> {
+    #[cfg(not(feature = "multi-tq"))]
     let metric_loop =
         resolve_metric_loop(sc.encoder, sc.use_alt_param, &sc.tq_ctx, sc.inf, sc.pipe);
+    #[cfg(feature = "multi-tq")]
+    let metric_loop = resolve_metric_loop(sc.encoder, sc.use_alt_param, sc.inf, sc.pipe);
     let threads = available_parallelism() as i32;
     let ext = sc.encoder.extension();
     let disp = sc.args.disp;
@@ -1689,13 +2249,27 @@ fn spawn_tq_metric(
         let rx = Arc::clone(met);
         let coord = Arc::clone(coord);
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
+        #[cfg(not(feature = "multi-tq"))]
         let (metric_mode, st) = (sc.args.metric_mode.clone(), sc.stats.clone());
+        #[cfg(feature = "multi-tq")]
+        let (metric_mode, st) = (
+            sc.args
+                .metric_mode
+                .split(',')
+                .map(|s| String::from(s))
+                .collect(),
+            sc.stats.clone(),
+        );
         let (resume_state, tq_logger, prog_clone) = (
             Arc::clone(sc.resume_state),
             Arc::clone(sc.tq_logger),
             Arc::clone(sc.prog),
         );
+        #[cfg(not(feature = "multi-tq"))]
         let (tq_ctx, use_alt_param, worker_cnt) = (sc.tq_ctx, sc.use_alt_param, sc.worker_cnt);
+        #[cfg(feature = "multi-tq")]
+        let (tq_ctx, use_alt_param, worker_cnt) =
+            (sc.tq_ctx.clone(), sc.use_alt_param, sc.worker_cnt);
         metric_workers.push(pspawn(move || {
             let ctx = TQWorkerCtx {
                 inf: &inf,
@@ -1732,7 +2306,10 @@ fn spawn_tq_encoders(
     met: &Arc<SeqRing>,
     sc: &TQSpawnCtx,
 ) -> Vec<JoinHandle<()>> {
+    #[cfg(not(feature = "multi-tq"))]
     let qp = (sc.tq_ctx.qp_min as i32, sc.tq_ctx.qp_max as i32);
+    #[cfg(feature = "multi-tq")]
+    let qp = (sc.tq_ctx[0].qp_min as i32, sc.tq_ctx[0].qp_max as i32);
     let tmpls = sc.build.map(|build| TqTmpls {
         base: build_zoned(build, sc.inf, &sc.args.params, sc.pipe, sc.zones, qp),
         alt: sc
@@ -1755,7 +2332,10 @@ fn spawn_tq_encoders(
         let (inf, pipe, wd) = (sc.inf.clone(), sc.pipe.clone(), sc.work_dir.to_path_buf());
         let (params, alt_param) = (sc.args.params.clone(), sc.args.alt_param.clone());
         let prog_clone = Arc::clone(sc.prog);
+        #[cfg(not(feature = "multi-tq"))]
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
+        #[cfg(feature = "multi-tq")]
+        let (tq_ctx, encoder) = (sc.tq_ctx[0], sc.encoder);
         let tmpls = tmpls.clone();
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
@@ -2059,7 +2639,8 @@ pub fn write_chnk_log(chnk_log: &ProbeLog, work_dir: &Path) {
 fn form_tq_json(
     all_logs: &[TqChunkLine],
     tri: &[(f32, f32, u64)],
-    metric_name: &str,
+    #[cfg(not(feature = "multi-tq"))] metric_name: &str,
+    #[cfg(feature = "multi-tq")] metric_names: &[&str],
     fps: f32,
     round_cnts: &BTreeMap<usize, usize>,
     crf_cnts: &BTreeMap<u64, usize>,
@@ -2079,7 +2660,51 @@ fn form_tq_json(
 
     let mut out = String::new();
     _ = writeln!(out, "{{");
-    _ = writeln!(out, "  \"chunks_{metric_name}\": [");
+    #[cfg(not(feature = "multi-tq"))]
+    {
+        _ = writeln!(out, "  \"chunks_{metric_name}\": [");
+    }
+    #[cfg(feature = "multi-tq")]
+    {
+        _ = writeln!(out, "  \"metrics\": [");
+        let (mut ssimu2_idx, mut butter_idx, mut cvvdp_idx) = (0, 0, 0);
+        for (i, &name) in metric_names.iter().enumerate() {
+            if name == "ssimulacra2" {
+                if ssimu2_idx == 0 {
+                    ssimu2_idx = i + 1;
+                }
+            } else if name == "butteraugli" {
+                if butter_idx == 0 {
+                    butter_idx = i + 1;
+                }
+            } else {
+                if cvvdp_idx == 0 {
+                    cvvdp_idx = i + 1;
+                }
+            }
+        }
+        let mut metric_occurence: Vec<(usize, &str)> = [
+            (ssimu2_idx, "ssimulacra2"),
+            (butter_idx, "butteraugli"),
+            (cvvdp_idx, "cvvdp"),
+        ]
+        .into_iter()
+        .filter(|e| e.0 > 0)
+        .collect();
+        metric_occurence.sort_by_key(|e| e.0);
+        for (i, name) in metric_occurence.iter().map(|e| e.1).enumerate() {
+            let comma = if i + 1 < metric_occurence.len() {
+                ","
+            } else {
+                ""
+            };
+            _ = writeln!(out, "    \"{name}\"{comma}");
+        }
+        _ = writeln!(out, "  ],");
+        _ = writeln!(out);
+
+        _ = writeln!(out, "  \"chunks\": [");
+    }
 
     for (i, l) in all_logs.iter().enumerate() {
         let mut sp: Vec<_> = tri[l.po..l.po + l.pn].iter().collect();
@@ -2151,7 +2776,13 @@ fn form_tq_json(
 }
 
 #[cfg(feature = "vship")]
-fn write_tq_log(inp: &Path, work_dir: &Path, inf: &VidInf, metric_name: &str) {
+fn write_tq_log(
+    inp: &Path,
+    work_dir: &Path,
+    inf: &VidInf,
+    #[cfg(not(feature = "multi-tq"))] metric_name: &str,
+    #[cfg(feature = "multi-tq")] metric_name: &[&str],
+) {
     let log_path = inp.with_extension("json");
     let chnks_path = work_dir.join("chunks.json");
     let fps = inf.fps_num as f32 / inf.fps_den as f32;
@@ -3399,11 +4030,15 @@ pub mod test_access {
         inf: &VidInf,
         pipe: &Pipeline,
     ) -> usize {
+        #[cfg(feature = "multi-tq")]
+        return resolve_metric_loop(if dav1d { SvtAv1 } else { X265 }, use_alt, inf, pipe) as usize;
+        #[cfg(not(feature = "multi-tq"))]
         let tq = TQCtx {
             target: 0.0,
             tolerance: 0.0,
             qp_min: 0.0,
             qp_max: 0.0,
+            qp_init: 0.0,
             use_butter: false,
             use_cvvdp: cvvdp,
         };

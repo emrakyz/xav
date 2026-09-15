@@ -18,6 +18,7 @@ cuda = []
 avm = []
 vvenc = []
 svt-essential = []
+multi-tq = ["vship"]
 
 [build-dependencies]
 nasm-rs = { version = "0.3.2", features = ["parallel"] }
