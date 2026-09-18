@@ -32,11 +32,16 @@ const fn cue_of(p: &ClusterPlan, pos_width: usize, frame_dur: u64) -> Cue {
 }
 
 #[must_use]
-pub fn cues_size(plans: &[ClusterPlan], pos_width: usize, frame_dur: u64) -> usize {
+pub fn cues_content(plans: &[ClusterPlan], pos_width: usize, frame_dur: u64) -> usize {
     let mut content = CRC_ELEMENT_LEN;
     for p in plans {
         content += cue_point_size(&cue_of(p, pos_width, frame_dur));
     }
+    content
+}
+
+#[must_use]
+pub const fn cues_size(content: usize) -> usize {
     master_size(CUES_ID, content)
 }
 
@@ -46,12 +51,8 @@ pub fn write_cues(
     plans: &[ClusterPlan],
     pos_width: usize,
     frame_dur: u64,
+    content: usize,
 ) -> usize {
-    let mut content = CRC_ELEMENT_LEN;
-    for p in plans {
-        content += cue_point_size(&cue_of(p, pos_width, frame_dur));
-    }
-
     let mut n = write_id(CUES_ID, out);
     let crc_offset;
     let children_start;

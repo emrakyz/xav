@@ -15,6 +15,7 @@ use alloc::{
 #[cfg(all(target_os = "linux", not(test)))]
 use core::ffi::CStr;
 use core::{
+    fmt::Write as _,
     hash::{Hash as _, Hasher as _},
     mem::transmute_copy,
     sync::atomic::Ordering::Relaxed,
@@ -77,6 +78,8 @@ mod fmath;
 mod fs;
 #[cfg(target_os = "linux")]
 mod galloc;
+#[cfg(all(feature = "vship", feature = "x265"))]
+mod hevc;
 #[cfg(feature = "vship")]
 mod interp;
 mod io;
@@ -120,13 +123,17 @@ mod vvenc;
 #[cfg(feature = "vvenc")]
 mod vvencerr;
 mod worker;
+#[cfg(feature = "x265")]
+mod x265;
+#[cfg(feature = "x265")]
+mod x265err;
 mod y4m;
 
 use audio::{AuSpec, AuStream, enc_au_streams, frame_samp, parse_au_arg};
 #[cfg(feature = "vship")]
 use chunk::has_rc;
 use chunk::{
-    Chunk, Scene, chnkify, get_resume, init_elapsed, load_scenes, merge_out, trans_scenes,
+    Chunk, Scene, chnkify, init_elapsed, load_scenes, merge_out, read_done, trans_scenes,
     val_scenes,
 };
 use crop::detect_crop;
@@ -203,6 +210,8 @@ const VW: usize = {
     let w = wmax(w, env!("XAV_V_AVM").len());
     #[cfg(feature = "vvenc")]
     let w = wmax(w, env!("XAV_V_VVENC").len());
+    #[cfg(feature = "x265")]
+    let w = wmax(w, env!("XAV_V_X265").len());
     #[cfg(all(feature = "vvenc", feature = "vship"))]
     let w = wmax(w, env!("XAV_V_VVDEC").len());
     #[cfg(feature = "vship")]
@@ -212,18 +221,25 @@ const VW: usize = {
     w
 };
 
+fn enc_list() -> String {
+    let mut s = format!("{R}<{G}svt-av1");
+    let mut add = |name: &str| _ = write!(s, "{P}┃{G}{name}");
+    #[cfg(feature = "avm")]
+    add("avm");
+    #[cfg(feature = "vvenc")]
+    add("vvenc");
+    #[cfg(feature = "x265")]
+    add("x265");
+    add("x264");
+    _ = write!(s, "{R}>");
+    s
+}
+
 #[rustfmt::skip]
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    #[cfg(all(feature = "avm", feature = "vvenc"))]
-    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
-    #[cfg(all(feature = "avm", not(feature = "vvenc")))]
-    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}avm{P}┃{G}x265{P}┃{G}x264{R}>");
-    #[cfg(all(not(feature = "avm"), feature = "vvenc"))]
-    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}vvenc{P}┃{G}x265{P}┃{G}x264{R}>");
-    #[cfg(all(not(feature = "avm"), not(feature = "vvenc")))]
-    println!("{C}-e {P}┃ {C}--encoder    {R}<{G}svt-av1{P}┃{G}x265{P}┃{G}x264{R}>");
+    println!("{C}-e {P}┃ {C}--encoder    {}", enc_list());
     println!("{C}-w {P}┃ {C}--worker     {W}Parallelism");
     println!("{C}-b {P}┃ {C}--buff       {W}Chunks to buffer");
     println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
@@ -253,6 +269,8 @@ fn print_help() {
     println!("{C}VVENC:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VVENC"), env!("XAV_D_VVENC"));
     #[cfg(all(feature = "vvenc", feature = "vship"))]
     println!("{C}VVDEC:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VVDEC"), env!("XAV_D_VVDEC"));
+    #[cfg(feature = "x265")]
+    println!("{C}X265:        {G}{:<VW$}  {B}{}{N}", env!("XAV_V_X265"), env!("XAV_D_X265"));
     #[cfg(feature = "vship")]
     {
         println!("{C}VSHIP:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VSHIP"), env!("XAV_D_VSHIP"));
@@ -552,8 +570,7 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     Ok(result)
 }
 
-fn hash_inp(path: &Path) -> String {
-    let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+fn hash_inp(canon: &Path) -> String {
     let mut hasher = Fnv::new();
     canon.hash(&mut hasher);
     format!("{:x}", hasher.finish())
@@ -579,15 +596,11 @@ fn get_saved_args(inp: &Path) -> Result<Args, Xerr> {
     let canon = inp.canonicalize()?;
     let hash = hash_inp(&canon);
     let work_dir = inp.with_file_name(format!(".{}", &hash[..7]));
-    let cmd_path = work_dir.join("cmd.txt");
-
-    if cmd_path.exists() && get_resume(&work_dir).is_some_and(|r| !r.chnks_done.is_empty()) {
-        let cmd_line = read_to_str(cmd_path)?;
-        let saved_args = parse_quoted_args(&cmd_line);
-        get_args(&saved_args, false)
-    } else {
-        Err("No tmp dir found".into())
+    if read_done(&work_dir).is_none_or(|(done, _)| done.is_empty()) {
+        return Err("No tmp dir found".into());
     }
+    let cmd_line = read_to_str(work_dir.join("cmd.txt"))?;
+    get_args(&parse_quoted_args(&cmd_line), false)
 }
 
 fn parse_quoted_args(cmd_line: &str) -> Vec<String> {
@@ -690,7 +703,7 @@ fn acq_au(
 fn val_all_scenes(scenes: &[Scene], enc: Encoder) -> Result<(), Xerr> {
     val_scenes(scenes)?;
     for s in scenes {
-        if let Some(ref p) = s.params {
+        if let Some(p) = s.params {
             val(enc, p)?;
         }
     }
@@ -709,7 +722,8 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     create_dir_all(&work_dir)?;
 
-    if get_resume(&work_dir).is_none_or(|r| r.chnks_done.is_empty()) {
+    let done = read_done(&work_dir);
+    if done.as_ref().is_none_or(|d| d.0.is_empty()) {
         save_args(&work_dir)?;
     }
 
@@ -777,7 +791,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     }
     args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwdec, tq));
 
-    let prior_secs = get_resume(&work_dir).map_or(0, |r| r.prior_secs);
+    let prior_secs = done.map_or(0, |(_, secs)| secs);
     init_elapsed(prior_secs);
     let enc_start = Mono::now();
     enc_all(&chnks, &inf, &args, &args.inp, &work_dir, pipe_reader);

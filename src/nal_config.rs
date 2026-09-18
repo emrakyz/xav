@@ -21,8 +21,8 @@ pub fn nal_codec_private(encoder: Encoder, p: &ParamSets) -> Vec<u8> {
 // depth (SPS only encodes for the high profiles)
 #[must_use]
 pub fn build_avcc(p: &ParamSets) -> Vec<u8> {
-    let sps = &p.sps;
-    let pps = &p.pps;
+    let sps = &p.rec.sps;
+    let pps = &p.rec.pps;
     let &[_, profile, compat, level, ..] = sps.as_slice() else {
         return Vec::new();
     };
@@ -61,7 +61,7 @@ fn avc_chroma_depth(sps: &[u8]) -> (u8, u8, u8) {
 #[must_use]
 pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
     let mut buf = [0u8; 512];
-    let sps = rbsp(&p.sps, &mut buf);
+    let sps = rbsp(&p.rec.sps, &mut buf);
     let Some(ptl) = sps.get(3..15) else {
         return Vec::new();
     };
@@ -86,7 +86,7 @@ pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
     let bd_luma = b.ue();
     let bd_chroma = b.ue();
 
-    let mut c = Vec::with_capacity(32 + p.vps.len() + p.sps.len() + p.pps.len());
+    let mut c = Vec::with_capacity(32 + p.rec.vps.len() + p.rec.sps.len() + p.rec.pps.len());
     c.push(1); // configurationVersion
     c.extend_from_slice(ptl); // general profile_space .. level_idc
     c.extend_from_slice(&[0xF0, 0x00]); // min_spatial_segmentation_idc = 0
@@ -99,10 +99,11 @@ pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
     c.push((((max_sub + 1) as u8) << 3) | (u8::from(nesting) << 2) | 3);
     push_nal_arrays(
         &mut c,
+        !p.in_band,
         &[
-            (32, p.vps.as_slice()),
-            (33, p.sps.as_slice()),
-            (34, p.pps.as_slice()),
+            (32, p.rec.vps.as_slice()),
+            (33, p.rec.sps.as_slice()),
+            (34, p.rec.pps.as_slice()),
         ],
     );
     c
@@ -113,7 +114,7 @@ pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
 #[must_use]
 pub fn build_vvcc(p: &ParamSets) -> Vec<u8> {
     let mut buf = [0u8; 512];
-    let sps = rbsp(&p.sps, &mut buf);
+    let sps = rbsp(&p.rec.sps, &mut buf);
     let mut b = Bits::new(sps);
     b.skip(24); // nal header(16) + sps_seq_parameter_set_id(4) + sps_video_parameter_set_id(4)
     let num_sub = b.u(3) + 1;
@@ -146,7 +147,8 @@ pub fn build_vvcc(p: &ParamSets) -> Vec<u8> {
     }
     let bd = b.ue();
 
-    let mut c = Vec::with_capacity(32 + ptl.len() + p.vps.len() + p.sps.len() + p.pps.len());
+    let mut c =
+        Vec::with_capacity(32 + ptl.len() + p.rec.vps.len() + p.rec.sps.len() + p.rec.pps.len());
     c.push(0xFF); // reserved | LengthSizeMinusOne=3 | ptl_present_flag=1
     // ols_idx=0(9) | num_sublayers(3) | constant_frame_rate=0(2) | chroma_format_idc(2)
     c.extend_from_slice(&(((num_sub as u16) << 4) | chroma as u16).to_be_bytes());
@@ -158,23 +160,24 @@ pub fn build_vvcc(p: &ParamSets) -> Vec<u8> {
     c.extend_from_slice(&[0x00, 0x00]); // avg_frame_rate = 0
     push_nal_arrays(
         &mut c,
+        !p.in_band,
         &[
-            (14, p.vps.as_slice()),
-            (15, p.sps.as_slice()),
-            (16, p.pps.as_slice()),
+            (14, p.rec.vps.as_slice()),
+            (15, p.rec.sps.as_slice()),
+            (16, p.rec.pps.as_slice()),
         ],
     );
     c
 }
 
-// hvcC/vvcC trailing arrays: one entry per present parameter set, array_completeness=1, 1 NALU each
-fn push_nal_arrays(c: &mut Vec<u8>, arrays: &[(u8, &[u8])]) {
+fn push_nal_arrays(c: &mut Vec<u8>, complete: bool, arrays: &[(u8, &[u8])]) {
+    let done = u8::from(complete) << 7;
     c.push(arrays.iter().filter(|e| !e.1.is_empty()).count() as u8);
     for &(t, nal) in arrays {
         if nal.is_empty() {
             continue;
         }
-        c.push(0x80 | t); // array_completeness=1 | NAL_unit_type
+        c.push(done | t); // array_completeness | NAL_unit_type
         c.extend_from_slice(&1u16.to_be_bytes()); // numNalus
         c.extend_from_slice(&(nal.len() as u16).to_be_bytes());
         c.extend_from_slice(nal);

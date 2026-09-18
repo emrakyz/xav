@@ -1,19 +1,16 @@
+use alloc::{ffi::CString, vec::Vec};
 use core::{
     arch::x86_64::_mm_sfence,
     mem::zeroed,
     ptr::null_mut,
     slice::{from_raw_parts, from_raw_parts_mut},
 };
-use alloc::{ffi::CString, vec::Vec};
-
-use crate::{
-    fs::{File, OpenOptions},
-    path::Path,
-};
 
 use crate::{
     error::Xerr,
+    fs::{File, OpenOptions},
     mkv_mux::Mux,
+    path::Path,
     progs::ProgsBar,
     sys::{
         MADV_HUGEPAGE, MADV_SEQUENTIAL, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE, Statfs,
@@ -108,19 +105,32 @@ fn ring_write(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr> {
     let max_cluster = mux.plans.iter().map(|p| p.size).max().unwrap_or(0);
     let cap = (SEG_BYTES + max_cluster).max(header_len);
 
-    let mut segs: Vec<(usize, usize)> = Vec::new();
+    let mut segs: Vec<Seg> = Vec::new();
     let mut c0 = 0usize;
     let mut acc = 0usize;
+    let mut frames = 0usize;
     for (ci, p) in mux.plans.iter().enumerate() {
         acc += p.size;
+        frames += unsafe { mux.clusters.get_unchecked(ci) }.len();
         if acc >= SEG_BYTES {
-            segs.push((c0, ci + 1));
+            segs.push(Seg {
+                c0,
+                c1: ci + 1,
+                bytes: acc,
+                frames,
+            });
             c0 = ci + 1;
             acc = 0;
+            frames = 0;
         }
     }
     if c0 < mux.plans.len() {
-        segs.push((c0, mux.plans.len()));
+        segs.push(Seg {
+            c0,
+            c1: mux.plans.len(),
+            bytes: acc,
+            frames,
+        });
     }
 
     let mut w = RingWriter::new(file.as_raw_fd(), RING_BUFS, cap)?;
@@ -136,10 +146,17 @@ fn ring_write(out: &Path, mux: &Mux, progs: &mut ProgsBar) -> Result<(), Xerr> {
     Ok(())
 }
 
+struct Seg {
+    c0: usize,
+    c1: usize,
+    bytes: usize,
+    frames: usize,
+}
+
 fn ring_segments<const HAS_SUBS: bool, const IS_NAL: bool>(
     mux: &Mux,
     w: &mut RingWriter,
-    segs: &[(usize, usize)],
+    segs: &[Seg],
     total: usize,
     progs: &mut ProgsBar,
 ) -> Result<(), Xerr> {
@@ -151,30 +168,21 @@ fn ring_segments<const HAS_SUBS: bool, const IS_NAL: bool>(
         let len = if ui == 0 {
             mux.write_headers(buf)
         } else {
-            // ui in 1..=segs.len() so ui-1 indexes segs; (c0,c1) valid plan;
-            // seg <= cap (buffer holds one SEG_BYTES batch + one max cluster)
-            let (c0, c1) = unsafe { *segs.get_unchecked(ui - 1) };
-            let seg: usize = unsafe { mux.plans.get_unchecked(c0..c1) }
-                .iter()
-                .map(|p| p.size)
-                .sum();
+            // ui >= 1 so ui-1 indexes segs; bytes <= cap
+            let sg = unsafe { segs.get_unchecked(ui - 1) };
             mux.build_clusters::<HAS_SUBS, IS_NAL>(
-                unsafe { buf.get_unchecked_mut(..seg) },
-                c0,
-                c1,
+                unsafe { buf.get_unchecked_mut(..sg.bytes) },
+                sg.c0,
+                sg.c1,
                 None,
             );
-            seg
+            sg.bytes
         };
         unsafe { _mm_sfence() };
         w.submit(idx, off, len as u32)?;
         off += len as u64;
         if ui > 0 {
-            let (c0, c1) = unsafe { *segs.get_unchecked(ui - 1) };
-            done += unsafe { mux.clusters.get_unchecked(c0..c1) }
-                .iter()
-                .map(|c| c.len())
-                .sum::<usize>();
+            done += unsafe { segs.get_unchecked(ui - 1) }.frames;
             progs.up_frames(done, total, 0, "MUX");
         }
     }

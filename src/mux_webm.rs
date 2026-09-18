@@ -9,6 +9,7 @@ use crate::{
     byte_range::ByteRange,
     error::Xerr,
     ffms::VidInf,
+    mkv::mux::pts_table,
     obu_parse::parse,
     opus::read,
     path::{Path, PathBuf},
@@ -42,28 +43,10 @@ const EBML_HEADER: &[u8] = &[
 
 const CLUSTER_SPAN: u64 = 0x7FFF; // i16 block-rel ceiling (ms @ default 1ms scale)
 
-const fn id_len(id: u32) -> usize {
-    4 - (id.leading_zeros() / 8) as usize
-}
-
-const fn uint_len(v: u64) -> usize {
-    let mut n = 1;
-    let mut x = v >> 8;
-    while x > 0 {
-        n += 1;
-        x >>= 8;
-    }
-    n
-}
-
-// EBML vint byte-count; all-ones per width is reserved (unknown-size), hence the -1
-const fn vint_len(v: u64) -> usize {
-    let mut n = 1;
-    while n < 8 && v >= (1u64 << (7 * n)) - 1 {
-        n += 1;
-    }
-    n
-}
+use crate::mkv::{
+    ebml::vint_size as vint_len,
+    element::{id_size as id_len, uint_size as uint_len},
+};
 
 const fn elem_len(id_bytes: usize, content: usize) -> usize {
     id_bytes + vint_len(content as u64) + content
@@ -311,6 +294,8 @@ pub fn mux_webm(
         .map(|e| Mmap::open(&e.1))
         .collect::<Result<Vec<_>, _>>()?;
 
+    let pts = pts_table(inf.frames, inf.fps_num, inf.fps_den);
+
     let mut blocks: Vec<Blk> = Vec::with_capacity(inf.frames);
     let mut gi = 0u64;
     let mut frames = Vec::new();
@@ -319,7 +304,8 @@ pub fn mux_webm(
         frames.clear();
         parse(buf, &mut frames);
         for (fj, r) in frames.iter().enumerate() {
-            let ts = (gi * 1000 * fps_den + fps_num / 2) / fps_num;
+            // gi <= inf.frames; table carries one past last frame
+            let ts = unsafe { *pts.get_unchecked(gi as usize) };
             blocks.push(Blk {
                 track: 1,
                 ts,
@@ -341,6 +327,7 @@ pub fn mux_webm(
         let track = 2 + audio_meta.len() as u64;
         let data = m.slice();
         let mut cum = 0u64;
+        blocks.reserve(os.packets.len());
         for p in &os.packets {
             let ts = (cum * 1000 + 24_000) / 48_000; // samples@48k -> ms, rounded
             blocks.push(Blk {
@@ -372,7 +359,8 @@ pub fn mux_webm(
         tracks_content += audio_track_len(a.0, a.1.len(), a.2);
     }
 
-    let mut clusters: Vec<Cluster> = Vec::new();
+    let mut clusters: Vec<Cluster> =
+        Vec::with_capacity((duration_ms as usize) / (CLUSTER_SPAN as usize) + 2);
     let info_total = elem_len(id_len(ID_INFO), f64_elem(ID_DURATION));
     let mut segment_content = info_total + elem_len(id_len(ID_TRACKS), tracks_content);
     let mut i = 0;

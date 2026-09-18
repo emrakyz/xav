@@ -223,6 +223,10 @@ pub fn write(fd: i32, buf: *const u8, count: usize) -> isize {
     syscall!(1, fd, buf, count) as isize
 }
 
+pub fn pwrite(fd: i32, buf: *const u8, count: usize, off: i64) -> isize {
+    syscall!(18, fd, buf, count, off) as isize
+}
+
 pub fn mkdirat(path: *const u8, mode: u32) -> i32 {
     syscall!(258, AT_FDCWD, path, mode) as i32
 }

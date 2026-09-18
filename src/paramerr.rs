@@ -4,6 +4,8 @@ use core::fmt::Arguments;
 use crate::{avmerr::val as avm_val, encoder::Encoder::Avm};
 #[cfg(feature = "vvenc")]
 use crate::{encoder::Encoder::Vvenc, vvencerr::val as vvenc_val};
+#[cfg(feature = "x265")]
+use crate::{encoder::Encoder::X265, x265err::val as x265_val};
 use crate::{
     encoder::Encoder::{self, SvtAv1},
     error::Xerr,
@@ -104,6 +106,8 @@ pub fn val(enc: Encoder, params: &str) -> Result<(), Xerr> {
         Vvenc => vvenc_val(params),
         #[cfg(feature = "avm")]
         Avm => avm_val(params),
+        #[cfg(feature = "x265")]
+        X265 => x265_val(params),
         _ => Ok(()),
     }
 }

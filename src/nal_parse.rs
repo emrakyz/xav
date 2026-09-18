@@ -1,22 +1,40 @@
 #[cfg(target_os = "linux")]
 use alloc::vec::Vec;
+use core::hint::cold_path;
 
 use crate::{byte_range::ByteRange, nal_scan::find_start_code};
 
 #[derive(Default)]
-pub struct ParamSets {
+pub struct Sets {
     pub vps: Vec<u8>,
     pub sps: Vec<u8>,
     pub pps: Vec<u8>,
 }
 
-// once per chunk; ranges recovered from lengths before/after the call
+impl Sets {
+    const fn slot(&mut self, kind: Param) -> &mut Vec<u8> {
+        match kind {
+            Param::Vps => &mut self.vps,
+            Param::Sps => &mut self.sps,
+            Param::Pps => &mut self.pps,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct ParamSets {
+    pub rec: Sets, // 1st of each kind; what codec_priv record carries
+    act: Sets,     // what stream has active now
+    pub in_band: bool,
+}
+
+// ranges recovered from lengths before/after the call
 pub struct NalSink<'a> {
-    pub arena: &'a mut Vec<ByteRange>, // one per frame: offset = NAL count, len = MKV block octets
-    pub nal_arena: &'a mut Vec<ByteRange>, // NAL byte-extents into the chunk map
-    pub displays: &'a mut Vec<u32>,    // one per frame, densified to 0..n display ranks per chunk
-    pub params: &'a mut ParamSets, // VPS/SPS/PPS, filled once from the first chunk that carries them
-    pub order: &'a mut Vec<usize>, // rank scratch, reused across chunks
+    pub arena: &'a mut Vec<ByteRange>, // offset = NAL count, len = MKV block octets
+    pub nal_arena: &'a mut Vec<ByteRange>, // NAL byte extents into the chunk map
+    pub displays: &'a mut Vec<u32>,    // densified to 0..n display ranks chunk-based
+    pub params: &'a mut ParamSets,     // VPS/SPS/PPS, filled from first chunk carrying them
+    pub order: &'a mut Vec<usize>,     // rank scratch, reused
 }
 
 pub fn parse_h264(raw: &[u8], out: &mut NalSink) {
@@ -138,6 +156,7 @@ impl Poc {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Param {
     Vps,
     Sps,
@@ -516,20 +535,27 @@ impl<C: Nal> Emit<'_, C> {
     fn push(&mut self, nal: &[u8], off: usize) {
         match self.codec.classify(nal) {
             Class::Drop => {}
+            // a chunk agreeing with rec inherit the set before
             Class::Param(kind) => {
-                let slot = match kind {
-                    Param::Vps => &mut self.params.vps,
-                    Param::Sps => &mut self.params.sps,
-                    Param::Pps => &mut self.params.pps,
-                };
-                if slot.is_empty() {
-                    slot.extend_from_slice(nal);
+                let act = self.params.act.slot(kind);
+                if act.as_slice() == nal {
+                    return;
                 }
+                cold_path();
+                act.clear();
+                act.extend_from_slice(nal);
+                let rec = self.params.rec.slot(kind);
+                if rec.is_empty() {
+                    rec.extend_from_slice(nal);
+                    return;
+                }
+                self.params.in_band = true;
+                self.add(nal, off);
             }
             Class::Prefix => self.add(nal, off),
             Class::Vcl(poc) => {
                 self.add(nal, off);
-                // decode-order fallback: a monotonic per-chunk index; rank() densifies it
+                // decode-order fb; rank() densifies
                 let display = poc.map_or((self.arena.len() - self.frame0) as u32, |p| p as u32);
                 self.arena.push(ByteRange {
                     offset: self.nal_arena.len() - self.nal0, // NAL count
@@ -542,14 +568,11 @@ impl<C: Nal> Emit<'_, C> {
         }
     }
 
-    // every frame outputs once -> dense ranks 0..n-1 over this chunk displays
     fn rank(&mut self) {
-        // frame0 <= displays.len() (captured at chunk start; displays only grows)
         let disp = unsafe { self.displays.get_unchecked_mut(self.frame0..) };
         let order = &mut *self.order;
         order.clear();
         order.extend(0..disp.len());
-        // i stays in 0..len, so both accesses are in-bounds
         order.sort_unstable_by_key(|&i| unsafe { *disp.get_unchecked(i) });
         for (rank, &i) in order.iter().enumerate() {
             unsafe { *disp.get_unchecked_mut(i) = rank as u32 };

@@ -1,6 +1,9 @@
 #[cfg(target_os = "linux")]
 use alloc::{string::String, vec::Vec};
-use core::ffi::{CStr, c_char, c_int};
+use core::{
+    ffi::{CStr, c_char, c_int},
+    hint::cold_path,
+};
 
 use crate::{byte_range::ByteRange, error::Xerr};
 
@@ -254,8 +257,18 @@ pub fn read(buf: &[u8]) -> OpusStream {
     let channels = unsafe { *head.get_unchecked(9) };
     let pre_skip =
         u16::from_le_bytes(unsafe { [*head.get_unchecked(10), *head.get_unchecked(11)] });
-    let mut packets = Vec::new();
     let mut pos = 2 + hl;
+    let body = buf.len() - pos;
+    let cap = if body > 2 {
+        let first = usize::from(u16::from_le_bytes(unsafe {
+            [*buf.get_unchecked(pos), *buf.get_unchecked(pos + 1)]
+        }));
+        body / (first + 2) + 1
+    } else {
+        cold_path();
+        0
+    };
+    let mut packets = Vec::with_capacity(cap);
     while pos < buf.len() {
         let len =
             u16::from_le_bytes(unsafe { [*buf.get_unchecked(pos), *buf.get_unchecked(pos + 1)] })

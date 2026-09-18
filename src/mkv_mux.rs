@@ -4,6 +4,7 @@ use alloc::{borrow::ToOwned as _, string::String, vec::Vec};
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::_mm_sfence;
 use core::{
+    hint::cold_path,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -28,7 +29,10 @@ use crate::{
         cues::write_cues,
         ebml_header::EBML_HEADER,
         info::{info_size, write_info},
-        mux::{ClusterPlan, Layout, assign_audio, assign_subs, layout, nal_timing, plan_clusters},
+        mux::{
+            ClusterPlan, Layout, assign_audio, assign_subs, layout, plan_clusters, pts_table,
+            timing,
+        },
         seek_head::write_seek_head,
         segment::write_segment_header,
         simple_block::build_simple_block,
@@ -232,7 +236,8 @@ pub fn mux_mkv(
     } else {
         Vec::new()
     };
-    let mut plans = plan_clusters(&clusters, &disp_clusters, fps_num, fps_den);
+    let pts = pts_table(inf.frames, fps_num, fps_den);
+    let mut plans = plan_clusters(&clusters, &disp_clusters, &pts);
 
     let (atracks, ainfos) = match audio {
         AudioSrc::Encode(au) => build_audio_tracks(au, &mut plans, &mut seed)?,
@@ -373,13 +378,12 @@ pub fn mux_mkv(
         edition_uid,
         atoms: &atoms,
         plans: &plans,
+        pts: &pts,
         clusters: &clusters,
         displays: &disp_clusters,
         maps: &maps,
         audio: &atracks,
         subs: &stracks,
-        fps_num,
-        fps_den,
         is_nal,
         nal_clusters: &nal_clusters,
     };
@@ -476,6 +480,11 @@ fn prep_nal(paths: &[PathBuf], inf: &VidInf, encoder: Encoder) -> Result<Prep, X
     let mut params = ParamSets::default();
     let mut order = Vec::new();
     let mut codec_private = Vec::new();
+    let parse: fn(&[u8], &mut NalSink) = match encoder {
+        X264 => parse_h264,
+        X265 => parse_h265,
+        _ => parse_h266,
+    };
     for (ci, src) in paths.iter().enumerate() {
         let raw = Mmap::open(src)?;
         let fstart = arena.len();
@@ -487,13 +496,11 @@ fn prep_nal(paths: &[PathBuf], inf: &VidInf, encoder: Encoder) -> Result<Prep, X
             params: &mut params,
             order: &mut order,
         };
-        match encoder {
-            X264 => parse_h264(raw.slice(), &mut sink),
-            X265 => parse_h265(raw.slice(), &mut sink),
-            _ => parse_h266(raw.slice(), &mut sink),
-        }
+        parse(raw.slice(), &mut sink);
         if ci == 0 {
+            cold_path();
             codec_private = nal_codec_private(encoder, &params);
+            nal_arena.reserve(nal_arena.len() * paths.len());
         }
         ranges.push((fstart, arena.len() - fstart));
         nal_ranges.push((nstart, nal_arena.len() - nstart));
@@ -575,16 +582,21 @@ fn build_audio_tracks(
         let number = 2 + ainfos.len() as u64;
         let default = ainfos.is_empty();
         let mut ts_ms = Vec::with_capacity(os.packets.len());
-        let mut lens = Vec::with_capacity(os.packets.len());
         let mut cum = 0u64;
         let mut n_bytes = 0u64;
         for p in &os.packets {
             ts_ms.push((cum * 1000 + 24_000) / 48_000); // round samples@48k to ms
-            lens.push(p.range.len);
             cum += u64::from(p.samples);
             n_bytes += p.range.len as u64;
         }
-        let bounds = assign_audio(plans, &ts_ms, &lens, &[], number);
+        // 1 ts_ms per packet; index in range
+        let bounds = assign_audio(
+            plans,
+            &ts_ms,
+            |i| unsafe { os.packets.get_unchecked(i) }.range.len,
+            &[],
+            number,
+        );
         let duration_ns = cum * 1_000_000_000 / 48_000;
         let bps = (u128::from(n_bytes) * 8 * 1_000_000_000)
             .checked_div(u128::from(duration_ns))
@@ -669,19 +681,23 @@ fn build_copy_audio(
         let scale = rate as i64 * tb_num;
         let origin = origin - (i64::from(delay) * tb_den + scale / 2) / scale;
         let mut ts_ms = Vec::with_capacity(packets.len());
-        let mut lens = Vec::with_capacity(packets.len());
         let mut n_bytes = 0u64;
         let mut min_start = i64::MAX;
         let mut max_end = i64::MIN;
         for p in &packets {
             let rel = (p.pts - origin).max(0);
             ts_ms.push(((rel * tb_num * 1000 + tb_den / 2) / tb_den) as u64);
-            lens.push(p.range.len);
             n_bytes += p.range.len as u64;
             min_start = min_start.min(p.pts);
             max_end = max_end.max(p.pts + p.duration);
         }
-        let bounds = assign_audio(plans, &ts_ms, &lens, &pads, number);
+        let bounds = assign_audio(
+            plans,
+            &ts_ms,
+            |i| unsafe { packets.get_unchecked(i) }.range.len,
+            &pads,
+            number,
+        );
         // span (first start -> last end) stays right when per-packet durations are 0 (TrueHD)
         let span_tb = (max_end - min_start).max(0);
         let duration_ns =
@@ -782,7 +798,6 @@ fn build_copy_subs(
         let tb_den = i64::from(tb_den);
         let mut ts_ms = Vec::with_capacity(packets.len());
         let mut dur_ms = Vec::with_capacity(packets.len());
-        let mut lens = Vec::with_capacity(packets.len());
         let mut n_bytes = 0u64;
         let mut min_start = i64::MAX;
         let mut max_end = i64::MIN;
@@ -790,12 +805,17 @@ fn build_copy_subs(
             let rel = (p.pts - origin).max(0);
             ts_ms.push(((rel * tb_num * 1000 + tb_den / 2) / tb_den) as u64);
             dur_ms.push(((p.duration.max(0) * tb_num * 1000 + tb_den / 2) / tb_den) as u64);
-            lens.push(p.range.len);
             n_bytes += p.range.len as u64;
             min_start = min_start.min(p.pts);
             max_end = max_end.max(p.pts + p.duration);
         }
-        let bounds = assign_subs(plans, &ts_ms, &lens, &dur_ms, number);
+        let bounds = assign_subs(
+            plans,
+            &ts_ms,
+            |i| unsafe { packets.get_unchecked(i) }.range.len,
+            &dur_ms,
+            number,
+        );
         let span_tb = (max_end - min_start).max(0);
         let duration_ns =
             (i128::from(span_tb) * i128::from(tb_num) * 1_000_000_000 / i128::from(tb_den)) as u64;
@@ -890,13 +910,12 @@ pub struct Mux<'a> {
     edition_uid: u64,
     atoms: &'a [ChapterEntry<'a>],
     pub plans: &'a [ClusterPlan],
+    pts: &'a [u64],
     pub clusters: &'a [&'a [ByteRange]],
     displays: &'a [&'a [u32]], // NAL POC display ranks, parallel to clusters; empty for AV1
     pub maps: &'a [Mmap],
     audio: &'a [AudioTrack],
     subs: &'a [SubtitleTrack],
-    fps_num: u32,
-    fps_den: u32,
     pub is_nal: bool,
     nal_clusters: &'a [&'a [ByteRange]], // NAL byte-extents per chunk; empty for AV1
 }
@@ -935,6 +954,7 @@ impl Mux<'_> {
                 self.plans,
                 self.lay.pos_width,
                 self.lay.frame_dur,
+                self.lay.cues_content,
             );
         }
         pos
@@ -963,18 +983,16 @@ impl Mux<'_> {
     ) {
         let mut rest = &mut dst[..];
         let mut regions: Vec<(&mut [u8], usize)> = Vec::with_capacity(c1 - c0);
+        let mut bytes = 0;
         for ci in c0..c1 {
             // sum of plan sizes over [c0,c1] equals rest.len() exactly, split is in bounds
-            let (r, tail) =
-                unsafe { rest.split_at_mut_unchecked(self.plans.get_unchecked(ci).size) };
+            let sz = unsafe { self.plans.get_unchecked(ci) }.size;
+            bytes += sz;
+            let (r, tail) = unsafe { rest.split_at_mut_unchecked(sz) };
             regions.push((r, ci));
             rest = tail;
         }
 
-        let bytes: usize = unsafe { self.plans.get_unchecked(c0..c1) }
-            .iter()
-            .map(|p| p.size)
-            .sum();
         let total: usize = unsafe { self.clusters.get_unchecked(c0..c1) }
             .iter()
             .map(|c| c.len())
@@ -1101,24 +1119,17 @@ impl Mux<'_> {
             crc: cc.finalize(),
         };
 
-        let num = u64::from(self.fps_num);
-        let step = u64::from(self.fps_den) * 1000;
-        let (ms_step, rem_step) = (step / num, step % num);
-        let r0 = plan.base_frame * step + num / 2;
-        let (mut ms, mut rem) = (r0 / num, r0 % num);
+        let dts0 = plan.base_frame as usize;
         let mut nal_cur = 0usize;
 
         if self.audio.is_empty() && (!HAS_SUBS || self.subs.is_empty()) {
             for (i, b) in blocks.iter().enumerate() {
-                let (rel, dur) = if IS_NAL {
-                    let d = unsafe { *disp.get_unchecked(i) };
-                    nal_timing(plan.base_frame, d, plan.ts, self.fps_num, self.fps_den)
+                let f = if IS_NAL {
+                    plan.base_frame + u64::from(unsafe { *disp.get_unchecked(i) })
                 } else {
-                    (
-                        (ms - plan.ts) as i16,
-                        ms_step + u64::from(rem + rem_step >= num),
-                    )
+                    plan.base_frame + i as u64
                 };
+                let (rel, dur) = timing(self.pts, f, plan.ts);
                 if IS_NAL {
                     let frame_nals = unsafe { nals.get_unchecked(nal_cur..nal_cur + b.offset) };
                     nal_cur += b.offset;
@@ -1137,14 +1148,6 @@ impl Mux<'_> {
                     );
                 } else {
                     emit_block_group(&mut sink, region, 1, b.slice(vsrc), rel, dur, i == 0);
-                }
-                if !IS_NAL {
-                    ms += ms_step;
-                    rem += rem_step;
-                    if rem >= num {
-                        ms += 1;
-                        rem -= num;
-                    }
                 }
             }
             patch_crc(region, ch.crc_offset, sink.crc);
@@ -1175,16 +1178,13 @@ impl Mux<'_> {
                 (usize::MAX, u64::MAX)
             };
             let aux_ts = best_a_ts.min(best_s_ts);
-            if vi < blocks.len() && ms <= aux_ts {
-                let (rel, dur) = if IS_NAL {
-                    let d = unsafe { *disp.get_unchecked(vi) };
-                    nal_timing(plan.base_frame, d, plan.ts, self.fps_num, self.fps_den)
+            if vi < blocks.len() && unsafe { *self.pts.get_unchecked(dts0 + vi) } <= aux_ts {
+                let f = if IS_NAL {
+                    plan.base_frame + u64::from(unsafe { *disp.get_unchecked(vi) })
                 } else {
-                    (
-                        (ms - plan.ts) as i16,
-                        ms_step + u64::from(rem + rem_step >= num),
-                    )
+                    plan.base_frame + vi as u64
                 };
+                let (rel, dur) = timing(self.pts, f, plan.ts);
                 if IS_NAL {
                     let b = unsafe { blocks.get_unchecked(vi) };
                     let frame_nals = unsafe { nals.get_unchecked(nal_cur..nal_cur + b.offset) };
@@ -1214,12 +1214,6 @@ impl Mux<'_> {
                     );
                 }
                 vi += 1;
-                ms += ms_step;
-                rem += rem_step;
-                if rem >= num {
-                    ms += 1;
-                    rem -= num;
-                }
             } else if best_a != usize::MAX && best_a_ts <= best_s_ts {
                 // best_a < self.audio.len(); cursor < bound <= packets.len() (earliest)
                 let a = unsafe { self.audio.get_unchecked(best_a) };

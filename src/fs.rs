@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 use alloc::{string::String, vec::Vec};
 #[cfg(target_os = "linux")]
-use core::mem::MaybeUninit;
+use core::{hint::cold_path, mem::MaybeUninit};
 
 #[cfg(target_os = "linux")]
 use crate::io::{Error, Read, Result, Write};
@@ -12,7 +12,7 @@ use crate::{
     path::{Path, PathBuf},
     sys::{
         AT_REMOVEDIR, O_APPEND, O_CLOEXEC, O_CREAT, O_DIRECTORY, O_RDONLY, O_RDWR, O_TRUNC,
-        O_WRONLY, Stat, close, fstat, ftruncate, getdents64, mkdirat, newfstatat, openat,
+        O_WRONLY, Stat, close, fstat, ftruncate, getdents64, mkdirat, newfstatat, openat, pwrite,
         read as sys_read, readlinkat, unlinkat, write as sys_write,
     },
 };
@@ -310,6 +310,21 @@ pub fn write<P: AsRef<Path>, D: AsRef<[u8]>>(path: P, data: D) -> Result<()> {
     f.write_all(data.as_ref())
 }
 
+// buffer only grows; nothing trails write
+#[cfg(target_os = "linux")]
+pub fn write_at(f: &File, mut buf: &[u8], mut off: u64) -> Result<()> {
+    while !buf.is_empty() {
+        let n = pwrite(f.fd, buf.as_ptr(), buf.len(), off as i64);
+        if n <= 0 {
+            cold_path();
+            return err(n as i64);
+        }
+        buf = unsafe { buf.get_unchecked(n as usize..) };
+        off += n as u64;
+    }
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", feature = "vship"))]
 pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
     let src = File::open(from)?;
@@ -469,6 +484,14 @@ pub fn read_to_string<P: AsRef<Path>>(path: P) -> Result<String> {
 #[cfg(not(target_os = "linux"))]
 pub fn write<P: AsRef<Path>, D: AsRef<[u8]>>(path: P, data: D) -> Result<()> {
     std_write(path, data)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn write_at(f: &File, buf: &[u8], off: u64) -> Result<()> {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    let mut f = f;
+    f.seek(SeekFrom::Start(off))?;
+    f.write_all(buf)
 }
 
 #[cfg(all(not(target_os = "linux"), feature = "vship"))]

@@ -1095,37 +1095,37 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
-{P}┃ {C}--input-csp {G}1               {P}# {B}YUV 4:2:0 color format                                                                     {P}┃
-{P}┃ {C}--input-depth {G}10            {P}# {B}10bit input                                                                                {P}┃
-{P}┃ {C}--output-depth {G}10           {P}# {B}10bit output                                                                               {P}┃
-{P}┃ {C}--profile {G}main10            {P}# {B}Main profile with 10b support                                                              {P}┃
-{P}┃ {C}--gop-lookahead {G}0           {P}# {B}Useless for XAV                                                                            {P}┃
-{P}┃ {C}--rc-lookahead {G}250          {P}# {B}Max lookahead; partially free for XAV due to having full chunk ready                       {P}┃
-{P}┃ {C}--keyint {G}-1                 {P}# {B}Keyframe insertion disabled                                                                {P}┃
-{P}┃ {C}--min-keyint {G}9999           {P}# {B}Keyframe insertion disabled                                                                {P}┃
-{P}┃ {C}--no-scenecut               {P}# {B}Internal SCD disabled                                                                      {P}┃
-{P}┃ {C}--lookahead-slices {G}1        {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--lookahead-threads {G}1       {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--frame-threads {G}1           {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--slices {G}1                  {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--no-wpp                    {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--pools {G}1                   {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--no-info                   {P}# {B}Useless for XAV                                                                            {P}┃
-{P}┃ {C}--no-vui-hrd-info           {P}# {B}Useless for XAV                                                                            {P}┃
-{P}┃ {C}--no-vui-timing-info        {P}# {B}Useless for XAV                                                                            {P}┃
-{P}┃ {C}--fps                       {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--input-res                 {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--frames                    {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--sar                       {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--video-signal-type-preset  {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--asm {G}avx512                {P}# {B}Auto-parsed if you have it available                                                       {P}┃
-{P}┃ {C}--colorprim {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--transfer {B}<>               {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--colormatrix {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--range {B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--chromaloc {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--master-display {B}<>         {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--max-cll {B}<>                {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--input-depth {G}10          {P}# {B}10bit input; xav writes the field, x265 has no such option                                   {P}┃
+{P}┃ {C}--profile {G}main10          {P}# {B}Implicit: the linked x265 is a 10bit only build                                              {P}┃
+{P}┃ {C}--input-csp {G}1             {P}# {B}Implicit: YUV 4:2:0 is x265's default and the only input xav feeds                           {P}┃
+{P}┃ {C}--log-level {G}none          {P}# {B}x265's own console output; errors and warnings still reach xav                               {P}┃
+{P}┃ {C}--gop-lookahead {G}0         {P}# {B}Useless for XAV                                                                              {P}┃
+{P}┃ {C}--rc-lookahead {G}300        {P}# {B}Whole GOP in the window; a chunk is never over 300 frames                                    {P}┃
+{P}┃ {C}--keyint {G}-1               {P}# {B}Keyframe insertion disabled                                                                  {P}┃
+{P}┃ {C}--min-keyint {G}9999         {P}# {B}Keyframe insertion disabled                                                                  {P}┃
+{P}┃ {C}--scenecut {G}0              {P}# {B}Internal SCD disabled                                                                        {P}┃
+{P}┃ {C}--frame-threads {G}1         {P}# {B}One frame in flight; it is encoded on the calling worker itself                              {P}┃
+{P}┃ {C}--lookahead-slices {G}0      {P}# {B}Increases quality/efficiency (we parallelize externally)                                     {P}┃
+{P}┃ {C}--wpp {G}0                   {P}# {B}Increases quality/efficiency (we parallelize externally)                                     {P}┃
+{P}┃ {C}--slices {G}1                {P}# {B}One slice per picture; slicing only costs efficiency here                                    {P}┃
+{P}┃ {C}--pools {G}none              {P}# {B}Implicit: the worker pool is compiled out, x265 starts no thread                             {P}┃
+{P}┃ {C}--opt-qp-pps {G}1            {P}# {B}Implicit: the PPS init QP is the CRF anchor, not the spec's 26                               {P}┃
+{P}┃ {C}--opt-ref-list-length-pps {G}1 {P}# {B}Implicit: the PPS carries this GOP's own L0/L1 lengths, not 1/1                            {P}┃
+{P}┃ {C}--info {G}0                  {P}# {B}Useless for XAV                                                                              {P}┃
+{P}┃ {C}--vui-hrd-info {G}0          {P}# {B}Useless for XAV                                                                              {P}┃
+{P}┃ {C}--vui-timing-info {G}0       {P}# {B}Useless for XAV                                                                              {P}┃
+{P}┃ {C}--fps                     {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--input-res               {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--frames                  {P}# {B}Auto-parsed; xav writes the field per chunk                                                  {P}┃
+{P}┃ {C}--sar                     {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--asm {G}avx512              {P}# {B}Auto-parsed if you have it available                                                         {P}┃
+{P}┃ {C}--colorprim {G}<>            {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--transfer {G}<>             {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--colormatrix {G}<>          {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--range {G}<>                {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--chromaloc {G}<>            {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--master-display {G}<>       {P}# {B}Auto-parsed                                                                                  {P}┃
+{P}┃ {C}--max-cll {G}<>              {P}# {B}Auto-parsed                                                                                  {P}┃
 {P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
 

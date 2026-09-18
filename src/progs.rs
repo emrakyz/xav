@@ -304,8 +304,8 @@ impl ProgsTrack {
         let inner = Arc::clone(&self.inner);
 
         spawn(move || match encoder {
-            SvtAv1 | Avm | Vvenc => assume_unreachable(),
-            X265 | X264 => watch_x265(&inner, stderr, w),
+            SvtAv1 | Avm | Vvenc | X265 => assume_unreachable(),
+            X264 => watch_x264(&inner, stderr, w),
         });
     }
 }
@@ -397,7 +397,12 @@ impl Tracker {
         Self::mk(prog, worker_id, chnk_idx, tot, false, crf_score, TAG_MET)
     }
 
-    #[cfg(any(feature = "vship", feature = "avm", feature = "vvenc"))]
+    #[cfg(any(
+        feature = "vship",
+        feature = "avm",
+        feature = "vvenc",
+        feature = "x265"
+    ))]
     #[inline]
     pub fn set(&self, n: usize) {
         unsafe { (*self.slot).enced.store(n, Relaxed) }
@@ -459,7 +464,7 @@ impl<R: Read> LineReader<R> {
     }
 }
 
-fn watch_x265(inner: &Shared, rd: impl Read, w: Watch) {
+fn watch_x264(inner: &Shared, rd: impl Read, w: Watch) {
     let Watch {
         worker_id,
         chnk_idx,
@@ -498,7 +503,7 @@ fn watch_x265(inner: &Shared, rd: impl Read, w: Watch) {
             }
             last_update = Mono::now();
 
-            let Some((cur, fps, kbps)) = parse_x265(text) else {
+            let Some((cur, fps, kbps)) = parse_x264(text) else {
                 continue;
             };
 
@@ -526,7 +531,7 @@ fn watch_x265(inner: &Shared, rd: impl Read, w: Watch) {
     inner.clear(worker_id);
 }
 
-fn parse_x265(s: &str) -> Option<(usize, f32, f32)> {
+fn parse_x264(s: &str) -> Option<(usize, f32, f32)> {
     let rest = s.split(']').nth(1)?;
     let mut parts = rest.split(',');
 

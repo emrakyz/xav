@@ -13,9 +13,9 @@ use std::{
 #[cfg(feature = "vship")]
 use crate::vship::{VshipProcessor, init_device, load_disp};
 use crate::{
-    chan::{Semaphore, SpscRing, sem_release, spsc_close, spsc_recv, spsc_send},
-    chunk::{chnkify, load_scenes},
-    dec::dec_chnks,
+    chan::{SpscRing, spsc_close, spsc_recv, spsc_send},
+    chunk::{MAX_CHNK_FRAMES, chnkify, load_scenes},
+    dec::{Bufs, dec_chnks},
     encoder::{EncConfig, set_svt_base, set_svt_crf},
     ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf},
     fs::{File, metadata, remove_file},
@@ -199,7 +199,8 @@ fn svt_enc(converted: &[u8], pipe: &Pipeline, inf: &VidInf, frame_cnt: usize, ou
     };
     let handle = svt_init(&cfg);
 
-    let mut writer = BufWriter::new(File::create(out).unwrap());
+    let mut sink = Vec::with_capacity(1 << 16);
+    let mut writer = BufWriter::new(File::create(out).unwrap(), &mut sink);
     write_ivf_header(&mut writer, cfg.width, cfg.height, inf.fps_num, inf.fps_den);
 
     let mut io_fmt = EbSvtIOFormat {
@@ -412,11 +413,26 @@ fn verify_pipeline(pipe: &Pipeline, inf: &VidInf, crop: (u32, u32), strat: DecSt
 
     let pix_sz = if inf.is_10b { 2 } else { 1 };
     assert_eq!(
-        pipe.y_sz,
+        pipe.met.y_sz,
         expected_w * expected_h * pix_sz,
         "y_size mismatch"
     );
-    assert_eq!(pipe.uv_sz, pipe.y_sz / 4, "uv_size mismatch");
+    assert_eq!(pipe.met.uv_sz, pipe.met.y_sz / 4, "uv_size mismatch");
+    assert_eq!(
+        pipe.met.cr_off,
+        pipe.met.y_sz + pipe.met.uv_sz,
+        "cr_off mismatch"
+    );
+    assert_eq!(
+        pipe.enc.y_sz,
+        expected_w * expected_h * 2,
+        "enc y_size mismatch"
+    );
+    assert_eq!(
+        pipe.enc.frame_sz,
+        pipe.enc.y_sz + pipe.enc.uv_sz * 2,
+        "enc frame_size mismatch"
+    );
 }
 
 #[cfg(feature = "vship")]
@@ -446,11 +462,9 @@ fn val_tq(
     let threads = available_parallelism() as i32;
     let mut probe_dec = VidDecoder::new(ivf, threads).unwrap();
 
-    let pix_sz = if inf.is_10b { 2 } else { 1 };
-    let y_sz = pipe.final_w * pipe.final_h * pix_sz;
-    let uv_sz = y_sz / 4;
-    let ys = (pipe.final_w * pix_sz) as i64;
-    let cs = (pipe.final_w / 2 * pix_sz) as i64;
+    let (y_sz, uv_sz) = (pipe.met.y_sz, pipe.met.uv_sz);
+    let ys = pipe.met.y_stride as i64;
+    let cs = pipe.met.c_stride as i64;
 
     let mut unpacked_buf = vec![0u8; pipe.conv_buf_sz];
     let mut last_score = 0.0;
@@ -540,17 +554,22 @@ fn run_test(
 
     let ring = Arc::new(SpscRing::new());
     let ring2 = Arc::clone(&ring);
-    let sem = Arc::new(Semaphore::new(1));
+    let bufs = Arc::new(Bufs::new(1, MAX_CHNK_FRAMES * pipe.frame_sz));
     let handle = pspawn({
         let inp = inp.clone();
         let inf = inf.clone();
-        let sem = Arc::clone(&sem);
+        let bufs = Arc::clone(&bufs);
         move || {
             let rp = Arc::as_ptr(&ring);
-            let send = move |p: WorkPkg| unsafe {
-                spsc_send(rp, Box::into_raw(Box::new(p)) as u64);
-            };
-            dec_chnks(&chnks, &inp, &inf, &send, &BTreeSet::new(), strat, &sem);
+            let send = move |p: *mut WorkPkg| unsafe { spsc_send(rp, p as u64) };
+            dec_chnks(
+                &chnks,
+                &inp,
+                &inf,
+                &BTreeSet::new(),
+                strat,
+                &bufs.sink(&send),
+            );
             unsafe { spsc_close(rp) };
         }
     });
@@ -562,10 +581,11 @@ fn run_test(
         if m == 0 {
             break;
         }
-        let pkg = unsafe { Box::from_raw(m as *mut WorkPkg) };
+        let slot = m as *mut WorkPkg;
+        let pkg = unsafe { &*slot };
         tot_frames += pkg.frame_cnt;
         all_yuv.extend_from_slice(&pkg.yuv);
-        sem_release(&sem);
+        bufs.give(slot);
     }
     handle.join();
 

@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-use alloc::{borrow::Cow, string::String, vec::Vec};
+use alloc::{borrow::Cow, boxed::Box, string::String, vec::Vec};
 #[cfg(target_os = "linux")]
 use core::{
     fmt::{self, Display, Formatter},
@@ -33,6 +33,22 @@ pub struct PathBuf(Vec<u8>);
 pub type Path = std::path::Path;
 #[cfg(not(target_os = "linux"))]
 pub type PathBuf = std::path::PathBuf;
+
+#[cold]
+#[inline(never)]
+#[must_use]
+#[cfg(target_os = "linux")]
+pub fn leak_path(p: &Path) -> &'static Path {
+    Path::from_bytes(Box::leak(Box::<[u8]>::from(p.as_bytes())))
+}
+
+#[cold]
+#[inline(never)]
+#[must_use]
+#[cfg(not(target_os = "linux"))]
+pub fn leak_path(p: &Path) -> &'static Path {
+    Box::leak(p.to_path_buf().into_boxed_path())
+}
 
 #[cfg(target_os = "linux")]
 fn split_name(b: &[u8]) -> Option<&[u8]> {

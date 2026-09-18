@@ -37,6 +37,7 @@ pub struct PipeReader {
     pub frame_sz: usize,
     pub start_idx: usize,
     frame_header: [u8; 6],
+    discard: Vec<u8>,
 }
 
 impl PipeReader {
@@ -47,11 +48,15 @@ impl PipeReader {
         self.reader.read_exact(dst).is_ok()
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn skip_frames(&mut self, cnt: usize) {
-        let mut discard = vec![0u8; self.frame_sz];
+        if self.discard.is_empty() {
+            self.discard = vec![0u8; self.frame_sz];
+        }
         for _ in 0..cnt {
             _ = self.reader.read_exact(&mut self.frame_header);
-            _ = self.reader.read_exact(&mut discard);
+            _ = self.reader.read_exact(&mut self.discard);
         }
     }
 }
@@ -105,6 +110,7 @@ pub fn init_pipe(start_idx: usize) -> Option<(Y4mInfo, PipeReader)> {
         frame_sz,
         start_idx,
         frame_header: [0u8; 6],
+        discard: Vec::new(),
     };
 
     Some((info, pipe_reader))

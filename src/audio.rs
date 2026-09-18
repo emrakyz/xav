@@ -5,6 +5,7 @@ use core::{
     hint::cold_path,
     iter::repeat_with,
     mem::take,
+    ptr::copy_nonoverlapping,
     sync::atomic::{
         AtomicBool, AtomicUsize,
         Ordering::{Acquire, Relaxed, Release},
@@ -22,7 +23,7 @@ use crate::{
     error::Xerr,
     ffms::get_au_streams,
     fs::{File, write},
-    io::{BufWriter, Write as _},
+    io::{BUF as SINK, BufWriter, Write as _},
     lavf::AuDecoder,
     norm::{downmix, measure},
     opus::{Encoder, FRAME},
@@ -146,23 +147,33 @@ pub fn frame_samp(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
 }
 
 #[inline]
+fn reord_n<const N: usize>(buf: &mut [f32], num_samples: usize, map: [usize; N]) {
+    if buf.len() < num_samples * N {
+        cold_path();
+        return;
+    }
+    let mut p = buf.as_mut_ptr();
+    for _ in 0..num_samples {
+        let mut tmp = [0.0f32; N];
+        let mut j = 0;
+        while j < N {
+            tmp[j] = unsafe { *p.add(map[j]) };
+            j += 1;
+        }
+        unsafe {
+            copy_nonoverlapping(tmp.as_ptr(), p, N);
+            p = p.add(N);
+        }
+    }
+}
+
+#[inline]
 fn reord_surround(buf: &mut [f32], channels: usize, num_samples: usize) {
-    let map: &[usize] = match channels {
-        6 => &[0, 2, 1, 4, 5, 3],
-        7 => &[0, 2, 1, 5, 6, 4, 3],
-        8 => &[0, 2, 1, 6, 7, 4, 5, 3],
-        _ => {
-            cold_path();
-            return;
-        }
-    };
-    let mut tmp = [0.0f32; 8];
-    for i in 0..num_samples {
-        let base = i * channels;
-        for (j, &m) in map.iter().enumerate() {
-            tmp[j] = buf[base + m];
-        }
-        buf[base..base + channels].copy_from_slice(&tmp[..channels]);
+    match channels {
+        6 => reord_n(buf, num_samples, [0, 2, 1, 4, 5, 3]),
+        7 => reord_n(buf, num_samples, [0, 2, 1, 5, 6, 4, 3]),
+        8 => reord_n(buf, num_samples, [0, 2, 1, 6, 7, 4, 5, 3]),
+        _ => cold_path(),
     }
 }
 
@@ -214,8 +225,8 @@ fn par_decode(
     let total: usize = ranges.iter().map(|&(s, e)| (e - s) as usize).sum();
     let nproc = available_parallelism();
 
-    let mut regions: Vec<(i64, i64, bool, bool)> = Vec::new();
-    let mut rmeta: Vec<(usize, usize, i64, i64)> = Vec::new();
+    let mut regions: Vec<(i64, i64, bool, bool)> = Vec::with_capacity(ranges.len() * nproc);
+    let mut rmeta: Vec<(usize, usize, i64, i64)> = Vec::with_capacity(ranges.len());
     let lastr = ranges.len() - 1;
     for (ri, &(rs, re)) in ranges.iter().enumerate() {
         let rstart = regions.len();
@@ -253,11 +264,16 @@ fn par_decode(
                             break;
                         }
                         let (s0, s1, isf, isl) = regions[u];
-                        let mut local: Vec<f32> = Vec::new();
+                        // downmix fills every float; reserve keeps set_len in bounds
+                        let mut local: Vec<f32> = Vec::with_capacity((s1 - s0) as usize * out_ch);
                         let bpos = dec.decode_range(s0, s1, isf, isl, |chnk: &mut [f32]| {
                             let n = chnk.len() / ch;
                             let off = local.len();
-                            local.resize(off + n * out_ch, 0.0);
+                            #[allow(clippy::uninit_vec)]
+                            {
+                                local.reserve(n * out_ch);
+                                unsafe { local.set_len(off + n * out_ch) };
+                            }
                             downmix(chnk, &mut local[off..], ch, n);
                             Ok(())
                         })?;
@@ -342,7 +358,8 @@ fn fused_encode(
     let consumed = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
 
-    let mut w = BufWriter::new(File::create(out)?);
+    let mut sink = Vec::with_capacity(SINK);
+    let mut w = BufWriter::new(File::create(out)?, &mut sink);
 
     scope(|s| -> Result<(), Xerr> {
         let mut handles = Vec::with_capacity(nproc);
@@ -362,7 +379,7 @@ fn fused_encode(
                             sleep(Duration::from_micros(100));
                         }
                         let (ts, te, last, rl) = units[u];
-                        let mut pcm: Vec<f32> = Vec::new();
+                        let mut pcm: Vec<f32> = Vec::with_capacity((te - ts) as usize * ch);
                         let bpos =
                             dec.decode_range(ts, te, rl > 0, last, |chnk: &mut [f32]| {
                                 let n = chnk.len() / ch;
@@ -389,13 +406,14 @@ fn fused_encode(
             }));
         }
 
-        let mut buf: Vec<f32> = Vec::new();
         let mut enc_off = 0usize;
         let mut remaining = 0usize;
         let mut done = 0usize;
         let mut first = true;
         let mut progs = ProgsBar::new();
         let seg = nproc * CHUNK_FRAMES;
+        let cf = ch * FRAME;
+        let mut buf: Vec<f32> = Vec::with_capacity((seg + PREROLL + POSTROLL) * cf);
         let enc_res = (|| -> Result<(), Xerr> {
             for u in 0..nunits {
                 while !ready[u].load(Acquire) {
@@ -414,7 +432,7 @@ fn fused_encode(
                 remaining -= emit;
                 done += emit;
                 consumed.store(u + 1, Relaxed);
-                while buf.len() / (ch * FRAME) >= enc_off + seg + POSTROLL {
+                while buf.len() >= (enc_off + seg + POSTROLL) * cf {
                     w.write_all(&par_encode_seg(&buf, enc_off, seg, ch, brate, first)?)?;
                     first = false;
                     buf.drain(..(enc_off + seg - PREROLL) * FRAME * ch);
@@ -422,7 +440,7 @@ fn fused_encode(
                     progs.up_au(done.min(total), total, progs_line, 2, tid);
                 }
             }
-            let bframes = buf.len().div_ceil(ch * FRAME);
+            let bframes = buf.len().div_ceil(cf);
             if bframes > enc_off {
                 buf.resize(bframes * FRAME * ch, 0.0);
                 w.write_all(&par_encode_seg(
@@ -538,25 +556,20 @@ fn encode_chunk(pcm: &[f32], c: usize, seg: &Seg, pkt: &mut [u8]) -> Result<Vec<
         out.extend_from_slice(&(h.len() as u16).to_le_bytes());
         out.extend_from_slice(&h);
     }
-    for f in fed_start..keep_start {
-        enc.encode(
-            unsafe { pcm.get_unchecked(f * stride..f * stride + stride) },
-            pkt,
-        )?;
+    let mut off = fed_start * stride;
+    for _ in fed_start..keep_start {
+        enc.encode(unsafe { pcm.get_unchecked(off..off + stride) }, pkt)?;
+        off += stride;
     }
-    for f in keep_start..keep_end {
-        let len = enc.encode(
-            unsafe { pcm.get_unchecked(f * stride..f * stride + stride) },
-            pkt,
-        )?;
+    for _ in keep_start..keep_end {
+        let len = enc.encode(unsafe { pcm.get_unchecked(off..off + stride) }, pkt)?;
+        off += stride;
         out.extend_from_slice(&(len as u16).to_le_bytes());
         out.extend_from_slice(&pkt[..len]);
     }
-    for f in keep_end..fed_end {
-        enc.encode(
-            unsafe { pcm.get_unchecked(f * stride..f * stride + stride) },
-            pkt,
-        )?;
+    for _ in keep_end..fed_end {
+        enc.encode(unsafe { pcm.get_unchecked(off..off + stride) }, pkt)?;
+        off += stride;
     }
     Ok(out)
 }

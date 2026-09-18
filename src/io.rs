@@ -248,32 +248,30 @@ pub trait IsTerminal {
     fn is_terminal(&self) -> bool;
 }
 
-const BUF: usize = 1 << 16;
+pub const BUF: usize = 1 << 16;
 
-pub struct BufWriter<W: Write> {
+pub struct BufWriter<'a, W: Write> {
     inner: W,
-    buf: Vec<u8>,
+    buf: &'a mut Vec<u8>,
 }
 
-impl<W: Write> BufWriter<W> {
+impl<'a, W: Write> BufWriter<'a, W> {
     #[inline]
-    pub fn new(inner: W) -> Self {
-        Self {
-            inner,
-            buf: Vec::with_capacity(BUF),
-        }
+    pub fn new(inner: W, buf: &'a mut Vec<u8>) -> Self {
+        buf.clear();
+        Self { inner, buf }
     }
 
     fn drain(&mut self) -> Result<()> {
         if !self.buf.is_empty() {
-            self.inner.write_all(&self.buf)?;
+            self.inner.write_all(self.buf)?;
             self.buf.clear();
         }
         Ok(())
     }
 }
 
-impl<W: Write> Write for BufWriter<W> {
+impl<W: Write> Write for BufWriter<'_, W> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         if self.buf.len() + buf.len() > BUF {
             self.drain()?;
@@ -310,7 +308,7 @@ impl<W: Write> Write for BufWriter<W> {
     }
 }
 
-impl<W: Write> Drop for BufWriter<W> {
+impl<W: Write> Drop for BufWriter<'_, W> {
     fn drop(&mut self) {
         _ = self.drain();
     }

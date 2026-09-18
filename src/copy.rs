@@ -17,6 +17,7 @@ use crate::{
         avformat_find_stream_info, avformat_open_input, dict_get, is_matroska, skip_end,
         stream_lang,
     },
+    fs::metadata,
     mkv::read::{chapter_langs, track_langs},
     path::Path,
     platform::Mmap,
@@ -59,7 +60,11 @@ pub struct Chapter {
     pub lang: Option<Cow<'static, str>>,
 }
 
-pub fn demux(inp: &Path, want_audio: bool, want_subs: bool) -> Result<Vec<Stream>, Xerr> {
+pub fn demux_extras(
+    inp: &Path,
+    want_audio: bool,
+    want_subs: bool,
+) -> Result<(Vec<Chapter>, Vec<Stream>), Xerr> {
     unsafe {
         let path = CString::new(inp.to_str().unwrap_unchecked()).unwrap_unchecked();
         let mut fmt_ctx: *mut AVFormatContext = null_mut();
@@ -71,60 +76,20 @@ pub fn demux(inp: &Path, want_audio: bool, want_subs: bool) -> Result<Vec<Stream
             return Err("copy: stream info failed".into());
         }
 
-        let n = (*fmt_ctx).nb_streams as usize;
+        let n_ch = (*fmt_ctx).nb_chapters as usize;
         let origin_us = video_origin_us(fmt_ctx);
-        let mut routes = vec![None; n];
-        let mut streams = Vec::new();
+        let dur_us = (*fmt_ctx).duration.max(0);
+        let file_sz = metadata(inp).unwrap_or(0) as usize;
         let map = is_matroska(fmt_ctx).then(|| Mmap::open(inp).ok()).flatten();
-        let tags = map
-            .as_ref()
-            .map_or_else(Vec::new, |m| track_langs(m.slice()));
-        for (i, route) in routes.iter_mut().enumerate() {
-            let st = *(*fmt_ctx).streams.add(i);
-            let par = &*(*st).codecpar;
-            let want = (par.codec_type == AVMEDIA_TYPE_AUDIO && want_audio)
-                || (par.codec_type == AVMEDIA_TYPE_SUBTITLE && want_subs);
-            if want {
-                *route = Some(streams.len());
-                let mut s = describe(st, par, origin_us);
-                s.lang = tags
-                    .iter()
-                    .find(|t| t.0 == i as u64)
-                    .map(|t| Cow::Owned(t.1.to_owned()))
-                    .or_else(|| stream_lang((*st).metadata));
-                streams.push(s);
-            } else {
-                (*st).discard = AVDISCARD_ALL;
-            }
-        }
-        if !streams.is_empty() {
-            read_packets(fmt_ctx, &routes, &mut streams);
-        }
-        avformat_close_input(&raw mut fmt_ctx);
-        Ok(streams)
-    }
-}
+        let slice = map.as_ref().map(Mmap::slice);
 
-pub fn read_chapters(inp: &Path) -> Result<Vec<Chapter>, Xerr> {
-    unsafe {
-        let path = CString::new(inp.to_str().unwrap_unchecked()).unwrap_unchecked();
-        let mut fmt_ctx: *mut AVFormatContext = null_mut();
-        if avformat_open_input(&raw mut fmt_ctx, path.as_ptr(), null(), null_mut()) < 0 {
-            return Err("chapters: open failed".into());
-        }
-        if avformat_find_stream_info(fmt_ctx, null_mut()) < 0 {
-            avformat_close_input(&raw mut fmt_ctx);
-            return Err("chapters: stream info failed".into());
-        }
-        let n = (*fmt_ctx).nb_chapters as usize;
-        let mut chapters = Vec::with_capacity(n);
-        let map = (n != 0 && is_matroska(fmt_ctx))
-            .then(|| Mmap::open(inp).ok())
-            .flatten();
-        let ctags = map
-            .as_ref()
-            .map_or_else(Vec::new, |m| chapter_langs(m.slice()));
-        for i in 0..n {
+        let ctags = if n_ch == 0 {
+            Vec::new()
+        } else {
+            slice.map_or_else(Vec::new, chapter_langs)
+        };
+        let mut chapters = Vec::with_capacity(n_ch);
+        for i in 0..n_ch {
             let ch = *(*fmt_ctx).chapters.add(i);
             let tb = (*ch).time_base;
             let ns = |t: i64| {
@@ -142,8 +107,34 @@ pub fn read_chapters(inp: &Path) -> Result<Vec<Chapter>, Xerr> {
                 lang,
             });
         }
+
+        let n = (*fmt_ctx).nb_streams as usize;
+        let mut routes = vec![None; n];
+        let mut streams = Vec::new();
+        let tags = slice.map_or_else(Vec::new, track_langs);
+        for (i, route) in routes.iter_mut().enumerate() {
+            let st = *(*fmt_ctx).streams.add(i);
+            let par = &*(*st).codecpar;
+            let want = (par.codec_type == AVMEDIA_TYPE_AUDIO && want_audio)
+                || (par.codec_type == AVMEDIA_TYPE_SUBTITLE && want_subs);
+            if want {
+                *route = Some(streams.len());
+                let mut s = describe(st, par, origin_us, dur_us, file_sz);
+                s.lang = tags
+                    .iter()
+                    .find(|t| t.0 == i as u64)
+                    .map(|t| Cow::Owned(t.1.to_owned()))
+                    .or_else(|| stream_lang((*st).metadata));
+                streams.push(s);
+            } else {
+                (*st).discard = AVDISCARD_ALL;
+            }
+        }
+        if !streams.is_empty() {
+            read_packets(fmt_ctx, &routes, &mut streams);
+        }
         avformat_close_input(&raw mut fmt_ctx);
-        Ok(chapters)
+        Ok((chapters, streams))
     }
 }
 
@@ -167,7 +158,13 @@ unsafe fn video_origin_us(fmt_ctx: *mut AVFormatContext) -> i64 {
     }
 }
 
-unsafe fn describe(st: *mut AVStream, par: &AVCodecParameters, origin_us: i64) -> Stream {
+unsafe fn describe(
+    st: *mut AVStream,
+    par: &AVCodecParameters,
+    origin_us: i64,
+    dur_us: i64,
+    file_sz: usize,
+) -> Stream {
     unsafe {
         let tb = (*st).time_base;
         let extradata = if par.extradata.is_null() || par.extradata_size <= 0 {
@@ -175,9 +172,15 @@ unsafe fn describe(st: *mut AVStream, par: &AVCodecParameters, origin_us: i64) -
         } else {
             from_raw_parts(par.extradata, par.extradata_size as usize).to_vec()
         };
+        let want = if par.bit_rate > 0 && dur_us > 0 {
+            ((par.bit_rate as u128 * dur_us as u128) / 8_000_000) as usize
+        } else {
+            0
+        };
+        let n_pkt = (*st).nb_frames.max(0) as usize;
         Stream {
-            data: Vec::new(),
-            packets: Vec::new(),
+            data: Vec::with_capacity(want.min(file_sz)),
+            packets: Vec::with_capacity(n_pkt),
             codec_id: par.codec_id,
             codec_type: par.codec_type,
             channels: par.ch_layout.nb_channels as u8,

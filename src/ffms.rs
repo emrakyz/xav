@@ -10,7 +10,7 @@ use core::{
 
 use crate::{
     Xerr,
-    dec::CropCalc,
+    dec::{CropCalc, Geom},
     error::{Xerr::Msg, fatal},
     ffms::DecStrat::{
         B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast, B10CropFastRem,
@@ -24,9 +24,9 @@ use crate::{
     lang::to_bcp47,
     mkv::read::track_langs,
     pack::{
-        PACK_CHUNK, SHIFT_CHUNK, conv_10b, conv_10b_rem, cpy_with_stride, deint_nv12,
-        deint_nv12_10b, deint_nv12_10b_rem, deint_nv12_rem, deint_p010, deint_p010_rem, pack_10b,
-        pack_10b_rem, pack_stride, pack_stride_rem, packed_row_sz, shift_p010, shift_p010_rem,
+        PACK_CHUNK, SHIFT_CHUNK, conv_10b, conv_10b_rem, deint_nv12, deint_nv12_10b,
+        deint_nv12_10b_rem, deint_nv12_rem, deint_p010, deint_p010_rem, pack_10b, pack_10b_rem,
+        pack_stride, pack_stride_rem, shift_p010, shift_p010_rem,
     },
     path::Path,
     platform::Mmap,
@@ -55,8 +55,8 @@ const AV_CODEC_ID_H264: c_int = 27;
 const AV_CODEC_ID_VC1: c_int = 70;
 #[cfg(feature = "cuda")]
 const AV_CODEC_ID_VP9: c_int = 166;
-#[cfg(feature = "cuda")]
-const AV_CODEC_ID_HEVC: c_int = 172;
+#[cfg(any(feature = "cuda", all(feature = "x265", feature = "vship")))]
+pub const AV_CODEC_ID_HEVC: c_int = 172;
 const AV_CODEC_ID_AV1: c_int = 222;
 const HW_DEVICE_CTX_OFFSET: usize = 560;
 
@@ -120,7 +120,7 @@ pub struct AVStream {
     pub time_base: AVRational,
     pub start_time: i64,
     pub duration: i64,
-    nb_frames: i64,
+    pub nb_frames: i64,
     _disposition: c_int,
     pub discard: c_int,
     pub sample_aspect_ratio: AVRational,
@@ -366,7 +366,7 @@ unsafe extern "C" {
     ) -> c_int;
     fn av_buffer_ref(buf: *mut c_void) -> *mut c_void;
     fn av_buffer_unref(buf: *mut *mut c_void);
-    fn avcodec_find_decoder_by_name(name: *const c_char) -> *const c_void;
+    pub fn avcodec_find_decoder_by_name(name: *const c_char) -> *const c_void;
 }
 
 const AV_LOG_ERROR: c_int = 16;
@@ -426,7 +426,7 @@ struct AVDictEntry {
     value: *const i8,
 }
 
-const unsafe fn set_thread_cnt(codec_ctx: *mut c_void, threads: c_int) {
+pub const unsafe fn set_thread_cnt(codec_ctx: *mut c_void, threads: c_int) {
     unsafe {
         codec_ctx
             .cast::<u8>()
@@ -1304,39 +1304,10 @@ unsafe fn extr_cont_light(f: &VidFrame) -> Option<(u16, u16)> {
 }
 
 #[inline]
-pub fn extr_8b(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
-    unsafe {
-        let f = &*frame;
-        let width = inf.width as usize;
-        let height = inf.height as usize;
-        let y_sz = width * height;
-        let uv_sz = y_sz / 4;
-
-        let y_linesz = f.linesize[0] as usize;
-        cpy_with_stride(f.data[0], y_linesz, width, height, out.as_mut_ptr());
-        cpy_with_stride(
-            f.data[1],
-            f.linesize[1] as usize,
-            width / 2,
-            height / 2,
-            out.as_mut_ptr().add(y_sz),
-        );
-        cpy_with_stride(
-            f.data[2],
-            f.linesize[2] as usize,
-            width / 2,
-            height / 2,
-            out.as_mut_ptr().add(y_sz + uv_sz),
-        );
-    }
-}
-
-#[inline]
 pub const fn extr_8b_crop_fast(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let y_sz = cc.new_w as usize * cc.new_h as usize;
-        let uv_sz = y_sz / 4;
+        let (y_sz, uv_sz) = (cc.g.y_sz, cc.g.uv_sz);
 
         copy_nonoverlapping(f.data[0].add(cc.y_start), out.as_mut_ptr(), y_sz);
         copy_nonoverlapping(f.data[1].add(cc.uv_off), out.as_mut_ptr().add(y_sz), uv_sz);
@@ -1352,45 +1323,36 @@ pub const fn extr_8b_crop_fast(frame: *const VidFrame, out: &mut [u8], cc: &Crop
 pub fn extr_8b_crop(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let mut pos = 0;
+        let mut d = out.as_mut_ptr();
+        let mut s0 = f.data[0].add(cc.y_start);
+        let mut s1 = f.data[1].add(cc.uv_off);
+        let mut s2 = f.data[2].add(cc.uv_off);
 
-        for row in 0..cc.new_h as usize {
-            copy_nonoverlapping(
-                f.data[0].add(cc.y_start + row * cc.y_stride),
-                out.as_mut_ptr().add(pos),
-                cc.y_len,
-            );
-            pos += cc.y_len;
+        for _ in 0..cc.g.hu {
+            copy_nonoverlapping(s0, d, cc.y_len);
+            s0 = s0.add(cc.y_stride);
+            d = d.add(cc.y_len);
         }
 
-        for row in 0..cc.new_h as usize / 2 {
-            copy_nonoverlapping(
-                f.data[1].add(cc.uv_off + row * cc.uv_stride),
-                out.as_mut_ptr().add(pos),
-                cc.uv_len,
-            );
-            pos += cc.uv_len;
+        for _ in 0..cc.g.hh {
+            copy_nonoverlapping(s1, d, cc.uv_len);
+            s1 = s1.add(cc.uv_stride);
+            d = d.add(cc.uv_len);
         }
 
-        for row in 0..cc.new_h as usize / 2 {
-            copy_nonoverlapping(
-                f.data[2].add(cc.uv_off + row * cc.uv_stride),
-                out.as_mut_ptr().add(pos),
-                cc.uv_len,
-            );
-            pos += cc.uv_len;
+        for _ in 0..cc.g.hh {
+            copy_nonoverlapping(s2, d, cc.uv_len);
+            s2 = s2.add(cc.uv_stride);
+            d = d.add(cc.uv_len);
         }
     }
 }
 
 #[inline]
-pub const fn extr_8b_fast(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub const fn extr_8b_fast(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let width = inf.width as usize;
-        let height = inf.height as usize;
-        let y_sz = width * height;
-        let uv_sz = y_sz / 4;
+        let (y_sz, uv_sz) = (g.y_sz, g.uv_sz);
 
         copy_nonoverlapping(f.data[0], out.as_mut_ptr(), y_sz);
         copy_nonoverlapping(f.data[1], out.as_mut_ptr().add(y_sz), uv_sz);
@@ -1402,10 +1364,8 @@ pub const fn extr_8b_fast(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) 
 pub fn extr_10b_crop_fast(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
-        let y_pack = (w * h * 5) / 4;
-        let uv_pack = (w * h / 4 * 5) / 4;
+        let (w, h) = (cc.g.wu, cc.g.hu);
+        let (y_pack, uv_pack) = (cc.g.y_pack, cc.g.cr_pack - cc.g.y_pack);
 
         let y_src = from_raw_parts(f.data[0].add(cc.y_start), w * h * 2);
         pack_10b(y_src, &mut out[..y_pack]);
@@ -1422,10 +1382,8 @@ pub fn extr_10b_crop_fast(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc)
 pub fn extr_10b_crop(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
-        let y_pack = (w * h * 5) / 4;
-        let uv_pack = (w * h / 4 * 5) / 4;
+        let (w, h) = (cc.g.wu, cc.g.hu);
+        let (y_pack, uv_pack) = (cc.g.y_pack, cc.g.cr_pack - cc.g.y_pack);
 
         pack_stride(
             f.data[0].add(cc.y_start),
@@ -1642,13 +1600,11 @@ pub fn get_dec_strat(inf: &VidInf, crop: (u32, u32), hwdec: bool, tq: bool) -> D
 }
 
 #[inline]
-pub fn extr_10b_pack(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_10b_pack(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
-        let y_pack = (w * h * 5) / 4;
-        let uv_pack = (w * h / 4 * 5) / 4;
+        let (w, h) = (g.wu, g.hu);
+        let (y_pack, uv_pack) = (g.y_pack, g.cr_pack - g.y_pack);
 
         let y_src = from_raw_parts(f.data[0], w * h * 2);
         pack_10b(y_src, &mut out[..y_pack]);
@@ -1662,42 +1618,34 @@ pub fn extr_10b_pack(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
 }
 
 #[inline]
-pub fn extr_8b_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_8b_stride(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let width = inf.width as usize;
-        let height = inf.height as usize;
+        let (width, height) = (g.wu, g.hu);
 
         let y_linesz = f.linesize[0] as usize;
         let uv_linesz = f.linesize[1] as usize;
 
-        let mut pos = 0;
+        let mut d = out.as_mut_ptr();
+        let (mut s0, mut s1, mut s2) = (f.data[0], f.data[1], f.data[2]);
+        let uv_w = width / 2;
 
-        for row in 0..height {
-            copy_nonoverlapping(
-                f.data[0].add(row * y_linesz),
-                out.as_mut_ptr().add(pos),
-                width,
-            );
-            pos += width;
+        for _ in 0..height {
+            copy_nonoverlapping(s0, d, width);
+            s0 = s0.add(y_linesz);
+            d = d.add(width);
         }
 
-        for row in 0..height / 2 {
-            copy_nonoverlapping(
-                f.data[1].add(row * uv_linesz),
-                out.as_mut_ptr().add(pos),
-                width / 2,
-            );
-            pos += width / 2;
+        for _ in 0..height / 2 {
+            copy_nonoverlapping(s1, d, uv_w);
+            s1 = s1.add(uv_linesz);
+            d = d.add(uv_w);
         }
 
-        for row in 0..height / 2 {
-            copy_nonoverlapping(
-                f.data[2].add(row * uv_linesz),
-                out.as_mut_ptr().add(pos),
-                width / 2,
-            );
-            pos += width / 2;
+        for _ in 0..height / 2 {
+            copy_nonoverlapping(s2, d, uv_w);
+            s2 = s2.add(uv_linesz);
+            d = d.add(uv_w);
         }
     }
 }
@@ -1706,64 +1654,57 @@ pub fn extr_8b_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
 pub fn extr_10b_crop_pack_stride(frame: *const VidFrame, out: &mut [u8], crop_calc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = crop_calc.new_w as usize;
-        let h = crop_calc.new_h as usize;
+        let (w, h) = (crop_calc.g.wu, crop_calc.g.hu);
         let pix_sz = 2;
 
         let y_linesz = f.linesize[0] as usize;
         let uv_linesz = f.linesize[1] as usize;
 
-        let mut dst_pos = 0;
         let pack_row_y = (w * 2 * 5) / 8;
-
-        for row in 0..h {
-            let src_off =
-                (crop_calc.crop_h as usize * pix_sz) + (row + crop_calc.crop_v as usize) * y_linesz;
-            let src_row = from_raw_parts(f.data[0].add(src_off), crop_calc.y_len);
-            let dst_row = from_raw_parts_mut(out.as_mut_ptr().add(dst_pos), pack_row_y);
-
-            pack_10b(src_row, dst_row);
-
-            dst_pos += pack_row_y;
-        }
-
         let pack_row_uv = (w / 2 * 2 * 5) / 8;
+        let cv = crop_calc.crop_v as usize;
+        let chb = crop_calc.crop_h as usize * pix_sz;
+        let mut d = out.as_mut_ptr();
+        let mut s0 = f.data[0].add(chb + cv * y_linesz);
+        let mut s1 = f.data[1].add(chb / 2 + cv / 2 * uv_linesz);
+        let mut s2 = f.data[2].add(chb / 2 + cv / 2 * uv_linesz);
 
-        for row in 0..h / 2 {
-            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
-                + (row + crop_calc.crop_v as usize / 2) * uv_linesz;
-            let src_row = from_raw_parts(f.data[1].add(src_off), crop_calc.uv_len);
-            let dst_row = from_raw_parts_mut(out.as_mut_ptr().add(dst_pos), pack_row_uv);
-
-            pack_10b(src_row, dst_row);
-
-            dst_pos += pack_row_uv;
+        for _ in 0..h {
+            pack_10b(
+                from_raw_parts(s0, crop_calc.y_len),
+                from_raw_parts_mut(d, pack_row_y),
+            );
+            s0 = s0.add(y_linesz);
+            d = d.add(pack_row_y);
         }
 
-        for row in 0..h / 2 {
-            let src_off = (crop_calc.crop_h as usize / 2 * pix_sz)
-                + (row + crop_calc.crop_v as usize / 2) * uv_linesz;
-            let src_row = from_raw_parts(f.data[2].add(src_off), crop_calc.uv_len);
-            let dst_row = from_raw_parts_mut(out.as_mut_ptr().add(dst_pos), pack_row_uv);
+        for _ in 0..h / 2 {
+            pack_10b(
+                from_raw_parts(s1, crop_calc.uv_len),
+                from_raw_parts_mut(d, pack_row_uv),
+            );
+            s1 = s1.add(uv_linesz);
+            d = d.add(pack_row_uv);
+        }
 
-            pack_10b(src_row, dst_row);
-
-            dst_pos += pack_row_uv;
+        for _ in 0..h / 2 {
+            pack_10b(
+                from_raw_parts(s2, crop_calc.uv_len),
+                from_raw_parts_mut(d, pack_row_uv),
+            );
+            s2 = s2.add(uv_linesz);
+            d = d.add(pack_row_uv);
         }
     }
 }
 
 #[inline]
-pub fn extr_10b_pack_rem(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_10b_pack_rem(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
+        let (w, h) = (g.wu, g.hu);
 
-        let y_row = packed_row_sz(w);
-        let uv_row = packed_row_sz(w / 2);
-        let y_pack = y_row * h;
-        let uv_pack = uv_row * h / 2;
+        let (y_pack, uv_pack) = (g.y_pack, g.cr_pack - g.y_pack);
 
         let y_src = from_raw_parts(f.data[0], w * h * 2);
         pack_10b_rem(y_src, &mut out[..y_pack], w, h);
@@ -1777,16 +1718,12 @@ pub fn extr_10b_pack_rem(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
 }
 
 #[inline]
-pub fn extr_10b_pack_stride_rem(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_10b_pack_stride_rem(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
+        let (w, h) = (g.wu, g.hu);
 
-        let y_row = packed_row_sz(w);
-        let uv_row = packed_row_sz(w / 2);
-        let y_pack = y_row * h;
-        let uv_pack = uv_row * h / 2;
+        let (y_pack, uv_pack) = (g.y_pack, g.cr_pack - g.y_pack);
 
         pack_stride_rem(f.data[0], f.linesize[0] as usize, w, h, out.as_mut_ptr());
         pack_stride_rem(
@@ -1810,13 +1747,9 @@ pub fn extr_10b_pack_stride_rem(frame: *const VidFrame, out: &mut [u8], inf: &Vi
 pub fn extr_10b_crop_fast_rem(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
+        let (w, h) = (cc.g.wu, cc.g.hu);
 
-        let y_row = packed_row_sz(w);
-        let uv_row = packed_row_sz(w / 2);
-        let y_pack = y_row * h;
-        let uv_pack = uv_row * h / 2;
+        let (y_pack, uv_pack) = (cc.g.y_pack, cc.g.cr_pack - cc.g.y_pack);
 
         let y_src = from_raw_parts(f.data[0].add(cc.y_start), w * h * 2);
         pack_10b_rem(y_src, &mut out[..y_pack], w, h);
@@ -1833,13 +1766,9 @@ pub fn extr_10b_crop_fast_rem(frame: *const VidFrame, out: &mut [u8], cc: &CropC
 pub fn extr_10b_crop_rem(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
+        let (w, h) = (cc.g.wu, cc.g.hu);
 
-        let y_row = packed_row_sz(w);
-        let uv_row = packed_row_sz(w / 2);
-        let y_pack = y_row * h;
-        let uv_pack = uv_row * h / 2;
+        let (y_pack, uv_pack) = (cc.g.y_pack, cc.g.cr_pack - cc.g.y_pack);
 
         pack_stride_rem(
             f.data[0].add(cc.y_start),
@@ -1869,17 +1798,13 @@ pub fn extr_10b_crop_rem(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) 
 pub fn extr_10b_crop_pack_stride_rem(frame: *const VidFrame, out: &mut [u8], crop_calc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = crop_calc.new_w as usize;
-        let h = crop_calc.new_h as usize;
+        let (w, h) = (crop_calc.g.wu, crop_calc.g.hu);
         let pix_sz = 2;
 
         let y_linesz = f.linesize[0] as usize;
         let uv_linesz = f.linesize[1] as usize;
 
-        let y_row = packed_row_sz(w);
-        let uv_row = packed_row_sz(w / 2);
-        let y_pack = y_row * h;
-        let uv_pack = uv_row * (h / 2);
+        let (y_pack, uv_pack) = (crop_calc.g.y_pack, crop_calc.g.cr_pack - crop_calc.g.y_pack);
 
         let y_off = crop_calc.crop_h as usize * pix_sz + crop_calc.crop_v as usize * y_linesz;
         pack_stride_rem(f.data[0].add(y_off), y_linesz, w, h, out.as_mut_ptr());
@@ -1904,13 +1829,10 @@ pub fn extr_10b_crop_pack_stride_rem(frame: *const VidFrame, out: &mut [u8], cro
 }
 
 #[inline]
-pub const fn extr_10b_raw(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub const fn extr_10b_raw(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
-        let y_sz = w * h * 2;
-        let uv_sz = y_sz / 4;
+        let (y_sz, uv_sz) = (g.y_sz, g.uv_sz);
 
         copy_nonoverlapping(f.data[0], out.as_mut_ptr(), y_sz);
         copy_nonoverlapping(f.data[1], out.as_mut_ptr().add(y_sz), uv_sz);
@@ -1919,40 +1841,32 @@ pub const fn extr_10b_raw(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) 
 }
 
 #[inline]
-pub fn extr_10b_raw_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_10b_raw_stride(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
+        let h = g.hu;
         let y_linesz = f.linesize[0] as usize;
         let uv_linesz = f.linesize[1] as usize;
-        let w_bytes = w * 2;
-        let uv_w_bytes = w;
+        let w_bytes = g.y_stride;
+        let uv_w_bytes = g.c_stride;
 
-        let mut pos = 0;
-        for row in 0..h {
-            copy_nonoverlapping(
-                f.data[0].add(row * y_linesz),
-                out.as_mut_ptr().add(pos),
-                w_bytes,
-            );
-            pos += w_bytes;
+        let mut d = out.as_mut_ptr();
+        let (mut s0, mut s1, mut s2) = (f.data[0], f.data[1], f.data[2]);
+
+        for _ in 0..h {
+            copy_nonoverlapping(s0, d, w_bytes);
+            s0 = s0.add(y_linesz);
+            d = d.add(w_bytes);
         }
-        for row in 0..h / 2 {
-            copy_nonoverlapping(
-                f.data[1].add(row * uv_linesz),
-                out.as_mut_ptr().add(pos),
-                uv_w_bytes,
-            );
-            pos += uv_w_bytes;
+        for _ in 0..h / 2 {
+            copy_nonoverlapping(s1, d, uv_w_bytes);
+            s1 = s1.add(uv_linesz);
+            d = d.add(uv_w_bytes);
         }
-        for row in 0..h / 2 {
-            copy_nonoverlapping(
-                f.data[2].add(row * uv_linesz),
-                out.as_mut_ptr().add(pos),
-                uv_w_bytes,
-            );
-            pos += uv_w_bytes;
+        for _ in 0..h / 2 {
+            copy_nonoverlapping(s2, d, uv_w_bytes);
+            s2 = s2.add(uv_linesz);
+            d = d.add(uv_w_bytes);
         }
     }
 }
@@ -1961,8 +1875,7 @@ pub fn extr_10b_raw_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf)
 pub const fn extr_10b_raw_crop_fast(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let y_sz = cc.new_w as usize * cc.new_h as usize * 2;
-        let uv_sz = y_sz / 4;
+        let (y_sz, uv_sz) = (cc.g.y_sz, cc.g.uv_sz);
 
         copy_nonoverlapping(f.data[0].add(cc.y_start), out.as_mut_ptr(), y_sz);
         copy_nonoverlapping(f.data[1].add(cc.uv_off), out.as_mut_ptr().add(y_sz), uv_sz);
@@ -1978,74 +1891,73 @@ pub const fn extr_10b_raw_crop_fast(frame: *const VidFrame, out: &mut [u8], cc: 
 pub fn extr_10b_raw_crop(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let mut pos = 0;
+        let mut d = out.as_mut_ptr();
+        let mut s0 = f.data[0].add(cc.y_start);
+        let mut s1 = f.data[1].add(cc.uv_off);
+        let mut s2 = f.data[2].add(cc.uv_off);
 
-        for row in 0..cc.new_h as usize {
-            copy_nonoverlapping(
-                f.data[0].add(cc.y_start + row * cc.y_stride),
-                out.as_mut_ptr().add(pos),
-                cc.y_len,
-            );
-            pos += cc.y_len;
+        for _ in 0..cc.g.hu {
+            copy_nonoverlapping(s0, d, cc.y_len);
+            s0 = s0.add(cc.y_stride);
+            d = d.add(cc.y_len);
         }
-        for row in 0..cc.new_h as usize / 2 {
-            copy_nonoverlapping(
-                f.data[1].add(cc.uv_off + row * cc.uv_stride),
-                out.as_mut_ptr().add(pos),
-                cc.uv_len,
-            );
-            pos += cc.uv_len;
+        for _ in 0..cc.g.hh {
+            copy_nonoverlapping(s1, d, cc.uv_len);
+            s1 = s1.add(cc.uv_stride);
+            d = d.add(cc.uv_len);
         }
-        for row in 0..cc.new_h as usize / 2 {
-            copy_nonoverlapping(
-                f.data[2].add(cc.uv_off + row * cc.uv_stride),
-                out.as_mut_ptr().add(pos),
-                cc.uv_len,
-            );
-            pos += cc.uv_len;
+        for _ in 0..cc.g.hh {
+            copy_nonoverlapping(s2, d, cc.uv_len);
+            s2 = s2.add(cc.uv_stride);
+            d = d.add(cc.uv_len);
+        }
+    }
+}
+
+#[inline]
+fn extr_crop_stride<const PIX: usize>(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
+    unsafe {
+        let f = &*frame;
+        let h = cc.g.hu;
+        let pix_sz = PIX;
+        let y_linesz = f.linesize[0] as usize;
+        let uv_linesz = f.linesize[1] as usize;
+        let w_bytes = cc.g.y_stride;
+        let uv_w_bytes = cc.g.c_stride;
+
+        let cv = cc.crop_v as usize;
+        let chb = cc.crop_h as usize * pix_sz;
+        let mut d = out.as_mut_ptr();
+        let mut s0 = f.data[0].add(chb + cv * y_linesz);
+        let mut s1 = f.data[1].add(chb / 2 + cv / 2 * uv_linesz);
+        let mut s2 = f.data[2].add(chb / 2 + cv / 2 * uv_linesz);
+
+        for _ in 0..h {
+            copy_nonoverlapping(s0, d, w_bytes);
+            s0 = s0.add(y_linesz);
+            d = d.add(w_bytes);
+        }
+        for _ in 0..h / 2 {
+            copy_nonoverlapping(s1, d, uv_w_bytes);
+            s1 = s1.add(uv_linesz);
+            d = d.add(uv_w_bytes);
+        }
+        for _ in 0..h / 2 {
+            copy_nonoverlapping(s2, d, uv_w_bytes);
+            s2 = s2.add(uv_linesz);
+            d = d.add(uv_w_bytes);
         }
     }
 }
 
 #[inline]
 pub fn extr_10b_raw_crop_stride(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
-    unsafe {
-        let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
-        let pix_sz = 2;
-        let y_linesz = f.linesize[0] as usize;
-        let uv_linesz = f.linesize[1] as usize;
-        let w_bytes = w * pix_sz;
-        let uv_w_bytes = w / 2 * pix_sz;
+    extr_crop_stride::<2>(frame, out, cc);
+}
 
-        let mut pos = 0;
-        for row in 0..h {
-            let src_off = cc.crop_h as usize * pix_sz + (row + cc.crop_v as usize) * y_linesz;
-            copy_nonoverlapping(f.data[0].add(src_off), out.as_mut_ptr().add(pos), w_bytes);
-            pos += w_bytes;
-        }
-        for row in 0..h / 2 {
-            let src_off =
-                cc.crop_h as usize / 2 * pix_sz + (row + cc.crop_v as usize / 2) * uv_linesz;
-            copy_nonoverlapping(
-                f.data[1].add(src_off),
-                out.as_mut_ptr().add(pos),
-                uv_w_bytes,
-            );
-            pos += uv_w_bytes;
-        }
-        for row in 0..h / 2 {
-            let src_off =
-                cc.crop_h as usize / 2 * pix_sz + (row + cc.crop_v as usize / 2) * uv_linesz;
-            copy_nonoverlapping(
-                f.data[2].add(src_off),
-                out.as_mut_ptr().add(pos),
-                uv_w_bytes,
-            );
-            pos += uv_w_bytes;
-        }
-    }
+#[inline]
+pub fn extr_8b_crop_stride(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
+    extr_crop_stride::<1>(frame, out, cc);
 }
 
 #[inline]
@@ -2083,45 +1995,52 @@ pub fn nv12_10b_rem(inp: &[u8], out: &mut [u8], w: usize, h: usize) {
 }
 
 #[inline]
-pub fn extr_hw_nv12(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_hw_nv12(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
-        let y_sz = w * h;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2);
+        let (y_sz, uv_sz) = (g.y_sz, g.uv_sz);
 
         copy_nonoverlapping(f.data[0], out.as_mut_ptr(), y_sz);
 
-        let src = from_raw_parts(f.data[1], w * (h / 2));
+        let src = from_raw_parts(f.data[1], uv_sz * 2);
         let u_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz), uv_sz);
-        let v_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz + uv_sz), uv_sz);
+        let v_dst = from_raw_parts_mut(out.as_mut_ptr().add(g.cr_off), uv_sz);
         deint_nv12(src, u_dst, v_dst);
     }
 }
 
 #[inline]
-pub fn extr_hw_nv12_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_hw_nv12_stride(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
+        let (w, h) = (g.wu, g.hu);
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
-        let y_sz = w * h;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2);
+        let y_sz = g.y_sz;
+        let uv_w = g.hw;
+        let uv_sz = g.uv_sz;
 
-        for row in 0..h {
-            copy_nonoverlapping(f.data[0].add(row * y_ls), out.as_mut_ptr().add(row * w), w);
+        let (mut s, mut d) = (f.data[0], out.as_mut_ptr());
+        for _ in 0..h {
+            copy_nonoverlapping(s, d, w);
+            s = s.add(y_ls);
+            d = d.add(w);
         }
 
-        for row in 0..h / 2 {
-            let src = from_raw_parts(f.data[1].add(row * uv_ls), uv_w * 2);
-            let u_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz + row * uv_w), uv_w);
-            let v_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz + uv_sz + row * uv_w), uv_w);
-            deint_nv12_rem(src, u_dst, v_dst);
+        let mut c = f.data[1];
+        let (mut u, mut v) = (
+            out.as_mut_ptr().add(y_sz),
+            out.as_mut_ptr().add(y_sz + uv_sz),
+        );
+        for _ in 0..h / 2 {
+            deint_nv12_rem(
+                from_raw_parts(c, uv_w * 2),
+                from_raw_parts_mut(u, uv_w),
+                from_raw_parts_mut(v, uv_w),
+            );
+            c = c.add(uv_ls);
+            u = u.add(uv_w);
+            v = v.add(uv_w);
         }
     }
 }
@@ -2130,38 +2049,46 @@ pub fn extr_hw_nv12_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf)
 pub fn extr_hw_nv12_crop(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
+        let (w, h) = (cc.g.wu, cc.g.hu);
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
         let cv = cc.crop_v as usize;
         let ch = cc.crop_h as usize;
-        let y_sz = w * h;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2);
+        let y_sz = cc.g.y_sz;
+        let uv_w = cc.g.hw;
+        let uv_sz = cc.g.uv_sz;
 
-        for row in 0..h {
-            let src = from_raw_parts(f.data[0].add((row + cv) * y_ls + ch), w);
-            let dst = from_raw_parts_mut(out.as_mut_ptr().add(row * w), w);
-            dst.copy_from_slice(src);
+        let (mut s, mut d) = (f.data[0].add(cv * y_ls + ch), out.as_mut_ptr());
+        for _ in 0..h {
+            copy_nonoverlapping(s, d, w);
+            s = s.add(y_ls);
+            d = d.add(w);
         }
 
-        for row in 0..h / 2 {
-            let src = from_raw_parts(f.data[1].add((row + cv / 2) * uv_ls + ch), uv_w * 2);
-            let u_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz + row * uv_w), uv_w);
-            let v_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz + uv_sz + row * uv_w), uv_w);
-            deint_nv12_rem(src, u_dst, v_dst);
+        let mut c = f.data[1].add(cv / 2 * uv_ls + ch);
+        let (mut u, mut v) = (
+            out.as_mut_ptr().add(y_sz),
+            out.as_mut_ptr().add(y_sz + uv_sz),
+        );
+        for _ in 0..h / 2 {
+            deint_nv12_rem(
+                from_raw_parts(c, uv_w * 2),
+                from_raw_parts_mut(u, uv_w),
+                from_raw_parts_mut(v, uv_w),
+            );
+            c = c.add(uv_ls);
+            u = u.add(uv_w);
+            v = v.add(uv_w);
         }
     }
 }
 
 #[inline]
-pub const fn extr_hw_nv12_to10(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub const fn extr_hw_nv12_to10(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
-        let y_sz = w * h;
+        let (w, h) = (g.wu, g.hu);
+        let y_sz = g.y_sz;
 
         copy_nonoverlapping(f.data[0], out.as_mut_ptr(), y_sz);
         copy_nonoverlapping(f.data[1], out.as_mut_ptr().add(y_sz), w * (h / 2));
@@ -2169,24 +2096,26 @@ pub const fn extr_hw_nv12_to10(frame: *const VidFrame, out: &mut [u8], inf: &Vid
 }
 
 #[inline]
-pub fn extr_hw_nv12_to10_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
+pub fn extr_hw_nv12_to10_stride(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let w = inf.width as usize;
-        let h = inf.height as usize;
+        let (w, h) = (g.wu, g.hu);
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
-        let y_sz = w * h;
+        let y_sz = g.y_sz;
 
-        for row in 0..h {
-            copy_nonoverlapping(f.data[0].add(row * y_ls), out.as_mut_ptr().add(row * w), w);
+        let (mut s, mut d) = (f.data[0], out.as_mut_ptr());
+        for _ in 0..h {
+            copy_nonoverlapping(s, d, w);
+            s = s.add(y_ls);
+            d = d.add(w);
         }
-        for row in 0..h / 2 {
-            copy_nonoverlapping(
-                f.data[1].add(row * uv_ls),
-                out.as_mut_ptr().add(y_sz + row * w),
-                w,
-            );
+        let mut c = f.data[1];
+        d = out.as_mut_ptr().add(y_sz);
+        for _ in 0..h / 2 {
+            copy_nonoverlapping(c, d, w);
+            c = c.add(uv_ls);
+            d = d.add(w);
         }
     }
 }
@@ -2195,38 +2124,35 @@ pub fn extr_hw_nv12_to10_stride(frame: *const VidFrame, out: &mut [u8], inf: &Vi
 pub fn extr_hw_nv12_crop_to10(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
+        let (w, h) = (cc.g.wu, cc.g.hu);
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
         let cv = cc.crop_v as usize;
         let ch = cc.crop_h as usize;
-        let y_sz = w * h;
+        let y_sz = cc.g.y_sz;
 
-        for row in 0..h {
-            copy_nonoverlapping(
-                f.data[0].add((row + cv) * y_ls + ch),
-                out.as_mut_ptr().add(row * w),
-                w,
-            );
+        let (mut s, mut d) = (f.data[0].add(cv * y_ls + ch), out.as_mut_ptr());
+        for _ in 0..h {
+            copy_nonoverlapping(s, d, w);
+            s = s.add(y_ls);
+            d = d.add(w);
         }
-        for row in 0..h / 2 {
-            copy_nonoverlapping(
-                f.data[1].add((row + cv / 2) * uv_ls + ch),
-                out.as_mut_ptr().add(y_sz + row * w),
-                w,
-            );
+        let mut c = f.data[1].add(cv / 2 * uv_ls + ch);
+        d = out.as_mut_ptr().add(y_sz);
+        for _ in 0..h / 2 {
+            copy_nonoverlapping(c, d, w);
+            c = c.add(uv_ls);
+            d = d.add(w);
         }
     }
 }
 
 #[inline]
-pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, out: &mut [u8], w: usize, h: usize) {
+pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let y_sz = w * h * 2;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2) * 2;
+        let (w, h) = (g.wu, g.hu);
+        let (y_sz, uv_w) = (g.y_sz, g.hw);
 
         let src = from_raw_parts(f.data[0].cast::<u16>(), w * h);
         let dst = from_raw_parts_mut(out.as_mut_ptr().cast::<u16>(), w * h);
@@ -2234,26 +2160,23 @@ pub fn extr_hw_p010_raw_wh(frame: *const VidFrame, out: &mut [u8], w: usize, h: 
 
         let src = from_raw_parts(f.data[1].cast::<u16>(), w * (h / 2));
         let u_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz).cast::<u16>(), uv_w * (h / 2));
-        let v_dst = from_raw_parts_mut(
-            out.as_mut_ptr().add(y_sz + uv_sz).cast::<u16>(),
-            uv_w * (h / 2),
-        );
+        let v_dst =
+            from_raw_parts_mut(out.as_mut_ptr().add(g.cr_off).cast::<u16>(), uv_w * (h / 2));
         deint_p010(src, u_dst, v_dst);
     }
 }
 
 #[inline]
-pub fn extr_hw_p010_raw(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
-    extr_hw_p010_raw_wh(frame, out, inf.width as usize, inf.height as usize);
+pub fn extr_hw_p010_raw(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
+    extr_hw_p010_raw_wh(frame, out, g);
 }
 
 #[inline]
-pub fn extr_hw_p010_raw_wh_rem(frame: *const VidFrame, out: &mut [u8], w: usize, h: usize) {
+pub fn extr_hw_p010_raw_wh_rem(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
-        let y_sz = w * h * 2;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2) * 2;
+        let (w, h) = (g.wu, g.hu);
+        let (y_sz, uv_w) = (g.y_sz, g.hw);
 
         let src = from_raw_parts(f.data[0].cast::<u16>(), w * h);
         let dst = from_raw_parts_mut(out.as_mut_ptr().cast::<u16>(), w * h);
@@ -2261,94 +2184,98 @@ pub fn extr_hw_p010_raw_wh_rem(frame: *const VidFrame, out: &mut [u8], w: usize,
 
         let src = from_raw_parts(f.data[1].cast::<u16>(), w * (h / 2));
         let u_dst = from_raw_parts_mut(out.as_mut_ptr().add(y_sz).cast::<u16>(), uv_w * (h / 2));
-        let v_dst = from_raw_parts_mut(
-            out.as_mut_ptr().add(y_sz + uv_sz).cast::<u16>(),
-            uv_w * (h / 2),
-        );
+        let v_dst =
+            from_raw_parts_mut(out.as_mut_ptr().add(g.cr_off).cast::<u16>(), uv_w * (h / 2));
         deint_p010_rem(src, u_dst, v_dst);
     }
 }
 
 #[inline]
-pub fn extr_hw_p010_raw_wh_rem_stride(frame: *const VidFrame, out: &mut [u8], w: usize, h: usize) {
+pub fn extr_hw_p010_raw_wh_rem_stride(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
     unsafe {
         let f = &*frame;
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
-        let w_bytes = w * 2;
-        let y_sz = w * h * 2;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2) * 2;
+        let (w, h) = (g.wu, g.hu);
+        let (y_sz, uv_sz, uv_w) = (g.y_sz, g.uv_sz, g.hw);
+        let w_bytes = g.y_stride;
 
-        for row in 0..h {
-            let src = from_raw_parts(f.data[0].add(row * y_ls).cast::<u16>(), w);
-            let dst = from_raw_parts_mut(out.as_mut_ptr().add(row * w_bytes).cast::<u16>(), w);
-            shift_p010_rem(src, dst);
+        let (mut s, mut d) = (f.data[0], out.as_mut_ptr());
+        for _ in 0..h {
+            shift_p010_rem(
+                from_raw_parts(s.cast::<u16>(), w),
+                from_raw_parts_mut(d.cast::<u16>(), w),
+            );
+            s = s.add(y_ls);
+            d = d.add(w_bytes);
         }
 
-        for row in 0..h / 2 {
-            let src = from_raw_parts(f.data[1].add(row * uv_ls).cast::<u16>(), w);
-            let u_dst = from_raw_parts_mut(
-                out.as_mut_ptr().add(y_sz + row * uv_w * 2).cast::<u16>(),
-                uv_w,
+        let mut c = f.data[1];
+        let (mut u, mut v) = (
+            out.as_mut_ptr().add(y_sz),
+            out.as_mut_ptr().add(y_sz + uv_sz),
+        );
+        for _ in 0..h / 2 {
+            deint_p010_rem(
+                from_raw_parts(c.cast::<u16>(), w),
+                from_raw_parts_mut(u.cast::<u16>(), uv_w),
+                from_raw_parts_mut(v.cast::<u16>(), uv_w),
             );
-            let v_dst = from_raw_parts_mut(
-                out.as_mut_ptr()
-                    .add(y_sz + uv_sz + row * uv_w * 2)
-                    .cast::<u16>(),
-                uv_w,
-            );
-            deint_p010_rem(src, u_dst, v_dst);
+            c = c.add(uv_ls);
+            u = u.add(uv_w * 2);
+            v = v.add(uv_w * 2);
         }
     }
 }
 
 #[inline]
-pub fn extr_hw_p010_raw_rem(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
-    extr_hw_p010_raw_wh_rem(frame, out, inf.width as usize, inf.height as usize);
+pub fn extr_hw_p010_raw_rem(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
+    extr_hw_p010_raw_wh_rem(frame, out, g);
 }
 
 #[inline]
-pub fn extr_hw_p010_raw_rem_stride(frame: *const VidFrame, out: &mut [u8], inf: &VidInf) {
-    extr_hw_p010_raw_wh_rem_stride(frame, out, inf.width as usize, inf.height as usize);
+pub fn extr_hw_p010_raw_rem_stride(frame: *const VidFrame, out: &mut [u8], g: &Geom) {
+    extr_hw_p010_raw_wh_rem_stride(frame, out, g);
 }
 
 #[inline]
 pub fn extr_hw_p010_raw_crop(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
+        let (w, h) = (cc.g.wu, cc.g.hu);
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
         let cv = cc.crop_v as usize;
         let ch = cc.crop_h as usize;
-        let y_sz = w * h * 2;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2) * 2;
+        let y_sz = cc.g.y_sz;
+        let uv_w = cc.g.hw;
+        let uv_sz = cc.g.uv_sz;
 
-        for row in 0..h {
-            let src = from_raw_parts(f.data[0].add((row + cv) * y_ls + ch * 2).cast::<u16>(), w);
-            let dst = from_raw_parts_mut(out.as_mut_ptr().add(row * w * 2).cast::<u16>(), w);
-            shift_p010_rem(src, dst);
+        let mut s = f.data[0].add(cv * y_ls + ch * 2);
+        let mut d = out.as_mut_ptr();
+        for _ in 0..h {
+            shift_p010_rem(
+                from_raw_parts(s.cast::<u16>(), w),
+                from_raw_parts_mut(d.cast::<u16>(), w),
+            );
+            s = s.add(y_ls);
+            d = d.add(w * 2);
         }
 
-        for row in 0..h / 2 {
-            let src = from_raw_parts(
-                f.data[1].add((row + cv / 2) * uv_ls + ch * 2).cast::<u16>(),
-                w,
+        let mut c = f.data[1].add(cv / 2 * uv_ls + ch * 2);
+        let (mut u, mut v) = (
+            out.as_mut_ptr().add(y_sz),
+            out.as_mut_ptr().add(y_sz + uv_sz),
+        );
+        for _ in 0..h / 2 {
+            deint_p010_rem(
+                from_raw_parts(c.cast::<u16>(), w),
+                from_raw_parts_mut(u.cast::<u16>(), uv_w),
+                from_raw_parts_mut(v.cast::<u16>(), uv_w),
             );
-            let u_dst = from_raw_parts_mut(
-                out.as_mut_ptr().add(y_sz + row * uv_w * 2).cast::<u16>(),
-                uv_w,
-            );
-            let v_dst = from_raw_parts_mut(
-                out.as_mut_ptr()
-                    .add(y_sz + uv_sz + row * uv_w * 2)
-                    .cast::<u16>(),
-                uv_w,
-            );
-            deint_p010_rem(src, u_dst, v_dst);
+            c = c.add(uv_ls);
+            u = u.add(uv_w * 2);
+            v = v.add(uv_w * 2);
         }
     }
 }
@@ -2357,38 +2284,40 @@ pub fn extr_hw_p010_raw_crop(frame: *const VidFrame, out: &mut [u8], cc: &CropCa
 pub fn extr_hw_p010_raw_crop_rem(frame: *const VidFrame, out: &mut [u8], cc: &CropCalc) {
     unsafe {
         let f = &*frame;
-        let w = cc.new_w as usize;
-        let h = cc.new_h as usize;
+        let (w, h) = (cc.g.wu, cc.g.hu);
         let y_ls = f.linesize[0] as usize;
         let uv_ls = f.linesize[1] as usize;
         let cv = cc.crop_v as usize;
         let ch = cc.crop_h as usize;
-        let y_sz = w * h * 2;
-        let uv_w = w / 2;
-        let uv_sz = uv_w * (h / 2) * 2;
+        let y_sz = cc.g.y_sz;
+        let uv_w = cc.g.hw;
+        let uv_sz = cc.g.uv_sz;
 
-        for row in 0..h {
-            let src = from_raw_parts(f.data[0].add((row + cv) * y_ls + ch * 2).cast::<u16>(), w);
-            let dst = from_raw_parts_mut(out.as_mut_ptr().add(row * w * 2).cast::<u16>(), w);
-            shift_p010_rem(src, dst);
+        let mut s = f.data[0].add(cv * y_ls + ch * 2);
+        let mut d = out.as_mut_ptr();
+        for _ in 0..h {
+            shift_p010_rem(
+                from_raw_parts(s.cast::<u16>(), w),
+                from_raw_parts_mut(d.cast::<u16>(), w),
+            );
+            s = s.add(y_ls);
+            d = d.add(w * 2);
         }
 
-        for row in 0..h / 2 {
-            let src = from_raw_parts(
-                f.data[1].add((row + cv / 2) * uv_ls + ch * 2).cast::<u16>(),
-                w,
+        let mut c = f.data[1].add(cv / 2 * uv_ls + ch * 2);
+        let (mut u, mut v) = (
+            out.as_mut_ptr().add(y_sz),
+            out.as_mut_ptr().add(y_sz + uv_sz),
+        );
+        for _ in 0..h / 2 {
+            deint_p010_rem(
+                from_raw_parts(c.cast::<u16>(), w),
+                from_raw_parts_mut(u.cast::<u16>(), uv_w),
+                from_raw_parts_mut(v.cast::<u16>(), uv_w),
             );
-            let u_dst = from_raw_parts_mut(
-                out.as_mut_ptr().add(y_sz + row * uv_w * 2).cast::<u16>(),
-                uv_w,
-            );
-            let v_dst = from_raw_parts_mut(
-                out.as_mut_ptr()
-                    .add(y_sz + uv_sz + row * uv_w * 2)
-                    .cast::<u16>(),
-                uv_w,
-            );
-            deint_p010_rem(src, u_dst, v_dst);
+            c = c.add(uv_ls);
+            u = u.add(uv_w * 2);
+            v = v.add(uv_w * 2);
         }
     }
 }

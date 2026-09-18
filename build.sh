@@ -225,6 +225,7 @@ cleanup_existing() {
                 [avm]="build/libavm_full.a"
                 [vvenc]="lib/release-static/libvvenc.a"
                 [vvdec]="lib/release-static/libvvdec.a"
+                [x265_git]="source/build-xav/libx265.a"
         )
 
         local successful=() incomplete=()
@@ -235,6 +236,7 @@ cleanup_existing() {
         ((ENC_ON[avm])) && dirs+=(avm)
         ((ENC_ON[vvenc])) && dirs+=(vvenc)
         ((ENC_ON[vvenc] && mode_choice == 1)) && dirs+=(vvdec)
+        ((ENC_ON[x265])) && dirs+=(x265_git)
 
         for dir in "${dirs[@]}"; do
                 [[ -d "${BUILD_DIR}/${dir}" ]] || continue
@@ -285,7 +287,7 @@ clone_phase() {
 
         local pids=()
 
-        clone_async "${BUILD_DIR}/opus" "https://gitlab.xiph.org/xiph/opus.git"
+        clone_async "${BUILD_DIR}/opus" "https://github.com/xiph/opus"
         clone_async "${BUILD_DIR}/SVT-AV1" "${svt_fork_url}"
         clone_async "${BUILD_DIR}/dav1d" "https://code.videolan.org/videolan/dav1d.git"
         clone_async "${BUILD_DIR}/FFmpeg" "https://github.com/FFmpeg/FFmpeg"
@@ -300,6 +302,7 @@ clone_phase() {
         ((ENC_ON[avm])) && clone_async "${BUILD_DIR}/avm" "https://github.com/AOMediaCodec/avm" "--depth 1"
         ((ENC_ON[vvenc])) && clone_async "${BUILD_DIR}/vvenc" "https://github.com/fraunhoferhhi/vvenc" "--depth 1"
         ((ENC_ON[vvenc] && mode_choice == 1)) && clone_async "${BUILD_DIR}/vvdec" "https://github.com/fraunhoferhhi/vvdec" "--depth 1"
+        ((ENC_ON[x265])) && clone_async "${BUILD_DIR}/x265_git" "https://bitbucket.org/multicoreware/x265_git" "--depth 1"
 
         local pid rc=0
         for pid in "${pids[@]}"; do
@@ -645,7 +648,7 @@ build_svtav1() {
 
         pgo_params=(
                 --preset 1 --tune 0 --keyint 0 --scd 0 --scm 0 --tile-rows 0 --tile-columns 0 --rc 0
-                --width 1920 --height 1080 --frames 96 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
+                --width 1024 --height 576 --frames 300 --fps-num 60 --fps-denom 1 --input-depth 10 --profile 0
                 --color-format 1 --color-range 0 --color-primaries 1 --transfer-characteristics 1
                 --matrix-coefficients 1 --chroma-sample-position 1 --progress 0 --lp 5 --enable-qm 1
                 --enable-variance-boost 1 --luminance-qp-bias 0 --sharpness 1
@@ -725,7 +728,7 @@ static EbErrorType svt_shared_setup(SequenceControlSet *scs) {\
         mkdir -p "${pgo_dir}"
         loginf b "Downloading PGO training video"
         curl -L "https://media.xiph.org/video/derf/webm/Netflix_FoodMarket2_4096x2160_60fps_10bit_420.webm" -o "${pgo_dir}/i.webm" >> "${logfile}" 2>&1
-        ffmpeg -hide_banner -v error -stats -y -nostdin -i "${pgo_dir}/i.webm" -frames:v 96 -vf "scale=1920:1080:flags=lanczos+accurate_rnd+full_chroma_int:param0=4" -pix_fmt yuv420p10le -strict -1 -f rawvideo "${pgo_dir}/i.yuv" >> "${logfile}" 2>&1
+        ffmpeg -hide_banner -v error -stats -y -nostdin -i "${pgo_dir}/i.webm" -frames:v 300 -vf "scale=1024:576:flags=lanczos+accurate_rnd+full_chroma_int:param0=4,setsar=1,setdar=16/9" -pix_fmt yuv420p10le -strict -1 -f rawvideo "${pgo_dir}/i.yuv" >> "${logfile}" 2>&1
         rm -f "${pgo_dir}/i.webm"
 
         cd Build/linux
@@ -889,6 +892,128 @@ build_vvenc() {
         }
 }
 
+build_x265() {
+        [[ -f "${BUILD_DIR}/x265_git/source/build-xav/libx265.a" ]] && return
+
+        loginf b "Building x265"
+
+        local logfile="/tmp/build_x265_$.log"
+        : > "${logfile}"
+
+        cd "${BUILD_DIR}/x265_git/source"
+
+        # 1 memcpy per param clone; no cpu_detect, default fill, 350 field walk
+        grep -q 'memcpy(param, p, sizeof(x265_param))' encoder/api.cpp || sed -i '/^    if(param) PARAM_NS::x265_param_default(param);$/,/^    x265_copy_params(zoneParam, p);$/c\
+    if (!param || !latestParam || !zoneParam)\
+        goto fail;\
+    memcpy(param, p, sizeof(x265_param));\
+    memcpy(latestParam, p, sizeof(x265_param));\
+    memcpy(zoneParam, p, sizeof(x265_param));' encoder/api.cpp
+        sed -i '/x265_log(param, X265_LOG_INFO, "HEVC encoder version/d' encoder/api.cpp
+        sed -i '/x265_log(param, X265_LOG_INFO, "build info/d' encoder/api.cpp
+        sed -i '/^    x265_print_params(param);$/d' encoder/api.cpp
+        sed -i '/^    x265_setup_primitives(param);$/d' encoder/api.cpp
+
+        # asm tables become process wide
+        sed -i '/^    x265_report_simd(param);$/d' common/primitives.cpp
+        grep -q xav_x265_setup common/primitives.cpp || cat >> common/primitives.cpp <<- 'X265SETUP'
+
+	extern "C" void xav_x265_setup(x265_param *param) { X265_NS::x265_setup_primitives(param); }
+	X265SETUP
+
+        # these land in xav's sink; never build a buffer
+        grep -q xav_x265_log common/common.cpp || {
+                sed -i 's|^void general_log(const x265_param\* param, const char\* caller, int level, const char\* fmt, ...)$|extern "C" void xav_x265_log(const char *msg);\nvoid general_log(const x265_param* param, const char* caller, int level, const char* fmt, ...)|' common/common.cpp
+                sed -i 's|^    if (param \&\& level > param->logLevel)$|    if (level > X265_LOG_WARNING)|' common/common.cpp
+                sed -i 's|^    fputs(buffer, stderr);$|    xav_x265_log(buffer);|' common/common.cpp
+                sed -i 's|^        fputs(buffer, stderr);$|        xav_x265_log(buffer);|' common/common.cpp
+        }
+
+        # scalar per-pixel luma/chroma histogram per frame; remove
+        sed -i 's@^    if (param.csvLogLevel >= 2 || param.maxCLL || param.maxFALL)$@    if (0)@' common/picyuv.cpp
+        sed -i 's@^    if (param.csvLogLevel >= 2)$@    if (0)@' common/picyuv.cpp
+
+        # remove per frame free, re-malloc
+        grep -q 'xav swap' encoder/nal.cpp || sed -i '/^void NALList::takeContents(NALList& other)$/,/^}$/c\
+void NALList::takeContents(NALList\& other)\
+{\
+    /* xav swap: both lists keep a buffer, neither hits the allocator */\
+    uint8_t* buf = m_buffer;\
+    uint32_t alloc = m_allocSize;\
+\
+    m_buffer = other.m_buffer;\
+    m_allocSize = other.m_allocSize;\
+    m_occupancy = other.m_occupancy;\
+\
+    m_numNal = other.m_numNal;\
+    memcpy(m_nal, other.m_nal, sizeof(x265_nal) * m_numNal);\
+\
+    other.m_numNal = 0;\
+    other.m_occupancy = 0;\
+    other.m_buffer = buf;\
+    other.m_allocSize = alloc;\
+}' encoder/nal.cpp
+
+        sed -i 's|^%if FORMAT_ELF$|%if 0 ; xav: non-PIC build has no GOT; the lea is a plain abs32|' common/x86/pixel-util8.asm
+
+        # frame encoder; runs on the caller; a worker is one thread; encode order is fixed
+        grep -q setupInPlace encoder/frameencoder.h || sed -i '/^class FrameEncoder : public WaveFront, public Thread$/,/^public:$/s|^public:$|public:\n\n    /* xav: nothing here is threaded; threadMain is only this encoder'"'"'s setup now */\n    void setupInPlace() { threadMain(); }\n|' encoder/frameencoder.h
+        grep -q 'xav: compress in place' encoder/frameencoder.cpp || sed -i 's|^    m_enable.trigger();$|    /* xav: compress in place. the bCTUInfo and AVC_INFO waits that guarded this\n     * in threadMain only ever complete from another thread, and there is none */\n    for (int layer = 0; layer < m_param->numLayers; layer++)\n        compressFrame(layer);|' encoder/frameencoder.cpp
+        sed -i '/^    m_done.trigger();     \/\* signal that thread is initialized \*\/$/,/^}$/c\
+}' encoder/frameencoder.cpp
+        sed -i '/^        \/\* block here until worker thread completes \*\/$/d' encoder/frameencoder.cpp
+        sed -i '/^        m_done.wait();$/d' encoder/frameencoder.cpp
+        sed -i '/^        m_frameEncoder\[i\]->start();$/,/^        m_frameEncoder\[i\]->m_done.wait(); \/\* wait for thread to initialize \*\/$/c\
+        m_frameEncoder[i]->setupInPlace();' encoder/encoder.cpp
+        sed -i '/^            m_frameEncoder\[i\]->m_enable.trigger();$/d' encoder/encoder.cpp
+
+        # with no pool, the numaPools strlen+strcmp per encoder goes
+        sed -i 's|^    bool allowPools = !strlen(p->numaPools) \|\| strcmp(p->numaPools, "none");$|    bool allowPools = false; /* xav: this build has no worker pool to allocate */|' encoder/encoder.cpp
+        sed -i 's|^    if (m_param->lookaheadThreads > 0)$|    if (0) /* xav: the lookahead runs on the caller, like everything else */|' encoder/encoder.cpp
+
+        # match lookahead with xav cap
+        sed -i 's|^#define X265_LOOKAHEAD_MAX 250$|#define X265_LOOKAHEAD_MAX 300|' x265.h
+
+        sed -i 's@^    pps->numRefIdxDefault\[0\] = 1 + !!m_param->bEnableSCC;;$@    /* xav: the qp a frame of base complexity gets, which is the anchor the\n     * rate factor is built on in RateControl::init and getQScale */\n    double anchor = m_param->rc.rfConstant;\n    if (m_param->rc.cuTree \&\& !m_param->rc.hevcAq)\n        anchor += (1.0 - m_param->rc.qCompress) * (13.5 + 6.0 * X265_LOG2(BASE_FRAME_DURATION /\n                  CLIP_DURATION((double)m_param->fpsDenom / m_param->fpsNum)));\n    m_iPPSQpMinus26 = x265_clip3(-(26 + QP_BD_OFFSET), 25, (int)(anchor + 0.5) - 26);\n\n    pps->numRefIdxDefault[0] = X265_MIN(m_param->maxNumReferences, MAX_NUM_REF - 1);@' encoder/encoder.cpp
+        sed -i 's@^    pps->numRefIdxDefault\[1\] = 1;$@    pps->numRefIdxDefault[1] = 1 + !!m_param->bBPyramid;@' encoder/encoder.cpp
+
+        cmake -S . -B build-xav -G Ninja \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER="${CC}" \
+                -DCMAKE_CXX_COMPILER="${CXX}" \
+                -DCMAKE_C_FLAGS="${CFLAGS}" \
+                -DCMAKE_CXX_FLAGS="${CXXFLAGS}" \
+                -DHIGH_BIT_DEPTH=ON \
+                -DMAIN12=OFF \
+                -DEXPORT_C_API=ON \
+                -DENABLE_SHARED=OFF \
+                -DENABLE_CLI=OFF \
+                -DENABLE_PIC=OFF \
+                -DENABLE_ASSEMBLY=ON \
+                -DENABLE_LIBNUMA=OFF \
+                -DENABLE_HDR10_PLUS=OFF \
+                -DENABLE_SVT_HEVC=OFF \
+                -DENABLE_LIBVMAF=OFF \
+                -DENABLE_ALPHA=OFF \
+                -DENABLE_MULTIVIEW=OFF \
+                -DENABLE_SCC_EXT=OFF \
+                -DENABLE_TESTS=OFF \
+                -DDETAILED_CU_STATS=OFF \
+                -DCHECKED_BUILD=OFF \
+                -DWARNINGS_AS_ERRORS=OFF >> "${logfile}" 2>&1
+        ninja -C build-xav x265-static >> "${logfile}" 2>&1
+
+        [[ -f "${BUILD_DIR}/x265_git/source/build-xav/libx265.a" ]] && {
+                rm -f "${logfile}"
+                loginf g "x265 built successfully"
+        } || {
+                echo -e "\n${R}Build failed! Output:${N}\n"
+                cat "${logfile}"
+                rm -f "${logfile}"
+                exit 1
+        }
+}
+
 build_vvdec() {
         [[ -f "${BUILD_DIR}/vvdec/lib/release-static/libvvdec.a" ]] && return
 
@@ -969,8 +1094,8 @@ setup_toolchain() {
         export LDFLAGS="-fuse-ld=lld -Wl,-O3 -Wl,--lto-O3 -Wl,--as-needed -Wl,--gc-sections -Wl,--icf=all -Wl,--strip-all -Wl,-z,norelro -Wl,--build-id=none -Wl,--relax -Wl,-z,noseparate-code -Wl,-znow -Wl,--discard-all"
 }
 
-ENCODER_NAMES=("AVM" "VVenC")
-ENCODER_FEATS=("avm" "vvenc")
+ENCODER_NAMES=("AVM" "VVenC" "x265")
+ENCODER_FEATS=("avm" "vvenc" "x265")
 declare -A ENC_ON=()
 for i in "${!ENCODER_FEATS[@]}"; do ENC_ON["${ENCODER_FEATS[i]}"]=0; done
 
@@ -1108,6 +1233,11 @@ main() {
                 PID_VVDEC="${!}"
         }
 
+        ((ENC_ON[x265])) && {
+                build_x265 &
+                PID_X265="${!}"
+        }
+
         build_opus &
         PID_OPUS="${!}"
         build_dav1d &
@@ -1137,6 +1267,7 @@ main() {
         ((ENC_ON[avm])) && { wait "${PID_AVM}" || exit 1; }
         ((ENC_ON[vvenc])) && { wait "${PID_VVENC}" || exit 1; }
         ((ENC_ON[vvenc] && mode_choice == 1)) && { wait "${PID_VVDEC}" || exit 1; }
+        ((ENC_ON[x265])) && { wait "${PID_X265}" || exit 1; }
 
         cd "${XAV_DIR}"
 

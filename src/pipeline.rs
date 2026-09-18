@@ -85,13 +85,42 @@ const fn write_frames_raw(_: &mut ChildStdin, _: &[u8], _: usize, _: &mut [u8], 
     assume_unreachable();
 }
 
+#[derive(Clone, Copy)]
+pub struct Planes {
+    pub y_sz: usize,
+    pub uv_sz: usize,
+    pub cr_off: usize,
+    pub frame_sz: usize,
+    pub y_stride: usize,
+    pub c_stride: usize,
+}
+
+impl Planes {
+    const fn new(w: usize, h: usize, pix_sz: usize) -> Self {
+        let y_stride = w * pix_sz;
+        let c_stride = w / 2 * pix_sz;
+        let y_sz = y_stride * h;
+        let uv_sz = c_stride * (h / 2);
+        Self {
+            y_sz,
+            uv_sz,
+            cr_off: y_sz + uv_sz,
+            frame_sz: y_sz + uv_sz * 2,
+            y_stride,
+            c_stride,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Pipeline {
     pub final_w: usize,
     pub final_h: usize,
+    pub half_w: usize,
+    pub half_h: usize,
     pub frame_sz: usize,
-    pub y_sz: usize,
-    pub uv_sz: usize,
+    pub met: Planes,
+    pub enc: Planes,
     pub conv_buf_sz: usize,
     #[cfg(feature = "vship")]
     pub unpack_buf_sz: usize,
@@ -139,15 +168,11 @@ impl Pipeline {
 
         let is_10b_out = inf.is_10b;
         let pix_sz = if is_10b_out { 2 } else { 1 };
-        let y_sz = final_w * final_h * pix_sz;
-        let uv_sz = y_sz / 4;
+        let met = Planes::new(final_w, final_h, pix_sz);
+        let enc = Planes::new(final_w, final_h, 2);
 
         let is_raw = strat.is_raw();
-        let conv_buf_sz = if is_raw {
-            0
-        } else {
-            final_w * final_h * 3 / 2 * 2
-        };
+        let conv_buf_sz = if is_raw { 0 } else { enc.frame_sz };
 
         #[cfg(feature = "vship")]
         let unpack_buf_sz = if is_10b_out { conv_buf_sz } else { 0 };
@@ -185,9 +210,11 @@ impl Pipeline {
         Self {
             final_w,
             final_h,
+            half_w: final_w / 2,
+            half_h: final_h / 2,
             frame_sz,
-            y_sz,
-            uv_sz,
+            met,
+            enc,
             conv_buf_sz,
             #[cfg(feature = "vship")]
             unpack_buf_sz,

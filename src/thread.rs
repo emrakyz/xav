@@ -5,6 +5,8 @@ use alloc::{boxed::Box, vec::Vec};
 use core::ffi::c_void;
 #[cfg(not(target_os = "linux"))]
 use core::ptr::from_ref;
+#[cfg(not(target_os = "linux"))]
+use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 use core::{
     cell::Cell,
     ptr::null,
@@ -272,7 +274,6 @@ where
     result
 }
 
-#[cfg(target_os = "linux")]
 static NPROC: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_os = "linux")]
@@ -394,7 +395,20 @@ where
 
 #[cfg(not(target_os = "linux"))]
 pub fn available_parallelism() -> usize {
-    std_ap().map_or(1, |n| n.get())
+    let c = NPROC.load(Relaxed);
+    if c != 0 {
+        return c;
+    }
+    compute()
+}
+
+#[cfg(not(target_os = "linux"))]
+#[cold]
+#[inline(never)]
+fn compute() -> usize {
+    let n = std_ap().map_or(1, |n| n.get());
+    NPROC.store(n, Relaxed);
+    n
 }
 
 #[cfg(not(target_os = "linux"))]

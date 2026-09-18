@@ -87,12 +87,19 @@ pub fn parse_chunks(buf: &[u8]) -> (Vec<TqChunkLine>, Vec<(f32, f32, u64)>) {
         pad(&mut uo);
         pad(&mut f2o);
         pad(&mut f4o);
-        uv.clear();
-        uv.resize(uo.len(), 0);
-        f2v.clear();
-        f2v.resize(f2o.len(), 0.0);
-        f4v.clear();
-        f4v.resize(f4o.len(), 0.0);
+        // batch kernels fill every slot; only length needed
+        #[allow(clippy::uninit_vec)]
+        unsafe {
+            uv.clear();
+            uv.reserve(uo.len());
+            uv.set_len(uo.len());
+            f2v.clear();
+            f2v.reserve(f2o.len());
+            f2v.set_len(f2o.len());
+            f4v.clear();
+            f4v.reserve(f4o.len());
+            f4v.set_len(f4o.len());
+        }
         unsafe {
             atou_batch(wbase, uo.as_ptr(), uo.len(), uv.as_mut_ptr());
             atof2_batch(wbase, f2o.as_ptr(), f2o.len(), f2v.as_mut_ptr());

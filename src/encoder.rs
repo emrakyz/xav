@@ -1,5 +1,7 @@
+#[cfg(feature = "x265")]
+use alloc::boxed::Box;
 use alloc::ffi::CString;
-#[cfg(feature = "vvenc")]
+#[cfg(any(feature = "vvenc", feature = "x265"))]
 use alloc::vec::Vec;
 #[cfg(target_os = "linux")]
 use alloc::{
@@ -42,6 +44,7 @@ impl Encoder {
             "avm" => Some(Avm),
             #[cfg(feature = "vvenc")]
             "vvenc" => Some(Vvenc),
+            #[cfg(feature = "x265")]
             "x265" => Some(X265),
             "x264" => Some(X264),
             _ => None,
@@ -88,8 +91,11 @@ impl Encoder {
             Vvenc => concat!("VVenC v", env!("XAV_V_VVENC")).to_owned(),
             #[cfg(not(feature = "vvenc"))]
             Vvenc => assume_unreachable(),
+            #[cfg(feature = "x265")]
+            X265 => concat!("x265 v", env!("XAV_V_X265")).to_owned(),
+            #[cfg(not(feature = "x265"))]
+            X265 => assume_unreachable(),
             X264 => run_version("x264", "x264", None),
-            X265 => run_version("x265", "x265", Some("version ")),
         }
     }
 
@@ -137,8 +143,7 @@ pub struct EncConfig<'a> {
 
 pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig, zone: Option<&str>) -> Command {
     let mut cmd = match encoder {
-        SvtAv1 | Avm | Vvenc => assume_unreachable(),
-        X265 => make_x265_cmd(cfg),
+        SvtAv1 | Avm | Vvenc | X265 => assume_unreachable(),
         X264 => make_x264_cmd(cfg),
     };
     if let Some(z) = zone {
@@ -148,7 +153,7 @@ pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig, zone: Option<&str>) -> Co
 }
 
 // NUL-sep argv arena + token count; nothing scans it back for one
-#[cfg(feature = "vvenc")]
+#[cfg(any(feature = "vvenc", feature = "x265"))]
 pub struct Argv {
     pub buf: Vec<u8>,
     pub n: usize,
@@ -162,7 +167,7 @@ impl Argv {
     };
 }
 
-#[cfg(feature = "vvenc")]
+#[cfg(any(feature = "vvenc", feature = "x265"))]
 fn push_arg(a: &mut Argv, s: &str) {
     a.buf.extend_from_slice(s.as_bytes());
     a.buf.push(0);
@@ -303,95 +308,174 @@ fn colorize_vvenc(a: &mut Argv, inf: &VidInf) {
     }
 }
 
-fn make_x265_cmd(cfg: &EncConfig) -> Command {
-    let mut cmd = Command::new("x265");
+#[cfg(feature = "x265")]
+#[rustfmt::skip]
+const X265_BASE: &[&str] = &[
+    "log-level",        "none",
+    "gop-lookahead",    "0",
+    "rc-lookahead",     "300",
+    "keyint",           "-1",
+    "min-keyint",       "9999",
+    "scenecut",         "0",
+    "lookahead-slices", "0",
+    "frame-threads",    "1",
+    "slices",           "1",
+    "wpp",              "0",
+    "info",             "0",
+    "vui-hrd-info",     "0",
+    "vui-timing-info",  "0",
+];
 
-    cmd.args([
-        "--log-level",
-        "error",
-        "--input-csp",
-        "1",
-        "--input-depth",
-        "10",
-        "--output-depth",
-        "10",
-        "--profile",
-        "main10",
-        "--gop-lookahead",
-        "0",
-        "--rc-lookahead",
-        "250",
-        "--keyint",
-        "-1",
-        "--min-keyint",
-        "9999",
-        "--no-scenecut",
-        "--lookahead-slices",
-        "1",
-        "--lookahead-threads",
-        "1",
-        "--frame-threads",
-        "1",
-        "--slices",
-        "1",
-        "--pools",
-        "1",
-        "--no-wpp",
-        "--no-info",
-        "--no-vui-hrd-info",
-        "--no-vui-timing-info",
-        "--fps",
-    ]);
+#[cfg(feature = "x265")]
+const X265_BASE_LEN: usize = {
+    let mut n = 0;
+    let mut i = 0;
+    while i < X265_BASE.len() {
+        n += X265_BASE[i].len() + 1;
+        i += 1;
+    }
+    n
+};
 
-    cmd.arg(format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den));
-    cmd.arg("--input-res")
-        .arg(format!("{}x{}", cfg.width, cfg.height));
-    cmd.arg("--frames").arg(cfg.frames.to_string());
+// x265 keeps tune pointer; arenas outlive every enc
+#[cfg(feature = "x265")]
+pub struct X265Argv {
+    pub args: &'static [u8],
+    pub preset: &'static [u8],
+    pub tune: &'static [u8],
+}
 
-    let (sar_n, sar_d) = h26x_sar(cfg.inf);
-    cmd.arg("--sar").arg(format!("{sar_n}:{sar_d}"));
+#[cfg(feature = "x265")]
+impl X265Argv {
+    pub const EMPTY: Self = Self {
+        args: &[],
+        preset: &[],
+        tune: &[],
+    };
+}
 
-    if let Some(crf) = cfg.crf {
-        cmd.arg("--crf").arg(format!("{crf:.2}"));
+#[cfg(feature = "x265")]
+fn leak(v: Vec<u8>) -> &'static [u8] {
+    if v.is_empty() {
+        return &[];
+    }
+    Box::leak(v.into_boxed_slice())
+}
+
+#[cfg(feature = "x265")]
+fn split_x265_params(a: &mut Argv, params: &str) -> (Vec<u8>, Vec<u8>) {
+    let (mut preset, mut tune) = (Vec::new(), Vec::new());
+    let mut it = params.split_whitespace();
+    while let Some(tok) = it.next() {
+        let name = tok.trim_start_matches('-');
+        let val = unsafe { it.next().unwrap_unchecked() };
+        let dst = match name {
+            "preset" => &mut preset,
+            "tune" => &mut tune,
+            _ => {
+                push_arg(a, name);
+                push_arg(a, val);
+                continue;
+            }
+        };
+        dst.clear();
+        dst.extend_from_slice(val.as_bytes());
+        dst.push(0);
+    }
+    (preset, tune)
+}
+
+#[cfg(feature = "x265")]
+#[cold]
+#[inline(never)]
+pub fn x265_args(inf: &VidInf, params: &str, w: u32, h: u32) -> X265Argv {
+    let mut a = Argv {
+        buf: Vec::with_capacity(X265_BASE_LEN + params.len() + 1),
+        n: 0,
+    };
+
+    for &s in X265_BASE {
+        push_arg(&mut a, s);
     }
 
-    if let Some(preset) = x265_signal_preset(cfg.inf) {
-        cmd.arg("--video-signal-type-preset");
-        let cv = preset
-            .starts_with("BT2100_PQ")
-            .then(|| {
-                cfg.inf
-                    .mastering_display
-                    .as_deref()
-                    .and_then(x265_color_volume)
-            })
-            .flatten();
-        if let Some(cv) = cv {
-            cmd.arg(format!("{preset}:{cv}"));
-        } else {
-            cmd.arg(preset);
-        }
-        if let Some(ref md) = cfg.inf.mastering_display
-            && let Some(converted) = h26x_mastering(md, false)
-        {
-            cmd.args(["--master-display", &converted]);
-        }
-        if let Some(ref cl) = cfg.inf.content_light {
-            cmd.args(["--max-cll", cl]);
-        }
-    } else {
-        colorize_h26x(&mut cmd, cfg.inf, false);
-    }
+    push_arg(&mut a, "input-res");
+    push_arg(&mut a, &format!("{w}x{h}"));
+    push_arg(&mut a, "fps");
+    push_arg(&mut a, &format!("{}/{}", inf.fps_num, inf.fps_den));
+
+    let (sar_n, sar_d) = h26x_sar(inf);
+    push_arg(&mut a, "sar");
+    push_arg(&mut a, &format!("{sar_n}:{sar_d}"));
+
+    colorize_x265(&mut a, inf);
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    cmd.args(["--asm", "avx512"]);
+    {
+        push_arg(&mut a, "asm");
+        push_arg(&mut a, "avx512");
+    }
 
-    cmd.args(cfg.params.split_whitespace());
-    cmd.arg("--output").arg(cfg.out);
-    cmd.args(["--input", "-"]);
-    cmd.stdin(Stdio::piped()).stderr(Stdio::piped());
+    let (preset, tune) = split_x265_params(&mut a, params);
 
-    cmd
+    X265Argv {
+        args: leak(a.buf),
+        preset: leak(preset),
+        tune: leak(tune),
+    }
+}
+
+#[cfg(feature = "x265")]
+#[cold]
+#[inline(never)]
+pub fn x265_zone_args(zone: &str) -> X265Argv {
+    let mut a = Argv {
+        buf: Vec::with_capacity(zone.len() + 1),
+        n: 0,
+    };
+    let (preset, tune) = split_x265_params(&mut a, zone);
+    X265Argv {
+        args: leak(a.buf),
+        preset: leak(preset),
+        tune: leak(tune),
+    }
+}
+
+// not --video-signal-type-preset; applied last; overwrites chromal & master disp
+#[cfg(feature = "x265")]
+#[cold]
+#[inline(never)]
+fn colorize_x265(a: &mut Argv, inf: &VidInf) {
+    push_arg(a, "colorprim");
+    push_arg(a, h26x_color_prims_str(inf.color_primaries));
+    push_arg(a, "transfer");
+    push_arg(a, h26x_trans_char_str(inf.transfer_characteristics));
+    push_arg(a, "colormatrix");
+    push_arg(a, h26x_matrix_coef_str(inf.matrix_coefficients));
+    push_arg(a, "range");
+    push_arg(
+        a,
+        if inf.color_range == 1 {
+            "full"
+        } else {
+            "limited"
+        },
+    );
+
+    let csp = inf.chroma_sample_position;
+    if (1..=6).contains(&csp) {
+        push_arg(a, "chromaloc");
+        push_arg(a, &(csp - 1).to_string());
+    }
+    if let Some(ref md) = inf.mastering_display
+        && let Some(converted) = h26x_mastering(md, false)
+    {
+        push_arg(a, "master-display");
+        push_arg(a, &converted);
+    }
+    if let Some(ref cl) = inf.content_light {
+        push_arg(a, "max-cll");
+        push_arg(a, cl);
+    }
 }
 
 fn make_x264_cmd(cfg: &EncConfig) -> Command {
@@ -449,7 +533,7 @@ fn make_x264_cmd(cfg: &EncConfig) -> Command {
     let cr = cfg.inf.color_range;
     cmd.args(["--input-range", if cr == 1 { "pc" } else { "tv" }]);
 
-    colorize_h26x(&mut cmd, cfg.inf, true);
+    colorize_x264(&mut cmd, cfg.inf);
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     cmd.args(["--asm", "avx512"]);
@@ -474,14 +558,8 @@ fn h26x_sar(inf: &VidInf) -> (u64, u64) {
     }
 }
 
-fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
-    let unk = |s| {
-        if is_x264 && s == "unknown" {
-            "undef"
-        } else {
-            s
-        }
-    };
+fn colorize_x264(cmd: &mut Command, inf: &VidInf) {
+    let unk = |s| if s == "unknown" { "undef" } else { s };
 
     cmd.args([
         "--colorprim",
@@ -495,87 +573,18 @@ fn colorize_h26x(cmd: &mut Command, inf: &VidInf, is_x264: bool) {
         "--colormatrix",
         unk(h26x_matrix_coef_str(inf.matrix_coefficients)),
     ]);
-    let cr = inf.color_range;
-    if is_x264 {
-        cmd.args(["--range", if cr == 1 { "pc" } else { "tv" }]);
-    } else {
-        cmd.args(["--range", if cr == 1 { "full" } else { "limited" }]);
-    }
+    cmd.args(["--range", if inf.color_range == 1 { "pc" } else { "tv" }]);
     let csp = inf.chroma_sample_position;
     if (1..=6).contains(&csp) {
         cmd.args(["--chromaloc", &(csp - 1).to_string()]);
     }
     if let Some(ref md) = inf.mastering_display
-        && let Some(converted) = h26x_mastering(md, is_x264)
+        && let Some(converted) = h26x_mastering(md, true)
     {
-        cmd.args([
-            if is_x264 {
-                "--mastering-display"
-            } else {
-                "--master-display"
-            },
-            &converted,
-        ]);
+        cmd.args(["--mastering-display", &converted]);
     }
     if let Some(ref cl) = inf.content_light {
-        cmd.args([if is_x264 { "--cll" } else { "--max-cll" }, cl]);
-    }
-}
-
-const fn x265_signal_preset(inf: &VidInf) -> Option<&'static str> {
-    match (
-        inf.color_primaries,
-        inf.transfer_characteristics,
-        inf.matrix_coefficients,
-        inf.color_range,
-    ) {
-        (9, 16, 9, 0) => Some("BT2100_PQ_YCC"),
-        (9, 16, 14, 0) => Some("BT2100_PQ_ICTCP"),
-        (9, 16, 0, 0) => Some("BT2100_PQ_RGB"),
-        (9, 18, 9, 0) => Some("BT2100_HLG_YCC"),
-        (9, 18, 0, 0) => Some("BT2100_HLG_RGB"),
-        (9, 14, 9, 0) => Some("BT2020_YCC_NCL"),
-        (1, 1, 1, 0) => Some("BT709_YCC"),
-        (1, 1, 0, 0) => Some("BT709_RGB"),
-        (1, 1, 0, 1) => Some("FR709_RGB"),
-        (6, 6, 6, 0) => Some("BT601_525"),
-        (5, 6, 5, 0) => Some("BT601_626"),
-        _ => None,
-    }
-}
-
-fn x265_color_volume(md: &str) -> Option<&'static str> {
-    let pair = |s: &str, p: &str| -> Option<(u32, u32)> {
-        let start = s.find(p)? + p.len();
-        let end = s[start..].find(')')? + start;
-        let mut parts = s[start..end].split(',');
-        let a: f64 = parts.next()?.parse().ok()?;
-        let b: f64 = parts.next()?.parse().ok()?;
-        Some(((a * 50000.0) as u32, (b * 50000.0) as u32))
-    };
-
-    let g = pair(md, "G(")?;
-    let b = pair(md, "B(")?;
-    let r = pair(md, "R(")?;
-    let wp = pair(md, "WP(")?;
-
-    let start = md.find("L(")? + 2;
-    let end = md[start..].find(')')? + start;
-    let mut parts = md[start..end].split(',');
-    let lmax = (parts.next()?.parse::<f64>().ok()? * 10000.0) as u32;
-    let lmin = (parts.next()?.parse::<f64>().ok()? * 10000.0) as u32;
-
-    match (g, b, r, wp, lmax, lmin) {
-        ((13250, 34500), (7500, 3000), (34000, 16000), (15635, 16450), 10_000_000, 5) => {
-            Some("P3D65x1000n0005")
-        }
-        ((13250, 34500), (7500, 3000), (34000, 16000), (15635, 16450), 40_000_000, 50) => {
-            Some("P3D65x4000n005")
-        }
-        ((8500, 39850), (6550, 2300), (34000, 146_000), (15635, 16450), 10_000_000, 1) => {
-            Some("BT2100x108n0005")
-        }
-        _ => None,
+        cmd.args(["--cll", cl]);
     }
 }
 
