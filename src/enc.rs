@@ -900,6 +900,7 @@ struct TQCtx {
     tolerance: f32,
     qp_min: f32,
     qp_max: f32,
+    bound_step: f32,
     use_butter: bool,
     use_cvvdp: bool,
     integer_qp: bool,
@@ -916,14 +917,14 @@ impl TQCtx {
     fn up_bounds(&self, state: &mut TQState, score: f32) -> bool {
         if self.use_butter {
             if score > self.target + self.tolerance {
-                state.search_max = state.last_crf - 0.25;
+                state.search_max = state.last_crf - self.bound_step;
             } else if score < self.target - self.tolerance {
-                state.search_min = state.last_crf + 0.25;
+                state.search_min = state.last_crf + self.bound_step;
             }
         } else if score < self.target - self.tolerance {
-            state.search_max = state.last_crf - 0.25;
+            state.search_max = state.last_crf - self.bound_step;
         } else if score > self.target + self.tolerance {
-            state.search_min = state.last_crf + 0.25;
+            state.search_min = state.last_crf + self.bound_step;
         }
         state.search_min > state.search_max
     }
@@ -1612,14 +1613,16 @@ fn parse_tq_ctx(args: &Args) -> TQCtx {
     let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
     let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
+    let integer_qp = args.encoder.integer_qp();
     TQCtx {
         target: tq_target,
         tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
         qp_min: qp_parts[0],
         qp_max: qp_parts[1],
+        bound_step: if integer_qp { 1.0 } else { 0.25 },
         use_butter: tq_target < 8.0,
         use_cvvdp: is_cvvdp(tq_target),
-        integer_qp: args.encoder.integer_qp(),
+        integer_qp,
     }
 }
 
@@ -4039,6 +4042,7 @@ pub mod test_access {
             tolerance: 0.0,
             qp_min: 0.0,
             qp_max: 0.0,
+            bound_step: 0.0,
             use_butter: false,
             use_cvvdp: cvvdp,
             integer_qp: false,
