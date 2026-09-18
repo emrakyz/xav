@@ -124,6 +124,8 @@ pub struct Pipeline {
     pub conv_buf_sz: usize,
     #[cfg(feature = "vship")]
     pub unpack_buf_sz: usize,
+    #[cfg(feature = "vship")]
+    pub met_strides: [i64; 3],
     pub write_frames: WriteFn,
     #[cfg(feature = "vship")]
     pub reset_cvvdp: bool,
@@ -176,6 +178,12 @@ impl Pipeline {
 
         #[cfg(feature = "vship")]
         let unpack_buf_sz = if is_10b_out { conv_buf_sz } else { 0 };
+        #[cfg(feature = "vship")]
+        let met_strides = [
+            met.y_stride as i64,
+            met.c_stride as i64,
+            met.c_stride as i64,
+        ];
 
         let has_rem = inf.is_10b
             && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_sz.is_multiple_of(UNPACK_CHUNK));
@@ -218,6 +226,8 @@ impl Pipeline {
             conv_buf_sz,
             #[cfg(feature = "vship")]
             unpack_buf_sz,
+            #[cfg(feature = "vship")]
+            met_strides,
             write_frames,
             #[cfg(feature = "vship")]
             reset_cvvdp,

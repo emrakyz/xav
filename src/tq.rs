@@ -2,7 +2,7 @@
 use alloc::vec::Vec;
 #[cfg(feature = "x265")]
 use core::ptr::write_bytes;
-use core::{ptr::null, slice::from_raw_parts};
+use core::slice::from_raw_parts;
 
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::fmath::{FloatExt as _, Powf as _};
@@ -250,6 +250,7 @@ pub fn interpolate_crf(probes: &[Probe], target: f32, round: u8, sc: &mut Interp
 pub struct MetricBufs<'a> {
     pub unpacked: &'a mut [u8],
     pub scores: &'a mut Vec<f32>,
+    pub planes: [*const u8; 3],
 }
 
 macro_rules! calc_metric_impl {
@@ -265,6 +266,7 @@ macro_rules! calc_metric_impl {
         ) -> f32 {
             let unpacked_buf = &mut *bufs.unpacked;
             let scores = &mut *bufs.scores;
+            let planes = bufs.planes;
             let cvvdp_per_frame = $is_cvvdp && agg.per_frame;
             if $is_cvvdp {
                 vship.reset_cvvdp();
@@ -282,14 +284,6 @@ macro_rules! calc_metric_impl {
 
             let (fw, fh) = (pipe.final_w, pipe.final_h);
             let (y_sz, cr_off) = (pipe.met.y_sz, pipe.met.cr_off);
-            let cs = pipe.met.c_stride as i64;
-            let inp_strides = [pipe.met.y_stride as i64, cs, cs];
-            let unp_planes = if $is_10b {
-                let b = unpacked_buf.as_ptr();
-                unsafe { [b, b.add(y_sz), b.add(cr_off)] }
-            } else {
-                [null(); 3]
-            };
             let mut src = pkg.yuv.as_ptr();
 
             macro_rules! process_frame {
@@ -302,7 +296,7 @@ macro_rules! calc_metric_impl {
 
                     let input_planes = if $is_10b {
                         ($unpack)(input_frame, unpacked_buf, fw, fh);
-                        unp_planes
+                        planes
                     } else {
                         let b = input_frame.as_ptr();
                         unsafe { [b, b.add(y_sz), b.add(cr_off)] }
@@ -312,7 +306,7 @@ macro_rules! calc_metric_impl {
                         vship,
                         input_planes,
                         output_planes,
-                        inp_strides,
+                        pipe.met_strides,
                         output_strides,
                     ));
                 }};

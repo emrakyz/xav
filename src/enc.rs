@@ -7,18 +7,15 @@ use alloc::vec::Vec;
 use alloc::{boxed::Box, collections::BTreeSet, sync::Arc};
 #[cfg(any(feature = "avm", feature = "vvenc", feature = "x265"))]
 use core::ffi::c_void;
-#[cfg(any(feature = "avm", feature = "x265"))]
+#[cfg(any(feature = "avm", feature = "vship", feature = "x265"))]
 use core::ptr::null;
 #[cfg(feature = "vvenc")]
 use core::ptr::write_bytes;
 #[cfg(feature = "vship")]
-use core::{
-    fmt::Write as _,
-    mem::{swap, take},
-};
+use core::{fmt::Write as _, mem::swap};
 use core::{
     hint::cold_path,
-    mem::{MaybeUninit, size_of, transmute, zeroed},
+    mem::{MaybeUninit, size_of, take, transmute, zeroed},
     ptr::{copy_nonoverlapping, null_mut},
     slice::from_raw_parts,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
@@ -1089,6 +1086,18 @@ macro_rules! make_metric_loop {
             let mut scores: Vec<f32> = Vec::with_capacity(MAX_CHNK_FRAMES);
             let mut unpacked_buf =
                 PinnedBuf::new(ctx.pipe.unpack_buf_sz).unwrap_or_else(|e| fatal(e));
+            // 8 bit never unpacks & PinnedBuf::new(0) dangles
+            let planes = if ctx.pipe.unpack_buf_sz == 0 {
+                [null(); 3]
+            } else {
+                let b = unpacked_buf.as_ptr();
+                unsafe { [b, b.add(ctx.pipe.met.y_sz), b.add(ctx.pipe.met.cr_off)] }
+            };
+            let mut bufs = MetricBufs {
+                unpacked: &mut unpacked_buf,
+                scores: &mut scores,
+                planes,
+            };
             let mut enc_path = OutPath::new(ctx.work_dir, ctx.ext);
             let mut split_path = ($mk_split)(ctx.work_dir, ctx.ext);
             let metric_slot = ctx.worker_cnt + worker_id;
@@ -1151,10 +1160,7 @@ macro_rules! make_metric_loop {
                     ctx.pipe,
                     unsafe { vship.as_ref().unwrap_unchecked() },
                     ctx.agg,
-                    &mut MetricBufs {
-                        unpacked: &mut unpacked_buf,
-                        scores: &mut scores,
-                    },
+                    &mut bufs,
                     &mp,
                 );
 
