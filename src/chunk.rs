@@ -40,7 +40,7 @@ pub struct Scene {
 #[derive(Clone, Copy)]
 pub struct Chunk {
     pub idx: u16,
-    pub tmpl: u16,
+    pub tmpl: u32,
     pub start: usize,
     pub end: usize,
     pub params: Option<&'static str>,
@@ -53,12 +53,10 @@ pub struct ChunkComp {
     pub sz: u64,
 }
 
-const ELAPSED_AT: usize = 8;
-const ELAPSED_W: usize = 10;
-
 pub struct ResumeInf {
     pub chnks_done: Vec<ChunkComp>,
     buf: String,
+    tail: usize,
     path: PathBuf,
     // creating in new would truncate file
     file: Option<File>,
@@ -69,13 +67,13 @@ impl ResumeInf {
     #[inline(never)]
     #[must_use]
     pub fn new(chnks_done: Vec<ChunkComp>, work_dir: &Path) -> Self {
-        let mut buf = String::with_capacity(ELAPSED_AT + ELAPSED_W + 1 + chnks_done.len() * 24);
-        _ = writeln!(buf, "elapsed {:0w$}", 0, w = ELAPSED_W);
+        let mut buf = String::with_capacity(chnks_done.len() * 24 + 64);
         for c in &chnks_done {
             Self::line(&mut buf, c);
         }
         Self {
             chnks_done,
+            tail: buf.len(),
             buf,
             path: work_dir.join("done.txt"),
             file: None,
@@ -87,20 +85,28 @@ impl ResumeInf {
     }
 
     pub fn finish(&mut self, comp: ChunkComp) {
+        let at = self.tail;
+        self.buf.truncate(at);
         Self::line(&mut self.buf, &comp);
-        self.chnks_done.push(comp);
-        let mut v = PRIOR_SECS.load(Relaxed) + ENC_START.get().map_or(0, |s| s.elapsed().as_secs());
-        let b = unsafe { self.buf.as_mut_vec() };
-        for i in (ELAPSED_AT..ELAPSED_AT + ELAPSED_W).rev() {
-            b[i] = b'0' + (v % 10) as u8;
-            v /= 10;
-        }
-        if self.file.is_none() {
+        self.tail = self.buf.len();
+        let secs = PRIOR_SECS.load(Relaxed)
+            + unsafe { ENC_START.get().unwrap_unchecked() }
+                .elapsed()
+                .as_secs();
+        _ = writeln!(self.buf, "elapsed {secs}");
+        let from = if self.file.is_none() {
             cold_path();
             self.file = File::create(&self.path).ok();
-        }
+            0
+        } else {
+            at
+        };
         if let Some(f) = self.file.as_ref() {
-            _ = write_at(f, self.buf.as_bytes(), 0);
+            _ = write_at(
+                f,
+                unsafe { self.buf.get_unchecked(from..) }.as_bytes(),
+                from as u64,
+            );
         }
     }
 }
@@ -179,7 +185,7 @@ pub fn chnkify(scenes: &[Scene]) -> Vec<Chunk> {
 
 #[cold]
 #[inline(never)]
-pub fn zone_tmpls(chnks: &mut [Chunk]) -> Vec<&'static str> {
+pub fn zone_tmpls(chnks: &mut [Chunk], scale: u32) -> Vec<&'static str> {
     let mut zones: Vec<&'static str> = Vec::new();
     for c in chnks {
         let Some(p) = c.params else {
@@ -188,10 +194,10 @@ pub fn zone_tmpls(chnks: &mut [Chunk]) -> Vec<&'static str> {
         c.tmpl = zones.iter().position(|&z| z == p).map_or_else(
             || {
                 zones.push(p);
-                zones.len() as u16
+                zones.len() as u32
             },
-            |i| i as u16 + 1,
-        );
+            |i| i as u32 + 1,
+        ) * scale;
     }
     zones
 }
@@ -206,13 +212,10 @@ pub fn read_done(work_dir: &Path) -> Option<(Vec<ChunkComp>, u64)> {
             prior_secs = s.parse().unwrap_or(0);
             continue;
         }
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() == 3
-            && let (Ok(idx), Ok(frames), Ok(sz)) = (
-                parts[0].parse::<u16>(),
-                parts[1].parse::<usize>(),
-                parts[2].parse::<u64>(),
-            )
+        let mut it = line.split_whitespace();
+        if let (Some(a), Some(b), Some(c), None) = (it.next(), it.next(), it.next(), it.next())
+            && let (Ok(idx), Ok(frames), Ok(sz)) =
+                (a.parse::<u16>(), b.parse::<usize>(), c.parse::<u64>())
         {
             chnks_done.push(ChunkComp { idx, frames, sz });
         }
@@ -231,6 +234,7 @@ pub fn merge_out(
     inf: &VidInf,
     au: &[(AuStream, PathBuf)],
     crop: (u32, u32),
+    vary: bool,
 ) -> Result<(), Xerr> {
     let mut paths: Vec<PathBuf> = Vec::new();
     for e in read_dir(enc_dir)?.filter_map(Result::ok) {
@@ -252,7 +256,7 @@ pub fn merge_out(
         if idx >= paths.len() {
             paths.resize_with(idx + 1, PathBuf::new);
         }
-        paths[idx] = p;
+        unsafe { *paths.get_unchecked_mut(idx) = p };
     }
 
     if args.out.extension().is_some_and(|e| e == "webm") {
@@ -264,7 +268,7 @@ pub fn merge_out(
     #[cfg(feature = "vship")]
     let dtag = args.disp.map(|d| d.tag(enc_w, enc_h));
     #[cfg(feature = "vship")]
-    let cvvdp = args.tq.as_deref().zip(dtag.as_deref());
+    let cvvdp = args.tq.map(|t| t.txt).zip(dtag.as_deref());
     #[cfg(not(feature = "vship"))]
     let cvvdp: Option<(&str, &str)> = None;
     let want_extras = args.ranges.is_none();
@@ -302,6 +306,7 @@ pub fn merge_out(
             subs,
             chapters,
             cvvdp,
+            vary,
         },
     )
 }

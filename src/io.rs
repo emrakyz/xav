@@ -257,8 +257,7 @@ pub struct BufWriter<'a, W: Write> {
 
 impl<'a, W: Write> BufWriter<'a, W> {
     #[inline]
-    pub fn new(inner: W, buf: &'a mut Vec<u8>) -> Self {
-        buf.clear();
+    pub const fn new(inner: W, buf: &'a mut Vec<u8>) -> Self {
         Self { inner, buf }
     }
 

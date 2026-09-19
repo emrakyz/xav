@@ -75,38 +75,6 @@ extern xav_vdso_init
 %endif
 %endmacro
 
-%macro PWAIT 1
-%if WIN64
-    lea          rcx, %1
-    mov          edx, 2
-    sub          rsp, 32
-    call         xav_plat_wait
-    add          rsp, 32
-%else
-    mov          eax, 202
-    lea          rdi, %1
-    mov          esi, FX_W
-    mov          edx, 2
-    xor          t1d, t1d
-    syscall
-%endif
-%endmacro
-
-%macro PWAKE 1
-%if WIN64
-    lea          rcx, %1
-    sub          rsp, 32
-    call         xav_plat_wake
-    add          rsp, 32
-%else
-    mov          eax, 202
-    lea          rdi, %1
-    mov          esi, FX_K
-    mov          edx, 1
-    syscall
-%endif
-%endmacro
-
 %macro PPARK 0
 %ifdef NOPARK
 %elif WIN64
@@ -787,11 +755,7 @@ cglobal pb_afmt, 6, 15, 0, pg, cv, tv, ln, ps, ti, ax, t1, t2, op, cvs, tvs, el,
     RET
     ITOASUB
 
-%define M_VAL   8
-%define M_LEN   520
 %define FX_W    128
-%define FX_K    129
-%define SPINS   100
 
 %define PAT(c) ((c)*0x0101010101010101)
 
@@ -849,10 +813,7 @@ cglobal pb_afmt, 6, 15, 0, pg, cv, tv, ln, ps, ti, ax, t1, t2, op, cvs, tvs, el,
 %define S_STA   48
 %define S_C     56
 %define S_S     60
-%define S_LK    64
-%define S_BUF   72
-%define S_LEN   584
-%define SLOTSZ  640
+%define SLOTSZ  64
 
 cglobal pb_fin, 2, 4, 0, sl, pc, t1, t2
     cmp          dword [slq+S_CNT], 0
@@ -868,8 +829,6 @@ cglobal pb_fin, 2, 4, 0, sl, pc, t1, t2
     ret
 
 %macro FMTSLOT 7
-    mov          rax, [rsp+A_NOW]
-    sub          rax, [bp1q+S_STA]
     cvtsi2ss     xmm0, rax
     mulss        xmm0, [ps_nsr]
     maxss        xmm0, [ps_mil]
@@ -1080,12 +1039,8 @@ cglobal pb_draw, 1, 15, 6, dw, a1, a2, a3, a4, a5, ax, t1, t2, op, bp1, bp2, dws
     jz           .bdone
 .bloop:
     mov          eax, [bp1q+S_TAG]
-    cmp          eax, 1
-    je           .slib
-    cmp          eax, 2
-    je           .smet
-    cmp          eax, 3
-    je           .stxt
+    lea          t1q, [rel .btbl]
+    jmp          [t1q+rax*8]
 .bnext:
     mov          [opq], t4q
     add          opq, 6
@@ -1334,58 +1289,21 @@ cglobal pb_draw, 1, 15, 6, dw, a1, a2, a3, a4, a5, ax, t1, t2, op, bp1, bp2, dws
     db           0xf0
     add          [t3q], t1q
 .slibf:
+    mov          rax, [rsp+A_NOW]
+    sub          rax, [bp1q+S_STA]
     FMTSLOT      CP, QBHASH, QYDASH, CP, bar_by, lit_b1, lit_c1
     jmp          .bnext
 .smet:
+    mov          rax, [rsp+A_NOW]
+    sub          rax, [bp1q+S_STA]
+.smett:
     FMTSLOT      0, QHASH, QDASH, CC, bar_gr, lit_b2, lit_c2
     jmp          .bnext
-.stxt:
-    xor          eax, eax
-    mov          ecx, 1
-    lock cmpxchg dword [bp1q+S_LK], ecx
-    jnz          .tslow
-.thave:
-    mov          t1q, [bp1q+S_LEN]
-    test         t1q, t1q
-    jz           .tempty
-    lea          t2q, [bp1q+S_BUF]
-    lea          t3q, [opq+t1q]
-.tcp:
-    vmovdqu      ymm0, [t2q]
-    vmovdqu      [opq], ymm0
-    add          t2q, 32
-    add          opq, 32
-    sub          t1q, 32
-    jg           .tcp
-    mov          opq, t3q
-.tempty:
-    xor          eax, eax
-    xchg         [bp1q+S_LK], eax
-    cmp          eax, 2
-    je           .twake
-    jmp          .bnext
-.twake:
-    PWAKE        [bp1q+S_LK]
-    jmp          .bnext
-.tslow:
-    mov          eax, SPINS
-.tspin:
-    pause
-    cmp          dword [bp1q+S_LK], 1
-    jne          .ttry
-    dec          eax
-    jnz          .tspin
-.ttry:
-    xor          eax, eax
-    mov          ecx, 1
-    lock cmpxchg dword [bp1q+S_LK], ecx
-    jz           .thave
-.twloop:
-    mov          eax, 2
-    xchg         [bp1q+S_LK], eax
-    test         eax, eax
-    jz           .thave
-    PWAIT        [bp1q+S_LK]
-    jmp          .twloop
+.smetd:
+    mov          rax, [bp1q+S_STA]
+    jmp          .smett
+    align        8
+.btbl:
+    dq           .bnext, .slib, .smet, .smetd
     PADSUB
     ITOASUB

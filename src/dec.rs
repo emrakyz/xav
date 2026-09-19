@@ -14,27 +14,23 @@ use crate::{
     ffms::{
         DecStrat,
         DecStrat::{
-            B8Crop, B8CropFast, B8CropStride, B8Fast, B8Stride, B10Crop, B10CropFast,
-            B10CropFastRem, B10CropRem, B10CropStride, B10CropStrideRem, B10Fast, B10FastRem,
-            B10Raw, B10RawCrop, B10RawCropFast, B10RawCropStride, B10RawStride, B10StrideRem,
-            HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12Stride, HwNv12To10, HwNv12To10Stride,
-            HwP010CropPack, HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem,
-            HwP010Pack, HwP010PackPkRem, HwP010PackRem, HwP010PackRemPkRem,
-            HwP010PackRemPkRemStride, HwP010Raw, HwP010RawCrop, HwP010RawCropRem, HwP010RawRem,
-            HwP010RawRemStride,
+            B8Crop, B8CropFast, B8Fast, B8Stride, B10Crop, B10CropFast, B10CropFastRem, B10CropRem,
+            B10Fast, B10FastRem, B10Raw, B10RawCrop, B10RawCropFast, B10RawStride, B10StrideRem,
+            HwNv12, HwNv12Crop, HwNv12CropTo10, HwNv12Rem, HwNv12Stride, HwNv12To10,
+            HwNv12To10Stride, HwP010CropPack, HwP010CropPackPkRem, HwP010Pack, HwP010PackPkRem,
+            HwP010PackRem, HwP010PackRemPkRem, HwP010PackRemPkRemStride, HwP010Raw, HwP010RawCrop,
+            HwP010RawRem, HwP010RawRemStride,
         },
-        VidDecoder, VidInf, extr_8b_crop, extr_8b_crop_fast, extr_8b_crop_stride, extr_8b_fast,
-        extr_8b_stride, extr_10b_crop, extr_10b_crop_fast, extr_10b_crop_fast_rem,
-        extr_10b_crop_pack_stride, extr_10b_crop_pack_stride_rem, extr_10b_crop_rem, extr_10b_pack,
-        extr_10b_pack_rem, extr_10b_pack_stride_rem, extr_10b_raw, extr_10b_raw_crop,
-        extr_10b_raw_crop_fast, extr_10b_raw_crop_stride, extr_10b_raw_stride, extr_hw_nv12,
-        extr_hw_nv12_crop, extr_hw_nv12_crop_to10, extr_hw_nv12_stride, extr_hw_nv12_to10,
-        extr_hw_nv12_to10_stride, extr_hw_p010_raw, extr_hw_p010_raw_crop,
-        extr_hw_p010_raw_crop_rem, extr_hw_p010_raw_rem, extr_hw_p010_raw_rem_stride,
+        VidDecoder, VidInf, extr_10b_crop, extr_10b_crop_fast, extr_10b_crop_fast_rem,
+        extr_10b_crop_rem, extr_10b_pack, extr_10b_pack_rem, extr_10b_pack_stride_rem,
+        extr_hw_nv12, extr_hw_nv12_crop, extr_hw_nv12_crop_to10, extr_hw_nv12_rem,
+        extr_hw_nv12_stride, extr_hw_nv12_to10, extr_hw_nv12_to10_stride, extr_hw_p010_raw,
+        extr_hw_p010_raw_crop, extr_hw_p010_raw_rem, extr_hw_p010_raw_rem_stride, extr_raw,
+        extr_raw_crop, extr_raw_crop_fast, extr_raw_stride,
     },
     pack::{
-        PACK_CHUNK, calc_8b_sz, calc_packed_sz, pack_10b, pack_10b_rem, pack_stride,
-        pack_stride_rem, packed_row_sz,
+        PACK_CHUNK, SHIFT_CHUNK, calc_8b_sz, calc_packed_sz, pack_stride, packed_row_sz,
+        xav_pack_10b, xav_pack_10b_rem,
     },
     path::Path,
     thread::available_parallelism,
@@ -56,12 +52,12 @@ pub struct CropCalc {
     pub y_len: usize,
     pub uv_len: usize,
     pub uv_off: usize,
-    pub crop_v: u32,
-    pub crop_h: u32,
+    pub y_start_ls: usize,
+    pub uv_off_ls: usize,
 }
 
 impl CropCalc {
-    pub const fn new(inf: &VidInf, crop: (u32, u32), pix_sz: usize) -> Self {
+    pub const fn new(inf: &VidInf, crop: (u32, u32), pix_sz: usize, nv: bool) -> Self {
         let (cv, ch) = crop;
         let new_w = inf.width - ch * 2;
         let new_h = inf.height - cv * 2;
@@ -76,6 +72,8 @@ impl CropCalc {
         let v_start = y_plane + uv_plane + uv_off;
         let y_len = (new_w * pix_sz as u32) as usize;
         let uv_len = (new_w / 2 * pix_sz as u32) as usize;
+        let chb = ch as usize * pix_sz;
+        let (cv, chb_c) = (cv as usize, if nv { chb } else { chb / 2 });
 
         Self {
             g: Geom::new(new_w, new_h, pix_sz),
@@ -89,8 +87,8 @@ impl CropCalc {
             y_len,
             uv_len,
             uv_off,
-            crop_v: cv,
-            crop_h: ch,
+            y_start_ls: cv * inf.y_linesz + chb,
+            uv_off_ls: cv / 2 * inf.uv_linesz + chb_c,
         }
     }
 
@@ -129,8 +127,17 @@ pub struct Geom {
     pub cr_off: usize,
     pub fsz: usize,
     pub y_pack: usize,
+    pub uv_pack: usize,
     pub cr_pack: usize,
     pub pack_fsz: usize,
+    pub y_row_pack: usize,
+    pub c_row_pack: usize,
+    pub y_iters: usize,
+    pub c_iters: usize,
+    pub y_row_iters: usize,
+    pub c_row_iters: usize,
+    pub shift_iters: usize,
+    pub deint_iters: usize,
 }
 
 impl Geom {
@@ -141,8 +148,10 @@ impl Geom {
         let c_stride = hw * pix_sz;
         let y_sz = y_stride * hu;
         let uv_sz = c_stride * hh;
-        let y_pack = packed_row_sz(wu) * hu;
-        let uv_pack = packed_row_sz(hw) * hh;
+        let y_row_pack = packed_row_sz(wu);
+        let c_row_pack = packed_row_sz(hw);
+        let y_pack = y_row_pack * hu;
+        let uv_pack = c_row_pack * hh;
         Self {
             w,
             h,
@@ -157,8 +166,17 @@ impl Geom {
             cr_off: y_sz + uv_sz,
             fsz: y_sz + uv_sz * 2,
             y_pack,
+            uv_pack,
             cr_pack: y_pack + uv_pack,
             pack_fsz: calc_packed_sz(w, h),
+            y_row_pack,
+            c_row_pack,
+            y_iters: y_sz / PACK_CHUNK,
+            c_iters: uv_sz / PACK_CHUNK,
+            y_row_iters: y_stride / PACK_CHUNK,
+            c_row_iters: c_stride / PACK_CHUNK,
+            shift_iters: y_sz / (2 * SHIFT_CHUNK),
+            deint_iters: uv_sz / (2 * SHIFT_CHUNK),
         }
     }
 }
@@ -203,12 +221,25 @@ fn emit(sk: &Sink, f: impl FnOnce(&mut WorkPkg)) {
     (sk.tx)(p);
 }
 
+#[inline(always)]
+fn run<C: Copy>(
+    filtered: &[Chunk],
+    dec: &mut VidDecoder,
+    sk: &Sink,
+    ctx: C,
+    f: fn(&Chunk, &mut VidDecoder, C, &mut WorkPkg),
+) {
+    for ch in filtered {
+        emit(sk, |p| f(ch, dec, ctx, p));
+    }
+}
+
 pub fn dec_chnks(
     chnks: &[Chunk],
     path: &Path,
     inf: &VidInf,
     skip: &BTreeSet<u16>,
-    strat: DecStrat,
+    strat: &DecStrat,
     sk: &Sink,
 ) {
     let thr = available_parallelism() as i32;
@@ -226,25 +257,25 @@ pub fn dec_chnks(
         .filter(|c| !skip.contains(&c.idx))
         .copied()
         .collect();
-    match strat {
+    match *strat {
         B8Fast
         | B8Stride
         | B8Crop { .. }
         | B8CropFast { .. }
-        | B8CropStride { .. }
+        | B10Raw
+        | B10RawStride
+        | B10RawCrop { .. }
+        | B10RawCropFast { .. }
         | HwNv12
+        | HwNv12Rem
         | HwNv12Stride
         | HwNv12Crop { .. }
         | HwNv12To10
         | HwNv12To10Stride
         | HwNv12CropTo10 { .. } => {
-            disp_8b(&filtered, &mut dec, inf, strat, sk);
+            disp_raw(&filtered, &mut dec, inf, strat, sk);
         }
-        HwP010Raw
-        | HwP010RawRem
-        | HwP010RawRemStride
-        | HwP010RawCrop { .. }
-        | HwP010RawCropRem { .. } => {
+        HwP010Raw | HwP010RawRem | HwP010RawRemStride | HwP010RawCrop { .. } => {
             disp_hw_10b_raw(&filtered, &mut dec, inf, strat, sk);
         }
         HwP010Pack
@@ -253,238 +284,43 @@ pub fn dec_chnks(
         | HwP010PackRemPkRem
         | HwP010PackRemPkRemStride
         | HwP010CropPack { .. }
-        | HwP010CropPackPkRem { .. }
-        | HwP010CropPackRem { .. }
-        | HwP010CropPackRemPkRem { .. } => {
+        | HwP010CropPackPkRem { .. } => {
             disp_hw_10b_pack(&filtered, &mut dec, inf, strat, sk);
         }
         _ => disp_10b(&filtered, &mut dec, inf, strat, sk),
     }
 }
 
-fn disp_10b(filtered: &[Chunk], dec: &mut VidDecoder, inf: &VidInf, strat: DecStrat, sk: &Sink) {
+fn disp_10b(filtered: &[Chunk], dec: &mut VidDecoder, inf: &VidInf, strat: &DecStrat, sk: &Sink) {
     let g = Geom::new(inf.width, inf.height, 2);
-    if strat.is_raw() {
-        disp_10b_raw(filtered, dec, inf, strat, sk);
-        return;
-    }
-    match strat {
-        B10Fast => {
-            let f = g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_fast(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        B10FastRem => {
-            let f = g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_fast_rem(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        B10StrideRem => {
-            let f = g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_stride_rem(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        B10CropFast { cc } => {
-            let f = cc.g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B10CropFastRem { cc } => {
-            let f = cc.g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_crop_fast_rem(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B10Crop { cc } => {
-            let f = cc.g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| dec_10_crop(ch, dec, &cc, cc.new_w, cc.new_h, f, p));
-            }
-        }
-        B10CropRem { cc } => {
-            let f = cc.g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_crop_rem(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B10CropStride { cc } => {
-            let f = cc.g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B10CropStrideRem { cc } => {
-            let f = cc.g.pack_fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_crop_stride_rem(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
+    match *strat {
+        B10Fast => run(filtered, dec, sk, &g, dec_10_fast),
+        B10FastRem => run(filtered, dec, sk, &g, dec_10_fast_rem),
+        B10StrideRem => run(filtered, dec, sk, &g, dec_10_stride_rem),
+        B10CropFast { ref cc } => run(filtered, dec, sk, cc, dec_10_crop_fast),
+        B10CropFastRem { ref cc } => run(filtered, dec, sk, cc, dec_10_crop_fast_rem),
+        B10Crop { ref cc } => run(filtered, dec, sk, cc, dec_10_crop),
+        B10CropRem { ref cc } => run(filtered, dec, sk, cc, dec_10_crop_rem),
         _ => assume_unreachable(),
     }
 }
 
-fn disp_10b_raw(
-    filtered: &[Chunk],
-    dec: &mut VidDecoder,
-    inf: &VidInf,
-    strat: DecStrat,
-    sk: &Sink,
-) {
-    let g = Geom::new(inf.width, inf.height, 2);
-    match strat {
-        B10Raw => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_raw(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
+fn disp_raw(filtered: &[Chunk], dec: &mut VidDecoder, inf: &VidInf, strat: &DecStrat, sk: &Sink) {
+    let g = Geom::new(inf.width, inf.height, if inf.is_10b { 2 } else { 1 });
+    match *strat {
+        B8Fast | B10Raw => run(filtered, dec, sk, &g, dec_raw),
+        B8Stride | B10RawStride => run(filtered, dec, sk, &g, dec_raw_stride),
+        B8CropFast { ref cc } | B10RawCropFast { ref cc } => {
+            run(filtered, dec, sk, cc, dec_raw_crop_fast);
         }
-        B10RawStride => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_raw_stride(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        B10RawCropFast { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_raw_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B10RawCrop { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B10RawCropStride { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_10_raw_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        _ => assume_unreachable(),
-    }
-}
-
-fn disp_8b(filtered: &[Chunk], dec: &mut VidDecoder, inf: &VidInf, strat: DecStrat, sk: &Sink) {
-    let g = Geom::new(inf.width, inf.height, 1);
-    match strat {
-        B8Fast => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_8_fast(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        B8Stride => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_8_stride(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        B8CropFast { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_8_crop_fast(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        B8Crop { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| dec_8_crop(ch, dec, &cc, cc.new_w, cc.new_h, f, p));
-            }
-        }
-        B8CropStride { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_8_crop_stride(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        HwNv12 => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_nv12(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwNv12Stride => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_nv12_stride(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwNv12Crop { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_nv12_crop(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        HwNv12To10 => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_nv12_to10(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwNv12To10Stride => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_nv12_to10_stride(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwNv12CropTo10 { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_nv12_crop_to10(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
+        B8Crop { ref cc } | B10RawCrop { ref cc } => run(filtered, dec, sk, cc, dec_raw_crop),
+        HwNv12 => run(filtered, dec, sk, &g, dec_hw_nv12),
+        HwNv12Rem => run(filtered, dec, sk, &g, dec_hw_nv12_rem),
+        HwNv12Stride => run(filtered, dec, sk, &g, dec_hw_nv12_stride),
+        HwNv12Crop { ref cc } => run(filtered, dec, sk, cc, dec_hw_nv12_crop),
+        HwNv12To10 => run(filtered, dec, sk, &g, dec_hw_nv12_to10),
+        HwNv12To10Stride => run(filtered, dec, sk, &g, dec_hw_nv12_to10_stride),
+        HwNv12CropTo10 { ref cc } => run(filtered, dec, sk, cc, dec_hw_nv12_crop_to10),
         _ => assume_unreachable(),
     }
 }
@@ -493,51 +329,15 @@ fn disp_hw_10b_raw(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    strat: DecStrat,
+    strat: &DecStrat,
     sk: &Sink,
 ) {
     let g = Geom::new(inf.width, inf.height, 2);
-    match strat {
-        HwP010Raw => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_p010_raw(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwP010RawRem => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_p010_raw_rem(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwP010RawRemStride => {
-            let f = g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_p010_raw_rem_stride(ch, dec, &g, g.w, g.h, f, p);
-                });
-            }
-        }
-        HwP010RawCrop { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_p010_raw_crop(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
-        HwP010RawCropRem { cc } => {
-            let f = cc.g.fsz;
-            for ch in filtered {
-                emit(sk, |p| {
-                    dec_hw_p010_raw_crop_rem(ch, dec, &cc, cc.new_w, cc.new_h, f, p);
-                });
-            }
-        }
+    match *strat {
+        HwP010Raw => run(filtered, dec, sk, &g, dec_hw_p010_raw),
+        HwP010RawRem => run(filtered, dec, sk, &g, dec_hw_p010_raw_rem),
+        HwP010RawRemStride => run(filtered, dec, sk, &g, dec_hw_p010_raw_rem_stride),
+        HwP010RawCrop { ref cc } => run(filtered, dec, sk, cc, dec_hw_p010_raw_crop),
         _ => assume_unreachable(),
     }
 }
@@ -546,18 +346,19 @@ fn disp_hw_10b_pack(
     filtered: &[Chunk],
     dec: &mut VidDecoder,
     inf: &VidInf,
-    strat: DecStrat,
+    strat: &DecStrat,
     sk: &Sink,
 ) {
-    let (w, h) = match strat {
-        HwP010CropPack { cc }
-        | HwP010CropPackPkRem { cc }
-        | HwP010CropPackRem { cc }
-        | HwP010CropPackRemPkRem { cc } => (cc.new_w, cc.new_h),
-        _ => (inf.width, inf.height),
+    let g = match *strat {
+        HwP010CropPack { ref cc } | HwP010CropPackPkRem { ref cc } => cc.g,
+        _ => Geom::new(inf.width, inf.height, 2),
     };
-    let g = Geom::new(w, h, 2);
-    let mut raw_buf = vec![0u8; g.fsz];
+    let mut raw_buf = Vec::new();
+    #[expect(clippy::uninit_vec, reason = "decode fills every byte")]
+    unsafe {
+        raw_buf.reserve(g.fsz);
+        raw_buf.set_len(g.fsz);
+    }
 
     macro_rules! run {
         ($dec_fn:ident, $ctx:expr) => {
@@ -566,45 +367,38 @@ fn disp_hw_10b_pack(
             }
         };
     }
-    match strat {
+    match *strat {
         HwP010Pack => run!(dec_hw_p010_pack, &g),
         HwP010PackPkRem => run!(dec_hw_p010_pack_pkrem, &g),
         HwP010PackRem => run!(dec_hw_p010_pack_rem, &g),
         HwP010PackRemPkRem => run!(dec_hw_p010_pack_rem_pkrem, &g),
         HwP010PackRemPkRemStride => run!(dec_hw_p010_pack_rem_pkrem_stride, &g),
-        HwP010CropPack { cc } => run!(dec_hw_p010_crop_pack, &cc),
-        HwP010CropPackPkRem { cc } => run!(dec_hw_p010_crop_pack_pkrem, &cc),
-        HwP010CropPackRem { cc } => run!(dec_hw_p010_crop_pack_rem, &cc),
-        HwP010CropPackRemPkRem { cc } => run!(dec_hw_p010_crop_pack_rem_pkrem, &cc),
+        HwP010CropPack { ref cc } => run!(dec_hw_p010_crop_pack, cc),
+        HwP010CropPackPkRem { ref cc } => run!(dec_hw_p010_crop_pack_pkrem, cc),
         _ => assume_unreachable(),
     }
 }
 
 #[inline]
 fn pack_hw_planes(raw_buf: &[u8], dst: &mut [u8], g: &Geom) {
-    pack_10b(&raw_buf[..g.y_sz], &mut dst[..g.y_pack]);
-    pack_10b(&raw_buf[g.y_sz..g.cr_off], &mut dst[g.y_pack..g.cr_pack]);
-    pack_10b(
-        &raw_buf[g.cr_off..g.cr_off + g.uv_sz],
-        &mut dst[g.cr_pack..],
-    );
+    let (s, d) = (raw_buf.as_ptr(), dst.as_mut_ptr());
+    unsafe {
+        xav_pack_10b(s, d, g.y_iters);
+        xav_pack_10b(s.add(g.y_sz), d.add(g.y_pack), g.c_iters);
+        xav_pack_10b(s.add(g.cr_off), d.add(g.cr_pack), g.c_iters);
+    }
 }
 
 #[inline]
 fn pack_hw_planes_rem(raw_buf: &[u8], dst: &mut [u8], g: &Geom) {
-    pack_10b_rem(&raw_buf[..g.y_sz], dst, g.wu, g.hu);
-    pack_10b_rem(
-        &raw_buf[g.y_sz..g.cr_off],
-        &mut dst[g.y_pack..g.cr_pack],
-        g.hw,
-        g.hh,
-    );
-    pack_10b_rem(
-        &raw_buf[g.cr_off..g.cr_off + g.uv_sz],
-        &mut dst[g.cr_pack..],
-        g.hw,
-        g.hh,
-    );
+    let (s, d) = (raw_buf.as_ptr(), dst.as_mut_ptr());
+    let (w, h) = (g.wu, g.hu);
+    let (hw, hh) = (w / 2, h / 2);
+    unsafe {
+        xav_pack_10b_rem(s, w * 2, w, h, d);
+        xav_pack_10b_rem(s.add(g.y_sz), w, hw, hh, d.add(g.y_pack));
+        xav_pack_10b_rem(s.add(g.cr_off), w, hw, hh, d.add(g.cr_pack));
+    }
 }
 
 macro_rules! dec_hw_pack {
@@ -675,20 +469,6 @@ dec_hw_pack!(
     cc
 );
 dec_hw_pack!(
-    dec_hw_p010_crop_pack_rem,
-    extr_hw_p010_raw_crop_rem,
-    pack_hw_planes,
-    &CropCalc,
-    cc
-);
-dec_hw_pack!(
-    dec_hw_p010_crop_pack_rem_pkrem,
-    extr_hw_p010_raw_crop_rem,
-    pack_hw_planes_rem,
-    &CropCalc,
-    cc
-);
-dec_hw_pack!(
     dec_hw_p010_pack_rem_pkrem_stride,
     extr_hw_p010_raw_rem_stride,
     pack_hw_planes_rem,
@@ -697,22 +477,15 @@ dec_hw_pack!(
 );
 
 macro_rules! dec_linear {
-    ($name:ident, $extr_fn:ident, $ctx_ty:ty, $ctx_arg:ident) => {
-        dec_linear!($name, $extr_fn, $ctx_ty, $ctx_arg, dec_next);
+    ($name:ident, $extr_fn:ident, $ctx_ty:ty, $ctx_arg:ident, $g:expr, $fsz:ident) => {
+        dec_linear!($name, $extr_fn, $ctx_ty, $ctx_arg, $g, $fsz, dec_next);
     };
-    ($name:ident, $extr_fn:ident, $ctx_ty:ty, $ctx_arg:ident, $next:ident) => {
+    ($name:ident, $extr_fn:ident, $ctx_ty:ty, $ctx_arg:ident, $g:expr, $fsz:ident, $next:ident) => {
         #[inline]
-        fn $name(
-            ch: &Chunk,
-            dec: &mut VidDecoder,
-            $ctx_arg: $ctx_ty,
-            w: u32,
-            h: u32,
-            fsz: usize,
-            pkg: &mut WorkPkg,
-        ) {
+        fn $name(ch: &Chunk, dec: &mut VidDecoder, $ctx_arg: $ctx_ty, pkg: &mut WorkPkg) {
             dec.skip_to(ch.start);
             let len = ch.end - ch.start;
+            let fsz = $g.$fsz;
             let mut actual = len;
             let mut dst = pkg.fit(len * fsz);
             for i in 0..len {
@@ -725,45 +498,74 @@ macro_rules! dec_linear {
                 $extr_fn(frame, unsafe { from_raw_parts_mut(dst, fsz) }, $ctx_arg);
                 dst = unsafe { dst.add(fsz) };
             }
-            pkg.set(*ch, actual, w, h);
+            pkg.set(*ch, actual, $g.w, $g.h);
         }
     };
 }
 
-dec_linear!(dec_10_fast, extr_10b_pack, &Geom, g);
-dec_linear!(dec_10_crop_fast, extr_10b_crop_fast, &CropCalc, cc);
-dec_linear!(dec_10_crop_fast_rem, extr_10b_crop_fast_rem, &CropCalc, cc);
-dec_linear!(dec_10_crop, extr_10b_crop, &CropCalc, cc);
-dec_linear!(dec_10_fast_rem, extr_10b_pack_rem, &Geom, g);
-dec_linear!(dec_10_stride_rem, extr_10b_pack_stride_rem, &Geom, g);
-dec_linear!(dec_10_crop_rem, extr_10b_crop_rem, &CropCalc, cc);
-dec_linear!(dec_10_raw, extr_10b_raw, &Geom, g);
-dec_linear!(dec_10_raw_stride, extr_10b_raw_stride, &Geom, g);
-dec_linear!(dec_10_raw_crop_fast, extr_10b_raw_crop_fast, &CropCalc, cc);
-dec_linear!(dec_10_raw_crop, extr_10b_raw_crop, &CropCalc, cc);
+dec_linear!(dec_10_fast, extr_10b_pack, &Geom, g, g, pack_fsz);
 dec_linear!(
-    dec_10_raw_crop_stride,
-    extr_10b_raw_crop_stride,
+    dec_10_crop_fast,
+    extr_10b_crop_fast,
     &CropCalc,
-    cc
+    cc,
+    cc.g,
+    pack_fsz
 );
-dec_linear!(dec_10_crop_stride, extr_10b_crop_pack_stride, &CropCalc, cc);
 dec_linear!(
-    dec_10_crop_stride_rem,
-    extr_10b_crop_pack_stride_rem,
+    dec_10_crop_fast_rem,
+    extr_10b_crop_fast_rem,
     &CropCalc,
-    cc
+    cc,
+    cc.g,
+    pack_fsz
 );
-dec_linear!(dec_8_fast, extr_8b_fast, &Geom, g);
-dec_linear!(dec_8_stride, extr_8b_stride, &Geom, g);
-dec_linear!(dec_8_crop_fast, extr_8b_crop_fast, &CropCalc, cc);
-dec_linear!(dec_8_crop, extr_8b_crop, &CropCalc, cc);
-dec_linear!(dec_hw_nv12, extr_hw_nv12, &Geom, g, dec_next_hw);
+dec_linear!(dec_10_crop, extr_10b_crop, &CropCalc, cc, cc.g, pack_fsz);
+dec_linear!(dec_10_fast_rem, extr_10b_pack_rem, &Geom, g, g, pack_fsz);
+dec_linear!(
+    dec_10_stride_rem,
+    extr_10b_pack_stride_rem,
+    &Geom,
+    g,
+    g,
+    pack_fsz
+);
+dec_linear!(
+    dec_10_crop_rem,
+    extr_10b_crop_rem,
+    &CropCalc,
+    cc,
+    cc.g,
+    pack_fsz
+);
+dec_linear!(dec_raw, extr_raw, &Geom, g, g, fsz);
+dec_linear!(dec_raw_stride, extr_raw_stride, &Geom, g, g, fsz);
+dec_linear!(
+    dec_raw_crop_fast,
+    extr_raw_crop_fast,
+    &CropCalc,
+    cc,
+    cc.g,
+    fsz
+);
+dec_linear!(dec_raw_crop, extr_raw_crop, &CropCalc, cc, cc.g, fsz);
+dec_linear!(dec_hw_nv12, extr_hw_nv12, &Geom, g, g, fsz, dec_next_hw);
+dec_linear!(
+    dec_hw_nv12_rem,
+    extr_hw_nv12_rem,
+    &Geom,
+    g,
+    g,
+    fsz,
+    dec_next_hw
+);
 dec_linear!(
     dec_hw_nv12_stride,
     extr_hw_nv12_stride,
     &Geom,
     g,
+    g,
+    fsz,
     dec_next_hw
 );
 dec_linear!(
@@ -771,14 +573,26 @@ dec_linear!(
     extr_hw_nv12_crop,
     &CropCalc,
     cc,
+    cc.g,
+    fsz,
     dec_next_hw
 );
-dec_linear!(dec_hw_nv12_to10, extr_hw_nv12_to10, &Geom, g, dec_next_hw);
+dec_linear!(
+    dec_hw_nv12_to10,
+    extr_hw_nv12_to10,
+    &Geom,
+    g,
+    g,
+    fsz,
+    dec_next_hw
+);
 dec_linear!(
     dec_hw_nv12_to10_stride,
     extr_hw_nv12_to10_stride,
     &Geom,
     g,
+    g,
+    fsz,
     dec_next_hw
 );
 dec_linear!(
@@ -786,14 +600,26 @@ dec_linear!(
     extr_hw_nv12_crop_to10,
     &CropCalc,
     cc,
+    cc.g,
+    fsz,
     dec_next_hw
 );
-dec_linear!(dec_hw_p010_raw, extr_hw_p010_raw, &Geom, g, dec_next_hw);
+dec_linear!(
+    dec_hw_p010_raw,
+    extr_hw_p010_raw,
+    &Geom,
+    g,
+    g,
+    fsz,
+    dec_next_hw
+);
 dec_linear!(
     dec_hw_p010_raw_crop,
     extr_hw_p010_raw_crop,
     &CropCalc,
     cc,
+    cc.g,
+    fsz,
     dec_next_hw
 );
 dec_linear!(
@@ -801,6 +627,8 @@ dec_linear!(
     extr_hw_p010_raw_rem,
     &Geom,
     g,
+    g,
+    fsz,
     dec_next_hw
 );
 dec_linear!(
@@ -808,48 +636,34 @@ dec_linear!(
     extr_hw_p010_raw_rem_stride,
     &Geom,
     g,
+    g,
+    fsz,
     dec_next_hw
 );
-dec_linear!(
-    dec_hw_p010_raw_crop_rem,
-    extr_hw_p010_raw_crop_rem,
-    &CropCalc,
-    cc,
-    dec_next_hw
-);
-
-dec_linear!(dec_8_crop_stride, extr_8b_crop_stride, &CropCalc, cc);
 
 pub fn dec_pipe(
     chnks: &[Chunk],
     reader: &mut PipeReader,
     inf: &VidInf,
     skip: &BTreeSet<u16>,
-    strat: DecStrat,
+    strat: &DecStrat,
     sk: &Sink,
 ) {
     let chnks = chnks.get(reader.start_idx..).unwrap_or(chnks);
-    let cc = match strat {
-        B10Crop { cc }
-        | B10CropRem { cc }
-        | B10CropFast { cc }
-        | B10CropFastRem { cc }
-        | B10CropStride { cc }
-        | B10CropStrideRem { cc }
-        | B8Crop { cc }
-        | B8CropFast { cc }
-        | B8CropStride { cc }
-        | B10RawCrop { cc }
-        | B10RawCropFast { cc }
-        | B10RawCropStride { cc }
-        | HwNv12Crop { cc }
-        | HwNv12CropTo10 { cc }
-        | HwP010RawCrop { cc }
-        | HwP010RawCropRem { cc }
-        | HwP010CropPack { cc }
-        | HwP010CropPackPkRem { cc }
-        | HwP010CropPackRem { cc }
-        | HwP010CropPackRemPkRem { cc } => Some(cc),
+    let cc = match *strat {
+        B10Crop { ref cc }
+        | B10CropRem { ref cc }
+        | B10CropFast { ref cc }
+        | B10CropFastRem { ref cc }
+        | B8Crop { ref cc }
+        | B8CropFast { ref cc }
+        | B10RawCrop { ref cc }
+        | B10RawCropFast { ref cc }
+        | HwNv12Crop { ref cc }
+        | HwNv12CropTo10 { ref cc }
+        | HwP010RawCrop { ref cc }
+        | HwP010CropPack { ref cc }
+        | HwP010CropPackPkRem { ref cc } => Some(cc),
         _ => None,
     };
 
@@ -860,7 +674,7 @@ pub fn dec_pipe(
         let fsz = w as usize * h as usize * 3;
         if let Some(cc) = cc {
             pipe_loop(chnks, reader, skip, sk, raw_fsz, |ch, raw, pkg| {
-                dec_pipe_raw_crop(ch, raw, raw_fsz, &cc, fsz, pkg);
+                dec_pipe_crop(ch, raw, raw_fsz, cc, fsz, pkg);
             });
         } else {
             pipe_direct(chnks, reader, skip, sk, fsz, w, h);
@@ -877,15 +691,13 @@ pub fn dec_pipe(
 
     match (inf.is_10b, cc, has_rem) {
         (true, Some(cc), false) => {
-            let g = Geom::new(w, h, 2);
             pipe_loop(chnks, reader, skip, sk, raw_fsz, |ch, raw, pkg| {
-                dec_pipe_10_crop(ch, raw, raw_fsz, &cc, &g, pkg);
+                dec_pipe_10_crop(ch, raw, raw_fsz, cc, pkg);
             });
         }
         (true, Some(cc), true) => {
-            let g = Geom::new(w, h, 2);
             pipe_loop(chnks, reader, skip, sk, raw_fsz, |ch, raw, pkg| {
-                dec_pipe_10_crop_rem(ch, raw, raw_fsz, &cc, &g, pkg);
+                dec_pipe_10_crop_rem(ch, raw, raw_fsz, cc, pkg);
             });
         }
         (true, None, false) => {
@@ -902,7 +714,7 @@ pub fn dec_pipe(
         }
         (false, Some(cc), _) => {
             pipe_loop(chnks, reader, skip, sk, raw_fsz, |ch, raw, pkg| {
-                dec_pipe_8_crop(ch, raw, raw_fsz, &cc, fsz, pkg);
+                dec_pipe_crop(ch, raw, raw_fsz, cc, fsz, pkg);
             });
         }
         (false, None, _) => pipe_direct(chnks, reader, skip, sk, fsz, w, h),
@@ -920,7 +732,12 @@ fn pipe_loop<F>(
 ) where
     F: FnMut(&Chunk, &[u8], &mut WorkPkg),
 {
-    let mut raw = vec![0u8; MAX_CHNK_FRAMES * raw_fsz];
+    let mut raw = Vec::new();
+    #[expect(clippy::uninit_vec, reason = "read_frame fills every byte")]
+    unsafe {
+        raw.reserve(MAX_CHNK_FRAMES * raw_fsz);
+        raw.set_len(MAX_CHNK_FRAMES * raw_fsz);
+    }
     for ch in chnks {
         let len = ch.end - ch.start;
 
@@ -1006,72 +823,44 @@ dec_pipe_pack!(dec_pipe_10, pack_hw_planes);
 dec_pipe_pack!(dec_pipe_10_rem, pack_hw_planes_rem);
 
 macro_rules! dec_pipe_crop_pack {
-    ($name:ident, $pack:ident) => {
+    ($name:ident, $pack:ident, $g:ident, ($($y:expr),*), ($($c:expr),*)) => {
         #[inline]
-        fn $name(
-            ch: &Chunk,
-            data: &[u8],
-            raw_fsz: usize,
-            cc: &CropCalc,
-            g: &Geom,
-            pkg: &mut WorkPkg,
-        ) {
+        fn $name(ch: &Chunk, data: &[u8], raw_fsz: usize, cc: &CropCalc, pkg: &mut WorkPkg) {
+            let $g = &cc.g;
             let len = ch.end - ch.start;
             let mut src = data.as_ptr();
-            let mut dst = pkg.fit(len * g.pack_fsz);
+            let mut dst = pkg.fit(len * $g.pack_fsz);
             for _ in 0..len {
                 unsafe {
-                    $pack(src.add(cc.y_start), cc.y_stride, g.wu, g.hu, dst);
-                    $pack(
-                        src.add(cc.u_start),
-                        cc.uv_stride,
-                        g.hw,
-                        g.hh,
-                        dst.add(g.y_pack),
-                    );
-                    $pack(
-                        src.add(cc.v_start),
-                        cc.uv_stride,
-                        g.hw,
-                        g.hh,
-                        dst.add(g.cr_pack),
-                    );
+                    $pack(src.add(cc.y_start), cc.y_stride, $($y,)* dst);
+                    $pack(src.add(cc.u_start), cc.uv_stride, $($c,)* dst.add($g.y_pack));
+                    $pack(src.add(cc.v_start), cc.uv_stride, $($c,)* dst.add($g.cr_pack));
                     src = src.add(raw_fsz);
-                    dst = dst.add(g.pack_fsz);
+                    dst = dst.add($g.pack_fsz);
                 }
             }
-            pkg.set(*ch, len, g.w, g.h);
+            pkg.set(*ch, len, $g.w, $g.h);
         }
     };
 }
 
-dec_pipe_crop_pack!(dec_pipe_10_crop, pack_stride);
-dec_pipe_crop_pack!(dec_pipe_10_crop_rem, pack_stride_rem);
+dec_pipe_crop_pack!(
+    dec_pipe_10_crop,
+    pack_stride,
+    g,
+    (g.hu, g.y_row_iters, g.y_row_pack),
+    (g.hh, g.c_row_iters, g.c_row_pack)
+);
+dec_pipe_crop_pack!(
+    dec_pipe_10_crop_rem,
+    xav_pack_10b_rem,
+    g,
+    (g.wu, g.hu),
+    (g.hw, g.hh)
+);
 
 #[inline]
-fn dec_pipe_8_crop(
-    ch: &Chunk,
-    data: &[u8],
-    raw_fsz: usize,
-    cc: &CropCalc,
-    fsz: usize,
-    pkg: &mut WorkPkg,
-) {
-    let len = ch.end - ch.start;
-    let mut src = data.as_ptr();
-    let mut dst = pkg.fit(len * fsz);
-    for _ in 0..len {
-        cc.crop(unsafe { from_raw_parts(src, raw_fsz) }, unsafe {
-            from_raw_parts_mut(dst, fsz)
-        });
-        src = unsafe { src.add(raw_fsz) };
-        dst = unsafe { dst.add(fsz) };
-    }
-    pkg.set(*ch, len, cc.new_w, cc.new_h);
-}
-
-#[inline]
-fn dec_pipe_raw_crop(
+fn dec_pipe_crop(
     ch: &Chunk,
     data: &[u8],
     raw_fsz: usize,

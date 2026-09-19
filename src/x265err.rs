@@ -1,6 +1,8 @@
 use crate::{
     error::Xerr,
-    paramerr::{auto_err, chk_frange, chk_range, chk_switch, err, name_of, off_err},
+    paramerr::{
+        auto_err, chk_deblock, chk_frange, chk_name, chk_range, chk_switch, err, name_of, off_err,
+    },
     util::{C, Y},
 };
 
@@ -145,6 +147,8 @@ const AUTO_SET: &[&str] = &[
     "pools",
     "numa-pools",
     "wpp",
+    "ctu",
+    "min-cu-size",
     "opt-qp-pps",
     "opt-ref-list-length-pps",
     "info",
@@ -203,8 +207,8 @@ const ME_NAMES: &[&str] = &[
     "dia", "hex", "umh", "star", "sea", "full", "0", "1", "2", "3", "4", "5",
 ];
 
-const DEBLOCK_HINT: &str = "deblock takes tC and beta offsets as one value, or tc:beta; -6 to 6";
-
+#[cold]
+#[inline(never)]
 fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
     if NOT_RELEVANT.contains(&name) {
         return Some(off_err(key));
@@ -226,8 +230,8 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
             key,
             format_args!(
                 "{Y}The b-pyramid reference structure makes random access efficient;\nxav encodes \
-                 offline only, there is none to gain by turning it off and it helps
-                 for internal truths to fix it"
+                 offline only, there is none to gain by turning it off and it helps for internal \
+                 truths to fix it"
             ),
         ),
         "copy-pic" => err(
@@ -256,28 +260,8 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
     })
 }
 
-fn chk_name(key: &str, name: &str, val: &str, names: &[&str], hint: &str) -> Result<(), Xerr> {
-    if names.contains(&val) {
-        return Ok(());
-    }
-    Err(err(key, format_args!("{Y}{name} must be one of {C}{hint}")))
-}
-
-fn chk_deblock(key: &str, val: &str) -> Result<(), Xerr> {
-    let mut n = 0;
-    for v in val.split([':', ',']) {
-        n += 1;
-        match v.parse::<i64>() {
-            Ok(o) if n <= 2 && (-6..=6).contains(&o) => {}
-            _ => return Err(err(key, format_args!("{Y}{DEBLOCK_HINT}"))),
-        }
-    }
-    Ok(())
-}
-
-fn chk_set(key: &str, name: &str, val: &str, set: &[i64]) -> Result<(), Xerr> {
-    let lo = set[0];
-    let hi = set[set.len() - 1];
+fn chk_set<const N: usize>(key: &str, name: &str, val: &str, set: &[i64; N]) -> Result<(), Xerr> {
+    let (lo, hi) = (set[0], set[N - 1]);
     if set.contains(&chk_range(key, name, val, lo, hi)?) {
         return Ok(());
     }
@@ -319,8 +303,6 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
         "qpmin" | "qpmax" => {
             chk_range(key, name, val, 0, 69)?;
         }
-        "ctu" => chk_set(key, name, val, &[16, 32, 64])?,
-        "min-cu-size" => chk_set(key, name, val, &[8, 16, 32])?,
         "max-tu-size" => chk_set(key, name, val, &[4, 8, 16, 32])?,
         "qg-size" => chk_set(key, name, val, &[8, 16, 32, 64])?,
         "tu-intra-depth" | "tu-inter-depth" => {
@@ -436,8 +418,6 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
 }
 
 pub fn val(params: &str) -> Result<(), Xerr> {
-    let mut ctu: i64 = 64;
-    let mut mincu: Option<(i64, &str)> = None;
     let mut iter = params.split_whitespace();
 
     while let Some(key) = iter.next() {
@@ -451,35 +431,7 @@ pub fn val(params: &str) -> Result<(), Xerr> {
             return Err(err(key, format_args!("{Y}missing value")));
         };
 
-        match name {
-            "ctu" => {
-                ctu = match val {
-                    "16" => 16,
-                    "32" => 32,
-                    "64" => 64,
-                    _ => {
-                        return Err(err(
-                            key,
-                            format_args!("{Y}ctu must be {C}16{Y}, {C}32 {Y}or {C}64"),
-                        ));
-                    }
-                };
-            }
-            "min-cu-size" => {
-                check_param(name, key, val)?;
-                mincu = Some((unsafe { val.parse().unwrap_unchecked() }, key));
-            }
-            _ => check_param(name, key, val)?,
-        }
-    }
-
-    if let Some((v, key)) = mincu
-        && v > ctu
-    {
-        return Err(err(
-            key,
-            format_args!("{Y}min-cu-size must not exceed ctu ({C}{ctu}{Y})"),
-        ));
+        check_param(name, key, val)?;
     }
 
     Ok(())

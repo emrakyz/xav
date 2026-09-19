@@ -250,17 +250,6 @@ unsafe extern "C" {
         p_buffer: *mut EbBufferHeaderType,
     ) -> i32;
 
-    // the drain owns these; only the tests calls them from here
-    #[cfg(test)]
-    pub fn svt_av1_enc_get_packet(
-        svt_enc_component: *mut EbComponentType,
-        p_buffer: *mut *mut EbBufferHeaderType,
-        pic_send_done: u8,
-    ) -> i32;
-
-    #[cfg(test)]
-    pub fn svt_av1_enc_release_out_buffer(p_buffer: *mut *mut EbBufferHeaderType);
-
     pub fn svt_av1_enc_deinit(svt_enc_component: *mut EbComponentType) -> i32;
 
     pub fn svt_av1_enc_deinit_handle(svt_enc_component: *mut EbComponentType) -> i32;

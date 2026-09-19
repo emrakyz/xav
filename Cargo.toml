@@ -10,12 +10,13 @@ keywords = ["av1", "av2", "vvc", "cvvdp", "video", "multimedia", "encoding", "qu
 categories = ["multimedia::video", "command-line-utilities"]
 
 [features]
-default = [ "vship","cuda","avm","vvenc","x265" ]
+default = [ "vship","cuda","avm","vvenc","x265","x264" ]
 vship = []
 cuda = []
 avm = []
 vvenc = []
 x265 = []
+x264 = []
 svt-essential = []
 
 [build-dependencies]

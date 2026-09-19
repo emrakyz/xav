@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 
 use crate::{
     encoder::Encoder::{self, Avm, SvtAv1, Vvenc, X264, X265},
-    nal_parse::{Bits, ParamSets, avc_high, rbsp, skip_hevc_ptl, skip_vvc_ptl},
+    nal_parse::{Bits, ParamSets, rbsp, skip_hevc_ptl, skip_vvc_ptl},
     util::assume_unreachable,
 };
 
@@ -17,8 +17,8 @@ pub fn nal_codec_private(encoder: Encoder, p: &ParamSets) -> Vec<u8> {
     }
 }
 
-// profile/compat/level are SPS bytes 1..4; the high-profile tail carries chroma + bit
-// depth (SPS only encodes for the high profiles)
+// profile/compat/level are SPS bytes 1..4; 10-bit = high profile
+// tail with chroma + bit depth always present
 #[must_use]
 pub fn build_avcc(p: &ParamSets) -> Vec<u8> {
     let sps = &p.rec.sps;
@@ -34,10 +34,8 @@ pub fn build_avcc(p: &ParamSets) -> Vec<u8> {
     c.push(1); // numPictureParameterSets
     c.extend_from_slice(&(pps.len() as u16).to_be_bytes());
     c.extend_from_slice(pps);
-    if avc_high(u32::from(profile)) {
-        let (chroma, bd_luma, bd_chroma) = avc_chroma_depth(sps);
-        c.extend_from_slice(&[0xFC | chroma, 0xF8 | bd_luma, 0xF8 | bd_chroma, 0]);
-    }
+    let (chroma, bd_luma, bd_chroma) = avc_chroma_depth(sps);
+    c.extend_from_slice(&[0xFC | chroma, 0xF8 | bd_luma, 0xF8 | bd_chroma, 0]);
     c
 }
 
@@ -47,17 +45,14 @@ fn avc_chroma_depth(sps: &[u8]) -> (u8, u8, u8) {
     let mut b = Bits::new(rbsp(sps, &mut buf));
     b.skip(32); // nal header + profile_idc + constraint flags + level_idc
     b.ue(); // seq_parameter_set_id
-    let chroma = b.ue();
-    if chroma == 3 {
-        b.skip(1); // separate_colour_plane_flag
-    }
+    let chroma = b.ue(); // 4:2:0 only, no separate planes
     let bd_luma = b.ue();
     let bd_chroma = b.ue();
     (chroma as u8, bd_luma as u8, bd_chroma as u8)
 }
 
-// The 12byte general PTL is the SPS own de-emulated bytes 3..15; chroma + bit depths follow
-// the sub-layer-variable PTL. min_spatial_segmentation/parallelism are 0 (single-slice, 0 tiles)
+// 12byte general PTL is the SPS own de-emulated bytes 3..15; chroma + bit depths follow
+// sub-layer-variable PTL. min_spatial_segmentation/parallelism are 0 (single-slice, 0 tiles)
 #[must_use]
 pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
     let mut buf = [0u8; 512];
@@ -71,10 +66,7 @@ pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
     let nesting = b.flag();
     skip_hevc_ptl(&mut b, max_sub);
     b.ue(); // sps_seq_parameter_set_id
-    let chroma = b.ue();
-    if chroma == 3 {
-        b.skip(1); // separate_colour_plane_flag
-    }
+    let chroma = b.ue(); // 4:2:0 only, no separate planes
     b.ue(); // pic_width_in_luma_samples
     b.ue(); // pic_height_in_luma_samples
     if b.flag() {
@@ -99,11 +91,10 @@ pub fn build_hvcc(p: &ParamSets) -> Vec<u8> {
     c.push((((max_sub + 1) as u8) << 3) | (u8::from(nesting) << 2) | 3);
     push_nal_arrays(
         &mut c,
-        !p.in_band,
         &[
-            (32, p.rec.vps.as_slice()),
-            (33, p.rec.sps.as_slice()),
-            (34, p.rec.pps.as_slice()),
+            (32, p.rec.vps.as_slice(), !p.varies[0]),
+            (33, p.rec.sps.as_slice(), !p.varies[1]),
+            (34, p.rec.pps.as_slice(), !p.varies[2]),
         ],
     );
     c
@@ -160,24 +151,22 @@ pub fn build_vvcc(p: &ParamSets) -> Vec<u8> {
     c.extend_from_slice(&[0x00, 0x00]); // avg_frame_rate = 0
     push_nal_arrays(
         &mut c,
-        !p.in_band,
         &[
-            (14, p.rec.vps.as_slice()),
-            (15, p.rec.sps.as_slice()),
-            (16, p.rec.pps.as_slice()),
+            (14, p.rec.vps.as_slice(), !p.varies[0]),
+            (15, p.rec.sps.as_slice(), !p.varies[1]),
+            (16, p.rec.pps.as_slice(), !p.varies[2]),
         ],
     );
     c
 }
 
-fn push_nal_arrays(c: &mut Vec<u8>, complete: bool, arrays: &[(u8, &[u8])]) {
-    let done = u8::from(complete) << 7;
+fn push_nal_arrays(c: &mut Vec<u8>, arrays: &[(u8, &[u8], bool)]) {
     c.push(arrays.iter().filter(|e| !e.1.is_empty()).count() as u8);
-    for &(t, nal) in arrays {
+    for &(t, nal, complete) in arrays {
         if nal.is_empty() {
             continue;
         }
-        c.push(done | t); // array_completeness | NAL_unit_type
+        c.push((u8::from(complete) << 7) | t); // array_completeness | NAL_unit_type
         c.extend_from_slice(&1u16.to_be_bytes()); // numNalus
         c.extend_from_slice(&(nal.len() as u16).to_be_bytes());
         c.extend_from_slice(nal);

@@ -9,7 +9,11 @@ use crate::{
     byte_range::ByteRange,
     error::Xerr,
     ffms::VidInf,
-    mkv::mux::pts_table,
+    mkv::{
+        ebml::vint_size as vint_len,
+        element::{id_size as id_len, uint_size as uint_len},
+        mux::pts_table,
+    },
     obu_parse::parse,
     opus::read,
     path::{Path, PathBuf},
@@ -42,11 +46,6 @@ const EBML_HEADER: &[u8] = &[
 ];
 
 const CLUSTER_SPAN: u64 = 0x7FFF; // i16 block-rel ceiling (ms @ default 1ms scale)
-
-use crate::mkv::{
-    ebml::vint_size as vint_len,
-    element::{id_size as id_len, uint_size as uint_len},
-};
 
 const fn elem_len(id_bytes: usize, content: usize) -> usize {
     id_bytes + vint_len(content as u64) + content

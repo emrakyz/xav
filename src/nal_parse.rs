@@ -23,34 +23,45 @@ impl Sets {
 
 #[derive(Default)]
 pub struct ParamSets {
-    pub rec: Sets, // 1st of each kind; what codec_priv record carries
-    act: Sets,     // what stream has active now
-    pub in_band: bool,
+    pub rec: Sets,             // 1st of each kind; what codec_priv record carries
+    pub varies: [bool; 3],     // per kind: some chunk differs from rec; VARY only
+    pub first: [ByteRange; 3], // chunk's 1st VPS/SPS/PPS, held back; VARY only
 }
 
-// ranges recovered from lengths before/after the call
 pub struct NalSink<'a> {
     pub arena: &'a mut Vec<ByteRange>, // offset = NAL count, len = MKV block octets
-    pub nal_arena: &'a mut Vec<ByteRange>, // NAL byte extents into the chunk map
-    pub displays: &'a mut Vec<u32>,    // densified to 0..n display ranks chunk-based
-    pub params: &'a mut ParamSets,     // VPS/SPS/PPS, filled from first chunk carrying them
-    pub order: &'a mut Vec<usize>,     // rank scratch, reused
+    pub nal_arena: &'a mut Vec<ByteRange>, // NAL byte extents into chunk map
+    pub displays: &'a mut Vec<u32>,    // densified to 0..n display ranks
+    pub params: &'a mut ParamSets,     // VPS/SPS/PPS
+    pub order: &'a mut Vec<usize>,     // rank scratch
 }
 
-pub fn parse_h264(raw: &[u8], out: &mut NalSink) {
-    run::<H264>(raw, out);
+// parameter sets may differ between chunks (tq, zones)
+// x264 leads a chunk with its SPS; lossless has no B-frames
+// x264 picks poc type 2; decode order; no slice is read
+pub fn parse_h264<const VARY: bool>(raw: &[u8], out: &mut NalSink) {
+    let start = first_nal(raw);
+    match H264::from_sps(unsafe { raw.get_unchecked(start..) }) {
+        Some(c) => run::<H264, VARY>(c, raw, start, out),
+        None => run::<H264Dec, VARY>(H264Dec, raw, start, out),
+    }
 }
 
-pub fn parse_h265(raw: &[u8], out: &mut NalSink) {
-    run::<H265>(raw, out);
+pub fn parse_h265<const VARY: bool>(raw: &[u8], out: &mut NalSink) {
+    run::<H265, VARY>(H265::default(), raw, first_nal(raw), out);
 }
 
-pub fn parse_h266(raw: &[u8], out: &mut NalSink) {
-    run::<H266>(raw, out);
+pub fn parse_h266<const VARY: bool>(raw: &[u8], out: &mut NalSink) {
+    run::<H266, VARY>(H266::default(), raw, first_nal(raw), out);
 }
 
-// strip emulation-prevention bytes into `buf`; the zero tail past the data backs
-// the word reader's 8-byte loads (every buffer is sized >= header + 8)
+// offset of the first NAL; len when there is none
+fn first_nal(raw: &[u8]) -> usize {
+    find_start_code(raw, 0).map_or(raw.len(), |sc| sc + 3)
+}
+
+// strip emulation-prevention bytes into `buf`; zero tail past data backs
+// word reader's 8byte loads (every buffer = sized >= header + 8)
 pub fn rbsp<'a>(nal: &[u8], buf: &'a mut [u8]) -> &'a [u8] {
     let mut n = 0;
     let mut z = 0u32;
@@ -83,8 +94,8 @@ impl<'a> Bits<'a> {
         self.pos += n as usize;
     }
 
-    // 8 bytes at the cursor, MSB-first, with the next unread bit at bit 63; every
-    // buff is sized >= header + 8, so pos>>3 + 8 <= len holds by constr
+    // 8 bytes at cursor, MSB-first, with next unread bit at bit 63; every
+    // buff is sized >= header + 8, so pos>>3 + 8 <= len auto-holds
     const fn peek(&self) -> u64 {
         let w = u64::from_be(unsafe {
             self.d
@@ -158,9 +169,9 @@ impl Poc {
 
 #[derive(Clone, Copy)]
 enum Param {
-    Vps,
-    Sps,
-    Pps,
+    Vps = 0,
+    Sps = 1,
+    Pps = 2,
 }
 
 enum Class {
@@ -170,81 +181,55 @@ enum Class {
     Vcl(Option<i64>), // coded slice; POC, or None -> decode order
 }
 
-trait Nal: Default {
+trait Nal {
     fn classify(&mut self, nal: &[u8]) -> Class;
 }
 
-#[derive(Default)]
+// poc type 0 (B-frames): pic_order_cnt_lsb orders the pictures
 struct H264 {
     poc: Poc,
     log2_frame_num: u32,
     log2_poc: u32,
-    frame_mbs_only: bool,
-    separate_colour: bool,
 }
 
-pub const fn avc_high(profile: u32) -> bool {
-    matches!(
-        profile,
-        100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
-    )
-}
-
+// 10b 420, prgrssv, scaling lists only in PPS: high profile SPS
+// with every branch syntax allows decided; None is poc type 2
 impl H264 {
-    fn parse_sps(&mut self, nal: &[u8]) {
+    fn from_sps(nal: &[u8]) -> Option<Self> {
         let mut buf = [0u8; 64];
         let mut b = Bits::new(rbsp(nal, &mut buf));
-        b.skip(8); // nal header
-        let profile = b.u(8);
-        b.skip(16); // constraint flags + level_idc
+        b.skip(32); // nal header + profile_idc + constraint flags + level_idc
         b.ue(); // seq_parameter_set_id
-        if avc_high(profile) {
-            if b.ue() == 3 {
-                self.separate_colour = b.flag(); // chroma_format_idc == 3
-            }
-            b.ue(); // bit_depth_luma_minus8
-            b.ue(); // bit_depth_chroma_minus8
-            b.skip(1); // qpprime_y_zero_transform_bypass_flag
-            if b.flag() {
-                return; // seq_scaling_matrix_present (not in config) -> decode order
-            }
-        }
-        self.log2_frame_num = b.ue() + 4;
+        b.ue(); // chroma_format_idc
+        b.ue(); // bit_depth_luma_minus8
+        b.ue(); // bit_depth_chroma_minus8
+        b.skip(2); // qpprime_y_zero_transform_bypass + seq_scaling_matrix_present
+        let log2_frame_num = b.ue() + 4;
         if b.ue() != 0 {
-            return; // poc_type != 0: no lsb reorder -> decode order
+            return None; // pic_order_cnt_type
         }
-        self.log2_poc = b.ue() + 4;
-        b.ue(); // max_num_ref_frames
-        b.skip(1); // gaps_in_frame_num_value_allowed_flag
-        b.ue(); // pic_width_in_mbs_minus1
-        b.ue(); // pic_height_in_map_units_minus1
-        self.frame_mbs_only = b.flag();
+        Some(Self {
+            poc: Poc::default(),
+            log2_frame_num,
+            log2_poc: b.ue() + 4,
+        })
     }
 
-    fn slice_poc(&mut self, nal: &[u8], b0: u8) -> Option<i64> {
-        if self.log2_poc == 0 {
-            return None; // poc_type != 0 -> decode order
-        }
+    fn slice_poc(&mut self, nal: &[u8], b0: u8) -> i64 {
         let mut buf = [0u8; 32];
         let mut b = Bits::new(rbsp(nal, &mut buf));
         b.skip(8); // nal header
         b.ue(); // first_mb_in_slice
         b.ue(); // slice_type
         b.ue(); // pic_parameter_set_id
-        if self.separate_colour {
-            b.skip(2); // colour_plane_id
-        }
         b.skip(self.log2_frame_num); // frame_num
-        if !self.frame_mbs_only && b.flag() {
-            b.skip(1); // bottom_field_flag
-        }
         if (b0 & 0x1F) == 5 {
             self.poc.reset(0); // IDR
-            return Some(0);
+            return 0;
         }
         let lsb = i64::from(b.u(self.log2_poc)); // pic_order_cnt_lsb
         let ref_idc = (b0 >> 5) & 3;
-        Some(self.poc.full(lsb, self.log2_poc, ref_idc != 0))
+        self.poc.full(lsb, self.log2_poc, ref_idc != 0)
     }
 }
 
@@ -252,12 +237,23 @@ impl Nal for H264 {
     fn classify(&mut self, nal: &[u8]) -> Class {
         let b0 = unsafe { *nal.get_unchecked(0) }; // nal non-empty (framing)
         match b0 & 0x1F {
-            7 => {
-                self.parse_sps(nal);
-                Class::Param(Param::Sps)
-            }
+            7 => Class::Param(Param::Sps),
             8 => Class::Param(Param::Pps),
-            1 | 5 => Class::Vcl(self.slice_poc(nal, b0)),
+            1 | 5 => Class::Vcl(Some(self.slice_poc(nal, b0))),
+            _ => Class::Drop,
+        }
+    }
+}
+
+// poc type 2; lossless; no B-frames; output order = decode order
+struct H264Dec;
+
+impl Nal for H264Dec {
+    fn classify(&mut self, nal: &[u8]) -> Class {
+        match unsafe { *nal.get_unchecked(0) } & 0x1F {
+            7 => Class::Param(Param::Sps),
+            8 => Class::Param(Param::Pps),
+            1 | 5 => Class::Vcl(None),
             _ => Class::Drop,
         }
     }
@@ -267,7 +263,6 @@ impl Nal for H264 {
 struct H265 {
     poc: Poc,
     log2_poc: u32,
-    separate_colour: bool,
     num_extra: u32,
     output_flag_present: bool,
 }
@@ -308,9 +303,7 @@ impl H265 {
         b.skip(1); // sps_temporal_id_nesting_flag
         skip_hevc_ptl(&mut b, max_sub);
         b.ue(); // sps_seq_parameter_set_id
-        if b.ue() == 3 {
-            self.separate_colour = b.flag();
-        }
+        b.ue(); // chroma_format_idc; 4:2:0 only, no separate planes
         b.ue(); // pic_width_in_luma_samples
         b.ue(); // pic_height_in_luma_samples
         if b.flag() {
@@ -354,9 +347,6 @@ impl H265 {
         b.ue(); // slice_type
         if self.output_flag_present {
             b.skip(1); // pic_output_flag
-        }
-        if self.separate_colour {
-            b.skip(2); // colour_plane_id
         }
         let lsb = i64::from(b.u(self.log2_poc)); // slice_pic_order_cnt_lsb
         if (16..=18).contains(&t) || t == 21 {
@@ -522,8 +512,6 @@ struct Emit<'a, C> {
 }
 
 impl<C: Nal> Emit<'_, C> {
-    // record a NAL extent in the src and grow this access unit block size by 4
-    // length prefix written at mux time + the nal length
     fn add(&mut self, nal: &[u8], off: usize) {
         self.nal_arena.push(ByteRange {
             offset: off,
@@ -532,25 +520,34 @@ impl<C: Nal> Emit<'_, C> {
         self.size += 4 + nal.len();
     }
 
-    fn push(&mut self, nal: &[u8], off: usize) {
+    fn push<const VARY: bool>(&mut self, nal: &[u8], off: usize) {
         match self.codec.classify(nal) {
             Class::Drop => {}
-            // a chunk agreeing with rec inherit the set before
             Class::Param(kind) => {
-                let act = self.params.act.slot(kind);
-                if act.as_slice() == nal {
+                let rec = self.params.rec.slot(kind);
+                if !VARY {
+                    if rec.is_empty() {
+                        rec.extend_from_slice(nal);
+                    }
                     return;
                 }
-                cold_path();
-                act.clear();
-                act.extend_from_slice(nal);
-                let rec = self.params.rec.slot(kind);
+                let k = kind as usize;
+                let f = unsafe { self.params.first.get_unchecked_mut(k) };
+                if f.len != 0 {
+                    cold_path();
+                    unsafe { *self.params.varies.get_unchecked_mut(k) = true };
+                    self.add(nal, off);
+                    return;
+                }
+                *f = ByteRange {
+                    offset: off,
+                    len: nal.len(),
+                };
                 if rec.is_empty() {
                     rec.extend_from_slice(nal);
-                    return;
+                } else if rec.as_slice() != nal {
+                    unsafe { *self.params.varies.get_unchecked_mut(k) = true };
                 }
-                self.params.in_band = true;
-                self.add(nal, off);
             }
             Class::Prefix => self.add(nal, off),
             Class::Vcl(poc) => {
@@ -580,11 +577,14 @@ impl<C: Nal> Emit<'_, C> {
     }
 }
 
-fn run<C: Nal>(raw: &[u8], out: &mut NalSink) {
+fn run<C: Nal, const VARY: bool>(codec: C, raw: &[u8], start: usize, out: &mut NalSink) {
+    if VARY {
+        out.params.first = [ByteRange::default(); 3];
+    }
     let frame0 = out.arena.len();
     let nal0 = out.nal_arena.len();
     let mut e = Emit {
-        codec: C::default(),
+        codec,
         arena: &mut *out.arena,
         nal_arena: &mut *out.nal_arena,
         displays: &mut *out.displays,
@@ -596,24 +596,17 @@ fn run<C: Nal>(raw: &[u8], out: &mut NalSink) {
     };
 
     let len = raw.len();
-    let mut nal_start = usize::MAX;
-    let mut pos = 0;
+    let mut pos = start;
     while let Some(sc) = find_start_code(raw, pos) {
-        if nal_start != usize::MAX {
-            let nal_end = if sc > 0 && unsafe { *raw.get_unchecked(sc - 1) } == 0 {
-                sc - 1
-            } else {
-                sc
-            };
-            if nal_end > nal_start {
-                e.push(unsafe { raw.get_unchecked(nal_start..nal_end) }, nal_start); // nal_start < nal_end <= len
-            }
+        // 4byte start code's leading zero is no NAL byte; sc >= start >= 3
+        let end = sc - usize::from(unsafe { *raw.get_unchecked(sc - 1) } == 0);
+        if end > pos {
+            e.push::<VARY>(unsafe { raw.get_unchecked(pos..end) }, pos); // pos < end <= len
         }
-        nal_start = sc + 3;
         pos = sc + 3;
     }
-    if nal_start != usize::MAX && len > nal_start {
-        e.push(unsafe { raw.get_unchecked(nal_start..len) }, nal_start);
+    if len > pos {
+        e.push::<VARY>(unsafe { raw.get_unchecked(pos..len) }, pos);
     }
 
     e.rank();

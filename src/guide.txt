@@ -870,11 +870,12 @@
   {P} {W}If a scene's target needs a CRF outside [min,max], it can't go there & it pins to nearest edge
     {W}& ships closest achievable quality
   {P} {C}Search granularity is per-encoder: {W}SVT-AV1 & X26* encoders can go by {B}0.25 {W}CRF increments
-    {W}VVENC only supports integer CRF jumps from {B}0 {W}to {B}63{W}; can never use fractions: {B}25.75
+    {W}VVENC & AVM only support integer CRF jumps; can never use fractions: {B}25.75
+    {C}-f {W}bounds must land on that grid; the search only ever draws there & rejects anything off it
   {P} {W}{C}-f {W}is global, not per-scene: Every scene searches same [min,max] but each converges to its own CRF
   {P} {W}If doing a scientific experiment; should always use widest CRF range possible
     {W}& set a very narrow target range with {C}-t{W}; so maximum precision is provided
-  {P} {W}Default value is {B}12-48
+  {P} {W}Default value is {B}8-48
 
 {P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
 {P}    ┃ {Y}Example: {G}-f 12-48  {P}# {B}Below CRF 12 & above CRF 48 will never be used                                                  {P}┃
@@ -1095,9 +1096,9 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
-{P}┃ {C}--input-depth {G}10          {P}# {B}10bit input; xav writes the field, x265 has no such option                                   {P}┃
-{P}┃ {C}--profile {G}main10          {P}# {B}Implicit: the linked x265 is a 10bit only build                                              {P}┃
-{P}┃ {C}--input-csp {G}1             {P}# {B}Implicit: YUV 4:2:0 is x265's default and the only input xav feeds                           {P}┃
+{P}┃ {C}--input-depth {G}10          {P}# {B}10bit input                                                                                  {P}┃
+{P}┃ {C}--profile {G}main10          {P}# {B}Only eligible profile for xav                                                                {P}┃
+{P}┃ {C}--input-csp {G}1             {P}# {B}YUV 4:2:0 as the only eligible format                                                        {P}┃
 {P}┃ {C}--log-level {G}none          {P}# {B}x265's own console output; errors and warnings still reach xav                               {P}┃
 {P}┃ {C}--gop-lookahead {G}0         {P}# {B}Useless for XAV                                                                              {P}┃
 {P}┃ {C}--rc-lookahead {G}300        {P}# {B}Whole GOP in the window; a chunk is never over 300 frames                                    {P}┃
@@ -1108,17 +1109,19 @@
 {P}┃ {C}--lookahead-slices {G}0      {P}# {B}Increases quality/efficiency (we parallelize externally)                                     {P}┃
 {P}┃ {C}--wpp {G}0                   {P}# {B}Increases quality/efficiency (we parallelize externally)                                     {P}┃
 {P}┃ {C}--slices {G}1                {P}# {B}One slice per picture; slicing only costs efficiency here                                    {P}┃
-{P}┃ {C}--pools {G}none              {P}# {B}Implicit: the worker pool is compiled out, x265 starts no thread                             {P}┃
-{P}┃ {C}--opt-qp-pps {G}1            {P}# {B}Implicit: the PPS init QP is the CRF anchor, not the spec's 26                               {P}┃
-{P}┃ {C}--opt-ref-list-length-pps {G}1 {P}# {B}Implicit: the PPS carries this GOP's own L0/L1 lengths, not 1/1                            {P}┃
+{P}┃ {C}--ctu {G}64                  {P}# {B}largest CTU; ultrafast & superfast shrink it for speed                                       {P}┃
+{P}┃ {C}--min-cu-size {G}8           {P}# {B}smallest CU; ultrafast & superfast raise it for speed                                        {P}┃
+{P}┃ {C}--pools {G}none              {P}# {B}worker pool is compiled out, x265 starts no thread                                           {P}┃
+{P}┃ {C}--opt-qp-pps {G}1            {P}# {B}PPS init QP is the CRF anchor                                                                {P}┃
+{P}┃ {C}--opt-ref-list-length-pps {G}1 {P}# {B}PPS carries this GOP's own L0/L1 lengths, not 1/1                                          {P}┃
 {P}┃ {C}--info {G}0                  {P}# {B}Useless for XAV                                                                              {P}┃
 {P}┃ {C}--vui-hrd-info {G}0          {P}# {B}Useless for XAV                                                                              {P}┃
 {P}┃ {C}--vui-timing-info {G}0       {P}# {B}Useless for XAV                                                                              {P}┃
 {P}┃ {C}--fps                     {P}# {B}Auto-parsed                                                                                  {P}┃
 {P}┃ {C}--input-res               {P}# {B}Auto-parsed                                                                                  {P}┃
-{P}┃ {C}--frames                  {P}# {B}Auto-parsed; xav writes the field per chunk                                                  {P}┃
+{P}┃ {C}--frames                  {P}# {B}Auto-parsed                                                                                  {P}┃
 {P}┃ {C}--sar                     {P}# {B}Auto-parsed                                                                                  {P}┃
-{P}┃ {C}--asm {G}avx512              {P}# {B}Auto-parsed if you have it available                                                         {P}┃
+{P}┃ {C}--asm {G}avx512              {P}# {B}Highest SIMD compiled-in                                                                     {P}┃
 {P}┃ {C}--colorprim {G}<>            {P}# {B}Auto-parsed                                                                                  {P}┃
 {P}┃ {C}--transfer {G}<>             {P}# {B}Auto-parsed                                                                                  {P}┃
 {P}┃ {C}--colormatrix {G}<>          {P}# {B}Auto-parsed                                                                                  {P}┃
@@ -1133,36 +1136,26 @@
 {P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
-{P}┃ {C}--input-csp {G}i420            {P}# {B}YUV 4:2:0 input                                                                            {P}┃
-{P}┃ {C}--output-csp {G}i420           {P}# {B}YUV 4:2:0 output                                                                           {P}┃
-{P}┃ {C}--input-depth {G}10            {P}# {B}10bit input                                                                                {P}┃
-{P}┃ {C}--output-depth {G}10           {P}# {B}10bit output                                                                               {P}┃
-{P}┃ {C}--profile {G}high10            {P}# {B}10bit profile                                                                              {P}┃
-{P}┃ {C}--keyint {G}infinite           {P}# {B}Keyframe insertion disabled                                                                {P}┃
-{P}┃ {C}--min-keyint {G}9999           {P}# {B}Keyframe insertion disabled                                                                {P}┃
-{P}┃ {C}--no-scenecut               {P}# {B}Keyframe insertion disabled                                                                {P}┃
-{P}┃ {C}--b-adapt {G}2                 {P}# {B}Adaptive b-frame decisions set to optimal                                                  {P}┃
-{P}┃ {C}--muxer {G}raw                 {P}# {B}We process raw i/o                                                                         {P}┃
-{P}┃ {C}--demuxer {G}raw               {P}# {B}We process raw i/o                                                                         {P}┃
-{P}┃ {C}--threads {G}1                 {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--lookahead-threads {G}1       {P}# {B}Increases quality/efficiency (we parallelize externally)                                   {P}┃
-{P}┃ {C}--non-deterministic         {P}# {B}With internal threading disabled; it's always deterministic anyways                        {P}┃
-{P}┃ {C}--nal-hrd {G}none              {P}# {B}Useless for XAV                                                                            {P}┃
-{P}┃ {C}--force-cfr                 {P}# {B}We strictly encode CFR (constant frame rate)                                               {P}┃
-{P}┃ {C}--rc-lookahead {G}250          {P}# {B}Max lookahead; partially free for XAV due to having full chunk ready                       {P}┃
-{P}┃ {C}--fps {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--input-res {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--frames {B}<>                 {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--sar {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--input-range {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--asm {G}avx512                {P}# {B}Auto-parsed if you have it available                                                       {P}┃
-{P}┃ {C}--colorprim {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--transfer {B}<>               {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--colormatrix {B}<>            {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--range {B}<>                  {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--chromaloc {B}<>              {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--mastering-display {B}<>      {P}# {B}Auto-parsed                                                                                {P}┃
-{P}┃ {C}--cll {B}<>                    {P}# {B}Auto-parsed                                                                                {P}┃
+{P}┃ {C}--keyint {G}infinite            {P}# {B}Keyframe insertion disabled                                                               {P}┃
+{P}┃ {C}--min-keyint {G}9999            {P}# {B}Keyframe insertion disabled                                                               {P}┃
+{P}┃ {C}--scenecut {G}0                 {P}# {B}Keyframe insertion disabled                                                               {P}┃
+{P}┃ {C}--bframes {G}16                 {P}# {B}For XAV internals (also highest efficiency)                                               {P}┃
+{P}┃ {C}--b-adapt {G}2                  {P}# {B}Adaptive b-frame decisions set to optimal                                                 {P}┃
+{P}┃ {C}--qp {G}0                       {P}# {B}Lossless; --crf 0 becomes this. x264 signals High 4:4:4 Predictive, still yuv420p10le     {P}┃
+{P}┃ {C}--threads {G}1                  {P}# {B}Increases quality/efficiency (we parallelize externally)                                  {P}┃
+{P}┃ {C}--deterministic {G}0            {P}# {B}Frees the lookahead to search every buffered frame                                        {P}┃
+{P}┃ {C}--nal-hrd {G}none               {P}# {B}Useless for XAV                                                                           {P}┃
+{P}┃ {C}--force-cfr {G}1                {P}# {B}We strictly encode CFR (constant frame rate)                                              {P}┃
+{P}┃ {C}--rc-lookahead {G}300           {P}# {B}Max lookahead; partially free for XAV due to having full chunk ready                      {P}┃
+{P}┃ {C}--fps {G}<>                     {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--sar {G}<>                     {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--colorprim {G}<>               {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--transfer {G}<>                {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--colormatrix {G}<>             {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--fullrange {G}<>               {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--chromaloc {G}<>               {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--mastering-display {G}<>       {P}# {B}Auto-parsed                                                                               {P}┃
+{P}┃ {C}--cll {G}<>                     {P}# {B}Auto-parsed                                                                               {P}┃
 {P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
 

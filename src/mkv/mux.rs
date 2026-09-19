@@ -35,7 +35,7 @@ pub fn pts_table(frames: usize, fps_num: u32, fps_den: u32) -> Vec<u64> {
     let num = u64::from(fps_num);
     let step = u64::from(fps_den) * 1000;
     let (ms_step, rem_step) = (step / num, step % num);
-    let (mut ms, mut rem) = (num / 2 / num, num / 2 % num);
+    let (mut ms, mut rem) = (0, num / 2);
     let mut tab = Vec::with_capacity(frames + 1);
     for _ in 0..=frames {
         tab.push(ms);

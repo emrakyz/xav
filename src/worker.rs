@@ -103,7 +103,10 @@ impl WorkPkg {
     }
 
     #[inline]
-    #[cfg_attr(not(feature = "vship"), allow(clippy::missing_const_for_fn))]
+    #[cfg_attr(
+        not(feature = "vship"),
+        expect(clippy::missing_const_for_fn, reason = "const only without vship")
+    )]
     pub fn set(&mut self, chnk: Chunk, frame_cnt: usize, width: u32, height: u32) {
         self.chnk = chnk;
         self.frame_cnt = frame_cnt;
@@ -118,10 +121,7 @@ impl WorkPkg {
 
     // decode writes every byte before anything reads
     #[inline]
-    #[allow(clippy::uninit_vec)]
     pub fn fit(&mut self, n: usize) -> *mut u8 {
-        self.yuv.clear();
-        self.yuv.reserve(n);
         unsafe { self.yuv.set_len(n) };
         self.yuv.as_mut_ptr()
     }
@@ -150,7 +150,7 @@ impl PkgPool {
     pub fn new(n: usize, cap: usize) -> Self {
         let mut slots = Vec::with_capacity(n);
         for _ in 0..n {
-            let mut p = Self::empty_pkg();
+            let mut p = WorkPkg::empty();
             p.yuv.reserve_exact(cap);
             slots.push(p);
         }
@@ -169,10 +169,6 @@ impl PkgPool {
             free: Box::leak(free.into_boxed_slice()).as_ptr(),
             words,
         }
-    }
-
-    const fn empty_pkg() -> WorkPkg {
-        WorkPkg::empty()
     }
 
     // permit is already held; free slot exists or 1 release away

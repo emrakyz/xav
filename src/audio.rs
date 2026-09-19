@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::{
     hint::cold_path,
     iter::repeat_with,
-    mem::take,
+    mem::{MaybeUninit, take},
     ptr::copy_nonoverlapping,
     sync::atomic::{
         AtomicBool, AtomicUsize,
@@ -148,20 +148,17 @@ pub fn frame_samp(frame: usize, fps_num: u32, fps_den: u32, rate: u32) -> i64 {
 
 #[inline]
 fn reord_n<const N: usize>(buf: &mut [f32], num_samples: usize, map: [usize; N]) {
-    if buf.len() < num_samples * N {
-        cold_path();
-        return;
-    }
     let mut p = buf.as_mut_ptr();
     for _ in 0..num_samples {
-        let mut tmp = [0.0f32; N];
+        let mut tmp = MaybeUninit::<[f32; N]>::uninit();
+        let t = tmp.as_mut_ptr().cast::<f32>();
         let mut j = 0;
         while j < N {
-            tmp[j] = unsafe { *p.add(map[j]) };
+            unsafe { t.add(j).write(*p.add(map[j])) };
             j += 1;
         }
         unsafe {
-            copy_nonoverlapping(tmp.as_ptr(), p, N);
+            copy_nonoverlapping(t, p, N);
             p = p.add(N);
         }
     }
@@ -263,18 +260,18 @@ fn par_decode(
                         if u >= nreg || failed.load(Relaxed) {
                             break;
                         }
-                        let (s0, s1, isf, isl) = regions[u];
-                        // downmix fills every float; reserve keeps set_len in bounds
+                        let (s0, s1, isf, isl) = unsafe { *regions.get_unchecked(u) };
+                        // reserve keeps set_len in bounds
                         let mut local: Vec<f32> = Vec::with_capacity((s1 - s0) as usize * out_ch);
-                        let bpos = dec.decode_range(s0, s1, isf, isl, |chnk: &mut [f32]| {
-                            let n = chnk.len() / ch;
+                        let bpos = dec.decode_range(s0, s1, isf, isl, |chnk: &mut [f32], n| {
+                            let m = n * out_ch;
                             let off = local.len();
-                            #[allow(clippy::uninit_vec)]
+                            #[expect(clippy::uninit_vec, reason = "downmix fills every float")]
                             {
-                                local.reserve(n * out_ch);
-                                unsafe { local.set_len(off + n * out_ch) };
+                                local.reserve(m);
+                                unsafe { local.set_len(off + m) };
                             }
-                            downmix(chnk, &mut local[off..], ch, n);
+                            downmix(chnk, unsafe { local.get_unchecked_mut(off..) }, ch, n);
                             Ok(())
                         })?;
                         done.fetch_add(local.len() / out_ch, Relaxed);
@@ -378,11 +375,10 @@ fn fused_encode(
                             }
                             sleep(Duration::from_micros(100));
                         }
-                        let (ts, te, last, rl) = units[u];
+                        let (ts, te, last, rl) = unsafe { *units.get_unchecked(u) };
                         let mut pcm: Vec<f32> = Vec::with_capacity((te - ts) as usize * ch);
                         let bpos =
-                            dec.decode_range(ts, te, rl > 0, last, |chnk: &mut [f32]| {
-                                let n = chnk.len() / ch;
+                            dec.decode_range(ts, te, rl > 0, last, |chnk: &mut [f32], n| {
                                 if ch > 2 {
                                     reord_surround(chnk, ch, n);
                                 }
@@ -395,7 +391,7 @@ fn fused_encode(
                             0
                         };
                         unsafe { *(base as *mut (Vec<f32>, usize)).add(u) = (pcm, drop_front) };
-                        ready[u].store(true, Release);
+                        unsafe { ready.get_unchecked(u) }.store(true, Release);
                     }
                     Ok(())
                 })();
@@ -416,7 +412,7 @@ fn fused_encode(
         let mut buf: Vec<f32> = Vec::with_capacity((seg + PREROLL + POSTROLL) * cf);
         let enc_res = (|| -> Result<(), Xerr> {
             for u in 0..nunits {
-                while !ready[u].load(Acquire) {
+                while !unsafe { ready.get_unchecked(u) }.load(Acquire) {
                     if failed.load(Relaxed) {
                         return Ok(());
                     }
@@ -424,8 +420,9 @@ fn fused_encode(
                 }
                 let (pcm, drop_front) =
                     take(unsafe { &mut *(base as *mut (Vec<f32>, usize)).add(u) });
-                if units[u].3 > 0 {
-                    remaining = units[u].3;
+                let range_len = unsafe { units.get_unchecked(u) }.3;
+                if range_len > 0 {
+                    remaining = range_len;
                 }
                 let emit = (pcm.len() / ch - drop_front).min(remaining);
                 buf.extend_from_slice(&pcm[drop_front * ch..(drop_front + emit) * ch]);
@@ -435,14 +432,14 @@ fn fused_encode(
                 while buf.len() >= (enc_off + seg + POSTROLL) * cf {
                     w.write_all(&par_encode_seg(&buf, enc_off, seg, ch, brate, first)?)?;
                     first = false;
-                    buf.drain(..(enc_off + seg - PREROLL) * FRAME * ch);
+                    buf.drain(..(enc_off + seg - PREROLL) * cf);
                     enc_off = PREROLL;
                     progs.up_au(done.min(total), total, progs_line, 2, tid);
                 }
             }
             let bframes = buf.len().div_ceil(cf);
             if bframes > enc_off {
-                buf.resize(bframes * FRAME * ch, 0.0);
+                buf.resize(bframes * cf, 0.0);
                 w.write_all(&par_encode_seg(
                     &buf,
                     enc_off,

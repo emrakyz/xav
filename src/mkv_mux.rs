@@ -156,6 +156,7 @@ pub struct Aux<'a> {
     pub subs: Vec<Stream>,
     pub chapters: Vec<Chapter>,
     pub cvvdp: Option<(&'a str, &'a str)>,
+    pub vary: bool, // parameter sets may differ between chunks (tq/zones)
 }
 
 pub fn mux_mkv(
@@ -173,6 +174,7 @@ pub fn mux_mkv(
         subs,
         chapters,
         cvvdp,
+        vary,
     } = aux;
     let is_nal = matches!(encoder, X264 | X265 | Vvenc);
     let Prep {
@@ -186,7 +188,13 @@ pub fn mux_mkv(
     } = match encoder {
         #[cfg(feature = "avm")]
         Avm => prep_av2(paths, inf)?,
-        _ if is_nal => prep_nal(paths, inf, encoder)?,
+        _ if is_nal => {
+            if vary {
+                prep_nal::<true>(paths, inf, encoder)?
+            } else {
+                prep_nal::<false>(paths, inf, encoder)?
+            }
+        }
         _ => prep_av1(paths, inf)?,
     };
 
@@ -470,7 +478,11 @@ fn prep_av2(paths: &[PathBuf], inf: &VidInf) -> Result<Prep, Xerr> {
     })
 }
 
-fn prep_nal(paths: &[PathBuf], inf: &VidInf, encoder: Encoder) -> Result<Prep, Xerr> {
+fn prep_nal<const VARY: bool>(
+    paths: &[PathBuf],
+    inf: &VidInf,
+    encoder: Encoder,
+) -> Result<Prep, Xerr> {
     let mut maps = Vec::with_capacity(paths.len());
     let mut arena = Vec::with_capacity(inf.frames);
     let mut ranges = Vec::with_capacity(paths.len());
@@ -479,11 +491,15 @@ fn prep_nal(paths: &[PathBuf], inf: &VidInf, encoder: Encoder) -> Result<Prep, X
     let mut displays = Vec::with_capacity(inf.frames);
     let mut params = ParamSets::default();
     let mut order = Vec::new();
-    let mut codec_private = Vec::new();
+    let mut psets: Vec<[ByteRange; 3]> = if VARY {
+        Vec::with_capacity(paths.len())
+    } else {
+        Vec::new()
+    };
     let parse: fn(&[u8], &mut NalSink) = match encoder {
-        X264 => parse_h264,
-        X265 => parse_h265,
-        _ => parse_h266,
+        X264 => parse_h264::<VARY>,
+        X265 => parse_h265::<VARY>,
+        _ => parse_h266::<VARY>,
     };
     for (ci, src) in paths.iter().enumerate() {
         let raw = Mmap::open(src)?;
@@ -499,13 +515,27 @@ fn prep_nal(paths: &[PathBuf], inf: &VidInf, encoder: Encoder) -> Result<Prep, X
         parse(raw.slice(), &mut sink);
         if ci == 0 {
             cold_path();
-            codec_private = nal_codec_private(encoder, &params);
             nal_arena.reserve(nal_arena.len() * paths.len());
         }
         ranges.push((fstart, arena.len() - fstart));
         nal_ranges.push((nstart, nal_arena.len() - nstart));
+        if VARY {
+            psets.push(params.first);
+        }
         maps.push(raw);
     }
+    if VARY && params.varies != [false; 3] {
+        cold_path();
+        inline_psets(
+            &mut arena,
+            &mut nal_arena,
+            &mut nal_ranges,
+            &ranges,
+            &psets,
+            params.varies,
+        );
+    }
+    let codec_private = nal_codec_private(encoder, &params);
     Ok(Prep {
         maps,
         arena,
@@ -515,6 +545,37 @@ fn prep_nal(paths: &[PathBuf], inf: &VidInf, encoder: Encoder) -> Result<Prep, X
         displays,
         codec_private,
     })
+}
+
+#[cold]
+#[inline(never)]
+fn inline_psets(
+    arena: &mut [ByteRange],
+    nal_arena: &mut Vec<ByteRange>,
+    nal_ranges: &mut [(usize, usize)],
+    ranges: &[(usize, usize)],
+    psets: &[[ByteRange; 3]],
+    varies: [bool; 3],
+) {
+    let n = varies.iter().filter(|&&v| v).count();
+    let mut out = Vec::with_capacity(nal_arena.len() + n * psets.len());
+    for (c, span) in nal_ranges.iter_mut().enumerate() {
+        let start = out.len();
+        let f = unsafe { arena.get_unchecked_mut(ranges.get_unchecked(c).0) };
+        for (k, &v) in varies.iter().enumerate() {
+            if v {
+                let r = unsafe { *psets.get_unchecked(c).get_unchecked(k) };
+                if r.len != 0 {
+                    out.push(r);
+                    f.offset += 1;
+                    f.len += 4 + r.len;
+                }
+            }
+        }
+        out.extend_from_slice(unsafe { nal_arena.get_unchecked(span.0..span.0 + span.1) });
+        *span = (start, out.len() - start);
+    }
+    *nal_arena = out;
 }
 
 const MIN_PAR: usize = 4 << 20;

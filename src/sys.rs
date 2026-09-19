@@ -287,11 +287,6 @@ pub struct Stat {
     _post: [u8; 88],
 }
 
-#[cfg(feature = "vship")]
-pub fn copy_file_range(fd_in: i32, fd_out: i32, len: usize) -> isize {
-    syscall!(326, fd_in, 0usize, fd_out, 0usize, len, 0usize) as isize
-}
-
 pub fn fstat(fd: i32, buf: *mut Stat) -> i32 {
     syscall!(5, fd, buf) as i32
 }

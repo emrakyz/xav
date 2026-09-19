@@ -172,7 +172,16 @@ impl VvdecDec {
         })
     }
 
-    pub fn dec_next(&mut self) -> ([*const u8; 3], [i64; 3]) {
+    pub fn strides(&self) -> [i64; 3] {
+        let p = unsafe { &(*self.frame).planes };
+        [
+            i64::from(p[0].stride),
+            i64::from(p[1].stride),
+            i64::from(p[1].stride),
+        ]
+    }
+
+    pub fn dec_next(&mut self) -> [*const u8; 3] {
         self.unref();
         loop {
             let mut f: *mut Frame = null_mut();
@@ -190,18 +199,11 @@ impl VvdecDec {
             if !f.is_null() {
                 self.frame = f;
                 let p = unsafe { &(*f).planes };
-                return (
-                    [
-                        p[0].ptr.cast_const(),
-                        p[1].ptr.cast_const(),
-                        p[2].ptr.cast_const(),
-                    ],
-                    [
-                        i64::from(p[0].stride),
-                        i64::from(p[1].stride),
-                        i64::from(p[1].stride),
-                    ],
-                );
+                return [
+                    p[0].ptr.cast_const(),
+                    p[1].ptr.cast_const(),
+                    p[2].ptr.cast_const(),
+                ];
             }
 
             if r == VVDEC_EOF {

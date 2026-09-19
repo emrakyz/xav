@@ -154,13 +154,11 @@ fn check_vvenc_layout(dir: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     println!("cargo:rerun-if-changed=src/vvenc.rs");
     let sz = field("src/vvenc.rs", "pub const VVENC_CFG_SIZE: usize =")
         .ok_or("src/vvenc.rs: VVENC_CFG_SIZE not found")?;
-    let probe = format!("{}/vvenc_layout.cpp", env::var("OUT_DIR")?);
     let src = VVENC_LAYOUT.replace("CFG_SIZE", sz.trim_end_matches(';'));
-    fs::write(&probe, src)?;
     Command::new("clang++")
         .args(["-std=c++20", "-fsyntax-only"])
         .arg(format!("-I{dir}/include"))
-        .arg(&probe)
+        .arg(&src_file("vvenc_layout.cpp", &src)?)
         .status()
         .is_ok_and(|s| s.success())
         .then_some(())
@@ -175,7 +173,6 @@ static_assert(sizeof(x265_picture)==PIC_SIZE,"");
 static_assert(offsetof(x265_param,totalFrames)==OFF_TOTAL_FRAMES,"");
 static_assert(offsetof(x265_param,rc.rfConstant)==OFF_RF_CONSTANT,"");
 static_assert(offsetof(x265_param,sourceBitDepth)==OFF_SOURCE_BIT_DEPTH,"");
-static_assert(offsetof(x265_picture,pts)==0,"");
 static_assert(offsetof(x265_picture,planes)==32,"");
 static_assert(offsetof(x265_picture,stride)==64,"");
 static_assert(offsetof(x265_picture,bitDepth)==80,"");
@@ -206,16 +203,68 @@ fn check_x265_layout(dir: &str, build: &str) -> Result<(), Box<dyn Error + Send 
         .args(["-std=c++20", "-fsyntax-only"])
         .arg(format!("-I{dir}/source"))
         .arg(format!("-I{build}"))
-        .arg(&src_file(&src)?)
+        .arg(&src_file("x265_layout.cpp", &src)?)
         .status()
         .is_ok_and(|s| s.success())
         .then_some(())
         .ok_or_else(|| "x265 public struct layout changed: update src/x265.rs".into())
 }
 
-#[cfg(feature = "x265")]
-fn src_file(src: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
-    let probe = format!("{}/x265_layout.cpp", env::var("OUT_DIR")?);
+#[cfg(feature = "x264")]
+const X264_LAYOUT: &str = r#"#include <stdint.h>
+#include <stddef.h>
+#include "x264.h"
+_Static_assert(sizeof(x264_param_t)==PARAM_SIZE,"");
+_Static_assert(sizeof(x264_picture_t)==PIC_SIZE,"");
+_Static_assert(offsetof(x264_param_t,i_width)==OFF_WIDTH,"");
+_Static_assert(offsetof(x264_param_t,i_height)==OFF_WIDTH+4,"");
+_Static_assert(offsetof(x264_param_t,i_frame_total)==OFF_FRAME_TOTAL,"");
+_Static_assert(offsetof(x264_param_t,i_log_level)==OFF_LOG_LEVEL,"");
+_Static_assert(offsetof(x264_param_t,rc.f_rf_constant)==OFF_RF_CONSTANT,"");
+_Static_assert(offsetof(x264_picture_t,i_pts)==16,"");
+_Static_assert(offsetof(x264_picture_t,img.i_csp)==40,"");
+_Static_assert(offsetof(x264_picture_t,img.i_stride)==48,"");
+_Static_assert(offsetof(x264_picture_t,img.plane)==64,"");
+_Static_assert(offsetof(x264_picture_t,prop)==96,"");
+_Static_assert(sizeof(x264_nal_t)==40,"");
+_Static_assert(offsetof(x264_nal_t,p_payload)==24,"");
+_Static_assert(X264_CSP_I420==2,"");
+_Static_assert(X264_CSP_HIGH_DEPTH==0x2000,"");
+_Static_assert(X264_LOG_WARNING==1,"");
+"#;
+
+#[cfg(feature = "x264")]
+fn check_x264_layout(dir: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("cargo:rerun-if-changed={dir}/x264.h");
+    println!("cargo:rerun-if-changed=src/x264.rs");
+    let mut src = X264_LAYOUT.to_owned();
+    for k in [
+        "PARAM_SIZE",
+        "PIC_SIZE",
+        "OFF_WIDTH",
+        "OFF_FRAME_TOTAL",
+        "OFF_LOG_LEVEL",
+        "OFF_RF_CONSTANT",
+    ] {
+        let key = format!("pub const X264_{k}: usize =");
+        let v = field("src/x264.rs", &key)
+            .or_else(|| field("src/x264.rs", &format!("pub const {k}: usize =")))
+            .ok_or_else(|| format!("src/x264.rs: {k} not found"))?;
+        src = src.replace(k, v.trim_end_matches(';'));
+    }
+    Command::new("clang")
+        .args(["-std=c11", "-fsyntax-only"])
+        .arg(format!("-I{dir}"))
+        .arg(&src_file("x264_layout.c", &src)?)
+        .status()
+        .is_ok_and(|s| s.success())
+        .then_some(())
+        .ok_or_else(|| "x264 public struct layout changed: update src/x264.rs".into())
+}
+
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+fn src_file(name: &str, src: &str) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let probe = format!("{}/{name}", env::var("OUT_DIR")?);
     fs::write(&probe, src)?;
     Ok(probe)
 }
@@ -302,6 +351,17 @@ fn stamp_versions(home: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
             &x265,
         );
         check_x265_layout(&x265, &format!("{x265}/source/build-xav"))?;
+    }
+
+    #[cfg(feature = "x264")]
+    {
+        let x264 = format!("{src}/x264");
+        stamp(
+            "X264",
+            field(&format!("{x264}/x264.h"), "#define X264_BUILD"),
+            &x264,
+        );
+        check_x264_layout(&x264)?;
     }
 
     #[cfg(feature = "vship")]
@@ -505,6 +565,16 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         println!("cargo:rustc-link-search=native={x265_dir}");
         println!("cargo:rustc-link-lib=static=x265");
+    }
+
+    #[cfg(feature = "x264")]
+    {
+        let x264_dir = format!("{home}/.local/src/x264");
+        if !Path::new(&format!("{x264_dir}/libx264.a")).exists() {
+            return Err(format!("{x264_dir}/libx264.a not found").into());
+        }
+        println!("cargo:rustc-link-search=native={x264_dir}");
+        println!("cargo:rustc-link-lib=static=x264");
     }
 
     #[cfg(feature = "vship")]

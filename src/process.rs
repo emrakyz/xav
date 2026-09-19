@@ -229,7 +229,10 @@ impl Command {
 
         let (in_p, in_c) = setup(self.stdin, true)?;
         let (out_p, out_c) = setup(self.stdout, false)?;
+        #[cfg(test)]
         let (err_p, err_c) = setup(self.stderr, false)?;
+        #[cfg(not(test))]
+        let (_, err_c) = setup(self.stderr, false)?;
 
         let pid = unsafe { fork() };
         if pid < 0 {
@@ -263,10 +266,12 @@ impl Command {
             pid,
             stdin: in_p.map(ChildStdin),
             stdout: out_p.map(ChildStdout),
+            #[cfg(test)]
             stderr: err_p.map(ChildStderr),
         })
     }
 
+    #[cfg(test)]
     pub fn output(&mut self) -> Result<Output> {
         self.stdout = Piped;
         self.stderr = Piped;
@@ -279,6 +284,7 @@ pub struct Child {
     pid: i64,
     pub stdin: Option<ChildStdin>,
     pub stdout: Option<ChildStdout>,
+    #[cfg(test)]
     pub stderr: Option<ChildStderr>,
 }
 #[cfg(not(target_os = "linux"))]
@@ -286,16 +292,17 @@ pub type Child = std::process::Child;
 
 #[cfg(target_os = "linux")]
 impl Child {
-    pub fn wait(&mut self) -> Result<ExitStatus> {
+    pub fn wait(&mut self) -> Result<i32> {
         self.stdin = None;
         let mut status = 0i32;
         let r = wait4(self.pid as i32, &raw mut status, 0);
         if r < 0 {
             return err(r);
         }
-        Ok(ExitStatus(status))
+        Ok(status)
     }
 
+    #[cfg(test)]
     pub fn wait_with_output(mut self) -> Result<Output> {
         self.stdin = None;
         let stdout = read_all(self.stdout.take());
@@ -313,7 +320,7 @@ impl Child {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 fn read_all<R: Read>(r: Option<R>) -> Vec<u8> {
     let mut v = Vec::new();
     if let Some(mut r) = r {
@@ -326,7 +333,7 @@ fn read_all<R: Read>(r: Option<R>) -> Vec<u8> {
 pub struct ChildStdin(i32);
 #[cfg(target_os = "linux")]
 pub struct ChildStdout(i32);
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 pub struct ChildStderr(i32);
 #[cfg(not(target_os = "linux"))]
 pub type ChildStdin = std::process::ChildStdin;
@@ -358,7 +365,7 @@ impl Read for ChildStdout {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 impl Read for ChildStderr {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         let n = sys_read(self.0, buf.as_mut_ptr(), buf.len());
@@ -393,7 +400,7 @@ impl Drop for ChildStdout {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 impl Drop for ChildStderr {
     #[inline]
     fn drop(&mut self) {
@@ -401,21 +408,14 @@ impl Drop for ChildStderr {
     }
 }
 
-#[cfg(target_os = "linux")]
-pub struct ExitStatus(i32);
-
-#[cfg(target_os = "linux")]
-impl ExitStatus {
-    #[inline]
-    pub const fn success(&self) -> bool {
-        self.0.trailing_zeros() >= 7 && (self.0 >> 8).trailing_zeros() >= 8
-    }
+#[cfg(test)]
+pub const fn ok_status(s: i32) -> bool {
+    s.trailing_zeros() >= 7 && (s >> 8).trailing_zeros() >= 8
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", test))]
 pub struct Output {
-    #[cfg(test)]
-    pub status: ExitStatus,
+    pub status: i32,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }

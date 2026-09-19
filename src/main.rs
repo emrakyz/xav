@@ -1,4 +1,4 @@
-#![feature(thread_local)]
+#![feature(get_mut_unchecked, thread_local)]
 #![cfg_attr(all(target_os = "linux", not(test)), no_std)]
 #![cfg_attr(all(target_os = "linux", not(test)), no_main)]
 
@@ -51,6 +51,8 @@ macro_rules! println {
     ($($arg:tt)*) => { println_fmt(format_args!($($arg)*)) };
 }
 
+#[cfg(all(feature = "vship", any(feature = "x264", feature = "x265")))]
+mod annexb;
 #[cfg(feature = "vship")]
 mod atofu;
 mod audio;
@@ -78,8 +80,8 @@ mod fmath;
 mod fs;
 #[cfg(target_os = "linux")]
 mod galloc;
-#[cfg(all(feature = "vship", feature = "x265"))]
-mod hevc;
+#[cfg(any(feature = "x264", feature = "x265"))]
+mod h26x;
 #[cfg(feature = "vship")]
 mod interp;
 mod io;
@@ -123,6 +125,10 @@ mod vvenc;
 #[cfg(feature = "vvenc")]
 mod vvencerr;
 mod worker;
+#[cfg(feature = "x264")]
+mod x264;
+#[cfg(feature = "x264")]
+mod x264err;
 #[cfg(feature = "x265")]
 mod x265;
 #[cfg(feature = "x265")]
@@ -137,9 +143,9 @@ use chunk::{
     val_scenes,
 };
 use crop::detect_crop;
-use enc::enc_all;
 #[cfg(feature = "vship")]
-use enc::{is_cvvdp, tq_target};
+use enc::TQCtx;
+use enc::enc_all;
 use encoder::Encoder;
 use error::{IN_ALT_SCREEN, Xerr, eprint, exit, fatal, reraise, signals, winch_hook};
 use ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf, vid_bytes};
@@ -147,6 +153,8 @@ use paramerr::val;
 use scd::fd_scenes;
 #[cfg(feature = "vship")]
 use vship::{Disp, load_disp};
+#[cfg(all(feature = "vship", feature = "vvenc"))]
+use vvenc::VVENC_MAX_QP;
 #[cfg(target_os = "linux")]
 use y4m::vspipe_resume;
 use y4m::{PipeReader, init_pipe, is_pipe};
@@ -170,11 +178,9 @@ pub struct Args {
     pub chnk_buff: usize,
     pub ranges: Option<Vec<(usize, usize)>>,
     #[cfg(feature = "vship")]
-    pub qp_range: Option<String>,
-    #[cfg(feature = "vship")]
     pub metric_worker: usize,
     #[cfg(feature = "vship")]
-    pub tq: Option<String>,
+    pub tq: Option<TQCtx>,
     #[cfg(feature = "vship")]
     pub metric_mode: String,
     #[cfg(feature = "vship")]
@@ -212,6 +218,8 @@ const VW: usize = {
     let w = wmax(w, env!("XAV_V_VVENC").len());
     #[cfg(feature = "x265")]
     let w = wmax(w, env!("XAV_V_X265").len());
+    #[cfg(feature = "x264")]
+    let w = wmax(w, env!("XAV_V_X264").len());
     #[cfg(all(feature = "vvenc", feature = "vship"))]
     let w = wmax(w, env!("XAV_V_VVDEC").len());
     #[cfg(feature = "vship")]
@@ -221,16 +229,22 @@ const VW: usize = {
     w
 };
 
+const ENC_NAMES: &[&str] = &[
+    #[cfg(feature = "avm")]
+    "avm",
+    #[cfg(feature = "vvenc")]
+    "vvenc",
+    #[cfg(feature = "x265")]
+    "x265",
+    #[cfg(feature = "x264")]
+    "x264",
+];
+
 fn enc_list() -> String {
     let mut s = format!("{R}<{G}svt-av1");
-    let mut add = |name: &str| _ = write!(s, "{P}┃{G}{name}");
-    #[cfg(feature = "avm")]
-    add("avm");
-    #[cfg(feature = "vvenc")]
-    add("vvenc");
-    #[cfg(feature = "x265")]
-    add("x265");
-    add("x264");
+    for name in ENC_NAMES {
+        _ = write!(s, "{P}┃{G}{name}");
+    }
     _ = write!(s, "{R}>");
     s
 }
@@ -239,7 +253,9 @@ fn enc_list() -> String {
 fn print_help() {
     println!("{P}Format: {Y}xav {C}[options] {G}<INPUT> {B}[<OUTPUT>]{W}");
     println!();
-    println!("{C}-e {P}┃ {C}--encoder    {}", enc_list());
+    if !ENC_NAMES.is_empty() {
+        println!("{C}-e {P}┃ {C}--encoder    {}", enc_list());
+    }
     println!("{C}-w {P}┃ {C}--worker     {W}Parallelism");
     println!("{C}-b {P}┃ {C}--buff       {W}Chunks to buffer");
     println!("{C}-p {P}┃ {C}--param      {W}Encoder params");
@@ -271,6 +287,8 @@ fn print_help() {
     println!("{C}VVDEC:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VVDEC"), env!("XAV_D_VVDEC"));
     #[cfg(feature = "x265")]
     println!("{C}X265:        {G}{:<VW$}  {B}{}{N}", env!("XAV_V_X265"), env!("XAV_D_X265"));
+    #[cfg(feature = "x264")]
+    println!("{C}X264:        {G}{:<VW$}  {B}{}{N}", env!("XAV_V_X264"), env!("XAV_D_X264"));
     #[cfg(feature = "vship")]
     {
         println!("{C}VSHIP:       {G}{:<VW$}  {B}{}{N}", env!("XAV_V_VSHIP"), env!("XAV_D_VSHIP"));
@@ -350,13 +368,6 @@ fn apply_defaults(args: &mut Args) {
         let stem = unsafe { args.inp.file_stem().unwrap_unchecked() }.to_string_lossy();
         args.sc_file = args.inp.with_file_name(format!("{stem}_scd.txt"));
     }
-
-    #[cfg(feature = "vship")]
-    {
-        if args.tq.is_some() && args.qp_range.is_none() {
-            args.qp_range = Some("8.0-48.0".to_owned());
-        }
-    }
 }
 
 fn next_arg<'a>(args: &'a [String], i: &mut usize) -> Option<&'a str> {
@@ -377,15 +388,27 @@ fn val_out(out: &Path, encoder: Encoder) -> Result<(), Xerr> {
 }
 
 #[cfg(feature = "vship")]
-fn val_range(s: &str, name: &str) -> Result<(), Xerr> {
-    let parts: Vec<f32> = s.split('-').filter_map(|v| v.parse().ok()).collect();
-    if parts.len() != 2 {
-        return Err(format!("{name} requires a range: <min>-<max>").into());
-    }
-    if parts[0] >= parts[1] {
-        return Err(format!("{name} min must be less than max: {s}").into());
+#[expect(clippy::float_cmp, reason = "exact grid test")]
+fn val_grid(qp: [f32; 2], step: f32) -> Result<(), Xerr> {
+    for v in qp {
+        let n = v / step;
+        if n != (n as i32) as f32 {
+            return Err(format!("-f/--qp {v} must be a multiple of {step}").into());
+        }
     }
     Ok(())
+}
+
+#[cfg(feature = "vship")]
+fn val_range(s: &str, name: &str) -> Result<[f32; 2], Xerr> {
+    let mut it = s.split('-').filter_map(|v| v.parse().ok());
+    let (Some(lo), Some(hi), None) = (it.next(), it.next(), it.next()) else {
+        return Err(format!("{name} requires a range: <min>-<max>").into());
+    };
+    if lo >= hi {
+        return Err(format!("{name} min must be less than max: {s}").into());
+    }
+    Ok([lo, hi])
 }
 
 macro_rules! arg {
@@ -488,6 +511,36 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         i += 1;
     }
 
+    #[cfg(feature = "vship")]
+    let tq = match tq {
+        Some(t) => {
+            #[cfg(feature = "avm")]
+            if encoder == Avm {
+                return Err("Target quality is not supported by avm".into());
+            }
+            let r = val_range(&t, "-t/--tq")?;
+            let q = match qp_range {
+                Some(ref q) => val_range(q, "-f/--qp")?,
+                None => [8.0, 48.0],
+            };
+            let step = encoder.qp_step();
+            val_grid(q, step)?;
+            #[cfg(feature = "vvenc")]
+            if encoder == Encoder::Vvenc && q[1] > VVENC_MAX_QP as f32 {
+                return Err(format!("vvenc: -f/--qp range must be within 0-{VVENC_MAX_QP}").into());
+            }
+            if has_rc(&params) || alt_param.as_deref().is_some_and(has_rc) {
+                return Err(
+                    "-p and -P must not set CRF/QP in target-quality mode: CRF is chosen \
+                     automatically"
+                        .into(),
+                );
+            }
+            Some(TQCtx::new(r, q, step, t.leak()))
+        }
+        None => None,
+    };
+
     Ok(Args {
         encoder,
         worker,
@@ -505,8 +558,6 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         tq,
         #[cfg(feature = "vship")]
         metric_mode,
-        #[cfg(feature = "vship")]
-        qp_range,
         #[cfg(feature = "vship")]
         metric_worker,
         #[cfg(feature = "vship")]
@@ -537,25 +588,6 @@ fn get_args(args: &[String], allow_resume: bool) -> Result<Args, Xerr> {
     }
 
     apply_defaults(&mut result);
-
-    #[cfg(feature = "vship")]
-    if let Some(ref tq) = result.tq {
-        #[cfg(feature = "avm")]
-        if result.encoder == Avm {
-            return Err("Target quality is not supported by avm".into());
-        }
-        val_range(tq, "-t/--tq")?;
-        val_range(
-            unsafe { result.qp_range.as_ref().unwrap_unchecked() },
-            "-f/--qp",
-        )?;
-        if has_rc(&result.params) || result.alt_param.as_deref().is_some_and(has_rc) {
-            return Err(
-                "-p and -P must not set CRF/QP in target-quality mode: CRF is chosen automatically"
-                    .into(),
-            );
-        }
-    }
 
     val(result.encoder, &result.params)?;
     #[cfg(feature = "vship")]
@@ -739,11 +771,12 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         if l.1 == usize::MAX {
             l.1 = inf.frames - 1;
         }
+        if let Some(&(s, e)) = r.iter().find(|&&(_, e)| e >= inf.frames) {
+            return Err(format!("-r {s}-{e} is out of source frames: 0-{}", inf.frames - 1).into());
+        }
     }
     #[cfg(feature = "vship")]
-    if let Some(ref t) = args.tq
-        && is_cvvdp(tq_target(t))
-    {
+    if args.tq.is_some_and(|t| t.is_cvvdp()) {
         args.disp = Some(load_disp(args.cvvdp_conf.as_deref(), &inf)?);
     }
 
@@ -777,6 +810,7 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
     create_dir_all(work_dir.join("encode"))?;
 
     let chnks = chnkify(&scenes);
+    let vary = tq || scenes.iter().any(|s| s.params.is_some());
 
     #[cfg(target_os = "linux")]
     let pipe_start = vspipe_resume(&chnks, &work_dir).unwrap_or(0);
@@ -787,7 +821,9 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     if args.hwdec {
         let mut dec = VidDecoder::new_hw(&args.inp, 1)?;
-        inf.y_linesz = unsafe { (*dec.dec_next_hw()).linesize[0] as usize };
+        let f = unsafe { &*dec.dec_next_hw() };
+        inf.y_linesz = f.linesize[0] as usize;
+        inf.uv_linesz = f.linesize[1] as usize;
     }
     args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwdec, tq));
 
@@ -803,7 +839,14 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         Vec::new()
     };
 
-    merge_out(&args, &work_dir.join("encode"), &inf, &au_tracks, crop)?;
+    merge_out(
+        &args,
+        &work_dir.join("encode"),
+        &inf,
+        &au_tracks,
+        crop,
+        vary,
+    )?;
 
     for t in &au_tracks {
         _ = rm_file(&t.1);

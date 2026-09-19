@@ -177,7 +177,7 @@ impl AuDecoder {
         (pts - self.start_time) * 48000 * self.tb_num / self.tb_den
     }
 
-    pub fn decode_range<F: FnMut(&mut [f32]) -> Result<(), Xerr>>(
+    pub fn decode_range<F: FnMut(&mut [f32], usize) -> Result<(), Xerr>>(
         &mut self,
         s_start: i64,
         s_end: i64,
@@ -231,7 +231,7 @@ impl AuDecoder {
         Ok(base)
     }
 
-    unsafe fn drain_unit<F: FnMut(&mut [f32]) -> Result<(), Xerr>>(
+    unsafe fn drain_unit<F: FnMut(&mut [f32], usize) -> Result<(), Xerr>>(
         &mut self,
         emit: bool,
         cb: &mut F,
@@ -254,7 +254,8 @@ impl AuDecoder {
             let in_ptr = unsafe { (*self.frame).extended_data.cast::<*const u8>() };
             let n = unsafe { swr_convert(self.swr, &raw mut out_ptr, max_per_ch, in_ptr, nb) };
             if n > 0 {
-                cb(&mut self.out_buf[..n as usize * ch])?;
+                let n = n as usize;
+                cb(unsafe { self.out_buf.get_unchecked_mut(..n * ch) }, n)?;
             }
         }
     }

@@ -1,54 +1,26 @@
-use std::{
-    collections::BTreeSet,
-    env,
-    mem::{size_of, zeroed},
-    ptr::{fn_addr_eq, null_mut},
-    slice::from_raw_parts,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering::Relaxed},
-    },
-};
+use std::{collections::BTreeSet, sync::Arc};
 
-#[cfg(feature = "vship")]
-use crate::vship::{VshipProcessor, init_device, load_disp};
 use crate::{
     chan::{SpscRing, spsc_close, spsc_recv, spsc_send},
     chunk::{MAX_CHNK_FRAMES, chnkify, load_scenes},
     dec::{Bufs, dec_chnks},
-    encoder::{EncConfig, set_svt_base, set_svt_crf},
+    enc::test_access::run_chunk,
     ffms::{DecStrat, VidDecoder, VidInf, get_dec_strat, get_vidinf},
-    fs::{File, metadata, remove_file},
-    io::{BufWriter, Write},
-    pack::{
-        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, unpack_10b,
-        unpack_10b_rem,
-    },
     path::{Path, PathBuf},
-    pipeline::{Pipeline, WriteFn},
-    process::{self, Command, Stdio},
-    svt::{
-        EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
-        EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
-        svt_av1_enc_get_packet, svt_av1_enc_init, svt_av1_enc_init_handle,
-        svt_av1_enc_release_out_buffer, svt_av1_enc_send_picture, svt_av1_enc_set_parameter,
-    },
-    sync::Once,
-    thread::{available_parallelism, pspawn, scope},
+    pipeline::Pipeline,
+    process::{Command, Stdio, ok_status},
+    thread::pspawn,
     worker::WorkPkg,
 };
 
-static TEST_ID: AtomicUsize = AtomicUsize::new(0);
-
-#[cfg(feature = "vship")]
-static INIT_DEVICE: Once = Once::new();
+const ENC_PARAMS: &str = "--preset 7 --lp 5 --scm 0";
 
 macro_rules! sw {
     ($name:ident, $file:expr, $crop:expr, $buf:literal, $strat:pat) => {
         #[test]
         fn $name() {
             use DecStrat::*;
-            let strat = run_test($file, $crop, false, false, $buf, false);
+            let strat = run_test($file, $crop, false, false, $buf);
             assert!(
                 matches!(strat, $strat),
                 "expected {}, got {strat:?}",
@@ -63,7 +35,7 @@ macro_rules! hw {
         #[test]
         fn $name() {
             use DecStrat::*;
-            let strat = run_test($file, $crop, true, $tq, $buf, false);
+            let strat = run_test($file, $crop, true, $tq, $buf);
             assert!(
                 matches!(strat, $strat),
                 "expected {}, got {strat:?}",
@@ -77,64 +49,6 @@ fn test_path(filename: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("test_files")
         .join(filename)
-}
-
-fn temp_ivf() -> PathBuf {
-    let id = TEST_ID.fetch_add(1, Relaxed);
-    let mut p = PathBuf::from(env::temp_dir().to_string_lossy().into_owned());
-    p.push(format!("xav_test_{}_{id}.ivf", process::id()));
-    p
-}
-
-fn write_ivf_header(out: &mut impl Write, w: u32, h: u32, fps_num: u32, fps_den: u32) {
-    let mut hdr = [0u8; 32];
-    hdr[0..4].copy_from_slice(b"DKIF");
-    hdr[6..8].copy_from_slice(&32u16.to_le_bytes());
-    hdr[8..12].copy_from_slice(b"AV01");
-    hdr[12..14].copy_from_slice(&(w as u16).to_le_bytes());
-    hdr[14..16].copy_from_slice(&(h as u16).to_le_bytes());
-    hdr[16..20].copy_from_slice(&fps_num.to_le_bytes());
-    hdr[20..24].copy_from_slice(&fps_den.to_le_bytes());
-    out.write_all(&hdr).unwrap();
-}
-
-fn svt_init(cfg: &EncConfig) -> *mut EbComponentType {
-    let mut handle: *mut EbComponentType = null_mut();
-    let mut conf = unsafe { zeroed::<EbSvtAv1EncConfiguration>() };
-    assert_eq!(
-        unsafe { svt_av1_enc_init_handle(&raw mut handle, &raw mut conf) },
-        EB_ERROR_NONE
-    );
-    set_svt_base(&raw mut conf, cfg.inf, cfg.params, cfg.width, cfg.height);
-    set_svt_crf(&raw mut conf, unsafe { cfg.crf.unwrap_unchecked() });
-    assert_eq!(
-        unsafe { svt_av1_enc_set_parameter(handle, &raw mut conf) },
-        EB_ERROR_NONE
-    );
-    assert_eq!(unsafe { svt_av1_enc_init(handle) }, EB_ERROR_NONE);
-    handle
-}
-
-fn svt_drain(handle: *mut EbComponentType, out: &mut impl Write, done: bool) {
-    loop {
-        let mut pkt: *mut EbBufferHeaderType = null_mut();
-        let ret = unsafe { svt_av1_enc_get_packet(handle, &raw mut pkt, u8::from(done)) };
-        if ret != EB_ERROR_NONE {
-            break;
-        }
-        let p = unsafe { &*pkt };
-        if p.n_filled_len > 0 {
-            let data = unsafe { from_raw_parts(p.p_buffer, p.n_filled_len as usize) };
-            _ = out.write_all(&(data.len() as u32).to_le_bytes());
-            _ = out.write_all(&p.pts.cast_unsigned().to_le_bytes());
-            _ = out.write_all(data);
-        }
-        let eos = p.flags & EB_BUFFERFLAG_EOS != 0;
-        unsafe { svt_av1_enc_release_out_buffer(&raw mut pkt) };
-        if eos {
-            break;
-        }
-    }
 }
 
 fn ffmpeg_reference(inp: &Path, w: usize, h: usize, crop: (u32, u32)) -> Vec<u8> {
@@ -154,98 +68,12 @@ fn ffmpeg_reference(inp: &Path, w: usize, h: usize, crop: (u32, u32)) -> Vec<u8>
     ]);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     let out = cmd.output().unwrap();
-    assert!(out.status.success(), "ffmpeg reference extraction failed");
+    assert!(
+        ok_status(out.status),
+        "ffmpeg reference extraction failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     out.stdout
-}
-
-fn prod_convert(all_yuv: &[u8], pipe: &Pipeline, frame_cnt: usize) -> Vec<u8> {
-    if pipe.conv_buf_sz == 0 {
-        return all_yuv[..frame_cnt * pipe.frame_sz].to_vec();
-    }
-    let mut child = Command::new("cat")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let stdin = child.stdin.take().unwrap();
-    scope(|s| {
-        s.spawn(move || {
-            let mut stdin = stdin;
-            let mut buf = vec![0u8; pipe.conv_buf_sz];
-            (pipe.write_frames)(&mut stdin, all_yuv, frame_cnt, &mut buf, pipe);
-        });
-        child.wait_with_output().unwrap().stdout
-    })
-}
-
-fn svt_enc(converted: &[u8], pipe: &Pipeline, inf: &VidInf, frame_cnt: usize, out: &Path) {
-    let w = pipe.final_w;
-    let h = pipe.final_h;
-    let y_sz = w * h * 2;
-    let uv_sz = (w / 2) * (h / 2) * 2;
-    let enc_frame_sz = y_sz + uv_sz * 2;
-
-    let cfg = EncConfig {
-        inf,
-        template: None,
-        params: "--preset 7 --lp 5 --scm 0",
-        crf: Some(20.0),
-        out,
-        chnk_idx: 0,
-        width: w as u32,
-        height: h as u32,
-        frames: frame_cnt,
-    };
-    let handle = svt_init(&cfg);
-
-    let mut sink = Vec::with_capacity(1 << 16);
-    let mut writer = BufWriter::new(File::create(out).unwrap(), &mut sink);
-    write_ivf_header(&mut writer, cfg.width, cfg.height, inf.fps_num, inf.fps_den);
-
-    let mut io_fmt = EbSvtIOFormat {
-        luma: null_mut(),
-        cb: null_mut(),
-        cr: null_mut(),
-        y_stride: w as u32,
-        cb_stride: (w / 2) as u32,
-        cr_stride: (w / 2) as u32,
-    };
-    let io_ptr = &raw mut io_fmt;
-
-    let mut in_hdr = unsafe { zeroed::<EbBufferHeaderType>() };
-    in_hdr.size = size_of::<EbBufferHeaderType>() as u32;
-    in_hdr.p_buffer = io_ptr.cast::<u8>();
-    in_hdr.n_filled_len = enc_frame_sz as u32;
-    in_hdr.n_alloc_len = in_hdr.n_filled_len;
-
-    for i in 0..frame_cnt {
-        let off = i * enc_frame_sz;
-        unsafe {
-            (*io_ptr).luma = converted[off..].as_ptr().cast_mut();
-            (*io_ptr).cb = converted[off + y_sz..].as_ptr().cast_mut();
-            (*io_ptr).cr = converted[off + y_sz + uv_sz..].as_ptr().cast_mut();
-        }
-
-        in_hdr.pts = i as i64;
-        in_hdr.flags = 0;
-        assert_eq!(
-            unsafe { svt_av1_enc_send_picture(handle, &raw mut in_hdr) },
-            EB_ERROR_NONE
-        );
-        svt_drain(handle, &mut writer, false);
-    }
-
-    let mut eos = unsafe { zeroed::<EbBufferHeaderType>() };
-    eos.flags = EB_BUFFERFLAG_EOS;
-    unsafe { svt_av1_enc_send_picture(handle, &raw mut eos) };
-    svt_drain(handle, &mut writer, true);
-
-    drop(writer);
-    unsafe {
-        svt_av1_enc_deinit(handle);
-        svt_av1_enc_deinit_handle(handle);
-    }
 }
 
 fn verify_pix(reference: &[u8], production: &[u8], pipe: &Pipeline) {
@@ -263,274 +91,56 @@ fn verify_pix(reference: &[u8], production: &[u8], pipe: &Pipeline) {
             .zip(production.iter())
             .position(|(a, b)| a != b)
             .unwrap();
-        let w = pipe.final_w;
-        let h = pipe.final_h;
-        let y_bytes = w * h * 2;
-        let uv_bytes = w / 2 * (h / 2) * 2;
-        let (plane, plane_pos) = if pos < y_bytes {
+        let (plane, plane_pos) = if pos < pipe.enc.y_sz {
             ("Y", pos)
-        } else if pos < y_bytes + uv_bytes {
-            ("U", pos - y_bytes)
+        } else if pos < pipe.enc.cr_off {
+            ("U", pos - pipe.enc.y_sz)
         } else {
-            ("V", pos - y_bytes - uv_bytes)
+            ("V", pos - pipe.enc.cr_off)
         };
-        let plane_w = if plane == "Y" { w } else { w / 2 };
-        let px = (plane_pos / 2) % plane_w;
-        let py = (plane_pos / 2) / plane_w;
+        let plane_w = if plane == "Y" {
+            pipe.final_w
+        } else {
+            pipe.half_w
+        };
         let ref_val =
             u16::from(reference[pos]) | (u16::from(reference[pos.saturating_add(1)]) << 8);
         let prod_val =
             u16::from(production[pos]) | (u16::from(production[pos.saturating_add(1)]) << 8);
-        panic!("pixel mismatch in {plane} plane at ({px},{py}) ref={ref_val} prod={prod_val}");
-    }
-}
-
-fn verify_dispatch(strat: DecStrat, pipe: &Pipeline, inf: &VidInf, tq_mode: bool) {
-    use DecStrat::*;
-
-    use crate::{
-        enc::test_access::{
-            enc_svt_direct_addr, enc_svt_drop_addr, enc_svt_drop_rem_addr, enc_svt_nv12_drop_addr,
-            enc_svt_nv12_drop_rem_addr, enc_svt_unpack_drop_addr, enc_svt_unpack_drop_rem_addr,
-            resolve_svt_enc_addr,
-        },
-        pipeline::test_access::{
-            WRITE_8B, WRITE_8B_REM, WRITE_NV12, WRITE_NV12_REM, WRITE_RAW, WRITE_UNPACK,
-            WRITE_UNPACK_REM,
-        },
-    };
-
-    let name = format!("{strat:?}");
-    let is_nv12_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
-    let nv12_exact = (pipe.final_w * pipe.final_h).is_multiple_of(SHIFT_CHUNK)
-        && (pipe.final_w / 2 * (pipe.final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
-    let unpack_exact =
-        pipe.final_w.is_multiple_of(PACK_CHUNK) && pipe.frame_sz.is_multiple_of(UNPACK_CHUNK);
-
-    let exp_write: WriteFn = if is_nv12_10 {
-        if nv12_exact {
-            WRITE_NV12
-        } else {
-            WRITE_NV12_REM
-        }
-    } else if strat.is_raw() {
-        WRITE_RAW
-    } else if !inf.is_10b {
-        if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            WRITE_8B
-        } else {
-            WRITE_8B_REM
-        }
-    } else if unpack_exact {
-        WRITE_UNPACK
-    } else {
-        WRITE_UNPACK_REM
-    };
-    assert!(
-        fn_addr_eq(pipe.write_frames, exp_write),
-        "wrong write_frames fn for {name}"
-    );
-
-    if !tq_mode {
-        let actual_enc = resolve_svt_enc_addr(strat, is_nv12_10, inf, pipe);
-        let expected_enc = if strat.is_raw() {
-            enc_svt_direct_addr()
-        } else if is_nv12_10 {
-            if nv12_exact {
-                enc_svt_nv12_drop_addr()
-            } else {
-                enc_svt_nv12_drop_rem_addr()
-            }
-        } else if inf.is_10b {
-            if unpack_exact {
-                enc_svt_unpack_drop_addr()
-            } else {
-                enc_svt_unpack_drop_rem_addr()
-            }
-        } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
-            enc_svt_drop_addr()
-        } else {
-            enc_svt_drop_rem_addr()
-        };
-        assert_eq!(actual_enc, expected_enc, "wrong SVT encode fn for {name}");
-    }
-
-    #[cfg(feature = "vship")]
-    if tq_mode {
-        use crate::enc::test_access::{
-            met_cvvdp_8b_addr, met_cvvdp_10b_addr, met_cvvdp_rem_addr, resolve_metric_loop_addr,
-        };
-
-        let expected = if !inf.is_10b {
-            met_cvvdp_8b_addr()
-        } else if unpack_exact {
-            met_cvvdp_10b_addr()
-        } else {
-            met_cvvdp_rem_addr()
-        };
-        assert_eq!(
-            resolve_metric_loop_addr(true, false, true, inf, pipe),
-            expected,
-            "wrong metric loop for {name}"
+        panic!(
+            "pixel mismatch in {plane} plane at ({},{}) ref={ref_val} prod={prod_val}",
+            (plane_pos / 2) % plane_w,
+            (plane_pos / 2) / plane_w
         );
     }
 }
 
 fn verify_pipeline(pipe: &Pipeline, inf: &VidInf, crop: (u32, u32), strat: DecStrat) {
-    let has_crop = crop != (0, 0);
-    let (expected_w, expected_h) = if has_crop {
+    let (expected_w, expected_h) = if crop == (0, 0) {
+        (inf.width as usize, inf.height as usize)
+    } else {
         (
             (inf.width - crop.1 * 2) as usize,
             (inf.height - crop.0 * 2) as usize,
         )
-    } else {
-        (inf.width as usize, inf.height as usize)
     };
 
     assert_eq!(pipe.final_w, expected_w, "pipeline width mismatch");
     assert_eq!(pipe.final_h, expected_h, "pipeline height mismatch");
 
     if strat.is_raw() {
-        assert_eq!(
-            pipe.frame_sz,
-            expected_w * expected_h * 3,
-            "raw frame_size mismatch"
-        );
         assert_eq!(pipe.conv_buf_sz, 0, "raw conv_buf_size should be 0");
-    } else if inf.is_10b {
-        assert_eq!(
-            pipe.frame_sz,
-            calc_packed_sz(expected_w as u32, expected_h as u32),
-            "packed frame_size mismatch"
-        );
-    } else {
-        assert_eq!(
-            pipe.frame_sz,
-            calc_8b_sz(expected_w as u32, expected_h as u32),
-            "8b frame_size mismatch"
-        );
     }
-
-    let pix_sz = if inf.is_10b { 2 } else { 1 };
-    assert_eq!(
-        pipe.met.y_sz,
-        expected_w * expected_h * pix_sz,
-        "y_size mismatch"
-    );
-    assert_eq!(pipe.met.uv_sz, pipe.met.y_sz / 4, "uv_size mismatch");
-    assert_eq!(
-        pipe.met.cr_off,
-        pipe.met.y_sz + pipe.met.uv_sz,
-        "cr_off mismatch"
-    );
-    assert_eq!(
-        pipe.enc.y_sz,
-        expected_w * expected_h * 2,
-        "enc y_size mismatch"
-    );
-    assert_eq!(
-        pipe.enc.frame_sz,
-        pipe.enc.y_sz + pipe.enc.uv_sz * 2,
-        "enc frame_size mismatch"
-    );
 }
 
-#[cfg(feature = "vship")]
-fn val_tq(
-    all_yuv: &[u8],
-    pipe: &Pipeline,
-    inf: &VidInf,
-    tot_frames: usize,
-    ivf: &Path,
-    filename: &str,
-) {
-    let disp = load_disp(test_path("display.txt").to_str(), inf).unwrap();
-
-    INIT_DEVICE.call_once(|| init_device().unwrap());
-
-    let vship = VshipProcessor::new(
-        pipe.final_w as u32,
-        pipe.final_h as u32,
-        inf,
-        true,
-        false,
-        Some(disp),
-    )
-    .unwrap();
-    vship.reset_cvvdp();
-
-    let threads = available_parallelism() as i32;
-    let mut probe_dec = VidDecoder::new(ivf, threads).unwrap();
-
-    let (y_sz, uv_sz) = (pipe.met.y_sz, pipe.met.uv_sz);
-    let ys = pipe.met.y_stride as i64;
-    let cs = pipe.met.c_stride as i64;
-
-    let mut unpacked_buf = vec![0u8; pipe.conv_buf_sz];
-    let mut last_score = 0.0;
-
-    let unpack_exact =
-        pipe.final_w.is_multiple_of(PACK_CHUNK) && pipe.frame_sz.is_multiple_of(UNPACK_CHUNK);
-
-    for i in 0..tot_frames {
-        let inp_frame = &all_yuv[i * pipe.frame_sz..(i + 1) * pipe.frame_sz];
-        let of = probe_dec.dec_next();
-
-        let inp_yuv: &[u8] = if inf.is_10b {
-            if unpack_exact {
-                unpack_10b(inp_frame, &mut unpacked_buf);
-            } else {
-                unpack_10b_rem(inp_frame, &mut unpacked_buf, pipe.final_w, pipe.final_h);
-            }
-            &unpacked_buf
-        } else {
-            inp_frame
-        };
-
-        let inp_planes = [
-            inp_yuv.as_ptr(),
-            inp_yuv[y_sz..].as_ptr(),
-            inp_yuv[y_sz + uv_sz..].as_ptr(),
-        ];
-
-        let of = unsafe { &*of };
-        let output_planes = [
-            of.data[0].cast_const(),
-            of.data[1].cast_const(),
-            of.data[2].cast_const(),
-        ];
-        let output_strides = [
-            i64::from(of.linesize[0]),
-            i64::from(of.linesize[1]),
-            i64::from(of.linesize[2]),
-        ];
-
-        last_score = unsafe {
-            vship
-                .comp_cvvdp(inp_planes, output_planes, [ys, cs, cs], output_strides)
-                .unwrap_unchecked()
-        };
-    }
-
-    assert!(
-        last_score > 9.0,
-        "CVVDP score {last_score:.4} < 9.0 for {filename}"
-    );
-}
-
-fn run_test(
-    filename: &str,
-    crop: (u32, u32),
-    hwdec: bool,
-    tq: bool,
-    buffer: usize,
-    tq_mode: bool,
-) -> DecStrat {
+fn run_test(filename: &str, crop: (u32, u32), hwdec: bool, tq: bool, buffer: usize) -> DecStrat {
     let inp = test_path(filename);
     let mut inf = get_vidinf(&inp).unwrap();
     if hwdec {
         let mut dec = VidDecoder::new_hw(&inp, 1).unwrap();
-        inf.y_linesz = unsafe { (*dec.dec_next_hw()).linesize[0] as usize };
+        let f = unsafe { &*dec.dec_next_hw() };
+        inf.y_linesz = f.linesize[0] as usize;
+        inf.uv_linesz = f.linesize[1] as usize;
     }
 
     let mut strat = get_dec_strat(&inf, crop, hwdec, tq);
@@ -538,18 +148,11 @@ fn run_test(
         strat = strat.to_raw();
     }
 
-    let pipe = Pipeline::new(
-        &inf,
-        strat,
-        #[cfg(feature = "vship")]
-        tq_mode.then_some("8-10"),
-    );
+    let pipe = Pipeline::new(&inf, &strat);
 
-    verify_dispatch(strat, &pipe, &inf, tq_mode);
     verify_pipeline(&pipe, &inf, crop, strat);
 
-    let scenes_path = test_path("scenes.txt");
-    let scenes = load_scenes(&scenes_path, inf.frames, false).unwrap();
+    let scenes = load_scenes(&test_path("scenes.txt"), inf.frames, false).unwrap();
     let chnks = chnkify(&scenes);
 
     let ring = Arc::new(SpscRing::new());
@@ -567,7 +170,7 @@ fn run_test(
                 &inp,
                 &inf,
                 &BTreeSet::new(),
-                strat,
+                &strat,
                 &bufs.sink(&send),
             );
             unsafe { spsc_close(rp) };
@@ -592,24 +195,23 @@ fn run_test(
     assert!(tot_frames > 0);
     assert_eq!(all_yuv.len(), tot_frames * pipe.frame_sz);
 
-    let converted = prod_convert(&all_yuv, &pipe, tot_frames);
+    let mut frame0 = all_yuv[..pipe.frame_sz].to_vec();
+    let mut bitstream = Vec::new();
+    let conv = run_chunk(
+        &inf,
+        &pipe,
+        strat,
+        &mut frame0,
+        1,
+        ENC_PARAMS,
+        &mut bitstream,
+    );
+    assert!(!bitstream.is_empty(), "encoder emitted no bitstream");
+
     let reference = ffmpeg_reference(&inp, pipe.final_w, pipe.final_h, crop);
-    let enc_frame_sz = pipe.final_w * pipe.final_h * 3;
-    verify_pix(&reference, &converted[..enc_frame_sz], &pipe);
+    let fed = if conv.is_empty() { &all_yuv } else { &conv };
+    verify_pix(&reference, &fed[..reference.len()], &pipe);
 
-    let ivf = temp_ivf();
-    svt_enc(&converted, &pipe, &inf, tot_frames, &ivf);
-    let ivf_sz = metadata(&ivf).unwrap_or(0);
-    assert!(ivf_sz > 32, "IVF file too small: {ivf_sz}");
-
-    #[cfg(feature = "vship")]
-    if tq_mode {
-        val_tq(&all_yuv, &pipe, &inf, tot_frames, &ivf, filename);
-    }
-    #[cfg(not(feature = "vship"))]
-    let _ = tq_mode;
-
-    _ = remove_file(&ivf);
     strat
 }
 
@@ -625,19 +227,16 @@ fn strat_coverage() {
             | B10CropRem { .. }
             | B10CropFast { .. }
             | B10CropFastRem { .. }
-            | B10CropStride { .. }
-            | B10CropStrideRem { .. }
             | B10Raw
             | B10RawStride
             | B10RawCrop { .. }
             | B10RawCropFast { .. }
-            | B10RawCropStride { .. }
             | B8Fast
             | B8Stride
             | B8Crop { .. }
             | B8CropFast { .. }
-            | B8CropStride { .. }
             | HwNv12
+            | HwNv12Rem
             | HwNv12Stride
             | HwNv12Crop { .. }
             | HwNv12To10
@@ -647,16 +246,13 @@ fn strat_coverage() {
             | HwP010RawRem
             | HwP010RawRemStride
             | HwP010RawCrop { .. }
-            | HwP010RawCropRem { .. }
             | HwP010Pack
             | HwP010PackRem
             | HwP010PackPkRem
             | HwP010PackRemPkRem
             | HwP010PackRemPkRemStride
             | HwP010CropPack { .. }
-            | HwP010CropPackRem { .. }
-            | HwP010CropPackPkRem { .. }
-            | HwP010CropPackRemPkRem { .. } => {}
+            | HwP010CropPackPkRem { .. } => {}
         }
     }
 }
@@ -676,7 +272,7 @@ sw!(
     "8b_718x480.mp4",
     (0, 2),
     1,
-    B8CropStride { .. }
+    B8Crop { .. }
 );
 
 sw!(sw_b10_fast, "10b_768x480.mp4", (0, 0), 1, B10Fast);
@@ -715,14 +311,14 @@ sw!(
     "10b_1936x1080.mp4",
     (0, 8),
     1,
-    B10CropStride { .. }
+    B10Crop { .. }
 );
 sw!(
     sw_b10_crop_stride_rem,
     "10b_720x480.mp4",
     (0, 4),
     1,
-    B10CropStrideRem { .. }
+    B10CropRem { .. }
 );
 
 sw!(sw_b10_raw, "10b_768x480.mp4", (0, 0), 0, B10Raw);
@@ -752,7 +348,7 @@ sw!(
     "10b_1936x1080.mp4",
     (0, 8),
     0,
-    B10RawCropStride { .. }
+    B10RawCrop { .. }
 );
 
 sw!(dim_10b_2w2h, "10b_718x478.mp4", (0, 0), 1, B10StrideRem);
@@ -765,21 +361,15 @@ sw!(
     "10b_718x478.mp4",
     (0, 2),
     1,
-    B10CropStrideRem { .. }
+    B10CropRem { .. }
 );
-sw!(
-    dim_8b_2w2h_crop,
-    "8b_718x478.mp4",
-    (0, 2),
-    1,
-    B8CropStride { .. }
-);
+sw!(dim_8b_2w2h_crop, "8b_718x478.mp4", (0, 2), 1, B8Crop { .. });
 sw!(
     dim_10b_4w8h_crop,
     "10b_720x480.mp4",
     (0, 2),
     1,
-    B10CropStrideRem { .. }
+    B10CropRem { .. }
 );
 sw!(dim_8b_4w8h_crop, "8b_768x480.mp4", (0, 2), 1, B8Crop { .. });
 sw!(
@@ -805,6 +395,7 @@ sw!(
 );
 
 hw!(hw_nv12, "8b_1920x1080.mp4", (0, 0), true, 1, HwNv12);
+hw!(hw_nv12_rem, "8b_1024x576.mp4", (0, 0), true, 1, HwNv12Rem);
 hw!(
     hw_nv12_stride,
     "8b_718x480.mp4",
@@ -864,7 +455,7 @@ hw!(
 );
 hw!(
     hw_p010_pack_rem,
-    "10b_768x480.mp4",
+    "10b_768x432.mp4",
     (0, 0),
     false,
     1,
@@ -872,7 +463,7 @@ hw!(
 );
 hw!(
     hw_p010_pack_rem_pk_rem,
-    "10b_704x480.mp4",
+    "10b_1024x576.mp4",
     (0, 0),
     false,
     1,
@@ -904,20 +495,20 @@ hw!(
     HwP010CropPackPkRem { .. }
 );
 hw!(
-    hw_p010_crop_pack_rem,
+    hw_p010_crop_pack_776,
     "10b_776x480.mp4",
     (0, 4),
     false,
     1,
-    HwP010CropPackRem { .. }
+    HwP010CropPack { .. }
 );
 hw!(
-    hw_p010_crop_pack_rem_pk_rem,
+    hw_p010_crop_pack_pk_rem_1920,
     "10b_1920x1080.mp4",
     (0, 4),
     false,
     1,
-    HwP010CropPackRemPkRem { .. }
+    HwP010CropPackPkRem { .. }
 );
 
 hw!(
@@ -930,7 +521,7 @@ hw!(
 );
 hw!(
     hw_p010_raw_rem,
-    "10b_768x480.mp4",
+    "10b_768x432.mp4",
     (0, 0),
     false,
     0,
@@ -953,12 +544,12 @@ hw!(
     HwP010RawCrop { .. }
 );
 hw!(
-    hw_p010_raw_crop_rem,
+    hw_p010_raw_crop_776,
     "10b_776x480.mp4",
     (0, 4),
     false,
     0,
-    HwP010RawCropRem { .. }
+    HwP010RawCrop { .. }
 );
 
 hw!(
@@ -1019,7 +610,7 @@ mod tq {
             #[test]
             fn $name() {
                 use DecStrat::*;
-                let strat = run_test($file, $crop, false, false, 1, true);
+                let strat = run_test($file, $crop, false, false, 1);
                 assert!(
                     matches!(strat, $strat),
                     "expected {}, got {strat:?}",
@@ -1034,7 +625,7 @@ mod tq {
             #[test]
             fn $name() {
                 use DecStrat::*;
-                let strat = run_test($file, $crop, true, $tq, 1, true);
+                let strat = run_test($file, $crop, true, $tq, 1);
                 assert!(
                     matches!(strat, $strat),
                     "expected {}, got {strat:?}",
@@ -1048,12 +639,7 @@ mod tq {
     tq_sw!(sw_b8_stride, "8b_718x480.mp4", (0, 0), B8Stride);
     tq_sw!(sw_b8_crop_fast, "8b_768x480.mp4", (4, 0), B8CropFast { .. });
     tq_sw!(sw_b8_crop, "8b_768x480.mp4", (0, 4), B8Crop { .. });
-    tq_sw!(
-        sw_b8_crop_stride,
-        "8b_718x480.mp4",
-        (0, 2),
-        B8CropStride { .. }
-    );
+    tq_sw!(sw_b8_crop_stride, "8b_718x480.mp4", (0, 2), B8Crop { .. });
 
     tq_sw!(sw_b10_fast, "10b_768x480.mp4", (0, 0), B10Fast);
     tq_sw!(sw_b10_fast_rem, "10b_704x480.mp4", (0, 0), B10FastRem);
@@ -1081,16 +667,17 @@ mod tq {
         sw_b10_crop_stride,
         "10b_1936x1080.mp4",
         (0, 8),
-        B10CropStride { .. }
+        B10Crop { .. }
     );
     tq_sw!(
         sw_b10_crop_stride_rem,
         "10b_720x480.mp4",
         (0, 4),
-        B10CropStrideRem { .. }
+        B10CropRem { .. }
     );
 
     tq_hw!(hw_nv12, "8b_1920x1080.mp4", (0, 0), true, HwNv12);
+    tq_hw!(hw_nv12_rem, "8b_1024x576.mp4", (0, 0), true, HwNv12Rem);
     tq_hw!(hw_nv12_stride, "8b_718x480.mp4", (0, 0), true, HwNv12Stride);
     tq_hw!(
         hw_nv12_crop,
@@ -1110,14 +697,14 @@ mod tq {
     );
     tq_hw!(
         hw_p010_pack_rem,
-        "10b_768x480.mp4",
+        "10b_768x432.mp4",
         (0, 0),
         false,
         HwP010PackRem
     );
     tq_hw!(
         hw_p010_pack_rem_pk_rem,
-        "10b_704x480.mp4",
+        "10b_1024x576.mp4",
         (0, 0),
         false,
         HwP010PackRemPkRem
@@ -1145,18 +732,18 @@ mod tq {
         HwP010CropPackPkRem { .. }
     );
     tq_hw!(
-        hw_p010_crop_pack_rem,
+        hw_p010_crop_pack_776,
         "10b_776x480.mp4",
         (0, 4),
         false,
-        HwP010CropPackRem { .. }
+        HwP010CropPack { .. }
     );
     tq_hw!(
-        hw_p010_crop_pack_rem_pk_rem,
+        hw_p010_crop_pack_pk_rem_1920,
         "10b_1920x1080.mp4",
         (0, 4),
         false,
-        HwP010CropPackRemPkRem { .. }
+        HwP010CropPackPkRem { .. }
     );
 
     tq_sw!(dim_10b_2w2h, "10b_718x478.mp4", (0, 0), B10StrideRem);
@@ -1168,19 +755,14 @@ mod tq {
         dim_10b_2w2h_crop,
         "10b_718x478.mp4",
         (0, 2),
-        B10CropStrideRem { .. }
+        B10CropRem { .. }
     );
-    tq_sw!(
-        dim_8b_2w2h_crop,
-        "8b_718x478.mp4",
-        (0, 2),
-        B8CropStride { .. }
-    );
+    tq_sw!(dim_8b_2w2h_crop, "8b_718x478.mp4", (0, 2), B8Crop { .. });
     tq_sw!(
         dim_10b_4w8h_crop,
         "10b_720x480.mp4",
         (0, 2),
-        B10CropStrideRem { .. }
+        B10CropRem { .. }
     );
     tq_sw!(dim_8b_4w8h_crop, "8b_768x480.mp4", (0, 2), B8Crop { .. });
     tq_sw!(

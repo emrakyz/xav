@@ -1,31 +1,17 @@
-#[cfg(all(target_os = "linux", feature = "vship"))]
-use alloc::vec::Vec;
-use core::slice::from_raw_parts;
-
 #[cfg(feature = "vship")]
 use crate::progs::ProgsTrack;
 use crate::{
     ffms::{
         DecStrat,
         DecStrat::{
-            B8Crop, B8CropFast, B8CropStride, B10Crop, B10CropFast, B10CropFastRem, B10CropRem,
-            B10CropStride, B10CropStrideRem, B10RawCrop, B10RawCropFast, B10RawCropStride,
-            HwNv12Crop, HwNv12CropTo10, HwNv12To10, HwNv12To10Stride, HwP010CropPack,
-            HwP010CropPackPkRem, HwP010CropPackRem, HwP010CropPackRemPkRem, HwP010RawCrop,
-            HwP010RawCropRem,
+            B8Crop, B8CropFast, B10Crop, B10CropFast, B10CropFastRem, B10CropRem, B10RawCrop,
+            B10RawCropFast, HwNv12Crop, HwNv12CropTo10, HwP010CropPack, HwP010CropPackPkRem,
+            HwP010RawCrop,
         },
-        VidInf, nv12_10b, nv12_10b_rem,
+        VidInf,
     },
-    io::Write as _,
-    pack::{
-        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz, conv_10b, conv_10b_rem,
-        unpack_10b, unpack_10b_rem,
-    },
-    process::ChildStdin,
-    util::assume_unreachable,
+    pack::{SHIFT_CHUNK, UNPACK_CHUNK, calc_8b_sz, calc_packed_sz},
 };
-
-pub type WriteFn = fn(&mut ChildStdin, &[u8], usize, &mut [u8], &Pipeline);
 
 #[cfg(feature = "vship")]
 pub struct MetricProgs<'a> {
@@ -33,56 +19,6 @@ pub struct MetricProgs<'a> {
     pub slot: usize,
     pub crf: f32,
     pub last_score: Option<f32>,
-}
-
-macro_rules! make_write_frames {
-    ($name:ident, $conv:expr) => {
-        pub fn $name(
-            stdin: &mut ChildStdin,
-            frames: &[u8],
-            frame_cnt: usize,
-            buf: &mut [u8],
-            pipe: &Pipeline,
-        ) {
-            let (fw, fh) = (pipe.final_w, pipe.final_h);
-            let frame_sz = pipe.frame_sz;
-            let mut src = frames.as_ptr();
-            for _ in 0..frame_cnt {
-                ($conv)(unsafe { from_raw_parts(src, frame_sz) }, buf, fw, fh);
-                src = unsafe { src.add(frame_sz) };
-                _ = stdin.write_all(buf);
-            }
-        }
-    };
-}
-
-make_write_frames!(
-    write_frames_8b,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b(f, b)
-);
-make_write_frames!(
-    write_frames_8b_rem,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
-);
-make_write_frames!(
-    write_frames_unpack,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
-);
-make_write_frames!(
-    write_frames_unpack_rem,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
-);
-make_write_frames!(
-    write_frames_nv12,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b(f, b, w, h)
-);
-make_write_frames!(
-    write_frames_nv12_rem,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
-);
-
-const fn write_frames_raw(_: &mut ChildStdin, _: &[u8], _: usize, _: &mut [u8], _: &Pipeline) {
-    assume_unreachable();
 }
 
 #[derive(Clone, Copy)]
@@ -126,41 +62,34 @@ pub struct Pipeline {
     pub unpack_buf_sz: usize,
     #[cfg(feature = "vship")]
     pub met_strides: [i64; 3],
-    pub write_frames: WriteFn,
-    #[cfg(feature = "vship")]
-    pub reset_cvvdp: bool,
-    #[cfg(feature = "vship")]
-    pub sort_descending: bool,
+    pub conv_iters: usize,
+    pub unpack_iters: usize,
+    pub nv12_y_iters: usize,
+    pub nv12_c_iters: usize,
 }
 
 impl Pipeline {
     #[must_use]
-    pub fn new(inf: &VidInf, strat: DecStrat, #[cfg(feature = "vship")] tq: Option<&str>) -> Self {
-        let (final_w, final_h) = match strat {
-            B10Crop { cc }
-            | B10CropRem { cc }
-            | B10CropFast { cc }
-            | B10CropFastRem { cc }
-            | B10CropStride { cc }
-            | B10CropStrideRem { cc }
-            | B8Crop { cc }
-            | B8CropFast { cc }
-            | B8CropStride { cc }
-            | B10RawCrop { cc }
-            | B10RawCropFast { cc }
-            | B10RawCropStride { cc }
-            | HwNv12Crop { cc }
-            | HwNv12CropTo10 { cc }
-            | HwP010RawCrop { cc }
-            | HwP010RawCropRem { cc }
-            | HwP010CropPack { cc }
-            | HwP010CropPackPkRem { cc }
-            | HwP010CropPackRem { cc }
-            | HwP010CropPackRemPkRem { cc } => (cc.new_w as usize, cc.new_h as usize),
+    pub const fn new(inf: &VidInf, strat: &DecStrat) -> Self {
+        let (final_w, final_h) = match *strat {
+            B10Crop { ref cc }
+            | B10CropRem { ref cc }
+            | B10CropFast { ref cc }
+            | B10CropFastRem { ref cc }
+            | B8Crop { ref cc }
+            | B8CropFast { ref cc }
+            | B10RawCrop { ref cc }
+            | B10RawCropFast { ref cc }
+            | HwNv12Crop { ref cc }
+            | HwNv12CropTo10 { ref cc }
+            | HwP010RawCrop { ref cc }
+            | HwP010CropPack { ref cc }
+            | HwP010CropPackPkRem { ref cc } => (cc.new_w as usize, cc.new_h as usize),
             _ => (inf.width as usize, inf.height as usize),
         };
 
-        let frame_sz = if strat.is_raw() {
+        let is_raw = strat.is_raw();
+        let frame_sz = if is_raw {
             final_w * final_h * 3
         } else if inf.is_10b {
             calc_packed_sz(final_w as u32, final_h as u32)
@@ -173,7 +102,6 @@ impl Pipeline {
         let met = Planes::new(final_w, final_h, pix_sz);
         let enc = Planes::new(final_w, final_h, 2);
 
-        let is_raw = strat.is_raw();
         let conv_buf_sz = if is_raw { 0 } else { enc.frame_sz };
 
         #[cfg(feature = "vship")]
@@ -184,36 +112,6 @@ impl Pipeline {
             met.c_stride as i64,
             met.c_stride as i64,
         ];
-
-        let has_rem = inf.is_10b
-            && (!final_w.is_multiple_of(PACK_CHUNK) || !frame_sz.is_multiple_of(UNPACK_CHUNK));
-
-        let is_nv12_10 = matches!(strat, HwNv12To10 | HwNv12To10Stride | HwNv12CropTo10 { .. });
-
-        let write_frames: WriteFn = if is_nv12_10 {
-            let y_ok = (final_w * final_h).is_multiple_of(SHIFT_CHUNK);
-            let uv_ok = (final_w / 2 * (final_h / 2)).is_multiple_of(SHIFT_CHUNK * 2);
-            if y_ok && uv_ok {
-                write_frames_nv12
-            } else {
-                write_frames_nv12_rem
-            }
-        } else if is_raw {
-            write_frames_raw
-        } else if !is_10b_out {
-            if frame_sz.is_multiple_of(SHIFT_CHUNK) {
-                write_frames_8b
-            } else {
-                write_frames_8b_rem
-            }
-        } else if has_rem {
-            write_frames_unpack_rem
-        } else {
-            write_frames_unpack
-        };
-
-        #[cfg(feature = "vship")]
-        let (reset_cvvdp, sort_descending) = resolve_metric(tq);
 
         Self {
             final_w,
@@ -228,34 +126,10 @@ impl Pipeline {
             unpack_buf_sz,
             #[cfg(feature = "vship")]
             met_strides,
-            write_frames,
-            #[cfg(feature = "vship")]
-            reset_cvvdp,
-            #[cfg(feature = "vship")]
-            sort_descending,
+            conv_iters: frame_sz / SHIFT_CHUNK,
+            unpack_iters: frame_sz / UNPACK_CHUNK,
+            nv12_y_iters: met.y_sz / SHIFT_CHUNK,
+            nv12_c_iters: met.uv_sz / (2 * SHIFT_CHUNK),
         }
     }
-}
-
-#[cfg(feature = "vship")]
-#[cold]
-fn resolve_metric(tq: Option<&str>) -> (bool, bool) {
-    tq.map_or((false, false), |tq| {
-        let tq_parts: Vec<f32> = tq.split('-').filter_map(|s| s.parse().ok()).collect();
-        let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
-        (tq_target > 8.0 && tq_target <= 10.0, tq_target < 8.0)
-    })
-}
-
-#[cfg(test)]
-pub mod test_access {
-    use super::*;
-
-    pub const WRITE_RAW: WriteFn = write_frames_raw;
-    pub const WRITE_8B: WriteFn = write_frames_8b;
-    pub const WRITE_8B_REM: WriteFn = write_frames_8b_rem;
-    pub const WRITE_UNPACK: WriteFn = write_frames_unpack;
-    pub const WRITE_UNPACK_REM: WriteFn = write_frames_unpack_rem;
-    pub const WRITE_NV12: WriteFn = write_frames_nv12;
-    pub const WRITE_NV12_REM: WriteFn = write_frames_nv12_rem;
 }

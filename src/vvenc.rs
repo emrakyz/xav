@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 use core::{
     ffi::{c_char, c_int, c_void},
     hint::cold_path,
-    mem::{MaybeUninit, offset_of, size_of},
-    ptr::{copy_nonoverlapping, null_mut},
+    mem::{offset_of, size_of},
+    ptr::null_mut,
     slice::from_raw_parts,
     str::from_utf8_unchecked,
 };
@@ -13,8 +13,9 @@ use crate::error::{eprint, fatal};
 // build.rs asserts this against vvencCfg.h
 pub const VVENC_CFG_SIZE: usize = 47312;
 pub const VVENC_TQ_HDR: usize = size_of::<u64>();
+pub const VVENC_MAX_QP: i32 = 63;
 
-const _: [(); 0] = [(); VVENC_CFG_SIZE % VVENC_TQ_HDR];
+const _: [(); 0] = [(); VVENC_CFG_SIZE % size_of::<u64>()];
 
 pub const VVENC_OK: c_int = 0;
 const VVENC_WARNING: c_int = 2;
@@ -164,16 +165,9 @@ pub fn vvenc_derive(dst: *mut u8) {
 }
 
 // vvenc_config holds doubles and pointers: the copy the encoder reads must be 8-aligned
-#[repr(C, align(8))]
-struct CfgBuf([u8; VVENC_CFG_SIZE]);
-
-pub fn vvenc_open(tmpl: &[u8], frames: usize) -> *mut c_void {
-    let mut cfg = MaybeUninit::<CfgBuf>::uninit();
-    let p = cfg.as_mut_ptr().cast::<u8>();
-    unsafe {
-        copy_nonoverlapping(tmpl.as_ptr(), p, VVENC_CFG_SIZE);
-        (*p.cast::<CfgHead>()).frames_to_be_encoded = frames as i32;
-    }
+#[inline]
+pub fn vvenc_open(p: *mut u8, frames: usize) -> *mut c_void {
+    unsafe { (*p.cast::<CfgHead>()).frames_to_be_encoded = frames as i32 };
 
     let enc = unsafe { vvenc_encoder_create() };
     let ret = unsafe { vvenc_encoder_open(enc, p) };

@@ -1,23 +1,26 @@
 #[cfg(target_os = "linux")]
 use alloc::vec::Vec;
-#[cfg(feature = "x265")]
-use core::ptr::write_bytes;
-use core::slice::from_raw_parts;
+#[cfg(any(feature = "x264", feature = "x265"))]
+use core::{
+    ffi::{CStr, c_int},
+    ptr::write_bytes,
+};
 
+#[cfg(any(feature = "x264", feature = "x265"))]
+use crate::annexb::{AnnexbDec, PAD};
+#[cfg(feature = "x264")]
+use crate::ffms::AV_CODEC_ID_H264;
+#[cfg(feature = "x265")]
+use crate::ffms::AV_CODEC_ID_HEVC;
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::fmath::{FloatExt as _, Powf as _};
-#[cfg(feature = "x265")]
-use crate::hevc::{HevcDec, PAD};
 #[cfg(feature = "vvenc")]
 use crate::vvdec::VvdecDec;
 use crate::{
     dav1d::Dav1dDec,
-    enc::SplitPath,
     error::fatal,
-    ffms::VidDecoder,
-    fs::metadata,
     interp::{fc_spline, lerp, pchip},
-    pack::{unpack_10b, unpack_10b_rem},
+    pack::{xav_unpack_10b, xav_unpack_10b_rem},
     pipeline::{MetricProgs, Pipeline},
     progs::Tracker,
     vship::VshipProcessor,
@@ -28,10 +31,8 @@ pub struct ProbeDec {
     dav1d: Option<Dav1dDec>,
     #[cfg(feature = "vvenc")]
     vvdec: Option<VvdecDec>,
-    #[cfg(feature = "x265")]
-    hevc: Option<HevcDec>,
-    vid: Option<VidDecoder>,
-    threads: i32,
+    #[cfg(any(feature = "x264", feature = "x265"))]
+    annexb: Option<AnnexbDec>,
 }
 
 pub fn make_dav1d(threads: i32, w: u32, h: u32) -> ProbeDec {
@@ -39,10 +40,8 @@ pub fn make_dav1d(threads: i32, w: u32, h: u32) -> ProbeDec {
         dav1d: Some(Dav1dDec::new(threads, w, h).unwrap_or_else(|e| fatal(e))),
         #[cfg(feature = "vvenc")]
         vvdec: None,
-        #[cfg(feature = "x265")]
-        hevc: None,
-        vid: None,
-        threads,
+        #[cfg(any(feature = "x264", feature = "x265"))]
+        annexb: None,
     }
 }
 
@@ -51,98 +50,82 @@ pub fn make_vvdec(threads: i32, _: u32, _: u32) -> ProbeDec {
     ProbeDec {
         dav1d: None,
         vvdec: Some(VvdecDec::new(threads).unwrap_or_else(|e| fatal(e))),
-        #[cfg(feature = "x265")]
-        hevc: None,
-        vid: None,
-        threads,
+        #[cfg(any(feature = "x264", feature = "x265"))]
+        annexb: None,
+    }
+}
+
+#[cfg(any(feature = "x264", feature = "x265"))]
+fn make_annexb(threads: i32, id: c_int, name: &'static CStr) -> ProbeDec {
+    ProbeDec {
+        dav1d: None,
+        #[cfg(feature = "vvenc")]
+        vvdec: None,
+        annexb: Some(AnnexbDec::new(threads, id, name).unwrap_or_else(|e| fatal(e))),
     }
 }
 
 #[cfg(feature = "x265")]
 pub fn make_hevc(threads: i32, _: u32, _: u32) -> ProbeDec {
-    ProbeDec {
-        dav1d: None,
-        #[cfg(feature = "vvenc")]
-        vvdec: None,
-        hevc: Some(HevcDec::new(threads).unwrap_or_else(|e| fatal(e))),
-        vid: None,
-        threads,
-    }
+    make_annexb(threads, AV_CODEC_ID_HEVC, c"hevc")
 }
 
-pub const fn make_ff(threads: i32, _: u32, _: u32) -> ProbeDec {
-    ProbeDec {
-        dav1d: None,
-        #[cfg(feature = "vvenc")]
-        vvdec: None,
-        #[cfg(feature = "x265")]
-        hevc: None,
-        vid: None,
-        threads,
-    }
+#[cfg(feature = "x264")]
+pub fn make_avc(threads: i32, _: u32, _: u32) -> ProbeDec {
+    make_annexb(threads, AV_CODEC_ID_H264, c"h264")
 }
 
-pub fn prep_dav1d(d: &mut ProbeDec, pkg: &WorkPkg, _: &mut SplitPath, _: u16, _: f32) -> u64 {
+pub fn prep_dav1d(d: &mut ProbeDec, pkg: &WorkPkg, _: u16, _: f32) -> u64 {
     unsafe { d.dav1d.as_mut().unwrap_unchecked() }.load(&pkg.probe, pkg.frame_cnt);
     pkg.probe.len() as u64
 }
 
-pub fn prep_ff(d: &mut ProbeDec, _: &WorkPkg, sp: &mut SplitPath, idx: u16, crf: f32) -> u64 {
-    let pp = sp.set(idx, crf);
-    let sz = metadata(pp).unwrap_or(0);
-    d.vid = Some(VidDecoder::new(pp, d.threads).unwrap_or_else(|e| fatal(e)));
-    sz
-}
-
 #[cfg(feature = "vvenc")]
-pub fn prep_vvdec(d: &mut ProbeDec, pkg: &WorkPkg, _: &mut SplitPath, _: u16, _: f32) -> u64 {
+pub fn prep_vvdec(d: &mut ProbeDec, pkg: &WorkPkg, _: u16, _: f32) -> u64 {
     unsafe { d.vvdec.as_mut().unwrap_unchecked() }.load(&pkg.probe, pkg.frame_cnt);
     pkg.probe.len() as u64
 }
 
-#[cfg(feature = "x265")]
-pub fn prep_hevc(d: &mut ProbeDec, pkg: &WorkPkg, _: &mut SplitPath, _: u16, _: f32) -> u64 {
-    unsafe { d.hevc.as_mut().unwrap_unchecked() }.load(&pkg.probe);
+#[cfg(any(feature = "x264", feature = "x265"))]
+pub fn prep_annexb(d: &mut ProbeDec, pkg: &WorkPkg, _: u16, _: f32) -> u64 {
+    unsafe { d.annexb.as_mut().unwrap_unchecked() }.load(&pkg.probe);
     pkg.probe.len() as u64
 }
 
 // bitreader reads past an au; PAD zeros in spare cap
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 pub fn pad_probe(probe: &mut Vec<u8>) {
     let n = probe.len();
     probe.reserve(PAD);
     unsafe { write_bytes(probe.as_mut_ptr().add(n), 0, PAD) };
 }
 
-fn frame_dav1d(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
+fn frame_dav1d(d: &mut ProbeDec) -> [*const u8; 3] {
     unsafe { d.dav1d.as_mut().unwrap_unchecked() }.dec_next()
 }
 
+const fn strides_dav1d(d: &ProbeDec) -> [i64; 3] {
+    unsafe { d.dav1d.as_ref().unwrap_unchecked() }.strides()
+}
+
 #[cfg(feature = "vvenc")]
-fn frame_vvdec(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
+fn frame_vvdec(d: &mut ProbeDec) -> [*const u8; 3] {
     unsafe { d.vvdec.as_mut().unwrap_unchecked() }.dec_next()
 }
 
-#[cfg(feature = "x265")]
-fn frame_hevc(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
-    unsafe { d.hevc.as_mut().unwrap_unchecked() }.dec_next()
+#[cfg(feature = "vvenc")]
+fn strides_vvdec(d: &ProbeDec) -> [i64; 3] {
+    unsafe { d.vvdec.as_ref().unwrap_unchecked() }.strides()
 }
 
-fn frame_ff(d: &mut ProbeDec) -> ([*const u8; 3], [i64; 3]) {
-    let vid = unsafe { d.vid.as_mut().unwrap_unchecked() };
-    let of = unsafe { &*vid.dec_next() };
-    (
-        [
-            of.data[0].cast_const(),
-            of.data[1].cast_const(),
-            of.data[2].cast_const(),
-        ],
-        [
-            i64::from(of.linesize[0]),
-            i64::from(of.linesize[1]),
-            i64::from(of.linesize[2]),
-        ],
-    )
+#[cfg(any(feature = "x264", feature = "x265"))]
+fn frame_annexb(d: &mut ProbeDec) -> [*const u8; 3] {
+    unsafe { d.annexb.as_mut().unwrap_unchecked() }.dec_next()
+}
+
+#[cfg(any(feature = "x264", feature = "x265"))]
+fn strides_annexb(d: &ProbeDec) -> [i64; 3] {
+    unsafe { d.annexb.as_ref().unwrap_unchecked() }.strides()
 }
 
 fn comp_ssimu2(
@@ -204,10 +187,6 @@ pub struct Probe {
     pub score: f32,
 }
 
-fn round_crf(crf: f32) -> f32 {
-    (crf * 4.0).round() / 4.0
-}
-
 pub struct Interp {
     pairs: Vec<(f32, f32)>,
     x: Vec<f32>,
@@ -238,13 +217,11 @@ pub fn interpolate_crf(probes: &[Probe], target: f32, round: u8, sc: &mut Interp
     sc.x.extend(sc.pairs.iter().map(|p| p.0));
     sc.y.extend(sc.pairs.iter().map(|p| p.1));
 
-    let result = match round {
+    match round {
         3 => lerp(&sc.x, &sc.y, target),
         4 => fc_spline(&sc.x, &sc.y, target),
         _ => pchip(&sc.x, &sc.y, target),
-    };
-
-    round_crf(result)
+    }
 }
 
 pub struct MetricBufs<'a> {
@@ -254,7 +231,15 @@ pub struct MetricBufs<'a> {
 }
 
 macro_rules! calc_metric_impl {
-    ($name:ident, $is_10b:expr, $is_cvvdp:expr, $unpack:expr, $frame:expr, $compute:expr) => {
+    (
+        $name:ident,
+        $is_10b:expr,
+        $is_cvvdp:expr,
+        $unpack:expr,
+        $frame:expr,
+        $strides:expr,
+        $compute:expr
+    ) => {
         pub fn $name(
             pkg: &WorkPkg,
             dec: &mut ProbeDec,
@@ -282,55 +267,59 @@ macro_rules! calc_metric_impl {
                 Some((mp.crf, mp.last_score)),
             );
 
-            let (fw, fh) = (pipe.final_w, pipe.final_h);
             let (y_sz, cr_off) = (pipe.met.y_sz, pipe.met.cr_off);
+            let in_strides = pipe.met_strides;
             let mut src = pkg.yuv.as_ptr();
 
+            let mut out_strides = [0i64; 3];
+            let dst = scores.as_mut_ptr();
+
             macro_rules! process_frame {
-                ($frame_idx: expr) => {{
+                ($frame_idx: expr,$first: expr) => {{
                     tk.set($frame_idx + 1);
 
-                    let input_frame = unsafe { from_raw_parts(src, frame_sz) };
-                    src = unsafe { src.add(frame_sz) };
-                    let (output_planes, output_strides) = ($frame)(dec);
+                    let output_planes = ($frame)(dec);
+                    if $first {
+                        out_strides = ($strides)(dec);
+                    }
 
                     let input_planes = if $is_10b {
-                        ($unpack)(input_frame, unpacked_buf, fw, fh);
+                        ($unpack)(src, unpacked_buf.as_mut_ptr(), pipe);
                         planes
                     } else {
-                        let b = input_frame.as_ptr();
-                        unsafe { [b, b.add(y_sz), b.add(cr_off)] }
+                        unsafe { [src, src.add(y_sz), src.add(cr_off)] }
                     };
+                    src = unsafe { src.add(frame_sz) };
 
-                    scores.push(($compute)(
-                        vship,
-                        input_planes,
-                        output_planes,
-                        pipe.met_strides,
-                        output_strides,
-                    ));
+                    let score =
+                        ($compute)(vship, input_planes, output_planes, in_strides, out_strides);
+                    unsafe { dst.add($frame_idx).write(score) };
                 }};
             }
 
+            process_frame!(0, true);
             if cvvdp_per_frame {
-                for frame_idx in 0..pkg.frame_cnt {
-                    process_frame!(frame_idx);
+                vship.reset_cvvdp_score();
+                for frame_idx in 1..pkg.frame_cnt {
+                    process_frame!(frame_idx, false);
                     vship.reset_cvvdp_score();
                 }
             } else {
-                for frame_idx in 0..pkg.frame_cnt {
-                    process_frame!(frame_idx);
+                for frame_idx in 1..pkg.frame_cnt {
+                    process_frame!(frame_idx, false);
                 }
             }
 
-            (agg.f)(scores, agg.pctl)
+            tk.freeze();
+            unsafe { scores.set_len(pkg.frame_cnt) };
+            (agg.f)(scores, agg.frac)
         }
     };
 }
 
 pub struct Agg {
     f: fn(&mut [f32], f32) -> f32,
-    pctl: f32,
+    frac: f32,
     per_frame: bool,
 }
 
@@ -339,26 +328,29 @@ impl Agg {
     #[inline(never)]
     #[must_use]
     pub fn new(mode: &str, reset_cvvdp: bool, sort_desc: bool) -> Self {
-        let pct = mode.strip_prefix('p').and_then(|p| p.parse::<f32>().ok());
+        let pct = mode
+            .strip_prefix('p')
+            .and_then(|p| p.parse::<f32>().ok())
+            .map(|p| p / 100.0);
         match (reset_cvvdp, pct) {
             (true, Some(p)) => Self {
                 f: agg_cvvdp_pct,
-                pctl: p,
+                frac: p,
                 per_frame: true,
             },
             (true, None) => Self {
                 f: agg_last,
-                pctl: 0.0,
+                frac: 0.0,
                 per_frame: false,
             },
             (false, Some(p)) => Self {
                 f: if sort_desc { agg_pct_desc } else { agg_pct_asc },
-                pctl: p,
+                frac: p,
                 per_frame: false,
             },
             (false, None) => Self {
                 f: agg_mean,
-                pctl: 0.0,
+                frac: 0.0,
                 per_frame: false,
             },
         }
@@ -366,113 +358,104 @@ impl Agg {
 }
 
 // cvvdp accumulates to last frame
-fn agg_last(scores: &mut [f32], _pctl: f32) -> f32 {
-    scores.last().copied().unwrap_or(0.0)
+const fn agg_last(scores: &mut [f32], _frac: f32) -> f32 {
+    unsafe { *scores.last().unwrap_unchecked() }
 }
 
-fn agg_mean(scores: &mut [f32], _pctl: f32) -> f32 {
+fn agg_mean(scores: &mut [f32], _frac: f32) -> f32 {
     scores.iter().sum::<f32>() / scores.len() as f32
 }
 
 // non-linear jod space
-fn agg_cvvdp_pct(scores: &mut [f32], pctl: f32) -> f32 {
+fn agg_cvvdp_pct(scores: &mut [f32], frac: f32) -> f32 {
     for s in &mut *scores {
         *s = inverse_jod(*s);
     }
     scores.sort_unstable_by(|a, b| b.total_cmp(a));
-    jod(pct_mean(scores, pctl))
+    jod(pct_mean(scores, frac))
 }
 
-fn agg_pct_desc(scores: &mut [f32], pctl: f32) -> f32 {
+fn agg_pct_desc(scores: &mut [f32], frac: f32) -> f32 {
     scores.sort_unstable_by(|a, b| b.total_cmp(a));
-    pct_mean(scores, pctl)
+    pct_mean(scores, frac)
 }
 
-fn agg_pct_asc(scores: &mut [f32], pctl: f32) -> f32 {
+fn agg_pct_asc(scores: &mut [f32], frac: f32) -> f32 {
     scores.sort_unstable_by(f32::total_cmp);
-    pct_mean(scores, pctl)
+    pct_mean(scores, frac)
 }
 
 #[inline]
-fn pct_mean(scores: &[f32], pctl: f32) -> f32 {
-    let cutoff = ((scores.len() as f32 * pctl / 100.0).ceil() as usize).min(scores.len());
-    scores[..cutoff].iter().sum::<f32>() / cutoff as f32
+fn pct_mean(scores: &[f32], frac: f32) -> f32 {
+    let cutoff = ((scores.len() as f32 * frac).ceil() as usize).min(scores.len());
+    unsafe { scores.get_unchecked(..cutoff) }
+        .iter()
+        .sum::<f32>()
+        / cutoff as f32
 }
 
 macro_rules! make_metric_shapes {
-    ($compute:expr, $cv:expr, $frame:ident, $b8:ident, $p10:ident, $r10:ident) => {
+    ($compute:expr, $cv:expr, $frame:ident, $str:ident, $b8:ident, $p10:ident, $r10:ident) => {
         calc_metric_impl!(
             $b8,
             false,
             $cv,
-            |_: &[u8], _: &mut [u8], _: usize, _: usize| (),
+            |_: *const u8, _: *mut u8, _: &Pipeline| (),
             $frame,
+            $str,
             $compute
         );
         calc_metric_impl!(
             $p10,
             true,
             $cv,
-            |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b),
+            |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+                xav_unpack_10b(s, d, p.unpack_iters);
+            },
             $frame,
+            $str,
             $compute
         );
         calc_metric_impl!(
             $r10,
             true,
             $cv,
-            |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h),
+            |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+                xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+            },
             $frame,
+            $str,
             $compute
         );
     };
 }
 
-macro_rules! make_metric_set {
-    (
-        $compute:expr,
-        $cv:expr,
-        $b8d:ident,
-        $b8f:ident,
-        $p10d:ident,
-        $p10f:ident,
-        $r10d:ident,
-        $r10f:ident
-    ) => {
-        make_metric_shapes!($compute, $cv, frame_dav1d, $b8d, $p10d, $r10d);
-        make_metric_shapes!($compute, $cv, frame_ff, $b8f, $p10f, $r10f);
-    };
-}
-
-make_metric_set!(
+make_metric_shapes!(
     comp_ssimu2,
     false,
+    frame_dav1d,
+    strides_dav1d,
     calc_ssimu2_8b_dav1d,
-    calc_ssimu2_8b_ff,
     calc_ssimu2_10b_dav1d,
-    calc_ssimu2_10b_ff,
-    calc_ssimu2_rem_dav1d,
-    calc_ssimu2_rem_ff
+    calc_ssimu2_rem_dav1d
 );
-make_metric_set!(
+make_metric_shapes!(
     comp_butter,
     false,
+    frame_dav1d,
+    strides_dav1d,
     calc_butter_8b_dav1d,
-    calc_butter_8b_ff,
     calc_butter_10b_dav1d,
-    calc_butter_10b_ff,
-    calc_butter_rem_dav1d,
-    calc_butter_rem_ff
+    calc_butter_rem_dav1d
 );
-make_metric_set!(
+make_metric_shapes!(
     comp_cvvdp,
     true,
+    frame_dav1d,
+    strides_dav1d,
     calc_cvvdp_8b_dav1d,
-    calc_cvvdp_8b_ff,
     calc_cvvdp_10b_dav1d,
-    calc_cvvdp_10b_ff,
-    calc_cvvdp_rem_dav1d,
-    calc_cvvdp_rem_ff
+    calc_cvvdp_rem_dav1d
 );
 
 #[cfg(feature = "vvenc")]
@@ -480,6 +463,7 @@ make_metric_shapes!(
     comp_ssimu2,
     false,
     frame_vvdec,
+    strides_vvdec,
     calc_ssimu2_8b_vvdec,
     calc_ssimu2_10b_vvdec,
     calc_ssimu2_rem_vvdec
@@ -489,6 +473,7 @@ make_metric_shapes!(
     comp_butter,
     false,
     frame_vvdec,
+    strides_vvdec,
     calc_butter_8b_vvdec,
     calc_butter_10b_vvdec,
     calc_butter_rem_vvdec
@@ -498,35 +483,39 @@ make_metric_shapes!(
     comp_cvvdp,
     true,
     frame_vvdec,
+    strides_vvdec,
     calc_cvvdp_8b_vvdec,
     calc_cvvdp_10b_vvdec,
     calc_cvvdp_rem_vvdec
 );
 
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 make_metric_shapes!(
     comp_ssimu2,
     false,
-    frame_hevc,
-    calc_ssimu2_8b_hevc,
-    calc_ssimu2_10b_hevc,
-    calc_ssimu2_rem_hevc
+    frame_annexb,
+    strides_annexb,
+    calc_ssimu2_8b_annexb,
+    calc_ssimu2_10b_annexb,
+    calc_ssimu2_rem_annexb
 );
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 make_metric_shapes!(
     comp_butter,
     false,
-    frame_hevc,
-    calc_butter_8b_hevc,
-    calc_butter_10b_hevc,
-    calc_butter_rem_hevc
+    frame_annexb,
+    strides_annexb,
+    calc_butter_8b_annexb,
+    calc_butter_10b_annexb,
+    calc_butter_rem_annexb
 );
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 make_metric_shapes!(
     comp_cvvdp,
     true,
-    frame_hevc,
-    calc_cvvdp_8b_hevc,
-    calc_cvvdp_10b_hevc,
-    calc_cvvdp_rem_hevc
+    frame_annexb,
+    strides_annexb,
+    calc_cvvdp_8b_annexb,
+    calc_cvvdp_10b_annexb,
+    calc_cvvdp_rem_annexb
 );

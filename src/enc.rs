@@ -5,17 +5,19 @@ use alloc::string::String;
 #[cfg(target_os = "linux")]
 use alloc::vec::Vec;
 use alloc::{boxed::Box, collections::BTreeSet, sync::Arc};
-#[cfg(any(feature = "avm", feature = "vvenc", feature = "x265"))]
+#[cfg(feature = "x264")]
+use core::ffi::c_int;
+#[cfg(any(feature = "avm", feature = "vvenc", feature = "x264", feature = "x265"))]
 use core::ffi::c_void;
 #[cfg(any(feature = "avm", feature = "vship", feature = "x265"))]
 use core::ptr::null;
-#[cfg(feature = "vvenc")]
+#[cfg(any(feature = "avm", feature = "vvenc"))]
 use core::ptr::write_bytes;
 #[cfg(feature = "vship")]
 use core::{fmt::Write as _, mem::swap};
 use core::{
     hint::cold_path,
-    mem::{MaybeUninit, size_of, take, transmute, zeroed},
+    mem::{MaybeUninit, size_of, transmute, zeroed},
     ptr::{copy_nonoverlapping, null_mut},
     slice::from_raw_parts,
     sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed},
@@ -32,13 +34,21 @@ use crate::avm::{
 };
 #[cfg(feature = "vship")]
 use crate::chan::{mpmc_close, mpmc_recv, mpmc_send, mpsc_recv, mpsc_send};
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+use crate::encoder::ParamBufs;
+#[cfg(any(feature = "x264", feature = "x265"))]
+use crate::encoder::{H26xArgv, h26x_zone_args};
 #[cfg(all(target_os = "linux", not(test), feature = "vship"))]
 use crate::fmath::FloatExt as _;
+#[cfg(all(feature = "x264", feature = "vship"))]
+use crate::tq::make_avc;
 #[cfg(all(feature = "x265", feature = "vship"))]
+use crate::tq::make_hevc;
+#[cfg(all(feature = "vship", any(feature = "x264", feature = "x265")))]
 use crate::tq::{
-    calc_butter_8b_hevc, calc_butter_10b_hevc, calc_butter_rem_hevc, calc_cvvdp_8b_hevc,
-    calc_cvvdp_10b_hevc, calc_cvvdp_rem_hevc, calc_ssimu2_8b_hevc, calc_ssimu2_10b_hevc,
-    calc_ssimu2_rem_hevc, make_hevc, pad_probe, prep_hevc,
+    calc_butter_8b_annexb, calc_butter_10b_annexb, calc_butter_rem_annexb, calc_cvvdp_8b_annexb,
+    calc_cvvdp_10b_annexb, calc_cvvdp_rem_annexb, calc_ssimu2_8b_annexb, calc_ssimu2_10b_annexb,
+    calc_ssimu2_rem_annexb, pad_probe, prep_annexb,
 };
 #[cfg(all(feature = "vvenc", feature = "vship"))]
 use crate::tq::{
@@ -46,27 +56,33 @@ use crate::tq::{
     calc_cvvdp_10b_vvdec, calc_cvvdp_rem_vvdec, calc_ssimu2_8b_vvdec, calc_ssimu2_10b_vvdec,
     calc_ssimu2_rem_vvdec, make_vvdec, prep_vvdec,
 };
+#[cfg(not(all(feature = "avm", feature = "vvenc", feature = "x264", feature = "x265")))]
+use crate::util::assume_unreachable;
+#[cfg(all(feature = "x264", feature = "vship"))]
+use crate::x264::x264_crf;
+#[cfg(all(feature = "x265", feature = "vship"))]
+use crate::x265::x265_crf;
 use crate::{
     Args,
     chan::{Semaphore, SeqRing, sem_release, spmc_close, spmc_recv, spmc_send},
-    chunk::{Chunk, ChunkComp, MAX_CHNK_FRAMES, ResumeInf, get_resume, zone_tmpls},
+    chunk::{Chunk, ChunkComp, ResumeInf, get_resume, zone_tmpls},
     dec::{Bufs, dec_chnks, dec_pipe},
     encoder::{
         EncConfig, Encoder,
         Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
-        SVT_CONF_SIZE, make_enc_cmd, parse_svt_params, set_svt_base,
+        SVT_CONF_SIZE, Tmpl, parse_svt_params, set_svt_base,
     },
     error::fatal,
     ffms::{DecStrat, VidInf, nv12_10b, nv12_10b_rem},
-    fs::{File, metadata},
+    fs::File,
     io::{BUF as SINK, BufWriter, Write},
     pack::{
-        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, conv_10b, conv_10b_rem, unpack_10b, unpack_10b_rem,
+        PACK_CHUNK, SHIFT_CHUNK, UNPACK_CHUNK, xav_conv_10b, xav_conv_10b_rem, xav_unpack_10b,
+        xav_unpack_10b_rem,
     },
     path::{Path, leak_path},
     pipeline::Pipeline,
-    process::Child,
-    progs::{ProgsTrack, Tracker, Watch},
+    progs::{ProgsTrack, Tracker},
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
         EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
@@ -75,44 +91,49 @@ use crate::{
     },
     sync::{Mutex, OnceLock},
     thread::{JoinHandle, spawn},
-    util::assume_unreachable,
     worker::WorkPkg,
     y4m::PipeReader,
 };
 #[cfg(feature = "vship")]
 use crate::{
     atofu::{TqChunkLine, parse_chunks},
-    fs::{File as FsFile, OpenOptions, copy, read, write},
+    chunk::MAX_CHNK_FRAMES,
+    fs::{File as FsFile, OpenOptions, read, write},
     pipeline::MetricProgs,
     thread::{PHandle, available_parallelism, pspawn},
     tq::{
-        Agg, MetricBufs, Probe, ProbeDec, calc_butter_8b_dav1d, calc_butter_8b_ff,
-        calc_butter_10b_dav1d, calc_butter_10b_ff, calc_butter_rem_dav1d, calc_butter_rem_ff,
-        calc_cvvdp_8b_dav1d, calc_cvvdp_8b_ff, calc_cvvdp_10b_dav1d, calc_cvvdp_10b_ff,
-        calc_cvvdp_rem_dav1d, calc_cvvdp_rem_ff, calc_ssimu2_8b_dav1d, calc_ssimu2_8b_ff,
-        calc_ssimu2_10b_dav1d, calc_ssimu2_10b_ff, calc_ssimu2_rem_dav1d, calc_ssimu2_rem_ff,
-        interpolate_crf, make_dav1d, make_ff, prep_dav1d, prep_ff,
+        Agg, MetricBufs, Probe, calc_butter_8b_dav1d, calc_butter_10b_dav1d, calc_butter_rem_dav1d,
+        calc_cvvdp_8b_dav1d, calc_cvvdp_10b_dav1d, calc_cvvdp_rem_dav1d, calc_ssimu2_8b_dav1d,
+        calc_ssimu2_10b_dav1d, calc_ssimu2_rem_dav1d, interpolate_crf, make_dav1d, prep_dav1d,
     },
     vship::{Disp, PinnedBuf, VshipProcessor, init_device},
     worker::TQState,
 };
 #[cfg(feature = "vship")]
 use crate::{encoder::set_svt_crf, interp::bisect};
-#[cfg(feature = "vvenc")]
+#[cfg(feature = "x264")]
 use crate::{
-    encoder::{Argv, vvenc_args, vvenc_zone_args},
-    vvenc::{
-        VVENC_CFG_SIZE, VVENC_OK, VVENC_TQ_HDR, VvencAccessUnit, VvencYuvBuffer, VvencYuvPlane,
-        vvenc_derive, vvenc_encode, vvenc_encoder_close, vvenc_open, vvenc_parse, vvenc_qp,
-        vvenc_simd,
+    encoder::x264_args,
+    x264::{
+        X264_PARAM_SIZE, X264Nal, X264Pics, x264_encoder_close, x264_encoder_encode, x264_open,
+        x264_parse, x264_simd,
     },
 };
 #[cfg(feature = "x265")]
 use crate::{
-    encoder::{X265Argv, x265_args, x265_zone_args},
+    encoder::x265_args,
     x265::{
         X265_PARAM_SIZE, X265Nal, X265Pic, x265_encoder_close, x265_encoder_encode,
         x265_encoder_headers, x265_open, x265_parse, x265_simd,
+    },
+};
+#[cfg(feature = "vvenc")]
+use crate::{
+    encoder::{Argv, vvenc_args, vvenc_zone_args},
+    vvenc::{
+        VVENC_CFG_SIZE, VVENC_MAX_QP, VVENC_OK, VVENC_TQ_HDR, VvencAccessUnit, VvencYuvBuffer,
+        VvencYuvPlane, vvenc_derive, vvenc_encode, vvenc_encoder_close, vvenc_open, vvenc_parse,
+        vvenc_qp, vvenc_simd,
     },
 };
 
@@ -228,138 +249,6 @@ impl OutPath {
     }
 }
 
-#[cfg(feature = "vship")]
-#[inline]
-fn hundredths(crf: f32) -> u32 {
-    (crf * 100.0).round() as u32
-}
-
-// "_NNN.NN" as eight packed ascii bytes
-#[cfg(feature = "vship")]
-fn crf_digits(crf: f32) -> u64 {
-    let h0 = u64::from(hundredths(crf));
-    let h1 = (h0 * 0xCCCC_CCCD) >> 35;
-    let h2 = (h1 * 0xCCCC_CCCD) >> 35;
-    let h3 = (h2 * 0xCCCC_CCCD) >> 35;
-    let h4 = (h3 * 0xCCCC_CCCD) >> 35;
-    0x0030_302E_3030_305Fu64
-        | (h4 << 8)
-        | ((h3 - h4 * 10) << 16)
-        | ((h2 - h3 * 10) << 24)
-        | ((h1 - h2 * 10) << 40)
-        | ((h0 - h1 * 10) << 48)
-}
-
-#[cfg(all(target_os = "linux", feature = "vship"))]
-pub struct SplitPath {
-    buf: Vec<u8>,
-    at: usize,
-    tail: [u8; 4],
-}
-
-#[cfg(all(target_os = "linux", feature = "vship"))]
-impl SplitPath {
-    const fn unused() -> Self {
-        Self {
-            buf: Vec::new(),
-            at: 0,
-            tail: [0; 4],
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn new(work_dir: &Path, ext: &str) -> Self {
-        let dir = work_dir.as_bytes();
-        let mut buf = Vec::with_capacity(dir.len() + ext.len() + 20);
-        buf.extend_from_slice(dir);
-        buf.extend_from_slice(b"/split/00000_000.00.");
-        buf.extend_from_slice(ext.as_bytes());
-        Self {
-            at: dir.len() + 7,
-            tail: dot_ext(ext),
-            buf,
-        }
-    }
-
-    #[inline]
-    pub fn set(&mut self, idx: u16, crf: f32) -> &Path {
-        let qua = crf_digits(crf);
-        let dig = idx_digits(idx);
-        let skip = usize::from(idx < 10000);
-        unsafe {
-            let p = self.buf.as_mut_ptr().add(self.at);
-            p.cast::<[u8; 8]>()
-                .write_unaligned((dig >> (skip * 8)).to_le_bytes());
-            p.add(5 - skip)
-                .cast::<[u8; 8]>()
-                .write_unaligned(qua.to_le_bytes());
-            p.add(12 - skip)
-                .cast::<[u8; 4]>()
-                .write_unaligned(self.tail);
-            self.buf.set_len(self.at + 16 - skip);
-        }
-        Path::from_bytes(&self.buf)
-    }
-}
-
-#[cfg(all(not(target_os = "linux"), feature = "vship"))]
-pub struct SplitPath {
-    buf: String,
-    at: usize,
-    tail: [u8; 4],
-}
-
-#[cfg(all(not(target_os = "linux"), feature = "vship"))]
-impl SplitPath {
-    const fn unused() -> Self {
-        Self {
-            buf: String::new(),
-            at: 0,
-            tail: [0; 4],
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn new(work_dir: &Path, ext: &str) -> Self {
-        let dir = work_dir.join("split");
-        let dir = dir.to_string_lossy();
-        let mut buf = String::with_capacity(dir.len() + ext.len() + 24);
-        buf.push_str(&dir);
-        buf.push(MAIN_SEPARATOR);
-        let at = buf.len();
-        buf.push_str("00000_000.00.");
-        buf.push_str(ext);
-        Self {
-            buf,
-            at,
-            tail: dot_ext(ext),
-        }
-    }
-
-    #[inline]
-    pub fn set(&mut self, idx: u16, crf: f32) -> &Path {
-        let qua = crf_digits(crf);
-        let dig = idx_digits(idx);
-        let skip = usize::from(idx < 10000);
-        unsafe {
-            let b = self.buf.as_mut_vec();
-            let p = b.as_mut_ptr().add(self.at);
-            p.cast::<[u8; 8]>()
-                .write_unaligned((dig >> (skip * 8)).to_le_bytes());
-            p.add(5 - skip)
-                .cast::<[u8; 8]>()
-                .write_unaligned(qua.to_le_bytes());
-            p.add(12 - skip)
-                .cast::<[u8; 4]>()
-                .write_unaligned(self.tail);
-            b.set_len(self.at + 16 - skip);
-        }
-        Path::new(&self.buf)
-    }
-}
-
 struct WorkerStats {
     completed: Arc<AtomicUsize>,
     completed_frames: Arc<AtomicUsize>,
@@ -378,6 +267,7 @@ impl WorkerStats {
     }
 
     fn add_completion(&self, completion: ChunkComp) {
+        self.completed.fetch_add(1, Relaxed);
         self.completed_frames.fetch_add(completion.frames, Relaxed);
         self.tot_sz.fetch_add(completion.sz, Relaxed);
         let mut data = self.completions.lock();
@@ -425,40 +315,61 @@ struct EncTrack {
 
 struct Scratch {
     conv: Vec<u8>,
-    sink: Vec<u8>,
     #[cfg(feature = "x265")]
     pic: *mut X265Pic,
+    #[cfg(feature = "x264")]
+    pics: *mut X264Pics,
+    #[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+    params: ParamBufs,
 }
 
 impl Scratch {
     #[cold]
     #[inline(never)]
     fn new(ctx: &EncWorkerCtx) -> Self {
-        #[cfg_attr(not(feature = "x265"), expect(unused_mut))]
+        #[cfg_attr(not(any(feature = "x264", feature = "x265")), expect(unused_mut))]
         let mut conv = vec![0u8; ctx.pipe.conv_buf_sz];
+        #[cfg(any(feature = "x264", feature = "x265"))]
+        let e = &ctx.pipe.enc;
         Self {
+            // raw; conv is empty; its ptr dangles
             #[cfg(feature = "x265")]
             pic: if matches!(ctx.encoder, Encoder::X265) {
-                let mut p = X265Pic::boxed(ctx.pipe.enc.y_stride, ctx.pipe.enc.c_stride);
-                // raw; conv is empty; its ptr dangles; direct points per frame
+                let mut p = X265Pic::boxed(e.y_stride, e.c_stride);
                 if !conv.is_empty() {
-                    p.point(conv.as_mut_ptr(), ctx.pipe.enc.y_sz, ctx.pipe.enc.cr_off);
+                    p.point(conv.as_mut_ptr(), e.y_sz, e.cr_off);
+                }
+                Box::into_raw(p)
+            } else {
+                null_mut()
+            },
+            #[cfg(feature = "x264")]
+            pics: if matches!(ctx.encoder, Encoder::X264) {
+                let mut p = X264Pics::boxed(e.y_stride, e.c_stride);
+                if !conv.is_empty() {
+                    p.point(conv.as_mut_ptr(), e.y_sz, e.cr_off);
                 }
                 Box::into_raw(p)
             } else {
                 null_mut()
             },
             conv,
-            sink: Vec::with_capacity(SINK),
+            #[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+            params: ParamBufs::new(),
         }
     }
 }
 
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 impl Drop for Scratch {
     fn drop(&mut self) {
+        #[cfg(feature = "x265")]
         if !self.pic.is_null() {
             drop(unsafe { Box::from_raw(self.pic) });
+        }
+        #[cfg(feature = "x264")]
+        if !self.pics.is_null() {
+            drop(unsafe { Box::from_raw(self.pics) });
         }
     }
 }
@@ -466,82 +377,42 @@ impl Drop for Scratch {
 type LibEncFn =
     fn(&mut Vec<u8>, &mut dyn Write, &EncConfig, &EncWorkerCtx, &mut Scratch, &EncTrack) -> u64;
 
-type WatchEncFn = fn(&Arc<ProgsTrack>, &mut Child, Watch, Encoder);
+type ChnkFn = fn(&mut WorkPkg, &EncWorkerCtx, &Path, &mut Scratch, &mut Vec<u8>, usize) -> u64;
 
-type ChnkFn = fn(&mut WorkPkg, &str, &EncWorkerCtx, &Path, &mut Scratch, usize) -> u64;
-
-#[cfg(feature = "vship")]
-struct EncRecipe<'a> {
-    params: &'a str,
-    template: Option<&'a [u8]>,
-}
+type FillFn = fn(&mut Scratch, &[Arc<[u64]>], &[Arc<[u64]>]) -> usize;
 
 #[cfg(feature = "vship")]
-type ProbeFn = fn(&mut WorkPkg, f32, &EncRecipe, &EncWorkerCtx, &mut Scratch, usize, Option<&Path>);
-
-fn watch_enc_stderr(prog: &Arc<ProgsTrack>, child: &mut Child, w: Watch, encoder: Encoder) {
-    prog.watch_enc(
-        unsafe { child.stderr.take().unwrap_unchecked() },
-        w,
-        encoder,
-    );
-}
-
-const fn watch_enc_unreachable(_: &Arc<ProgsTrack>, _: &mut Child, _: Watch, _: Encoder) {
-    assume_unreachable();
-}
+type ProbeFn = fn(&mut WorkPkg, f32, Tmpl, &EncWorkerCtx, &mut Scratch, usize, Option<&Path>);
 
 #[cold]
-fn resolve_watch_enc(encoder: Encoder) -> WatchEncFn {
-    match encoder {
-        X264 => watch_enc_stderr,
-        SvtAv1 | Avm | Vvenc | X265 => watch_enc_unreachable,
+const fn resolve_chnk_fn(zoned: bool, raw: bool) -> ChnkFn {
+    match (zoned, raw) {
+        (true, true) => enc_chnk_raw_zoned,
+        (true, false) => enc_chnk_lib_zoned,
+        (false, true) => enc_chnk_raw,
+        (false, false) => enc_chnk_lib,
     }
 }
 
-#[cfg(feature = "x265")]
-const fn is_lib_enc(encoder: Encoder) -> bool {
-    matches!(encoder, SvtAv1 | Avm | Vvenc | X265)
-}
-
-#[cfg(not(feature = "x265"))]
-const fn is_lib_enc(encoder: Encoder) -> bool {
-    matches!(encoder, SvtAv1 | Avm | Vvenc)
-}
-
-#[cold]
-fn resolve_chnk_fn(encoder: Encoder, zoned: bool) -> ChnkFn {
-    if !is_lib_enc(encoder) {
-        enc_chnk_sub
-    } else if zoned {
-        enc_chnk_lib_zoned
-    } else {
-        enc_chnk_lib
-    }
-}
-
+// annexb parser reads past last au; probes carry pad
 #[cfg(feature = "vship")]
 #[cold]
-fn resolve_probe_fn(encoder: Encoder) -> ProbeFn {
+const fn resolve_probe_fn(encoder: Encoder) -> ProbeFn {
     match encoder {
-        #[cfg(feature = "x265")]
-        X265 => enc_tq_probe_x265,
-        _ if is_lib_enc(encoder) => enc_tq_probe_lib,
-        _ => enc_tq_probe_sub,
+        #[cfg(any(feature = "x264", feature = "x265"))]
+        X264 | X265 => enc_tq_probe_annexb,
+        _ => enc_tq_probe_lib,
     }
 }
 
 struct EncWorkerCtx<'a> {
-    inf: &'a VidInf,
     pipe: &'a Pipeline,
     work_dir: &'a Path,
     prog: &'a Arc<ProgsTrack>,
     encoder: Encoder,
     lib_enc: LibEncFn,
-    watch_enc: WatchEncFn,
-    chnk_fn: ChnkFn,
-    tmpl: Option<&'a [u8]>,
-    tmpls: &'a [Arc<[u8]>],
+    tmpl: *const u8,
+    tmpls: &'a [Arc<[u64]>],
     bufs: &'a Bufs,
     #[cfg(feature = "vship")]
     probe_fn: ProbeFn,
@@ -573,7 +444,7 @@ struct TQWorkerCtx<'a> {
 
 #[cold]
 #[inline(never)]
-fn resolve_svt_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+fn resolve_svt_enc(strat: &DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
     if strat.is_raw() {
         enc_svt_direct
     } else if is_nv12 {
@@ -624,7 +495,7 @@ const fn unpack_exact(pipe: &Pipeline) -> bool {
 #[cfg(feature = "avm")]
 #[cold]
 #[inline(never)]
-fn resolve_avm_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+fn resolve_avm_enc(strat: &DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
     if strat.is_raw() {
         enc_avm_direct
     } else if is_nv12 {
@@ -649,7 +520,7 @@ fn resolve_avm_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline
 #[cfg(feature = "vvenc")]
 #[cold]
 #[inline(never)]
-fn resolve_vvenc_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+fn resolve_vvenc_enc(strat: &DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
     if strat.is_raw() {
         enc_vvenc_direct
     } else if is_nv12 {
@@ -691,7 +562,7 @@ fn resolve_vvenc_crf_enc(inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
 #[cfg(feature = "x265")]
 #[cold]
 #[inline(never)]
-fn resolve_x265_enc(strat: DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+fn resolve_x265_enc(strat: &DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
     if strat.is_raw() {
         enc_x265_direct
     } else if is_nv12 {
@@ -730,6 +601,48 @@ fn resolve_x265_crf_enc(inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
     }
 }
 
+#[cfg(feature = "x264")]
+#[cold]
+#[inline(never)]
+fn resolve_x264_enc(strat: &DecStrat, is_nv12: bool, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+    if strat.is_raw() {
+        enc_x264_direct
+    } else if is_nv12 {
+        if nv12_exact(pipe) {
+            enc_x264_nv12
+        } else {
+            enc_x264_nv12_rem
+        }
+    } else if inf.is_10b {
+        if unpack_exact(pipe) {
+            enc_x264_unpack
+        } else {
+            enc_x264_unpack_rem
+        }
+    } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
+        enc_x264_conv
+    } else {
+        enc_x264_conv_rem
+    }
+}
+
+#[cfg(all(feature = "x264", feature = "vship"))]
+#[cold]
+#[inline(never)]
+fn resolve_x264_crf_enc(inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
+    if inf.is_10b {
+        if unpack_exact(pipe) {
+            enc_x264_lib_unpack
+        } else {
+            enc_x264_lib_unpack_rem
+        }
+    } else if pipe.frame_sz.is_multiple_of(SHIFT_CHUNK) {
+        enc_x264_lib
+    } else {
+        enc_x264_lib_rem
+    }
+}
+
 #[cfg(feature = "vship")]
 #[cold]
 fn resolve_crf_enc(encoder: Encoder, inf: &VidInf, pipe: &Pipeline) -> LibEncFn {
@@ -738,6 +651,8 @@ fn resolve_crf_enc(encoder: Encoder, inf: &VidInf, pipe: &Pipeline) -> LibEncFn 
         Vvenc => resolve_vvenc_crf_enc(inf, pipe),
         #[cfg(feature = "x265")]
         X265 => resolve_x265_crf_enc(inf, pipe),
+        #[cfg(feature = "x264")]
+        X264 => resolve_x264_crf_enc(inf, pipe),
         _ => resolve_svt_crf_enc(inf, pipe),
     }
 }
@@ -745,7 +660,7 @@ fn resolve_crf_enc(encoder: Encoder, inf: &VidInf, pipe: &Pipeline) -> LibEncFn 
 #[cold]
 fn resolve_lib_enc(
     encoder: Encoder,
-    strat: DecStrat,
+    strat: &DecStrat,
     is_nv12: bool,
     inf: &VidInf,
     pipe: &Pipeline,
@@ -757,6 +672,8 @@ fn resolve_lib_enc(
         Vvenc => resolve_vvenc_enc(strat, is_nv12, inf, pipe),
         #[cfg(feature = "x265")]
         X265 => resolve_x265_enc(strat, is_nv12, inf, pipe),
+        #[cfg(feature = "x264")]
+        X264 => resolve_x264_enc(strat, is_nv12, inf, pipe),
         _ => resolve_svt_enc(strat, is_nv12, inf, pipe),
     }
 }
@@ -776,8 +693,7 @@ pub fn enc_all(
 
     #[cfg(feature = "vship")]
     {
-        let is_tq = args.tq.is_some() && args.qp_range.is_some();
-        if is_tq {
+        if args.tq.is_some() {
             enc_tq(chnks, inf, args, path, work_dir, pipe_reader);
             return;
         }
@@ -808,18 +724,13 @@ pub fn enc_all(
         strat,
         DecStrat::HwNv12To10 | DecStrat::HwNv12To10Stride | DecStrat::HwNv12CropTo10 { .. }
     );
-    let strat = if is_lib_enc(args.encoder) && inf.is_10b && args.chnk_buff == args.worker {
+    let strat = if inf.is_10b && args.chnk_buff == args.worker {
         strat.to_raw()
     } else {
         strat
     };
-    let pipe = Pipeline::new(
-        inf,
-        strat,
-        #[cfg(feature = "vship")]
-        None,
-    );
-    let lib_enc_fn = resolve_lib_enc(args.encoder, strat, is_nv12, inf, &pipe);
+    let pipe = Pipeline::new(inf, &strat);
+    let lib_enc_fn = resolve_lib_enc(args.encoder, &strat, is_nv12, inf, &pipe);
     #[cfg(feature = "vship")]
     let probe_fn = resolve_probe_fn(args.encoder);
 
@@ -828,7 +739,7 @@ pub fn enc_all(
 
     let build = resolve_build_tmpl(args.encoder);
     let mut chnks = chnks.to_vec();
-    let zones = build.map_or_else(Vec::new, |_| zone_tmpls(&mut chnks));
+    let zones = zone_tmpls(&mut chnks, tmpl_scale(args.encoder, (-1, -1)));
 
     let inf: &'static VidInf = Box::leak(Box::new(inf.clone()));
     let pipe: &'static Pipeline = Box::leak(Box::new(pipe));
@@ -844,17 +755,17 @@ pub fn enc_all(
             let send = move |p: *mut WorkPkg| unsafe { spmc_send(rp, p as u64) };
             let sk = bufs.sink(&send);
             if let Some(mut reader) = pipe_reader {
-                dec_pipe(&chnks, &mut reader, inf, &skip, strat, &sk);
+                dec_pipe(&chnks, &mut reader, inf, &skip, &strat, &sk);
             } else {
-                dec_chnks(&chnks, path, inf, &skip, strat, &sk);
+                dec_chnks(&chnks, path, inf, &skip, &strat, &sk);
             }
             unsafe { spmc_close(rp) };
         })
     };
 
-    let tmpls = build.map(|b| build_zoned(b, inf, params, pipe, &zones, (-1, -1)));
-    let chnk_fn = resolve_chnk_fn(args.encoder, !zones.is_empty());
-    let watch_enc = resolve_watch_enc(args.encoder);
+    let tmpls = build_zoned(build, inf, params, pipe, &zones, (-1, -1));
+    let chnk_fn = resolve_chnk_fn(!zones.is_empty(), !args.encoder.lib_params());
+    let fill = resolve_fill(args.encoder);
 
     let mut workers = Vec::new();
     for worker_id in 0..args.worker {
@@ -866,23 +777,20 @@ pub fn enc_all(
         let tmpls = tmpls.clone();
 
         let handle = spawn(move || {
-            let tset: &[Arc<[u8]>] = tmpls.as_deref().unwrap_or(&[]);
+            let tset: &[Arc<[u64]>] = &tmpls;
             let ctx = EncWorkerCtx {
-                inf,
                 pipe,
                 work_dir,
                 prog: &prog_clone,
                 encoder,
                 lib_enc: lib_enc_fn,
-                watch_enc,
-                chnk_fn,
-                tmpl: tset.first().map(|t| &**t),
+                tmpl: unsafe { tset.get_unchecked(0) }.as_ptr().cast(),
                 tmpls: tset,
                 bufs: &bufs_clone,
                 #[cfg(feature = "vship")]
                 probe_fn,
             };
-            run_enc_worker(&rx_clone, params, &ctx, &stats_clone, worker_id);
+            run_enc_worker(&rx_clone, chnk_fn, fill, &ctx, &stats_clone, worker_id);
         });
         workers.push(handle);
     }
@@ -895,19 +803,41 @@ pub fn enc_all(
 
 #[derive(Copy, Clone)]
 #[cfg(feature = "vship")]
-struct TQCtx {
+pub struct TQCtx {
     target: f32,
     tolerance: f32,
     qp_min: f32,
     qp_max: f32,
     bound_step: f32,
+    grid: f32,
     use_butter: bool,
     use_cvvdp: bool,
-    integer_qp: bool,
+    pub txt: &'static str,
 }
 
 #[cfg(feature = "vship")]
 impl TQCtx {
+    #[must_use]
+    pub fn new(t: [f32; 2], q: [f32; 2], step: f32, txt: &'static str) -> Self {
+        let target = f32::midpoint(t[0], t[1]);
+        Self {
+            target,
+            tolerance: (t[1] - t[0]) / 2.0,
+            qp_min: q[0],
+            qp_max: q[1],
+            bound_step: step,
+            grid: 1.0 / step,
+            use_butter: target < 8.0,
+            use_cvvdp: target > 8.0 && target <= 10.0,
+            txt,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_cvvdp(&self) -> bool {
+        self.use_cvvdp
+    }
+
     #[inline(always)]
     fn converged(&self, score: f32) -> bool {
         (score - self.target).abs() <= self.tolerance
@@ -958,13 +888,7 @@ impl TQCtx {
 #[cold]
 #[inline(never)]
 fn max_chnk_bytes(chnks: &[Chunk], pipe: &Pipeline) -> usize {
-    chnks
-        .iter()
-        .map(|c| c.end - c.start)
-        .max()
-        .unwrap_or(0)
-        .min(MAX_CHNK_FRAMES)
-        * pipe.frame_sz
+    chnks.iter().map(|c| c.end - c.start).max().unwrap_or(0) * pipe.frame_sz
 }
 
 #[cold]
@@ -986,7 +910,6 @@ fn complete_chnk(
         sz: file_sz,
     };
 
-    ctx.stats.completed.fetch_add(1, Relaxed);
     ctx.stats.add_completion(comp);
 
     let mut log = ctx.tq_logger.lock();
@@ -1000,9 +923,11 @@ fn complete_chnk(
         "{{\"id\":{chnk_idx},\"r\":{},\"f\":{chnk_frames},\"p\":[",
         tq_state.round
     );
-    for (i, (p, &(_, sz))) in tq_state.probes.iter().zip(&tq_state.probe_szs).enumerate() {
-        let sep = if i == 0 { "" } else { "," };
-        _ = write!(line, "{sep}[{:.2},{:.4},{sz}]", p.crf, p.score);
+    let mut it = tq_state.probes.iter().zip(&tq_state.probe_szs);
+    let (p, &(_, sz)) = unsafe { it.next().unwrap_unchecked() };
+    _ = write!(line, "[{:.2},{:.4},{sz}]", p.crf, p.score);
+    for (p, &(_, sz)) in it {
+        _ = write!(line, ",[{:.2},{:.4},{sz}]", p.crf, p.score);
     }
     _ = writeln!(
         line,
@@ -1034,31 +959,14 @@ fn retain_swap(pkg: &mut WorkPkg, score: f32) {
 const fn retain_noop(_: &mut WorkPkg, _: f32) {}
 
 #[cfg(feature = "vship")]
-fn output_bytes(dst: &Path, tq: &TQState, _: &mut SplitPath, _: u16, _: f32, _: usize) -> u64 {
+fn output_bytes(dst: &Path, tq: &TQState, _: u16, _: f32, _: usize) -> u64 {
     _ = write(dst, &tq.best_probe);
     tq.best_probe.len() as u64
 }
 
 #[cfg(feature = "vship")]
-const fn output_probe(_: &Path, _: &TQState, _: &mut SplitPath, _: u16, _: f32, n: usize) -> u64 {
+const fn output_probe(_: &Path, _: &TQState, _: u16, _: f32, n: usize) -> u64 {
     n as u64
-}
-
-#[cfg(feature = "vship")]
-fn output_copy(dst: &Path, _: &TQState, sp: &mut SplitPath, idx: u16, crf: f32, _: usize) -> u64 {
-    copy(sp.set(idx, crf), dst).unwrap_or(0)
-}
-
-#[cold]
-#[inline(never)]
-#[cfg(feature = "vship")]
-fn output_stat(dst: &Path, _: &TQState, _: &mut SplitPath, _: u16, _: f32, _: usize) -> u64 {
-    metadata(dst).unwrap_or(0)
-}
-
-#[cfg(feature = "vship")]
-const fn split_unused(_: &Path, _: &str) -> SplitPath {
-    SplitPath::unused()
 }
 
 #[cfg(feature = "vship")]
@@ -1066,15 +974,7 @@ type MetricLoopFn = fn(&SeqRing, &SeqRing, &TQWorkerCtx, usize, Option<Disp>);
 
 #[cfg(feature = "vship")]
 macro_rules! make_metric_loop {
-    (
-        $name:ident,
-        $mk_dec:expr,
-        $prep:expr,
-        $retain:expr,
-        $output:expr,
-        $mk_split:expr,
-        $calc:expr
-    ) => {
+    ($name:ident, $mk_dec:expr, $prep:expr, $retain:expr, $output:expr, $calc:expr) => {
         fn $name(
             rx: &SeqRing,
             work_tx: &SeqRing,
@@ -1082,8 +982,17 @@ macro_rules! make_metric_loop {
             worker_id: usize,
             disp: Option<Disp>,
         ) {
-            let mut vship: Option<VshipProcessor> = None;
-            let mut dec: Option<ProbeDec> = None;
+            let (w, h) = (ctx.pipe.final_w as u32, ctx.pipe.final_h as u32);
+            let vship = VshipProcessor::new(
+                w,
+                h,
+                ctx.inf,
+                ctx.tq_ctx.use_cvvdp,
+                ctx.tq_ctx.use_butter,
+                disp,
+            )
+            .unwrap_or_else(|e| fatal(e));
+            let mut d = ($mk_dec)(ctx.threads, w, h);
             let mut scores: Vec<f32> = Vec::with_capacity(MAX_CHNK_FRAMES);
             let mut unpacked_buf =
                 PinnedBuf::new(ctx.pipe.unpack_buf_sz).unwrap_or_else(|e| fatal(e));
@@ -1100,7 +1009,6 @@ macro_rules! make_metric_loop {
                 planes,
             };
             let mut enc_path = OutPath::new(ctx.work_dir, ctx.ext);
-            let mut split_path = ($mk_split)(ctx.work_dir, ctx.ext);
             let metric_slot = ctx.worker_cnt + worker_id;
 
             loop {
@@ -1117,7 +1025,6 @@ macro_rules! make_metric_loop {
                     let sz = ($output)(
                         enc_path.set(pkg.chnk.idx),
                         tq_st,
-                        &mut split_path,
                         pkg.chnk.idx,
                         best.crf,
                         pkg.probe.len(),
@@ -1127,24 +1034,10 @@ macro_rules! make_metric_loop {
                     continue;
                 }
 
-                if vship.is_none() {
-                    let v = VshipProcessor::new(
-                        pkg.width,
-                        pkg.height,
-                        ctx.inf,
-                        ctx.tq_ctx.use_cvvdp,
-                        ctx.tq_ctx.use_butter,
-                        disp,
-                    )
-                    .unwrap_or_else(|e| fatal(e));
-                    vship = Some(v);
-                }
-
                 let crf = tq_st.last_crf;
                 let last_score = tq_st.probes.last().map(|probe| probe.score);
 
-                let d = dec.get_or_insert_with(|| ($mk_dec)(ctx.threads, pkg.width, pkg.height));
-                let probe_sz = ($prep)(d, &pkg, &mut split_path, pkg.chnk.idx, crf);
+                let probe_sz = ($prep)(&mut d, &pkg, pkg.chnk.idx, crf);
                 unsafe { pkg.tq_state.as_mut().unwrap_unchecked() }
                     .probe_szs
                     .push((crf, probe_sz));
@@ -1155,15 +1048,7 @@ macro_rules! make_metric_loop {
                     crf,
                     last_score,
                 };
-                let score = ($calc)(
-                    &pkg,
-                    d,
-                    ctx.pipe,
-                    unsafe { vship.as_ref().unwrap_unchecked() },
-                    ctx.agg,
-                    &mut bufs,
-                    &mp,
-                );
+                let score = ($calc)(&pkg, &mut d, ctx.pipe, &vship, ctx.agg, &mut bufs, &mp);
 
                 ($retain)(pkg, score);
 
@@ -1188,7 +1073,6 @@ macro_rules! make_metric_loop {
                         let sz = ($output)(
                             enc_path.set(pkg.chnk.idx),
                             tq_state,
-                            &mut split_path,
                             pkg.chnk.idx,
                             best.crf,
                             pkg.probe.len(),
@@ -1211,7 +1095,6 @@ macro_rules! make_metric_group {
         $prep:expr,
         $retain:expr,
         $output:expr,
-        $mk_split:expr,
         $ss8:ident,
         $c_ss8:expr,
         $ss10:ident,
@@ -1231,15 +1114,15 @@ macro_rules! make_metric_group {
         $cvr:ident,
         $c_cvr:expr
     ) => {
-        make_metric_loop!($ss8, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss8);
-        make_metric_loop!($ss10, $mk_dec, $prep, $retain, $output, $mk_split, $c_ss10);
-        make_metric_loop!($ssr, $mk_dec, $prep, $retain, $output, $mk_split, $c_ssr);
-        make_metric_loop!($bu8, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu8);
-        make_metric_loop!($bu10, $mk_dec, $prep, $retain, $output, $mk_split, $c_bu10);
-        make_metric_loop!($bur, $mk_dec, $prep, $retain, $output, $mk_split, $c_bur);
-        make_metric_loop!($cv8, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv8);
-        make_metric_loop!($cv10, $mk_dec, $prep, $retain, $output, $mk_split, $c_cv10);
-        make_metric_loop!($cvr, $mk_dec, $prep, $retain, $output, $mk_split, $c_cvr);
+        make_metric_loop!($ss8, $mk_dec, $prep, $retain, $output, $c_ss8);
+        make_metric_loop!($ss10, $mk_dec, $prep, $retain, $output, $c_ss10);
+        make_metric_loop!($ssr, $mk_dec, $prep, $retain, $output, $c_ssr);
+        make_metric_loop!($bu8, $mk_dec, $prep, $retain, $output, $c_bu8);
+        make_metric_loop!($bu10, $mk_dec, $prep, $retain, $output, $c_bu10);
+        make_metric_loop!($bur, $mk_dec, $prep, $retain, $output, $c_bur);
+        make_metric_loop!($cv8, $mk_dec, $prep, $retain, $output, $c_cv8);
+        make_metric_loop!($cv10, $mk_dec, $prep, $retain, $output, $c_cv10);
+        make_metric_loop!($cvr, $mk_dec, $prep, $retain, $output, $c_cvr);
     };
 }
 
@@ -1249,7 +1132,6 @@ make_metric_group!(
     prep_dav1d,
     retain_swap,
     output_bytes,
-    split_unused,
     met_d_ss_8b,
     calc_ssimu2_8b_dav1d,
     met_d_ss_10b,
@@ -1275,7 +1157,6 @@ make_metric_group!(
     prep_dav1d,
     retain_noop,
     output_probe,
-    split_unused,
     met_da_ss_8b,
     calc_ssimu2_8b_dav1d,
     met_da_ss_10b,
@@ -1301,7 +1182,6 @@ make_metric_group!(
     prep_vvdec,
     retain_swap,
     output_bytes,
-    split_unused,
     met_v_ss_8b,
     calc_ssimu2_8b_vvdec,
     met_v_ss_10b,
@@ -1327,7 +1207,6 @@ make_metric_group!(
     prep_vvdec,
     retain_noop,
     output_probe,
-    split_unused,
     met_va_ss_8b,
     calc_ssimu2_8b_vvdec,
     met_va_ss_10b,
@@ -1350,106 +1229,102 @@ make_metric_group!(
 #[cfg(all(feature = "vship", feature = "x265"))]
 make_metric_group!(
     make_hevc,
-    prep_hevc,
+    prep_annexb,
     retain_swap,
     output_bytes,
-    split_unused,
     met_h_ss_8b,
-    calc_ssimu2_8b_hevc,
+    calc_ssimu2_8b_annexb,
     met_h_ss_10b,
-    calc_ssimu2_10b_hevc,
+    calc_ssimu2_10b_annexb,
     met_h_ss_rem,
-    calc_ssimu2_rem_hevc,
+    calc_ssimu2_rem_annexb,
     met_h_bu_8b,
-    calc_butter_8b_hevc,
+    calc_butter_8b_annexb,
     met_h_bu_10b,
-    calc_butter_10b_hevc,
+    calc_butter_10b_annexb,
     met_h_bu_rem,
-    calc_butter_rem_hevc,
+    calc_butter_rem_annexb,
     met_h_cv_8b,
-    calc_cvvdp_8b_hevc,
+    calc_cvvdp_8b_annexb,
     met_h_cv_10b,
-    calc_cvvdp_10b_hevc,
+    calc_cvvdp_10b_annexb,
     met_h_cv_rem,
-    calc_cvvdp_rem_hevc
+    calc_cvvdp_rem_annexb
 );
 #[cfg(all(feature = "vship", feature = "x265"))]
 make_metric_group!(
     make_hevc,
-    prep_hevc,
+    prep_annexb,
     retain_noop,
     output_probe,
-    split_unused,
     met_ha_ss_8b,
-    calc_ssimu2_8b_hevc,
+    calc_ssimu2_8b_annexb,
     met_ha_ss_10b,
-    calc_ssimu2_10b_hevc,
+    calc_ssimu2_10b_annexb,
     met_ha_ss_rem,
-    calc_ssimu2_rem_hevc,
+    calc_ssimu2_rem_annexb,
     met_ha_bu_8b,
-    calc_butter_8b_hevc,
+    calc_butter_8b_annexb,
     met_ha_bu_10b,
-    calc_butter_10b_hevc,
+    calc_butter_10b_annexb,
     met_ha_bu_rem,
-    calc_butter_rem_hevc,
+    calc_butter_rem_annexb,
     met_ha_cv_8b,
-    calc_cvvdp_8b_hevc,
+    calc_cvvdp_8b_annexb,
     met_ha_cv_10b,
-    calc_cvvdp_10b_hevc,
+    calc_cvvdp_10b_annexb,
     met_ha_cv_rem,
-    calc_cvvdp_rem_hevc
+    calc_cvvdp_rem_annexb
 );
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", feature = "x264"))]
 make_metric_group!(
-    make_ff,
-    prep_ff,
-    retain_noop,
-    output_copy,
-    SplitPath::new,
-    met_f_ss_8b,
-    calc_ssimu2_8b_ff,
-    met_f_ss_10b,
-    calc_ssimu2_10b_ff,
-    met_f_ss_rem,
-    calc_ssimu2_rem_ff,
-    met_f_bu_8b,
-    calc_butter_8b_ff,
-    met_f_bu_10b,
-    calc_butter_10b_ff,
-    met_f_bu_rem,
-    calc_butter_rem_ff,
-    met_f_cv_8b,
-    calc_cvvdp_8b_ff,
-    met_f_cv_10b,
-    calc_cvvdp_10b_ff,
-    met_f_cv_rem,
-    calc_cvvdp_rem_ff
+    make_avc,
+    prep_annexb,
+    retain_swap,
+    output_bytes,
+    met_a_ss_8b,
+    calc_ssimu2_8b_annexb,
+    met_a_ss_10b,
+    calc_ssimu2_10b_annexb,
+    met_a_ss_rem,
+    calc_ssimu2_rem_annexb,
+    met_a_bu_8b,
+    calc_butter_8b_annexb,
+    met_a_bu_10b,
+    calc_butter_10b_annexb,
+    met_a_bu_rem,
+    calc_butter_rem_annexb,
+    met_a_cv_8b,
+    calc_cvvdp_8b_annexb,
+    met_a_cv_10b,
+    calc_cvvdp_10b_annexb,
+    met_a_cv_rem,
+    calc_cvvdp_rem_annexb
 );
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", feature = "x264"))]
 make_metric_group!(
-    make_ff,
-    prep_ff,
+    make_avc,
+    prep_annexb,
     retain_noop,
-    output_stat,
-    SplitPath::new,
-    met_fa_ss_8b,
-    calc_ssimu2_8b_ff,
-    met_fa_ss_10b,
-    calc_ssimu2_10b_ff,
-    met_fa_ss_rem,
-    calc_ssimu2_rem_ff,
-    met_fa_bu_8b,
-    calc_butter_8b_ff,
-    met_fa_bu_10b,
-    calc_butter_10b_ff,
-    met_fa_bu_rem,
-    calc_butter_rem_ff,
-    met_fa_cv_8b,
-    calc_cvvdp_8b_ff,
-    met_fa_cv_10b,
-    calc_cvvdp_10b_ff,
-    met_fa_cv_rem,
-    calc_cvvdp_rem_ff
+    output_probe,
+    met_aa_ss_8b,
+    calc_ssimu2_8b_annexb,
+    met_aa_ss_10b,
+    calc_ssimu2_10b_annexb,
+    met_aa_ss_rem,
+    calc_ssimu2_rem_annexb,
+    met_aa_bu_8b,
+    calc_butter_8b_annexb,
+    met_aa_bu_10b,
+    calc_butter_10b_annexb,
+    met_aa_bu_rem,
+    calc_butter_rem_annexb,
+    met_aa_cv_8b,
+    calc_cvvdp_8b_annexb,
+    met_aa_cv_10b,
+    calc_cvvdp_10b_annexb,
+    met_aa_cv_rem,
+    calc_cvvdp_rem_annexb
 );
 
 #[cfg(feature = "vship")]
@@ -1542,27 +1417,27 @@ fn hevc_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     }
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", feature = "x264"))]
 #[cold]
-fn ff_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+fn avc_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     if tq.use_butter {
-        by_shape(inf, pipe, met_f_bu_8b, met_f_bu_10b, met_f_bu_rem)
+        by_shape(inf, pipe, met_a_bu_8b, met_a_bu_10b, met_a_bu_rem)
     } else if tq.use_cvvdp {
-        by_shape(inf, pipe, met_f_cv_8b, met_f_cv_10b, met_f_cv_rem)
+        by_shape(inf, pipe, met_a_cv_8b, met_a_cv_10b, met_a_cv_rem)
     } else {
-        by_shape(inf, pipe, met_f_ss_8b, met_f_ss_10b, met_f_ss_rem)
+        by_shape(inf, pipe, met_a_ss_8b, met_a_ss_10b, met_a_ss_rem)
     }
 }
 
-#[cfg(feature = "vship")]
+#[cfg(all(feature = "vship", feature = "x264"))]
 #[cold]
-fn ff_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
+fn avc_alt_loop(tq: &TQCtx, inf: &VidInf, pipe: &Pipeline) -> MetricLoopFn {
     if tq.use_butter {
-        by_shape(inf, pipe, met_fa_bu_8b, met_fa_bu_10b, met_fa_bu_rem)
+        by_shape(inf, pipe, met_aa_bu_8b, met_aa_bu_10b, met_aa_bu_rem)
     } else if tq.use_cvvdp {
-        by_shape(inf, pipe, met_fa_cv_8b, met_fa_cv_10b, met_fa_cv_rem)
+        by_shape(inf, pipe, met_aa_cv_8b, met_aa_cv_10b, met_aa_cv_rem)
     } else {
-        by_shape(inf, pipe, met_fa_ss_8b, met_fa_ss_10b, met_fa_ss_rem)
+        by_shape(inf, pipe, met_aa_ss_8b, met_aa_ss_10b, met_aa_ss_rem)
     }
 }
 
@@ -1585,44 +1460,12 @@ fn resolve_metric_loop(
         (X265, false) => hevc_loop(tq, inf, pipe),
         #[cfg(feature = "x265")]
         (X265, true) => hevc_alt_loop(tq, inf, pipe),
-        (SvtAv1, false) => dav1d_loop(tq, inf, pipe),
-        (SvtAv1, true) => dav1d_alt_loop(tq, inf, pipe),
-        (_, false) => ff_loop(tq, inf, pipe),
-        (_, true) => ff_alt_loop(tq, inf, pipe),
-    }
-}
-
-#[cfg(feature = "vship")]
-#[must_use]
-pub fn tq_target(tq: &str) -> f32 {
-    let mut p = tq.split('-').filter_map(|s| s.parse().ok());
-    let a = unsafe { p.next().unwrap_unchecked() };
-    f32::midpoint(a, unsafe { p.next().unwrap_unchecked() })
-}
-
-#[cfg(feature = "vship")]
-#[must_use]
-pub const fn is_cvvdp(target: f32) -> bool {
-    target > 8.0 && target <= 10.0
-}
-
-#[cfg(feature = "vship")]
-fn parse_tq_ctx(args: &Args) -> TQCtx {
-    let tq_str = unsafe { args.tq.as_ref().unwrap_unchecked() };
-    let qp_str = unsafe { args.qp_range.as_ref().unwrap_unchecked() };
-    let tq_parts: Vec<f32> = tq_str.split('-').filter_map(|s| s.parse().ok()).collect();
-    let qp_parts: Vec<f32> = qp_str.split('-').filter_map(|s| s.parse().ok()).collect();
-    let tq_target = f32::midpoint(tq_parts[0], tq_parts[1]);
-    let integer_qp = args.encoder.integer_qp();
-    TQCtx {
-        target: tq_target,
-        tolerance: (tq_parts[1] - tq_parts[0]) / 2.0,
-        qp_min: qp_parts[0],
-        qp_max: qp_parts[1],
-        bound_step: if integer_qp { 1.0 } else { 0.25 },
-        use_butter: tq_target < 8.0,
-        use_cvvdp: is_cvvdp(tq_target),
-        integer_qp,
+        #[cfg(feature = "x264")]
+        (X264, false) => avc_loop(tq, inf, pipe),
+        #[cfg(feature = "x264")]
+        (X264, true) => avc_alt_loop(tq, inf, pipe),
+        (_, false) => dav1d_loop(tq, inf, pipe),
+        (_, true) => dav1d_alt_loop(tq, inf, pipe),
     }
 }
 
@@ -1642,24 +1485,22 @@ fn tq_coord(coord: &SeqRing, enc: &SeqRing, tot_chnks: usize) {
 
 #[cfg(feature = "vship")]
 #[inline]
-fn tq_search_crf(tq: &mut TQState, integer_qp: bool) -> f32 {
+fn tq_search_crf(tq: &mut TQState, ctx: &TQCtx) -> f32 {
     tq.round += 1;
-    let c = if tq.round <= 2 {
+    let d = if tq.round <= 2 {
         bisect(tq.search_min, tq.search_max)
     } else {
         interpolate_crf(&tq.probes, tq.target, tq.round, &mut tq.interp)
-    }
-    .clamp(tq.search_min, tq.search_max);
-    let c = if integer_qp { c.round() } else { c };
+    };
+    let c = ((d * ctx.grid).round() * ctx.bound_step).clamp(tq.search_min, tq.search_max);
     tq.last_crf = c;
     c
 }
 
 #[cfg(feature = "vship")]
 struct TqEncParams<'a> {
-    tmpls: Option<&'a TqTmpls>,
-    params: &'a str,
-    alt_param: Option<&'a str>,
+    tmpls: &'a TqTmpls,
+    fill: FillFn,
 }
 
 #[cfg(feature = "vship")]
@@ -1668,8 +1509,14 @@ type TqLoopFn = fn(&SeqRing, &SeqRing, &EncWorkerCtx, &TqEncParams, &TQCtx, usiz
 #[cfg(feature = "vship")]
 macro_rules! make_tq_loop {
     (
-        $name:ident, $pkg:ident, $crf:ident, $fin:ident, $probe:ident, $is_final:ident,
-        $sel:expr, $probe_dst:expr $(, $split:ident)?
+        $name:ident,
+        $pkg:ident,
+        $crf:ident,
+        $fin:ident,
+        $probe:ident,
+        $poff:ident,
+        $is_final:ident,
+        $sel:expr
     ) => {
         fn $name(
             rx: &SeqRing,
@@ -1679,19 +1526,15 @@ macro_rules! make_tq_loop {
             tq_ctx: &TQCtx,
             worker_id: usize,
         ) {
-            let &TqEncParams {
-                tmpls,
-                params,
-                alt_param,
-            } = enc;
+            let TqEncParams { tmpls, fill } = *enc;
             let mut sc = Scratch::new(ctx);
             let ext = ctx.encoder.extension();
             let mut enc_path = OutPath::new(ctx.work_dir, ext);
-            $(let mut $split = SplitPath::new(ctx.work_dir, ext);)?
-            let probe_params = alt_param.unwrap_or(params);
-            let ($fin, $probe) = tmpls.map_or((&[][..], &[][..]), |t| {
-                (t.base.as_slice(), t.alt.as_deref().unwrap_or(&t.base))
-            });
+            let alt = tmpls.alt.as_deref().unwrap_or(&[]);
+            let $fin = tmpls.base.as_slice();
+            // probes after finals; no alt = both draw one copy
+            let $probe = if alt.is_empty() { $fin } else { alt };
+            let $poff = (fill)(&mut sc, $fin, alt);
             loop {
                 let m = unsafe { spmc_recv(rx) };
                 if m == 0 {
@@ -1713,26 +1556,10 @@ macro_rules! make_tq_loop {
                 let $crf = if $is_final {
                     tq.best.crf
                 } else {
-                    tq_search_crf(tq, tq_ctx.integer_qp)
+                    tq_search_crf(tq, tq_ctx)
                 };
-                let (p, dst) = if $is_final {
-                    (params, Some(enc_path.set($pkg.chnk.idx)))
-                } else {
-                    (probe_params, $probe_dst)
-                };
-                let svt_t = $sel;
-                (ctx.probe_fn)(
-                    $pkg,
-                    $crf,
-                    &EncRecipe {
-                        params: p,
-                        template: svt_t,
-                    },
-                    ctx,
-                    &mut sc,
-                    worker_id,
-                    dst,
-                );
+                let dst = $is_final.then(|| enc_path.set($pkg.chnk.idx));
+                (ctx.probe_fn)($pkg, $crf, $sel, ctx, &mut sc, worker_id, dst);
                 unsafe { mpmc_send(tx, m) };
             }
         }
@@ -1745,10 +1572,27 @@ make_tq_loop!(
     pkg,
     crf,
     fin,
-    probe,
+    _probe,
+    poff,
     is_final,
-    if is_final { fin } else { probe }.first().map(|t| &**t),
-    None
+    Tmpl {
+        off: if is_final { 0 } else { poff }
+    }
+);
+#[cfg(feature = "vship")]
+make_tq_loop!(
+    tq_enc_raw,
+    pkg,
+    crf,
+    fin,
+    probe,
+    _poff,
+    is_final,
+    Tmpl {
+        ptr: unsafe { if is_final { fin } else { probe }.get_unchecked(0) }
+            .as_ptr()
+            .cast()
+    }
 );
 #[cfg(feature = "vship")]
 make_tq_loop!(
@@ -1756,44 +1600,37 @@ make_tq_loop!(
     pkg,
     crf,
     fin,
-    probe,
+    _probe,
+    poff,
     is_final,
-    Some(&**unsafe { if is_final { fin } else { probe }.get_unchecked(pkg.chnk.tmpl as usize) }),
-    None
+    Tmpl {
+        off: if is_final { 0 } else { poff } + pkg.chnk.tmpl as usize
+    }
 );
 #[cfg(feature = "vship")]
 make_tq_loop!(
-    tq_enc_loop_sub,
+    tq_enc_raw_zoned,
     pkg,
     crf,
     fin,
     probe,
+    _poff,
     is_final,
-    if is_final { fin } else { probe }.first().map(|t| &**t),
-    Some(split.set(pkg.chnk.idx, crf)),
-    split
-);
-#[cfg(feature = "vship")]
-make_tq_loop!(
-    tq_enc_loop_sub_zoned,
-    pkg,
-    crf,
-    fin,
-    probe,
-    is_final,
-    Some(&**unsafe { if is_final { fin } else { probe }.get_unchecked(pkg.chnk.tmpl as usize) }),
-    Some(split.set(pkg.chnk.idx, crf)),
-    split
+    Tmpl {
+        ptr: unsafe { if is_final { fin } else { probe }.get_unchecked(pkg.chnk.tmpl as usize) }
+            .as_ptr()
+            .cast()
+    }
 );
 
 #[cfg(feature = "vship")]
 #[cold]
-fn resolve_tq_loop(zoned: bool, lib: bool) -> TqLoopFn {
-    match (lib, zoned) {
-        (true, false) => tq_enc_loop,
-        (true, true) => tq_enc_loop_zoned,
-        (false, false) => tq_enc_loop_sub,
-        (false, true) => tq_enc_loop_sub_zoned,
+const fn resolve_tq_loop(zoned: bool, raw: bool) -> TqLoopFn {
+    match (zoned, raw) {
+        (true, true) => tq_enc_raw_zoned,
+        (true, false) => tq_enc_loop_zoned,
+        (false, true) => tq_enc_raw,
+        (false, false) => tq_enc_loop,
     }
 }
 
@@ -1810,11 +1647,12 @@ fn spawn_tq_dec(
     path: &'static Path,
     inf: &'static VidInf,
     skip: BTreeSet<u16>,
-    strat: DecStrat,
+    strat: &DecStrat,
     bufs: &Arc<Bufs>,
     pipe_reader: Option<PipeReader>,
 ) -> TQDecodeResult {
     let tot = chnks.iter().filter(|c| !skip.contains(&c.idx)).count();
+    let strat = *strat;
     let enc = Arc::new(SeqRing::new());
     let coord = Arc::new(SeqRing::new());
 
@@ -1829,9 +1667,9 @@ fn spawn_tq_dec(
             let send = move |p: *mut WorkPkg| unsafe { mpsc_send(rp, p as u64) };
             let sk = bufs_dec.sink(&send);
             if let Some(mut r) = pipe_reader {
-                dec_pipe(&chnks, &mut r, inf, &skip, strat, &sk);
+                dec_pipe(&chnks, &mut r, inf, &skip, &strat, &sk);
             } else {
-                dec_chnks(&chnks, path, inf, &skip, strat, &sk);
+                dec_chnks(&chnks, path, inf, &skip, &strat, &sk);
             }
         });
         tq_coord(&coord2, &enc2, tot);
@@ -1856,30 +1694,26 @@ fn enc_tq(
         frames: done_frames,
         sz: done_sz,
     } = build_skip_set(&resume_data);
-    let tq_ctx = parse_tq_ctx(args);
+    let tq_ctx = unsafe { args.tq.unwrap_unchecked() };
     let strat = unsafe { args.dec_strat.unwrap_unchecked() };
-    let pipe = Pipeline::new(inf, strat, args.tq.as_deref());
+    let pipe = Pipeline::new(inf, &strat);
     let bufs = Arc::new(Bufs::new(args.chnk_buff, max_chnk_bytes(chnks, &pipe)));
     let inf: &'static VidInf = Box::leak(Box::new(inf.clone()));
     let pipe: &'static Pipeline = Box::leak(Box::new(pipe));
     let path = leak_path(path);
     let work_dir = leak_path(work_dir);
-    let params: &'static str = Box::leak(args.params.clone().into_boxed_str());
-    let alt_param: Option<&'static str> = args
-        .alt_param
-        .as_ref()
-        .map(|a| &*Box::leak(a.clone().into_boxed_str()));
     let agg: &'static Agg = Box::leak(Box::new(Agg::new(
         &args.metric_mode,
-        pipe.reset_cvvdp,
-        pipe.sort_descending,
+        tq_ctx.use_cvvdp,
+        tq_ctx.use_butter,
     )));
     let build = resolve_build_tmpl(args.encoder);
     let mut chnks = chnks.to_vec();
-    let zones = build.map_or_else(Vec::new, |_| zone_tmpls(&mut chnks));
+    let qp = (tq_ctx.qp_min as i32, tq_ctx.qp_max as i32);
+    let zones = zone_tmpls(&mut chnks, tmpl_scale(args.encoder, qp));
     let chnks = &chnks;
 
-    let dec = spawn_tq_dec(chnks, path, inf, skip, strat, &bufs, pipe_reader);
+    let dec = spawn_tq_dec(chnks, path, inf, skip, &strat, &bufs, pipe_reader);
     let met = Arc::new(SeqRing::new());
 
     let tq_logger = Arc::new(Mutex::new(TqLog {
@@ -1905,8 +1739,6 @@ fn enc_tq(
         inf,
         pipe,
         work_dir,
-        params,
-        alt_param,
         agg,
         args,
         prog: &prog,
@@ -1942,8 +1774,6 @@ struct TQSpawnCtx<'a> {
     inf: &'static VidInf,
     pipe: &'static Pipeline,
     work_dir: &'static Path,
-    params: &'static str,
-    alt_param: Option<&'static str>,
     agg: &'static Agg,
     args: &'a Args,
     prog: &'a Arc<ProgsTrack>,
@@ -1952,7 +1782,7 @@ struct TQSpawnCtx<'a> {
     tq_ctx: TQCtx,
     bufs: &'a Arc<Bufs>,
     zones: &'a [&'static str],
-    build: Option<BuildTmpl>,
+    build: BuildTmpl,
     encoder: Encoder,
     use_alt_param: bool,
     worker_cnt: usize,
@@ -2005,8 +1835,8 @@ fn spawn_tq_metric(
 #[cfg(feature = "vship")]
 #[derive(Clone)]
 struct TqTmpls {
-    base: Vec<Arc<[u8]>>,
-    alt: Option<Vec<Arc<[u8]>>>,
+    base: Vec<Arc<[u64]>>,
+    alt: Option<Vec<Arc<[u64]>>>,
 }
 
 #[cfg(feature = "vship")]
@@ -2016,42 +1846,35 @@ fn spawn_tq_encoders(
     sc: &TQSpawnCtx,
 ) -> Vec<JoinHandle<()>> {
     let qp = (sc.tq_ctx.qp_min as i32, sc.tq_ctx.qp_max as i32);
-    let tmpls = sc.build.map(|build| TqTmpls {
+    let build = sc.build;
+    let tmpls = TqTmpls {
         base: build_zoned(build, sc.inf, &sc.args.params, sc.pipe, sc.zones, qp),
         alt: sc
             .args
             .alt_param
             .as_deref()
             .map(|ap| build_zoned(build, sc.inf, ap, sc.pipe, sc.zones, qp)),
-    });
+    };
     let mut workers = Vec::new();
-    let chnk_fn = resolve_chnk_fn(sc.encoder, false);
+    let fill = resolve_fill_crf(sc.encoder);
     let probe_fn = resolve_probe_fn(sc.encoder);
-    let watch_enc = resolve_watch_enc(sc.encoder);
     let crf_enc = resolve_crf_enc(sc.encoder, sc.inf, sc.pipe);
-    let tq_loop = resolve_tq_loop(
-        !sc.zones.is_empty() && tmpls.is_some(),
-        is_lib_enc(sc.encoder),
-    );
+    let tq_loop = resolve_tq_loop(!sc.zones.is_empty(), !sc.encoder.lib_params());
     for worker_id in 0..sc.worker_cnt {
         let (rx, tx) = (Arc::clone(enc), Arc::clone(met));
-        let (inf, pipe, wd) = (sc.inf, sc.pipe, sc.work_dir);
-        let (params, alt_param) = (sc.params, sc.alt_param);
+        let (pipe, wd) = (sc.pipe, sc.work_dir);
         let prog_clone = Arc::clone(sc.prog);
         let (tq_ctx, encoder) = (sc.tq_ctx, sc.encoder);
         let bufs = Arc::clone(sc.bufs);
         let tmpls = tmpls.clone();
         workers.push(spawn(move || {
             let ctx = EncWorkerCtx {
-                inf,
                 pipe,
                 work_dir: wd,
                 prog: &prog_clone,
                 encoder,
                 lib_enc: crf_enc,
-                watch_enc,
-                chnk_fn,
-                tmpl: None,
+                tmpl: null(),
                 tmpls: &[],
                 bufs: &bufs,
                 probe_fn,
@@ -2061,9 +1884,8 @@ fn spawn_tq_encoders(
                 &tx,
                 &ctx,
                 &TqEncParams {
-                    tmpls: tmpls.as_ref(),
-                    params,
-                    alt_param,
+                    tmpls: &tmpls,
+                    fill,
                 },
                 &tq_ctx,
                 worker_id,
@@ -2077,25 +1899,23 @@ fn spawn_tq_encoders(
 fn enc_tq_probe_lib(
     pkg: &mut WorkPkg,
     crf: f32,
-    recipe: &EncRecipe,
+    tmpl: Tmpl,
     ctx: &EncWorkerCtx,
     sc: &mut Scratch,
     worker_id: usize,
     dst: Option<&Path>,
 ) {
-    let &EncRecipe { params, template } = recipe;
-    let last_score = pkg
-        .tq_state
-        .as_ref()
-        .and_then(|tq| tq.probes.last().map(|probe| probe.score));
+    let last_score = unsafe { pkg.tq_state.as_ref().unwrap_unchecked() }
+        .probes
+        .last()
+        .map(|probe| probe.score);
     let cfg = EncConfig {
-        inf: ctx.inf,
-        template,
-        params,
+        tmpl,
         crf: Some(crf),
-        out: Path::new(""),
         chnk_idx: pkg.chnk.idx,
+        #[cfg(feature = "avm")]
         width: pkg.width,
+        #[cfg(feature = "avm")]
         height: pkg.height,
         frames: pkg.frame_cnt,
     };
@@ -2117,86 +1937,108 @@ fn enc_tq_probe_lib(
     }
 }
 
-#[cfg(all(feature = "vship", feature = "x265"))]
-fn enc_tq_probe_x265(
+#[cfg(all(feature = "vship", any(feature = "x264", feature = "x265")))]
+fn enc_tq_probe_annexb(
     pkg: &mut WorkPkg,
     crf: f32,
-    recipe: &EncRecipe,
+    tmpl: Tmpl,
     ctx: &EncWorkerCtx,
     sc: &mut Scratch,
     worker_id: usize,
     dst: Option<&Path>,
 ) {
-    enc_tq_probe_lib(pkg, crf, recipe, ctx, sc, worker_id, dst);
+    enc_tq_probe_lib(pkg, crf, tmpl, ctx, sc, worker_id, dst);
     pad_probe(&mut pkg.probe);
 }
 
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+#[cold]
+#[inline(never)]
+fn fill_fixed(sc: &mut Scratch, a: &[Arc<[u64]>], b: &[Arc<[u64]>]) -> usize {
+    let t = unsafe { a.first().unwrap_unchecked() };
+    b.len()
+        * sc.params
+            .fill(a.len() + b.len(), t.len(), a.iter().chain(b).map(|x| &**x))
+}
+
+// templ is header; one config per crf
+#[cfg(all(feature = "vvenc", feature = "vship"))]
+#[cold]
+#[inline(never)]
+fn fill_qp(sc: &mut Scratch, a: &[Arc<[u64]>], b: &[Arc<[u64]>]) -> usize {
+    const W: usize = VVENC_TQ_HDR / size_of::<u64>();
+    let t = unsafe { a.first().unwrap_unchecked() };
+    sc.params.set_qlo(unsafe { *t.get_unchecked(0) } as u32);
+    b.len()
+        * sc.params.fill(
+            a.len() + b.len(),
+            t.len() - W,
+            a.iter().chain(b).map(|x| unsafe { x.get_unchecked(W..) }),
+        )
+}
+
+const fn fill_none(_: &mut Scratch, _: &[Arc<[u64]>], _: &[Arc<[u64]>]) -> usize {
+    0
+}
+
+#[cold]
+#[cfg_attr(not(feature = "vvenc"), expect(unused_variables))]
+const fn tmpl_scale(encoder: Encoder, qp: (i32, i32)) -> u32 {
+    match encoder {
+        SvtAv1 | Avm => 1,
+        #[cfg(feature = "vvenc")]
+        Vvenc => (vvenc_cfg_cnt(qp) * VVENC_CFG_SIZE) as u32,
+        #[cfg(not(feature = "vvenc"))]
+        Vvenc => assume_unreachable(),
+        #[cfg(feature = "x265")]
+        X265 => X265_PARAM_SIZE as u32,
+        #[cfg(not(feature = "x265"))]
+        X265 => assume_unreachable(),
+        #[cfg(feature = "x264")]
+        X264 => X264_PARAM_SIZE as u32,
+        #[cfg(not(feature = "x264"))]
+        X264 => assume_unreachable(),
+    }
+}
+
+#[cold]
+const fn resolve_fill(encoder: Encoder) -> FillFn {
+    match encoder {
+        #[cfg(feature = "vvenc")]
+        Vvenc => fill_fixed,
+        #[cfg(feature = "x264")]
+        X264 => fill_fixed,
+        #[cfg(feature = "x265")]
+        X265 => fill_fixed,
+        _ => fill_none,
+    }
+}
+
 #[cfg(feature = "vship")]
-fn enc_tq_probe_sub(
-    pkg: &mut WorkPkg,
-    crf: f32,
-    recipe: &EncRecipe,
-    ctx: &EncWorkerCtx,
-    sc: &mut Scratch,
-    worker_id: usize,
-    dst: Option<&Path>,
-) {
-    let &EncRecipe { params, template } = recipe;
-    let out = unsafe { dst.unwrap_unchecked() };
-    let cfg = EncConfig {
-        inf: ctx.inf,
-        template,
-        params,
-        crf: Some(crf),
-        out,
-        chnk_idx: pkg.chnk.idx,
-        width: pkg.width,
-        height: pkg.height,
-        frames: pkg.frame_cnt,
-    };
-
-    #[allow(unused_mut)]
-    let mut cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params);
-    let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
-
-    let last_score = pkg
-        .tq_state
-        .as_ref()
-        .and_then(|tq| tq.probes.last().map(|probe| probe.score));
-    (ctx.watch_enc)(
-        ctx.prog,
-        &mut child,
-        Watch {
-            worker_id,
-            chnk_idx: pkg.chnk.idx,
-            frames: pkg.frame_cnt,
-            track_frames: false,
-            crf_score: Some((crf, last_score)),
-        },
-        ctx.encoder,
-    );
-    (ctx.pipe.write_frames)(
-        unsafe { child.stdin.as_mut().unwrap_unchecked() },
-        &pkg.yuv,
-        pkg.frame_cnt,
-        &mut sc.conv,
-        ctx.pipe,
-    );
-
-    let status = child.wait().unwrap_or_else(|e| fatal(e));
-    if !status.success() {
-        fatal(format_args!("probe encode failed: {}", out.display()));
+#[cold]
+const fn resolve_fill_crf(encoder: Encoder) -> FillFn {
+    match encoder {
+        #[cfg(all(feature = "vvenc", feature = "vship"))]
+        Vvenc => fill_qp,
+        #[cfg(feature = "x264")]
+        X264 => fill_fixed,
+        #[cfg(feature = "x265")]
+        X265 => fill_fixed,
+        _ => fill_none,
     }
 }
 
 fn run_enc_worker(
     rx: &SeqRing,
-    params: &str,
+    chnk_fn: ChnkFn,
+    fill: FillFn,
     ctx: &EncWorkerCtx,
     stats: &Arc<WorkerStats>,
     worker_id: usize,
 ) {
     let mut sc = Scratch::new(ctx);
+    (fill)(&mut sc, ctx.tmpls, &[]);
+    let mut sink = Vec::with_capacity(SINK);
     let mut enc_path = OutPath::new(ctx.work_dir, ctx.encoder.extension());
 
     loop {
@@ -2208,9 +2050,8 @@ fn run_enc_worker(
         let slot = m as *mut WorkPkg;
         let pkg = unsafe { &mut *slot };
         let out = enc_path.set(pkg.chnk.idx);
-        let sz = (ctx.chnk_fn)(pkg, params, ctx, out, &mut sc, worker_id);
+        let sz = (chnk_fn)(pkg, ctx, out, &mut sc, &mut sink, worker_id);
 
-        stats.completed.fetch_add(1, Relaxed);
         stats.add_completion(ChunkComp {
             idx: pkg.chnk.idx,
             frames: pkg.frame_cnt,
@@ -2225,109 +2066,61 @@ macro_rules! make_chnk_lib {
     ($name:ident, $ctx:ident, $pkg:ident, $tmpl:expr) => {
         fn $name(
             $pkg: &mut WorkPkg,
-            params: &str,
             $ctx: &EncWorkerCtx,
             out: &Path,
             sc: &mut Scratch,
+            buf: &mut Vec<u8>,
             worker_id: usize,
         ) -> u64 {
             let cfg = EncConfig {
-                inf: $ctx.inf,
-                template: $tmpl,
-                params,
+                tmpl: $tmpl,
+                #[cfg(feature = "vship")]
                 crf: None,
-                out,
                 chnk_idx: $pkg.chnk.idx,
+                #[cfg(feature = "avm")]
                 width: $pkg.width,
+                #[cfg(feature = "avm")]
                 height: $pkg.height,
                 frames: $pkg.frame_cnt,
             };
-            let mut buf = take(&mut sc.sink);
-            let sz = {
-                let mut sink =
-                    BufWriter::new(File::create(out).unwrap_or_else(|e| fatal(e)), &mut buf);
-                ($ctx.lib_enc)(
-                    &mut $pkg.yuv,
-                    &mut sink,
-                    &cfg,
-                    $ctx,
-                    sc,
-                    &EncTrack {
-                        worker_id,
-                        track_frames: true,
-                        crf_score: None,
-                    },
-                )
-            };
-            sc.sink = buf;
-            sz
+            let mut sink = BufWriter::new(File::create(out).unwrap_or_else(|e| fatal(e)), buf);
+            ($ctx.lib_enc)(
+                &mut $pkg.yuv,
+                &mut sink,
+                &cfg,
+                $ctx,
+                sc,
+                &EncTrack {
+                    worker_id,
+                    track_frames: true,
+                    crf_score: None,
+                },
+            )
         }
     };
 }
 
-make_chnk_lib!(enc_chnk_lib, ctx, pkg, ctx.tmpl);
+make_chnk_lib!(enc_chnk_lib, ctx, pkg, Tmpl { off: 0 });
+make_chnk_lib!(enc_chnk_raw, ctx, pkg, Tmpl { ptr: ctx.tmpl });
 make_chnk_lib!(
     enc_chnk_lib_zoned,
     ctx,
     pkg,
-    Some(unsafe { &**ctx.tmpls.get_unchecked(pkg.chnk.tmpl as usize) })
+    Tmpl {
+        off: pkg.chnk.tmpl as usize
+    }
+);
+make_chnk_lib!(
+    enc_chnk_raw_zoned,
+    ctx,
+    pkg,
+    Tmpl {
+        ptr: unsafe { ctx.tmpls.get_unchecked(pkg.chnk.tmpl as usize) }
+            .as_ptr()
+            .cast()
+    }
 );
 
-fn enc_chnk_sub(
-    pkg: &mut WorkPkg,
-    params: &str,
-    ctx: &EncWorkerCtx,
-    out: &Path,
-    sc: &mut Scratch,
-    worker_id: usize,
-) -> u64 {
-    let cfg = EncConfig {
-        inf: ctx.inf,
-        template: None,
-        params,
-        crf: None,
-        out,
-        chnk_idx: pkg.chnk.idx,
-        width: pkg.width,
-        height: pkg.height,
-        frames: pkg.frame_cnt,
-    };
-
-    #[allow(unused_mut)]
-    let mut cmd = make_enc_cmd(ctx.encoder, &cfg, pkg.chnk.params);
-    let mut child = cmd.spawn().unwrap_or_else(|e| fatal(e));
-
-    (ctx.watch_enc)(
-        ctx.prog,
-        &mut child,
-        Watch {
-            worker_id,
-            chnk_idx: pkg.chnk.idx,
-            frames: pkg.frame_cnt,
-            track_frames: true,
-            crf_score: None,
-        },
-        ctx.encoder,
-    );
-
-    (ctx.pipe.write_frames)(
-        unsafe { child.stdin.as_mut().unwrap_unchecked() },
-        &pkg.yuv,
-        pkg.frame_cnt,
-        &mut sc.conv,
-        ctx.pipe,
-    );
-    pkg.yuv.clear();
-
-    let status = child.wait().unwrap_or_else(|e| fatal(e));
-    if !status.success() {
-        cold_path();
-        fatal(format_args!("encode failed: chunk {:04}", pkg.chnk.idx));
-    }
-    metadata(out).unwrap_or(0)
-}
-
-#[cfg(feature = "vship")]
 #[cfg(feature = "vship")]
 fn form_tq_json(
     all_logs: &[TqChunkLine],
@@ -2509,7 +2302,19 @@ fn svt_defaults() -> &'static [u8; SVT_CONF_SIZE] {
     })
 }
 
-type BuildTmpl = fn(&VidInf, &str, &[&'static str], u32, u32, (i32, i32)) -> Vec<Arc<[u8]>>;
+type BuildTmpl = fn(&VidInf, &str, &[&'static str], u32, u32, (i32, i32)) -> Vec<Arc<[u64]>>;
+
+#[cold]
+#[inline(never)]
+fn tmpl_alloc(words: usize) -> (Arc<[MaybeUninit<u64>]>, *mut u8) {
+    let mut a = Arc::<[u64]>::new_uninit_slice(words);
+    let p = unsafe { Arc::get_mut_unchecked(&mut a) }
+        .as_mut_ptr()
+        .cast::<u8>();
+    (a, p)
+}
+
+const SVT_WORDS: usize = SVT_CONF_SIZE / size_of::<u64>();
 
 #[cold]
 #[inline(never)]
@@ -2520,7 +2325,7 @@ fn build_zoned(
     pipe: &Pipeline,
     zones: &[&'static str],
     qp: (i32, i32),
-) -> Vec<Arc<[u8]>> {
+) -> Vec<Arc<[u64]>> {
     build(
         inf,
         params,
@@ -2532,22 +2337,25 @@ fn build_zoned(
 }
 
 #[cold]
-fn resolve_build_tmpl(encoder: Encoder) -> Option<BuildTmpl> {
+fn resolve_build_tmpl(encoder: Encoder) -> BuildTmpl {
     match encoder {
-        SvtAv1 => Some(build_svt_templates),
+        SvtAv1 => build_svt_templates,
         #[cfg(feature = "avm")]
-        Avm => Some(build_avm_templates),
+        Avm => build_avm_templates,
         #[cfg(not(feature = "avm"))]
-        Avm => None,
+        Avm => assume_unreachable(),
         #[cfg(feature = "vvenc")]
-        Vvenc => Some(build_vvenc_templates),
+        Vvenc => build_vvenc_templates,
         #[cfg(not(feature = "vvenc"))]
-        Vvenc => None,
+        Vvenc => assume_unreachable(),
         #[cfg(feature = "x265")]
-        X265 => Some(build_x265_templates),
+        X265 => build_x265_templates,
         #[cfg(not(feature = "x265"))]
-        X265 => None,
-        X264 => None,
+        X265 => assume_unreachable(),
+        #[cfg(feature = "x264")]
+        X264 => build_x264_templates,
+        #[cfg(not(feature = "x264"))]
+        X264 => assume_unreachable(),
     }
 }
 
@@ -2560,28 +2368,18 @@ fn build_svt_templates(
     width: u32,
     height: u32,
     _: (i32, i32),
-) -> Vec<Arc<[u8]>> {
-    let mut conf = unsafe {
-        svt_defaults()
-            .as_ptr()
-            .cast::<EbSvtAv1EncConfiguration>()
-            .read_unaligned()
-    };
-    set_svt_base(&raw mut conf, inf, params, width, height);
-    let base = unsafe { (&raw const conf).cast::<[u8; SVT_CONF_SIZE]>().read() };
+) -> Vec<Arc<[u64]>> {
+    let (a, p) = tmpl_alloc(SVT_WORDS);
+    unsafe { copy_nonoverlapping(svt_defaults().as_ptr(), p, SVT_CONF_SIZE) };
+    set_svt_base(p.cast(), inf, params, width, height);
 
-    let mut v: Vec<Arc<[u8]>> = Vec::with_capacity(zones.len() + 1);
-    v.push(Arc::new(base));
+    let mut v = Vec::with_capacity(zones.len() + 1);
+    v.push(unsafe { a.assume_init() });
     for z in zones {
-        let mut zc = unsafe {
-            (&raw const base)
-                .cast::<EbSvtAv1EncConfiguration>()
-                .read_unaligned()
-        };
-        parse_svt_params(&raw mut zc, z);
-        v.push(Arc::new(unsafe {
-            (&raw const zc).cast::<[u8; SVT_CONF_SIZE]>().read()
-        }));
+        let (za, zp) = tmpl_alloc(SVT_WORDS);
+        unsafe { copy_nonoverlapping(p, zp, SVT_CONF_SIZE) };
+        parse_svt_params(zp.cast(), z);
+        v.push(unsafe { za.assume_init() });
     }
     v
 }
@@ -2590,8 +2388,8 @@ fn init_svt(cfg: &EncConfig) -> *mut EbComponentType {
     let mut conf = MaybeUninit::<EbSvtAv1EncConfiguration>::uninit();
     let handle = svt_handle(null_mut());
     unsafe {
-        let t = cfg.template.unwrap_unchecked();
-        copy_nonoverlapping(t.as_ptr(), conf.as_mut_ptr().cast::<u8>(), SVT_CONF_SIZE);
+        let t = cfg.tmpl.ptr;
+        copy_nonoverlapping(t, conf.as_mut_ptr().cast::<u8>(), SVT_CONF_SIZE);
     }
     let ret = unsafe { svt_av1_enc_set_parameter(handle, conf.as_mut_ptr()) };
     if ret != EB_ERROR_NONE {
@@ -2611,8 +2409,8 @@ fn init_svt_crf(cfg: &EncConfig) -> *mut EbComponentType {
     let mut conf = MaybeUninit::<EbSvtAv1EncConfiguration>::uninit();
     let handle = svt_handle(null_mut());
     unsafe {
-        let t = cfg.template.unwrap_unchecked();
-        copy_nonoverlapping(t.as_ptr(), conf.as_mut_ptr().cast::<u8>(), SVT_CONF_SIZE);
+        let t = cfg.tmpl.ptr;
+        copy_nonoverlapping(t, conf.as_mut_ptr().cast::<u8>(), SVT_CONF_SIZE);
         set_svt_crf(conf.as_mut_ptr(), cfg.crf.unwrap_unchecked());
     }
     let ret = unsafe { svt_av1_enc_set_parameter(handle, conf.as_mut_ptr()) };
@@ -2672,16 +2470,10 @@ macro_rules! make_send_svt {
 
             let st = drain_go(worker_id, handle, out, &tracker);
 
-            let (fw, fh) = (ctx.pipe.final_w, ctx.pipe.final_h);
             let frame_sz = ctx.pipe.frame_sz;
             let mut src = yuv.as_ptr();
             for i in 0..cfg.frames {
-                ($conv)(
-                    unsafe { from_raw_parts(src, frame_sz) },
-                    &mut sc.conv,
-                    fw,
-                    fh,
-                );
+                ($conv)(src, sc.conv.as_mut_ptr(), ctx.pipe);
                 src = unsafe { src.add(frame_sz) };
 
                 in_hdr.pts = i as i64;
@@ -2704,63 +2496,61 @@ macro_rules! make_send_svt {
 make_send_svt!(
     send_svt_conv,
     init_svt,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
-        conv_10b(f, b);
-    }
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
 );
 make_send_svt!(
     send_svt_conv_rem,
     init_svt,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
 );
 make_send_svt!(
     send_svt_unpack,
     init_svt,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
 );
 make_send_svt!(
     send_svt_unpack_rem,
     init_svt,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+    }
 );
 make_send_svt!(
     send_svt_nv12,
     init_svt,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| {
-        nv12_10b(f, b, w, h);
-    }
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b(s, d, p)
 );
 make_send_svt!(
     send_svt_nv12_rem,
     init_svt,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b_rem(s, d, p)
 );
 
 #[cfg(feature = "vship")]
 make_send_svt!(
     send_svt_crf,
     init_svt_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
-        conv_10b(f, b);
-    }
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
 );
 #[cfg(feature = "vship")]
 make_send_svt!(
     send_svt_crf_rem,
     init_svt_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
 );
 #[cfg(feature = "vship")]
 make_send_svt!(
     send_svt_crf_unpack,
     init_svt_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
 );
 #[cfg(feature = "vship")]
 make_send_svt!(
     send_svt_crf_unpack_rem,
     init_svt_crf,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+    }
 );
 macro_rules! make_enc_svt {
     ($name:ident, $send:ident) => {
@@ -2907,7 +2697,7 @@ fn build_avm_templates(
     width: u32,
     height: u32,
     _: (i32, i32),
-) -> Vec<Arc<[u8]>> {
+) -> Vec<Arc<[u64]>> {
     let mut conf = MaybeUninit::<AvmCodecEncCfg>::uninit();
     unsafe { avm_codec_enc_config_default(avm_codec_av2_cx(), conf.as_mut_ptr(), 0) };
     let mut conf = unsafe { conf.assume_init() };
@@ -2931,34 +2721,38 @@ fn build_avm_templates(
 #[cfg(feature = "avm")]
 #[cold]
 #[inline(never)]
-fn assemble_avm_tmpl(conf: &AvmCodecEncCfg, ctrls: &[i32; AVM_CTRL_CNT], opts: &[u8]) -> Arc<[u8]> {
+fn assemble_avm_tmpl(
+    conf: &AvmCodecEncCfg,
+    ctrls: &[i32; AVM_CTRL_CNT],
+    opts: &[u8],
+) -> Arc<[u64]> {
     let (hdr, extra) = avm_snapshot(conf, ctrls, opts);
-    let mut tmpl = Vec::with_capacity(AVM_TMPL_HDR + extra.len());
-    tmpl.extend_from_slice(unsafe {
-        from_raw_parts((&raw const *conf).cast::<u8>(), AVM_CFG_SIZE)
-    });
-    tmpl.extend_from_slice(unsafe {
-        from_raw_parts((&raw const hdr).cast::<u8>(), size_of::<AvmTmpl>())
-    });
-    tmpl.extend_from_slice(&extra);
-    Arc::from(tmpl)
+    let bytes = AVM_TMPL_HDR + extra.len();
+    let words = bytes.div_ceil(size_of::<u64>());
+    let (a, p) = tmpl_alloc(words);
+    unsafe {
+        copy_nonoverlapping((&raw const *conf).cast::<u8>(), p, AVM_CFG_SIZE);
+        copy_nonoverlapping(
+            (&raw const hdr).cast::<u8>(),
+            p.add(AVM_CFG_SIZE),
+            size_of::<AvmTmpl>(),
+        );
+        copy_nonoverlapping(extra.as_ptr(), p.add(AVM_TMPL_HDR), extra.len());
+        write_bytes(p.add(bytes), 0, words * size_of::<u64>() - bytes);
+        a.assume_init()
+    }
 }
 
 #[cfg(feature = "avm")]
 fn init_avm(cfg: &EncConfig, ec: *mut AvmCodecCtx) {
-    let t = unsafe { cfg.template.unwrap_unchecked() };
-    let mut conf = unsafe { t.as_ptr().cast::<AvmCodecEncCfg>().read_unaligned() };
+    let t = unsafe { cfg.tmpl.ptr };
+    let mut conf = unsafe { t.cast::<AvmCodecEncCfg>().read_unaligned() };
     conf.g_limit = cfg.frames as u32;
     conf.g_lag_in_frames = conf.g_limit.min(AVM_MAX_LAG);
-    let hdr = unsafe {
-        t.as_ptr()
-            .add(AVM_CFG_SIZE)
-            .cast::<AvmTmpl>()
-            .read_unaligned()
-    };
+    let hdr = unsafe { t.add(AVM_CFG_SIZE).cast::<AvmTmpl>().read_unaligned() };
 
     avm_init(&conf, ec);
-    avm_blit(ec, hdr, unsafe { t.get_unchecked(AVM_TMPL_HDR..) });
+    avm_blit(ec, hdr, unsafe { t.add(AVM_TMPL_HDR) });
 }
 
 #[cfg(feature = "avm")]
@@ -3041,17 +2835,11 @@ macro_rules! make_send_avm {
             );
             let mut done = 0;
             let mut sz = 0;
-            let (fw, fh) = (ctx.pipe.final_w, ctx.pipe.final_h);
             let frame_sz = ctx.pipe.frame_sz;
             let mut src = yuv.as_ptr();
 
             for i in 0..cfg.frames {
-                ($conv)(
-                    unsafe { from_raw_parts(src, frame_sz) },
-                    &mut sc.conv,
-                    fw,
-                    fh,
-                );
+                ($conv)(src, sc.conv.as_mut_ptr(), ctx.pipe);
                 src = unsafe { src.add(frame_sz) };
 
                 let ret = unsafe { avm_codec_encode(ec, img_ptr, i as i64, 1, 0) };
@@ -3069,38 +2857,35 @@ macro_rules! make_send_avm {
 }
 
 #[cfg(feature = "avm")]
-make_send_avm!(send_avm_conv, |f: &[u8],
-                               b: &mut [u8],
-                               _w: usize,
-                               _h: usize| {
-    conv_10b(f, b);
-});
+make_send_avm!(
+    send_avm_conv,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
+);
 #[cfg(feature = "avm")]
 make_send_avm!(
     send_avm_conv_rem,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
 );
 #[cfg(feature = "avm")]
 make_send_avm!(
     send_avm_unpack,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
 );
 #[cfg(feature = "avm")]
 make_send_avm!(
     send_avm_unpack_rem,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+    }
 );
 #[cfg(feature = "avm")]
-make_send_avm!(send_avm_nv12, |f: &[u8],
-                               b: &mut [u8],
-                               w: usize,
-                               h: usize| {
-    nv12_10b(f, b, w, h);
+make_send_avm!(send_avm_nv12, |s: *const u8, d: *mut u8, p: &Pipeline| {
+    nv12_10b(s, d, p);
 });
 #[cfg(feature = "avm")]
 make_send_avm!(
     send_avm_nv12_rem,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b_rem(s, d, p)
 );
 
 #[cfg(feature = "avm")]
@@ -3215,7 +3000,17 @@ fn finish_avm(
 }
 
 #[cfg(feature = "vvenc")]
-const VVENC_MAX_QP: i32 = 63;
+const fn vvenc_cfg_cnt(qp: (i32, i32)) -> usize {
+    if qp.0 < 0 {
+        return 1;
+    }
+    let hi = if qp.1 < VVENC_MAX_QP {
+        qp.1 + 1
+    } else {
+        VVENC_MAX_QP
+    };
+    (hi - qp.0 + 1) as usize
+}
 
 #[cfg(feature = "vvenc")]
 #[cold]
@@ -3227,16 +3022,9 @@ fn build_vvenc_templates(
     width: u32,
     height: u32,
     qp: (i32, i32),
-) -> Vec<Arc<[u8]>> {
-    if qp.0 >= 0 && (qp.0 > qp.1 || qp.1 > VVENC_MAX_QP) {
-        cold_path();
-        fatal(format_args!(
-            "vvenc: -f/--qp range must be within 0-{VVENC_MAX_QP}"
-        ));
-    }
+) -> Vec<Arc<[u64]>> {
     let lo = qp.0;
-    let hi = (qp.1 + 1).min(VVENC_MAX_QP);
-    let n = if lo < 0 { 1 } else { (hi - lo + 1) as usize };
+    let n = vvenc_cfg_cnt(qp);
     let hdr = if lo < 0 { 0 } else { VVENC_TQ_HDR };
     let sz = hdr + n * VVENC_CFG_SIZE;
 
@@ -3253,10 +3041,8 @@ fn build_vvenc_templates(
 #[cfg(feature = "vvenc")]
 #[cold]
 #[inline(never)]
-fn vvenc_tmpl(args: &Argv, zone: &Argv, lo: i32, n: usize, hdr: usize, sz: usize) -> Arc<[u8]> {
-    // parse target holds doubles and pointers; must stay 8-aligned
-    let mut t = Vec::<u64>::with_capacity(sz / size_of::<u64>());
-    let base = t.as_mut_ptr().cast::<u8>();
+fn vvenc_tmpl(args: &Argv, zone: &Argv, lo: i32, n: usize, hdr: usize, sz: usize) -> Arc<[u64]> {
+    let (a, base) = tmpl_alloc(sz / size_of::<u64>());
     unsafe {
         let first = base.add(hdr);
         write_bytes(first, 0, VVENC_CFG_SIZE);
@@ -3272,22 +3058,20 @@ fn vvenc_tmpl(args: &Argv, zone: &Argv, lo: i32, n: usize, hdr: usize, sz: usize
             vvenc_qp(first, lo);
         }
         vvenc_derive(first);
-        Arc::from(from_raw_parts(base, sz))
+        a.assume_init()
     }
 }
 
 #[cfg(feature = "vvenc")]
-fn init_vvenc(cfg: &EncConfig) -> *mut c_void {
-    vvenc_open(unsafe { cfg.template.unwrap_unchecked() }, cfg.frames)
+fn init_vvenc(cfg: &EncConfig, sc: &Scratch) -> *mut c_void {
+    vvenc_open(sc.params.get(unsafe { cfg.tmpl.off }), cfg.frames)
 }
 
 #[cfg(all(feature = "vvenc", feature = "vship"))]
-fn init_vvenc_crf(cfg: &EncConfig) -> *mut c_void {
-    let t = unsafe { cfg.template.unwrap_unchecked() };
-    let lo = unsafe { t.as_ptr().cast::<u32>().read_unaligned() };
+fn init_vvenc_crf(cfg: &EncConfig, sc: &Scratch) -> *mut c_void {
     let q = unsafe { cfg.crf.unwrap_unchecked() } as u32;
-    let off = VVENC_TQ_HDR + (q - lo) as usize * VVENC_CFG_SIZE;
-    vvenc_open(unsafe { t.get_unchecked(off..) }, cfg.frames)
+    let off = (q - sc.params.qlo()) as usize * VVENC_CFG_SIZE;
+    vvenc_open(unsafe { sc.params.get(cfg.tmpl.off).add(off) }, cfg.frames)
 }
 
 #[cfg(feature = "vvenc")]
@@ -3349,7 +3133,7 @@ macro_rules! make_send_vvenc {
                 track_frames,
                 crf_score,
             } = track;
-            let enc = $init(cfg);
+            let enc = $init(cfg, sc);
 
             let mut yb = vvenc_yuv(ctx.pipe);
             yb.planes[0].ptr = sc.conv.as_mut_ptr().cast();
@@ -3367,7 +3151,6 @@ macro_rules! make_send_vvenc {
             let mut done = 0;
             let mut sz = 0;
             let mut fin = false;
-            let (fw, fh) = (ctx.pipe.final_w, ctx.pipe.final_h);
             let frame_sz = ctx.pipe.frame_sz;
             let mut src = yuv.as_ptr();
             // nothing vvenc does to the au modifies payload_size; never reloads
@@ -3375,12 +3158,7 @@ macro_rules! make_send_vvenc {
             let mut pend = 0;
 
             for i in 0..cfg.frames {
-                ($conv)(
-                    unsafe { from_raw_parts(src, frame_sz) },
-                    &mut sc.conv,
-                    fw,
-                    fh,
-                );
+                ($conv)(src, sc.conv.as_mut_ptr(), ctx.pipe);
                 src = unsafe { src.add(frame_sz) };
 
                 au.payload = out.spare(pend, cap);
@@ -3404,68 +3182,66 @@ macro_rules! make_send_vvenc {
 make_send_vvenc!(
     send_vvenc_conv,
     init_vvenc,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
-        conv_10b(f, b);
-    }
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
 );
 #[cfg(feature = "vvenc")]
 make_send_vvenc!(
     send_vvenc_conv_rem,
     init_vvenc,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
 );
 #[cfg(feature = "vvenc")]
 make_send_vvenc!(
     send_vvenc_unpack,
     init_vvenc,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
 );
 #[cfg(feature = "vvenc")]
 make_send_vvenc!(
     send_vvenc_unpack_rem,
     init_vvenc,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+    }
 );
 #[cfg(feature = "vvenc")]
 make_send_vvenc!(
     send_vvenc_nv12,
     init_vvenc,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| {
-        nv12_10b(f, b, w, h);
-    }
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b(s, d, p)
 );
 #[cfg(feature = "vvenc")]
 make_send_vvenc!(
     send_vvenc_nv12_rem,
     init_vvenc,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b_rem(s, d, p)
 );
 
 #[cfg(all(feature = "vvenc", feature = "vship"))]
 make_send_vvenc!(
     send_vvenc_crf,
     init_vvenc_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
-        conv_10b(f, b);
-    }
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
 );
 #[cfg(all(feature = "vvenc", feature = "vship"))]
 make_send_vvenc!(
     send_vvenc_crf_rem,
     init_vvenc_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
 );
 #[cfg(all(feature = "vvenc", feature = "vship"))]
 make_send_vvenc!(
     send_vvenc_crf_unpack,
     init_vvenc_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
 );
 #[cfg(all(feature = "vvenc", feature = "vship"))]
 make_send_vvenc!(
     send_vvenc_crf_unpack_rem,
     init_vvenc_crf,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+    }
 );
 
 #[cfg(feature = "vvenc")]
@@ -3534,7 +3310,7 @@ fn enc_vvenc_direct(
     out: &mut dyn Write,
     cfg: &EncConfig,
     ctx: &EncWorkerCtx,
-    _sc: &mut Scratch,
+    sc: &mut Scratch,
     track: &EncTrack,
 ) -> u64 {
     let &EncTrack {
@@ -3542,7 +3318,7 @@ fn enc_vvenc_direct(
         track_frames,
         crf_score,
     } = track;
-    let enc = init_vvenc(cfg);
+    let enc = init_vvenc(cfg, sc);
 
     let mut au = vvenc_au(ctx.pipe);
     let mut yb = vvenc_yuv(ctx.pipe);
@@ -3617,6 +3393,26 @@ fn finish_vvenc(
     sz
 }
 
+#[cfg(any(feature = "x264", feature = "x265"))]
+#[cold]
+#[inline(never)]
+fn h26x_tmpl<F>(args: &H26xArgv, zone: &H26xArgv, sz: usize, parse: F) -> Arc<[u64]>
+where
+    F: Fn(*mut u8, &[u8], &[u8], &[u8], &[u8]),
+{
+    let pick = |z: &'static [u8], b: &'static [u8]| if z.is_empty() { b } else { z };
+
+    let (a, base) = tmpl_alloc(sz / size_of::<u64>());
+    parse(
+        base,
+        pick(zone.preset, args.preset),
+        pick(zone.tune, args.tune),
+        args.args,
+        zone.args,
+    );
+    unsafe { a.assume_init() }
+}
+
 #[cfg(feature = "x265")]
 #[cold]
 #[inline(never)]
@@ -3627,60 +3423,74 @@ fn build_x265_templates(
     width: u32,
     height: u32,
     _: (i32, i32),
-) -> Vec<Arc<[u8]>> {
+) -> Vec<Arc<[u64]>> {
     let a = x265_args(inf, params, width, height);
+    let tmpl = |z: &H26xArgv| h26x_tmpl(&a, z, X265_PARAM_SIZE, x265_parse);
 
     let mut v = Vec::with_capacity(zones.len() + 1);
-    v.push(x265_tmpl(&a, &X265Argv::EMPTY));
+    v.push(tmpl(&H26xArgv::EMPTY));
     for z in zones {
-        v.push(x265_tmpl(&a, &x265_zone_args(z)));
+        v.push(tmpl(&h26x_zone_args(z, false)));
     }
     x265_simd(unsafe { v.get_unchecked(0) });
     v
 }
 
 #[cfg(feature = "x265")]
-#[cold]
-#[inline(never)]
-fn x265_tmpl(args: &X265Argv, zone: &X265Argv) -> Arc<[u8]> {
-    let pick = |z: &'static [u8], b: &'static [u8]| if z.is_empty() { b } else { z };
-
-    // x265_param holds doubles and pointers; keep 8-aligned
-    let mut t = Vec::<u64>::with_capacity(X265_PARAM_SIZE / size_of::<u64>());
-    let base = t.as_mut_ptr().cast::<u8>();
-    unsafe {
-        x265_parse(
-            base,
-            pick(zone.preset, args.preset),
-            pick(zone.tune, args.tune),
-            args.args,
-            zone.args,
-        );
-        Arc::from(from_raw_parts(base, X265_PARAM_SIZE))
-    }
-}
-
-#[cfg(feature = "x265")]
-fn init_x265(cfg: &EncConfig) -> *mut c_void {
-    x265_open(unsafe { cfg.template.unwrap_unchecked() }, cfg.frames, None)
+fn init_x265(cfg: &EncConfig, sc: &Scratch) -> *mut c_void {
+    x265_open(sc.params.get(unsafe { cfg.tmpl.off }), cfg.frames)
 }
 
 #[cfg(all(feature = "x265", feature = "vship"))]
-fn init_x265_crf(cfg: &EncConfig) -> *mut c_void {
-    x265_open(
-        unsafe { cfg.template.unwrap_unchecked() },
-        cfg.frames,
-        cfg.crf,
-    )
+fn init_x265_crf(cfg: &EncConfig, sc: &Scratch) -> *mut c_void {
+    let d = sc.params.get(unsafe { cfg.tmpl.off });
+    x265_crf(d, unsafe { cfg.crf.unwrap_unchecked() });
+    x265_open(d, cfg.frames)
+}
+
+#[cfg(feature = "x264")]
+#[cold]
+#[inline(never)]
+fn build_x264_templates(
+    inf: &VidInf,
+    params: &str,
+    zones: &[&'static str],
+    width: u32,
+    height: u32,
+    _: (i32, i32),
+) -> Vec<Arc<[u64]>> {
+    let a = x264_args(inf, params);
+    let res = [width, height];
+    let tmpl = |z: &H26xArgv| {
+        h26x_tmpl(&a, z, X264_PARAM_SIZE, |d, p, t, ar, zo| {
+            x264_parse(d, p, t, ar, zo, res);
+        })
+    };
+
+    let mut v = Vec::with_capacity(zones.len() + 1);
+    v.push(tmpl(&H26xArgv::EMPTY));
+    for z in zones {
+        v.push(tmpl(&h26x_zone_args(z, true)));
+    }
+    x264_simd(unsafe { v.get_unchecked(0) });
+    v
+}
+
+#[cfg(feature = "x264")]
+fn init_x264(cfg: &EncConfig, sc: &Scratch) -> *mut c_void {
+    x264_open(sc.params.get(unsafe { cfg.tmpl.off }), cfg.frames)
+}
+
+#[cfg(all(feature = "x264", feature = "vship"))]
+fn init_x264_crf(cfg: &EncConfig, sc: &Scratch) -> *mut c_void {
+    let d = sc.params.get(unsafe { cfg.tmpl.off });
+    x264_crf(d, unsafe { cfg.crf.unwrap_unchecked() });
+    x264_open(d, cfg.frames)
 }
 
 #[cfg(feature = "x265")]
 #[inline]
 fn emit_nals(nal: *const X265Nal, n: u32, out: &mut dyn Write) -> u64 {
-    if n == 0 {
-        cold_path();
-        return 0;
-    }
     let first = unsafe { &*nal };
     let last = unsafe { &*nal.add(n as usize - 1) };
     let sz = unsafe {
@@ -3693,8 +3503,157 @@ fn emit_nals(nal: *const X265Nal, n: u32, out: &mut dyn Write) -> u64 {
 }
 
 #[cfg(feature = "x265")]
-macro_rules! make_send_x265 {
-    ($name:ident, $init:ident, $conv:expr) => {
+#[inline]
+fn hdrs_x265(enc: *mut c_void, out: &mut dyn Write) -> u64 {
+    let mut nal = MaybeUninit::<*mut X265Nal>::uninit();
+    let mut nnal = MaybeUninit::<u32>::uninit();
+    let hdr = unsafe { x265_encoder_headers(enc, nal.as_mut_ptr(), nnal.as_mut_ptr()) };
+    if hdr < 0 {
+        cold_path();
+        fatal("x265_encoder_headers failed");
+    }
+    _ = out.write_all(unsafe { from_raw_parts((*nal.assume_init()).payload, hdr as usize) });
+    hdr as u64
+}
+
+// x265 returns frame count, no size
+#[cfg(feature = "x265")]
+#[inline]
+fn step_x265(enc: *mut c_void, pic: &mut X265Pic, pts: i64, out: &mut dyn Write) -> u64 {
+    let mut nal = MaybeUninit::<*mut X265Nal>::uninit();
+    let mut nnal = MaybeUninit::<u32>::uninit();
+    pic.head.pts = pts;
+    let ret = unsafe {
+        x265_encoder_encode(
+            enc,
+            nal.as_mut_ptr(),
+            nnal.as_mut_ptr(),
+            &raw const *pic,
+            null_mut(),
+        )
+    };
+    if ret > 0 {
+        return emit_nals(
+            unsafe { nal.assume_init() },
+            unsafe { nnal.assume_init() },
+            out,
+        );
+    }
+    if ret < 0 {
+        cold_path();
+        fatal(format_args!("x265_encoder_encode failed at frame {pts}"));
+    }
+    0
+}
+
+#[cfg(feature = "x265")]
+fn flush_x265(
+    enc: *mut c_void,
+    _: &mut Scratch,
+    out: &mut dyn Write,
+    tracker: &Tracker,
+    done: &mut usize,
+) -> u64 {
+    let mut nal = MaybeUninit::<*mut X265Nal>::uninit();
+    let mut nnal = MaybeUninit::<u32>::uninit();
+    let mut sz = 0;
+
+    loop {
+        let ret = unsafe {
+            x265_encoder_encode(enc, nal.as_mut_ptr(), nnal.as_mut_ptr(), null(), null_mut())
+        };
+        if ret <= 0 {
+            break;
+        }
+        sz += emit_nals(
+            unsafe { nal.assume_init() },
+            unsafe { nnal.assume_init() },
+            out,
+        );
+        *done += 1;
+        tracker.set(*done);
+    }
+
+    unsafe { x265_encoder_close(enc) };
+
+    sz
+}
+
+// x264 repeats headers before one idr; nothing to pull
+#[cfg(feature = "x264")]
+#[inline]
+const fn hdrs_x264(_: *mut c_void, _: &mut dyn Write) -> u64 {
+    0
+}
+
+#[cfg(feature = "x264")]
+#[inline]
+fn step_x264(enc: *mut c_void, pics: &mut X264Pics, pts: i64, out: &mut dyn Write) -> u64 {
+    let mut nal = MaybeUninit::<*mut X264Nal>::uninit();
+    let mut nnal = MaybeUninit::<c_int>::uninit();
+    pics.inp.head.pts = pts;
+    let ret = unsafe {
+        x264_encoder_encode(
+            enc,
+            nal.as_mut_ptr(),
+            nnal.as_mut_ptr(),
+            &raw mut pics.inp,
+            &raw mut pics.out,
+        )
+    };
+    if ret > 0 {
+        let nal = unsafe { nal.assume_init() };
+        _ = out.write_all(unsafe { from_raw_parts((*nal).payload, ret as usize) });
+        return ret as u64;
+    }
+    if ret < 0 {
+        cold_path();
+        fatal(format_args!("x264_encoder_encode failed at frame {pts}"));
+    }
+    0
+}
+
+#[cfg(feature = "x264")]
+fn flush_x264(
+    enc: *mut c_void,
+    sc: &mut Scratch,
+    out: &mut dyn Write,
+    tracker: &Tracker,
+    done: &mut usize,
+) -> u64 {
+    let mut nal = MaybeUninit::<*mut X264Nal>::uninit();
+    let mut nnal = MaybeUninit::<c_int>::uninit();
+    let mut sz = 0;
+    let pic_out = unsafe { &raw mut (*sc.pics).out };
+
+    // single thread; null feed returns 0 only when encoder empty
+    loop {
+        let ret = unsafe {
+            x264_encoder_encode(
+                enc,
+                nal.as_mut_ptr(),
+                nnal.as_mut_ptr(),
+                null_mut(),
+                pic_out,
+            )
+        };
+        if ret <= 0 {
+            break;
+        }
+        _ = out.write_all(unsafe { from_raw_parts((*nal.assume_init()).payload, ret as usize) });
+        sz += ret as u64;
+        *done += 1;
+        tracker.set(*done);
+    }
+
+    unsafe { x264_encoder_close(enc) };
+
+    sz
+}
+
+#[cfg(any(feature = "x264", feature = "x265"))]
+macro_rules! make_send_h26x {
+    ($name:ident, $pic:ident, $init:ident, $hdrs:ident, $step:ident, $conv:expr) => {
         fn $name(
             out: &mut dyn Write,
             yuv: &[u8],
@@ -3708,9 +3667,9 @@ macro_rules! make_send_x265 {
                 track_frames,
                 crf_score,
             } = track;
-            let enc = $init(cfg);
+            let enc = $init(cfg, sc);
 
-            let pic = unsafe { &mut *sc.pic };
+            let pic = unsafe { &mut *sc.$pic };
 
             let tracker = Tracker::new(
                 ctx.prog,
@@ -3721,47 +3680,18 @@ macro_rules! make_send_x265 {
                 crf_score,
             );
 
-            let mut nal: *mut X265Nal = null_mut();
-            let mut nnal = 0u32;
-            let hdr = unsafe { x265_encoder_headers(enc, &raw mut nal, &raw mut nnal) };
-            if hdr < 0 {
-                cold_path();
-                fatal("x265_encoder_headers failed");
-            }
-            _ = out.write_all(unsafe { from_raw_parts((*nal).payload, hdr as usize) });
-
             let mut done = 0;
-            let mut sz = hdr as u64;
-            let (fw, fh) = (ctx.pipe.final_w, ctx.pipe.final_h);
+            let mut sz = $hdrs(enc, out);
             let frame_sz = ctx.pipe.frame_sz;
             let mut src = yuv.as_ptr();
 
             for i in 0..cfg.frames {
-                ($conv)(
-                    unsafe { from_raw_parts(src, frame_sz) },
-                    &mut sc.conv,
-                    fw,
-                    fh,
-                );
+                ($conv)(src, sc.conv.as_mut_ptr(), ctx.pipe);
                 src = unsafe { src.add(frame_sz) };
 
-                pic.head.pts = i as i64;
-
-                let ret = unsafe {
-                    x265_encoder_encode(
-                        enc,
-                        &raw mut nal,
-                        &raw mut nnal,
-                        &raw const *pic,
-                        null_mut(),
-                    )
-                };
-                if ret < 0 {
-                    cold_path();
-                    fatal(format_args!("x265_encoder_encode failed at frame {i}"));
-                }
-                if ret > 0 {
-                    sz += emit_nals(nal, nnal, out);
+                let n = $step(enc, pic, i as i64, out);
+                if n != 0 {
+                    sz += n;
                     done += 1;
                     tracker.set(done);
                 }
@@ -3772,77 +3702,62 @@ macro_rules! make_send_x265 {
     };
 }
 
-#[cfg(feature = "x265")]
-make_send_x265!(
-    send_x265_conv,
-    init_x265,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
-        conv_10b(f, b);
-    }
-);
-#[cfg(feature = "x265")]
-make_send_x265!(
-    send_x265_conv_rem,
-    init_x265,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
-);
-#[cfg(feature = "x265")]
-make_send_x265!(
-    send_x265_unpack,
-    init_x265,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
-);
-#[cfg(feature = "x265")]
-make_send_x265!(
-    send_x265_unpack_rem,
-    init_x265,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
-);
-#[cfg(feature = "x265")]
-make_send_x265!(
-    send_x265_nv12,
-    init_x265,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| {
-        nv12_10b(f, b, w, h);
-    }
-);
-#[cfg(feature = "x265")]
-make_send_x265!(
-    send_x265_nv12_rem,
-    init_x265,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| nv12_10b_rem(f, b, w, h)
-);
+// raw inp already encoder layout
+#[cfg(any(feature = "x264", feature = "x265"))]
+macro_rules! make_send_h26x_direct {
+    ($name:ident, $pic:ident, $init:ident, $hdrs:ident, $step:ident) => {
+        fn $name(
+            out: &mut dyn Write,
+            yuv: &[u8],
+            cfg: &EncConfig,
+            ctx: &EncWorkerCtx,
+            sc: &mut Scratch,
+            track: &EncTrack,
+        ) -> (*mut c_void, Tracker, usize, u64) {
+            let &EncTrack {
+                worker_id,
+                track_frames,
+                crf_score,
+            } = track;
+            let enc = $init(cfg, sc);
 
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_send_x265!(
-    send_x265_crf,
-    init_x265_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| {
-        conv_10b(f, b);
-    }
-);
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_send_x265!(
-    send_x265_crf_rem,
-    init_x265_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| conv_10b_rem(f, b)
-);
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_send_x265!(
-    send_x265_crf_unpack,
-    init_x265_crf,
-    |f: &[u8], b: &mut [u8], _w: usize, _h: usize| unpack_10b(f, b)
-);
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_send_x265!(
-    send_x265_crf_unpack_rem,
-    init_x265_crf,
-    |f: &[u8], b: &mut [u8], w: usize, h: usize| unpack_10b_rem(f, b, w, h)
-);
+            let pic = unsafe { &mut *sc.$pic };
 
-#[cfg(feature = "x265")]
-macro_rules! make_enc_x265 {
-    ($name:ident, $send:ident) => {
+            let tracker = Tracker::new(
+                ctx.prog,
+                worker_id,
+                cfg.chnk_idx,
+                cfg.frames,
+                track_frames,
+                crf_score,
+            );
+
+            let mut done = 0;
+            let mut sz = $hdrs(enc, out);
+            let (y_sz, cr_off) = (ctx.pipe.enc.y_sz, ctx.pipe.enc.cr_off);
+            let frame_sz = ctx.pipe.frame_sz;
+            let mut src = yuv.as_ptr().cast_mut();
+
+            for i in 0..cfg.frames {
+                pic.point(src, y_sz, cr_off);
+                src = unsafe { src.add(frame_sz) };
+
+                let n = $step(enc, pic, i as i64, out);
+                if n != 0 {
+                    sz += n;
+                    done += 1;
+                    tracker.set(done);
+                }
+            }
+
+            (enc, tracker, done, sz)
+        }
+    };
+}
+
+#[cfg(any(feature = "x264", feature = "x265"))]
+macro_rules! make_enc_h26x {
+    ($name:ident, $send:ident, $flush:ident) => {
         fn $name(
             yuv: &mut Vec<u8>,
             out: &mut dyn Write,
@@ -3853,14 +3768,16 @@ macro_rules! make_enc_x265 {
         ) -> u64 {
             let (enc, tracker, mut done, sz) = $send(out, yuv, cfg, ctx, sc, track);
             yuv.clear();
-            sz + finish_x265(enc, out, &tracker, &mut done)
+            let sz = sz + $flush(enc, sc, out, &tracker, &mut done);
+            tracker.finish();
+            sz
         }
     };
 }
 
-#[cfg(all(feature = "x265", feature = "vship"))]
-macro_rules! make_enc_x265_tq {
-    ($name:ident, $send:ident) => {
+#[cfg(all(feature = "vship", any(feature = "x264", feature = "x265")))]
+macro_rules! make_enc_h26x_tq {
+    ($name:ident, $send:ident, $flush:ident) => {
         fn $name(
             yuv: &mut Vec<u8>,
             out: &mut dyn Write,
@@ -3870,196 +3787,353 @@ macro_rules! make_enc_x265_tq {
             track: &EncTrack,
         ) -> u64 {
             let (enc, tracker, mut done, sz) = $send(out, yuv.as_slice(), cfg, ctx, sc, track);
-            sz + finish_x265(enc, out, &tracker, &mut done)
+            let sz = sz + $flush(enc, sc, out, &tracker, &mut done);
+            tracker.finish();
+            sz
         }
     };
 }
 
 #[cfg(feature = "x265")]
-make_enc_x265!(enc_x265_conv, send_x265_conv);
+make_send_h26x!(
+    send_x265_conv,
+    pic,
+    init_x265,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
+);
 #[cfg(feature = "x265")]
-make_enc_x265!(enc_x265_conv_rem, send_x265_conv_rem);
+make_send_h26x!(
+    send_x265_conv_rem,
+    pic,
+    init_x265,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
+);
 #[cfg(feature = "x265")]
-make_enc_x265!(enc_x265_unpack, send_x265_unpack);
+make_send_h26x!(
+    send_x265_unpack,
+    pic,
+    init_x265,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
+);
 #[cfg(feature = "x265")]
-make_enc_x265!(enc_x265_unpack_rem, send_x265_unpack_rem);
-#[cfg(feature = "x265")]
-make_enc_x265!(enc_x265_nv12, send_x265_nv12);
-#[cfg(feature = "x265")]
-make_enc_x265!(enc_x265_nv12_rem, send_x265_nv12_rem);
-
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_enc_x265_tq!(enc_x265_lib, send_x265_crf);
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_enc_x265_tq!(enc_x265_lib_rem, send_x265_crf_rem);
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_enc_x265_tq!(enc_x265_lib_unpack, send_x265_crf_unpack);
-#[cfg(all(feature = "x265", feature = "vship"))]
-make_enc_x265_tq!(enc_x265_lib_unpack_rem, send_x265_crf_unpack_rem);
-
-#[cfg(feature = "x265")]
-fn enc_x265_direct(
-    yuv: &mut Vec<u8>,
-    out: &mut dyn Write,
-    cfg: &EncConfig,
-    ctx: &EncWorkerCtx,
-    sc: &mut Scratch,
-    track: &EncTrack,
-) -> u64 {
-    let &EncTrack {
-        worker_id,
-        track_frames,
-        crf_score,
-    } = track;
-    let enc = init_x265(cfg);
-
-    let pic = unsafe { &mut *sc.pic };
-
-    let tracker = Tracker::new(
-        ctx.prog,
-        worker_id,
-        cfg.chnk_idx,
-        cfg.frames,
-        track_frames,
-        crf_score,
-    );
-
-    let mut nal: *mut X265Nal = null_mut();
-    let mut nnal = 0u32;
-    let hdr = unsafe { x265_encoder_headers(enc, &raw mut nal, &raw mut nnal) };
-    if hdr < 0 {
-        cold_path();
-        fatal("x265_encoder_headers failed");
+make_send_h26x!(
+    send_x265_unpack_rem,
+    pic,
+    init_x265,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
     }
-    _ = out.write_all(unsafe { from_raw_parts((*nal).payload, hdr as usize) });
-
-    let mut done = 0;
-    let mut sz = hdr as u64;
-    let (y_sz, cr_off) = (ctx.pipe.enc.y_sz, ctx.pipe.enc.cr_off);
-    let frame_sz = ctx.pipe.frame_sz;
-    let mut src = yuv.as_ptr().cast_mut();
-
-    for i in 0..cfg.frames {
-        pic.point(src, y_sz, cr_off);
-        src = unsafe { src.add(frame_sz) };
-        pic.head.pts = i as i64;
-
-        let ret = unsafe {
-            x265_encoder_encode(
-                enc,
-                &raw mut nal,
-                &raw mut nnal,
-                &raw const *pic,
-                null_mut(),
-            )
-        };
-        if ret < 0 {
-            cold_path();
-            fatal(format_args!("x265_encoder_encode failed at frame {i}"));
-        }
-        if ret > 0 {
-            sz += emit_nals(nal, nnal, out);
-            done += 1;
-            tracker.set(done);
-        }
+);
+#[cfg(feature = "x265")]
+make_send_h26x!(
+    send_x265_nv12,
+    pic,
+    init_x265,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b(s, d, p)
+);
+#[cfg(feature = "x265")]
+make_send_h26x!(
+    send_x265_nv12_rem,
+    pic,
+    init_x265,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b_rem(s, d, p)
+);
+#[cfg(feature = "x265")]
+make_send_h26x_direct!(send_x265_direct, pic, init_x265, hdrs_x265, step_x265);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_send_h26x!(
+    send_x265_crf,
+    pic,
+    init_x265_crf,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
+);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_send_h26x!(
+    send_x265_crf_rem,
+    pic,
+    init_x265_crf,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
+);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_send_h26x!(
+    send_x265_crf_unpack,
+    pic,
+    init_x265_crf,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
+);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_send_h26x!(
+    send_x265_crf_unpack_rem,
+    pic,
+    init_x265_crf,
+    hdrs_x265,
+    step_x265,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
     }
-
-    yuv.clear();
-
-    sz + finish_x265(enc, out, &tracker, &mut done)
-}
+);
 
 #[cfg(feature = "x265")]
-fn finish_x265(enc: *mut c_void, out: &mut dyn Write, tracker: &Tracker, done: &mut usize) -> u64 {
-    let mut nal: *mut X265Nal = null_mut();
-    let mut nnal = 0u32;
-    let mut sz = 0;
+make_enc_h26x!(enc_x265_conv, send_x265_conv, flush_x265);
+#[cfg(feature = "x265")]
+make_enc_h26x!(enc_x265_conv_rem, send_x265_conv_rem, flush_x265);
+#[cfg(feature = "x265")]
+make_enc_h26x!(enc_x265_unpack, send_x265_unpack, flush_x265);
+#[cfg(feature = "x265")]
+make_enc_h26x!(enc_x265_unpack_rem, send_x265_unpack_rem, flush_x265);
+#[cfg(feature = "x265")]
+make_enc_h26x!(enc_x265_nv12, send_x265_nv12, flush_x265);
+#[cfg(feature = "x265")]
+make_enc_h26x!(enc_x265_nv12_rem, send_x265_nv12_rem, flush_x265);
+#[cfg(feature = "x265")]
+make_enc_h26x!(enc_x265_direct, send_x265_direct, flush_x265);
 
-    loop {
-        let ret =
-            unsafe { x265_encoder_encode(enc, &raw mut nal, &raw mut nnal, null(), null_mut()) };
-        if ret <= 0 {
-            break;
-        }
-        sz += emit_nals(nal, nnal, out);
-        *done += 1;
-        tracker.set(*done);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_enc_h26x_tq!(enc_x265_lib, send_x265_crf, flush_x265);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_enc_h26x_tq!(enc_x265_lib_rem, send_x265_crf_rem, flush_x265);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_enc_h26x_tq!(enc_x265_lib_unpack, send_x265_crf_unpack, flush_x265);
+#[cfg(all(feature = "x265", feature = "vship"))]
+make_enc_h26x_tq!(
+    enc_x265_lib_unpack_rem,
+    send_x265_crf_unpack_rem,
+    flush_x265
+);
+
+#[cfg(feature = "x264")]
+make_send_h26x!(
+    send_x264_conv,
+    pics,
+    init_x264,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
+);
+#[cfg(feature = "x264")]
+make_send_h26x!(
+    send_x264_conv_rem,
+    pics,
+    init_x264,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
+);
+#[cfg(feature = "x264")]
+make_send_h26x!(
+    send_x264_unpack,
+    pics,
+    init_x264,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
+);
+#[cfg(feature = "x264")]
+make_send_h26x!(
+    send_x264_unpack_rem,
+    pics,
+    init_x264,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
     }
+);
+#[cfg(feature = "x264")]
+make_send_h26x!(
+    send_x264_nv12,
+    pics,
+    init_x264,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b(s, d, p)
+);
+#[cfg(feature = "x264")]
+make_send_h26x!(
+    send_x264_nv12_rem,
+    pics,
+    init_x264,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| nv12_10b_rem(s, d, p)
+);
+#[cfg(feature = "x264")]
+make_send_h26x_direct!(send_x264_direct, pics, init_x264, hdrs_x264, step_x264);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_send_h26x!(
+    send_x264_crf,
+    pics,
+    init_x264_crf,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b(s, d, p.conv_iters) }
+);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_send_h26x!(
+    send_x264_crf_rem,
+    pics,
+    init_x264_crf,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_conv_10b_rem(s, d, p.frame_sz) }
+);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_send_h26x!(
+    send_x264_crf_unpack,
+    pics,
+    init_x264_crf,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe { xav_unpack_10b(s, d, p.unpack_iters) }
+);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_send_h26x!(
+    send_x264_crf_unpack_rem,
+    pics,
+    init_x264_crf,
+    hdrs_x264,
+    step_x264,
+    |s: *const u8, d: *mut u8, p: &Pipeline| unsafe {
+        xav_unpack_10b_rem(s, d, p.final_w, p.final_h);
+    }
+);
 
-    tracker.finish();
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_conv, send_x264_conv, flush_x264);
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_conv_rem, send_x264_conv_rem, flush_x264);
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_unpack, send_x264_unpack, flush_x264);
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_unpack_rem, send_x264_unpack_rem, flush_x264);
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_nv12, send_x264_nv12, flush_x264);
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_nv12_rem, send_x264_nv12_rem, flush_x264);
+#[cfg(feature = "x264")]
+make_enc_h26x!(enc_x264_direct, send_x264_direct, flush_x264);
 
-    unsafe { x265_encoder_close(enc) };
-
-    sz
-}
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_enc_h26x_tq!(enc_x264_lib, send_x264_crf, flush_x264);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_enc_h26x_tq!(enc_x264_lib_rem, send_x264_crf_rem, flush_x264);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_enc_h26x_tq!(enc_x264_lib_unpack, send_x264_crf_unpack, flush_x264);
+#[cfg(all(feature = "x264", feature = "vship"))]
+make_enc_h26x_tq!(
+    enc_x264_lib_unpack_rem,
+    send_x264_crf_unpack_rem,
+    flush_x264
+);
 
 #[cfg(test)]
-#[allow(function_casts_as_integer, clippy::fn_to_numeric_cast_any)]
 pub mod test_access {
     use super::*;
 
-    pub fn resolve_svt_enc_addr(
+    pub fn run_chunk(
+        inf: &VidInf,
+        pipe: &Pipeline,
         strat: DecStrat,
-        is_nv12: bool,
-        inf: &VidInf,
-        pipe: &Pipeline,
-    ) -> usize {
-        resolve_svt_enc(strat, is_nv12, inf, pipe) as usize
-    }
-
-    pub fn enc_svt_direct_addr() -> usize {
-        (enc_svt_direct as LibEncFn) as usize
-    }
-    pub fn enc_svt_drop_addr() -> usize {
-        (enc_svt_drop as LibEncFn) as usize
-    }
-    pub fn enc_svt_drop_rem_addr() -> usize {
-        (enc_svt_drop_rem as LibEncFn) as usize
-    }
-    pub fn enc_svt_nv12_drop_addr() -> usize {
-        (enc_svt_nv12_drop as LibEncFn) as usize
-    }
-    pub fn enc_svt_nv12_drop_rem_addr() -> usize {
-        (enc_svt_nv12_drop_rem as LibEncFn) as usize
-    }
-    pub fn enc_svt_unpack_drop_addr() -> usize {
-        (enc_svt_unpack_drop as LibEncFn) as usize
-    }
-    pub fn enc_svt_unpack_drop_rem_addr() -> usize {
-        (enc_svt_unpack_drop_rem as LibEncFn) as usize
-    }
-
-    #[cfg(feature = "vship")]
-    pub fn resolve_metric_loop_addr(
-        dav1d: bool,
-        use_alt: bool,
-        cvvdp: bool,
-        inf: &VidInf,
-        pipe: &Pipeline,
-    ) -> usize {
-        let tq = TQCtx {
-            target: 0.0,
-            tolerance: 0.0,
-            qp_min: 0.0,
-            qp_max: 0.0,
-            bound_step: 0.0,
-            use_butter: false,
-            use_cvvdp: cvvdp,
-            integer_qp: false,
+        yuv: &mut Vec<u8>,
+        frames: usize,
+        params: &str,
+        out: &mut dyn Write,
+    ) -> Vec<u8> {
+        let tmpls = build_svt_templates(
+            inf,
+            params,
+            &[],
+            pipe.final_w as u32,
+            pipe.final_h as u32,
+            (-1, -1),
+        );
+        let chnks = [Chunk {
+            idx: 0,
+            tmpl: 0,
+            start: 0,
+            end: frames,
+            params: None,
+        }];
+        let (prog, disp) = ProgsTrack::new(
+            &chnks,
+            inf,
+            1,
+            0,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicU64::new(0)),
+        );
+        let prog = Arc::new(prog);
+        let bufs = Bufs::new(1, frames * pipe.frame_sz);
+        let ctx = EncWorkerCtx {
+            pipe,
+            work_dir: Path::new("."),
+            prog: &prog,
+            encoder: SvtAv1,
+            lib_enc: resolve_lib_enc(
+                SvtAv1,
+                &strat,
+                matches!(
+                    strat,
+                    DecStrat::HwNv12To10
+                        | DecStrat::HwNv12To10Stride
+                        | DecStrat::HwNv12CropTo10 { .. }
+                ),
+                inf,
+                pipe,
+            ),
+            tmpl: tmpls[0].as_ptr().cast(),
+            tmpls: &tmpls,
+            bufs: &bufs,
+            #[cfg(feature = "vship")]
+            probe_fn: resolve_probe_fn(SvtAv1),
         };
-        resolve_metric_loop(if dav1d { SvtAv1 } else { X265 }, use_alt, &tq, inf, pipe) as usize
-    }
-
-    #[cfg(feature = "vship")]
-    pub fn met_cvvdp_8b_addr() -> usize {
-        (met_d_cv_8b as MetricLoopFn) as usize
-    }
-    #[cfg(feature = "vship")]
-    pub fn met_cvvdp_10b_addr() -> usize {
-        (met_d_cv_10b as MetricLoopFn) as usize
-    }
-    #[cfg(feature = "vship")]
-    pub fn met_cvvdp_rem_addr() -> usize {
-        (met_d_cv_rem as MetricLoopFn) as usize
+        let mut sc = Scratch::new(&ctx);
+        let cfg = EncConfig {
+            tmpl: Tmpl {
+                ptr: tmpls[0].as_ptr().cast(),
+            },
+            #[cfg(feature = "vship")]
+            crf: None,
+            chnk_idx: 0,
+            #[cfg(feature = "avm")]
+            width: pipe.final_w as u32,
+            #[cfg(feature = "avm")]
+            height: pipe.final_h as u32,
+            frames,
+        };
+        (ctx.lib_enc)(
+            yuv,
+            out,
+            &cfg,
+            &ctx,
+            &mut sc,
+            &EncTrack {
+                worker_id: 0,
+                track_frames: false,
+                crf_score: None,
+            },
+        );
+        drop(prog);
+        disp.join();
+        core::mem::take(&mut sc.conv)
     }
 }

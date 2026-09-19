@@ -1,29 +1,31 @@
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 use alloc::boxed::Box;
 use alloc::ffi::CString;
-#[cfg(any(feature = "vvenc", feature = "x265"))]
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 use alloc::vec::Vec;
 #[cfg(target_os = "linux")]
-use alloc::{
-    borrow::ToOwned as _,
-    string::{String, ToString as _},
-};
+use alloc::{borrow::ToOwned as _, string::String};
 use core::mem::size_of;
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+use core::{fmt::Arguments, ptr::copy_nonoverlapping};
 
+#[cfg(any(feature = "x264", feature = "x265"))]
+use crate::ffms::gcd;
 #[cfg(all(target_os = "linux", not(test)))]
 use crate::fmath::FloatExt as _;
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+use crate::io::Write as _;
 #[cfg(any(feature = "vship", test))]
 use crate::svt::{MAX_QP_VALUE, SVT_AV1_RC_MODE_CQP_OR_CRF};
+#[cfg(not(all(feature = "avm", feature = "vvenc", feature = "x264", feature = "x265")))]
+use crate::util::assume_unreachable;
 use crate::{
     Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
-    ffms::{VidInf, gcd},
-    path::Path,
-    process::{Command, Stdio},
+    ffms::VidInf,
     svt::{
         ChromaPoints, ContentLightLevel, EbSvtAv1EncConfiguration, MasteringDisplayInfo,
         svt_av1_enc_parse_parameter,
     },
-    util::assume_unreachable,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,6 +48,7 @@ impl Encoder {
             "vvenc" => Some(Vvenc),
             #[cfg(feature = "x265")]
             "x265" => Some(X265),
+            #[cfg(feature = "x264")]
             "x264" => Some(X264),
             _ => None,
         }
@@ -95,65 +98,108 @@ impl Encoder {
             X265 => concat!("x265 v", env!("XAV_V_X265")).to_owned(),
             #[cfg(not(feature = "x265"))]
             X265 => assume_unreachable(),
-            X264 => run_version("x264", "x264", None),
+            #[cfg(feature = "x264")]
+            X264 => concat!("x264 v", env!("XAV_V_X264")).to_owned(),
+            #[cfg(not(feature = "x264"))]
+            X264 => assume_unreachable(),
         }
     }
 
-    pub const fn integer_qp(self) -> bool {
-        matches!(self, Avm | Vvenc)
+    pub const fn qp_step(self) -> f32 {
+        if matches!(self, Avm | Vvenc) {
+            1.0
+        } else {
+            0.25
+        }
+    }
+
+    // svt/avm read it raw
+    pub const fn lib_params(self) -> bool {
+        matches!(self, Vvenc | X264 | X265)
     }
 }
 
-fn run_version(prog: &str, name: &str, marker: Option<&str>) -> String {
-    let Ok(out) = Command::new(prog).arg("--version").output() else {
-        return name.to_owned();
-    };
-    let mut t = String::from_utf8_lossy(&out.stdout).into_owned();
-    t.push_str(&String::from_utf8_lossy(&out.stderr));
-    marker.map_or_else(
-        || {
-            t.lines()
-                .map(str::trim)
-                .find(|l| !l.is_empty())
-                .unwrap_or(name)
-                .to_owned()
-        },
-        |m| {
-            t.lines()
-                .find_map(|l| l.split_once(m))
-                .and_then(|(_, rest)| rest.split_whitespace().next())
-                .map_or_else(|| name.to_owned(), |v| format!("{name} {v}"))
-        },
-    )
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+pub struct ParamBufs {
+    buf: Vec<u64>,
+    #[cfg(all(feature = "vvenc", feature = "vship"))]
+    qlo: u32,
+}
+
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+impl ParamBufs {
+    pub const fn new() -> Self {
+        Self {
+            buf: Vec::new(),
+            #[cfg(all(feature = "vvenc", feature = "vship"))]
+            qlo: 0,
+        }
+    }
+
+    #[cfg(all(feature = "vvenc", feature = "vship"))]
+    #[cold]
+    #[inline(never)]
+    pub const fn set_qlo(&mut self, q: u32) {
+        self.qlo = q;
+    }
+
+    #[cfg(all(feature = "vvenc", feature = "vship"))]
+    #[inline(always)]
+    pub const fn qlo(&self) -> u32 {
+        self.qlo
+    }
+
+    #[cold]
+    #[inline(never)]
+    pub fn fill<'a, I: Iterator<Item = &'a [u64]>>(
+        &mut self,
+        cnt: usize,
+        len: usize,
+        tmpls: I,
+    ) -> usize {
+        self.buf.reserve_exact(len * cnt);
+        let mut d = self.buf.as_mut_ptr();
+        for t in tmpls {
+            unsafe {
+                copy_nonoverlapping(t.as_ptr(), d, len);
+                d = d.add(len);
+            }
+        }
+        len * size_of::<u64>()
+    }
+
+    #[inline(always)]
+    pub const fn get(&self, off: usize) -> *mut u8 {
+        unsafe { self.buf.as_ptr().cast::<u8>().add(off).cast_mut() }
+    }
 }
 
 pub const SVT_CONF_SIZE: usize = size_of::<EbSvtAv1EncConfiguration>();
 
-pub struct EncConfig<'a> {
-    pub inf: &'a VidInf,
-    pub template: Option<&'a [u8]>,
-    pub params: &'a str,
+const _: [(); 0] = [(); SVT_CONF_SIZE % size_of::<u64>()];
+
+// svt/avm read bytes, rest index own
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub union Tmpl {
+    pub ptr: *const u8,
+    pub off: usize,
+}
+
+pub struct EncConfig {
+    pub tmpl: Tmpl,
+    #[cfg(feature = "vship")]
     pub crf: Option<f32>,
-    pub out: &'a Path,
     pub chnk_idx: u16,
+    #[cfg(feature = "avm")]
     pub width: u32,
+    #[cfg(feature = "avm")]
     pub height: u32,
     pub frames: usize,
 }
 
-pub fn make_enc_cmd(encoder: Encoder, cfg: &EncConfig, zone: Option<&str>) -> Command {
-    let mut cmd = match encoder {
-        SvtAv1 | Avm | Vvenc | X265 => assume_unreachable(),
-        X264 => make_x264_cmd(cfg),
-    };
-    if let Some(z) = zone {
-        cmd.args(z.split_whitespace());
-    }
-    cmd
-}
-
-// NUL-sep argv arena + token count; nothing scans it back for one
-#[cfg(any(feature = "vvenc", feature = "x265"))]
+// NUL-sep argv arena + token cnt; nothing scans back
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 pub struct Argv {
     pub buf: Vec<u8>,
     pub n: usize,
@@ -167,9 +213,16 @@ impl Argv {
     };
 }
 
-#[cfg(any(feature = "vvenc", feature = "x265"))]
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 fn push_arg(a: &mut Argv, s: &str) {
     a.buf.extend_from_slice(s.as_bytes());
+    a.buf.push(0);
+    a.n += 1;
+}
+
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+fn push_fmt(a: &mut Argv, args: Arguments) {
+    _ = a.buf.write_fmt(args);
     a.buf.push(0);
     a.n += 1;
 }
@@ -196,16 +249,19 @@ const VVENC_BASE: &[&str] = &[
     "--Verbosity", "silent",
 ];
 
-#[cfg(feature = "vvenc")]
-const VVENC_BASE_LEN: usize = {
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
+const fn base_len(list: &[&str]) -> usize {
     let mut n = 0;
     let mut i = 0;
-    while i < VVENC_BASE.len() {
-        n += VVENC_BASE[i].len() + 1;
+    while i < list.len() {
+        n += list[i].len() + 1;
         i += 1;
     }
     n
-};
+}
+
+#[cfg(feature = "vvenc")]
+const VVENC_BASE_LEN: usize = base_len(VVENC_BASE);
 
 // everything but the zone shared; built once for all
 #[cfg(feature = "vvenc")]
@@ -222,11 +278,11 @@ pub fn vvenc_args(inf: &VidInf, params: &str, w: u32, h: u32) -> Argv {
     }
 
     push_arg(&mut a, "--SourceWidth");
-    push_arg(&mut a, &w.to_string());
+    push_fmt(&mut a, format_args!("{w}"));
     push_arg(&mut a, "--SourceHeight");
-    push_arg(&mut a, &h.to_string());
+    push_fmt(&mut a, format_args!("{h}"));
     push_arg(&mut a, "--fps");
-    push_arg(&mut a, &format!("{}/{}", inf.fps_num, inf.fps_den));
+    push_fmt(&mut a, format_args!("{}/{}", inf.fps_num, inf.fps_den));
 
     colorize_vvenc(&mut a, inf);
 
@@ -294,7 +350,7 @@ fn colorize_vvenc(a: &mut Argv, inf: &VidInf) {
     let csp = inf.chroma_sample_position;
     if (1..=6).contains(&csp) {
         push_arg(a, "--ChromaSampleLocType");
-        push_arg(a, &(csp - 1).to_string());
+        push_fmt(a, format_args!("{}", csp - 1));
     }
     if let Some(ref md) = inf.mastering_display
         && let Some(converted) = h26x_mastering(md, false)
@@ -321,32 +377,26 @@ const X265_BASE: &[&str] = &[
     "frame-threads",    "1",
     "slices",           "1",
     "wpp",              "0",
+    "ctu",              "64",
+    "min-cu-size",      "8",
     "info",             "0",
     "vui-hrd-info",     "0",
     "vui-timing-info",  "0",
 ];
 
 #[cfg(feature = "x265")]
-const X265_BASE_LEN: usize = {
-    let mut n = 0;
-    let mut i = 0;
-    while i < X265_BASE.len() {
-        n += X265_BASE[i].len() + 1;
-        i += 1;
-    }
-    n
-};
+const X265_BASE_LEN: usize = base_len(X265_BASE);
 
-// x265 keeps tune pointer; arenas outlive every enc
-#[cfg(feature = "x265")]
-pub struct X265Argv {
+// x26x keeps tune pointer; arenas outlive every enc
+#[cfg(any(feature = "x264", feature = "x265"))]
+pub struct H26xArgv {
     pub args: &'static [u8],
     pub preset: &'static [u8],
     pub tune: &'static [u8],
 }
 
-#[cfg(feature = "x265")]
-impl X265Argv {
+#[cfg(any(feature = "x264", feature = "x265"))]
+impl H26xArgv {
     pub const EMPTY: Self = Self {
         args: &[],
         preset: &[],
@@ -354,7 +404,7 @@ impl X265Argv {
     };
 }
 
-#[cfg(feature = "x265")]
+#[cfg(any(feature = "x264", feature = "x265"))]
 fn leak(v: Vec<u8>) -> &'static [u8] {
     if v.is_empty() {
         return &[];
@@ -362,8 +412,9 @@ fn leak(v: Vec<u8>) -> &'static [u8] {
     Box::leak(v.into_boxed_slice())
 }
 
-#[cfg(feature = "x265")]
-fn split_x265_params(a: &mut Argv, params: &str) -> (Vec<u8>, Vec<u8>) {
+// preset/tune are their own c strings; else joins the arena
+#[cfg(any(feature = "x264", feature = "x265"))]
+fn finish_h26x(mut a: Argv, params: &str, lossless_qp: bool) -> H26xArgv {
     let (mut preset, mut tune) = (Vec::new(), Vec::new());
     let mut it = params.split_whitespace();
     while let Some(tok) = it.next() {
@@ -373,8 +424,13 @@ fn split_x265_params(a: &mut Argv, params: &str) -> (Vec<u8>, Vec<u8>) {
             "preset" => &mut preset,
             "tune" => &mut tune,
             _ => {
-                push_arg(a, name);
-                push_arg(a, val);
+                if lossless_qp && name == "crf" && val.parse::<f32>().is_ok_and(|v| v <= 0.0) {
+                    push_arg(&mut a, "qp");
+                    push_arg(&mut a, "0");
+                } else {
+                    push_arg(&mut a, name);
+                    push_arg(&mut a, val);
+                }
                 continue;
             }
         };
@@ -382,13 +438,31 @@ fn split_x265_params(a: &mut Argv, params: &str) -> (Vec<u8>, Vec<u8>) {
         dst.extend_from_slice(val.as_bytes());
         dst.push(0);
     }
-    (preset, tune)
+    H26xArgv {
+        args: leak(a.buf),
+        preset: leak(preset),
+        tune: leak(tune),
+    }
+}
+
+#[cfg(any(feature = "x264", feature = "x265"))]
+#[cold]
+#[inline(never)]
+pub fn h26x_zone_args(zone: &str, lossless_qp: bool) -> H26xArgv {
+    finish_h26x(
+        Argv {
+            buf: Vec::with_capacity(zone.len() + 1),
+            n: 0,
+        },
+        zone,
+        lossless_qp,
+    )
 }
 
 #[cfg(feature = "x265")]
 #[cold]
 #[inline(never)]
-pub fn x265_args(inf: &VidInf, params: &str, w: u32, h: u32) -> X265Argv {
+pub fn x265_args(inf: &VidInf, params: &str, w: u32, h: u32) -> H26xArgv {
     let mut a = Argv {
         buf: Vec::with_capacity(X265_BASE_LEN + params.len() + 1),
         n: 0,
@@ -399,15 +473,9 @@ pub fn x265_args(inf: &VidInf, params: &str, w: u32, h: u32) -> X265Argv {
     }
 
     push_arg(&mut a, "input-res");
-    push_arg(&mut a, &format!("{w}x{h}"));
-    push_arg(&mut a, "fps");
-    push_arg(&mut a, &format!("{}/{}", inf.fps_num, inf.fps_den));
-
-    let (sar_n, sar_d) = h26x_sar(inf);
-    push_arg(&mut a, "sar");
-    push_arg(&mut a, &format!("{sar_n}:{sar_d}"));
-
-    colorize_x265(&mut a, inf);
+    push_fmt(&mut a, format_args!("{w}x{h}"));
+    push_fps_sar(&mut a, inf);
+    colorize_h26x(&mut a, inf, X265_COLOR);
 
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
@@ -415,139 +483,129 @@ pub fn x265_args(inf: &VidInf, params: &str, w: u32, h: u32) -> X265Argv {
         push_arg(&mut a, "avx512");
     }
 
-    let (preset, tune) = split_x265_params(&mut a, params);
-
-    X265Argv {
-        args: leak(a.buf),
-        preset: leak(preset),
-        tune: leak(tune),
-    }
+    finish_h26x(a, params, false)
 }
 
-#[cfg(feature = "x265")]
+#[cfg(feature = "x264")]
+#[rustfmt::skip]
+const X264_BASE: &[&str] = &[
+    "keyint",        "infinite",
+    "min-keyint",    "9999",
+    "scenecut",      "0",
+    "bframes",       "16",
+    "b-adapt",       "2",
+    "rc-lookahead",  "300",
+    "threads",       "1",
+    "deterministic", "0",
+    "force-cfr",     "1",
+    "nal-hrd",       "none",
+];
+
+#[cfg(feature = "x264")]
+const X264_BASE_LEN: usize = base_len(X264_BASE);
+
+// res, csp, depth not on params; x264_parse writes fields
+#[cfg(feature = "x264")]
 #[cold]
 #[inline(never)]
-pub fn x265_zone_args(zone: &str) -> X265Argv {
+pub fn x264_args(inf: &VidInf, params: &str) -> H26xArgv {
     let mut a = Argv {
-        buf: Vec::with_capacity(zone.len() + 1),
+        buf: Vec::with_capacity(X264_BASE_LEN + params.len() + 1),
         n: 0,
     };
-    let (preset, tune) = split_x265_params(&mut a, zone);
-    X265Argv {
-        args: leak(a.buf),
-        preset: leak(preset),
-        tune: leak(tune),
+
+    for &s in X264_BASE {
+        push_arg(&mut a, s);
     }
+
+    push_fps_sar(&mut a, inf);
+    colorize_h26x(&mut a, inf, X264_COLOR);
+
+    finish_h26x(a, params, true)
 }
 
-// not --video-signal-type-preset; applied last; overwrites chromal & master disp
+#[cfg(any(feature = "x264", feature = "x265"))]
+struct ColorNames {
+    range: &'static str,
+    range_full: &'static str,
+    range_lim: &'static str,
+    master: &'static str,
+    cll: &'static str,
+    // x264 sets unset enum "undef"; takes G(x,y).. for disp
+    x264_form: bool,
+}
+
 #[cfg(feature = "x265")]
+const X265_COLOR: &ColorNames = &ColorNames {
+    range: "range",
+    range_full: "full",
+    range_lim: "limited",
+    master: "master-display",
+    cll: "max-cll",
+    x264_form: false,
+};
+
+#[cfg(feature = "x264")]
+const X264_COLOR: &ColorNames = &ColorNames {
+    range: "fullrange",
+    range_full: "on",
+    range_lim: "off",
+    master: "mastering-display",
+    cll: "cll",
+    x264_form: true,
+};
+
+// not --video-signal-type-preset; applied last; overwrites chromal & master disp
+#[cfg(any(feature = "x264", feature = "x265"))]
 #[cold]
 #[inline(never)]
-fn colorize_x265(a: &mut Argv, inf: &VidInf) {
+fn colorize_h26x(a: &mut Argv, inf: &VidInf, nm: &ColorNames) {
+    let unk = |s| {
+        if nm.x264_form && s == "unknown" {
+            "undef"
+        } else {
+            s
+        }
+    };
+
     push_arg(a, "colorprim");
-    push_arg(a, h26x_color_prims_str(inf.color_primaries));
+    push_arg(a, unk(h26x_color_prims_str(inf.color_primaries)));
     push_arg(a, "transfer");
-    push_arg(a, h26x_trans_char_str(inf.transfer_characteristics));
+    push_arg(a, unk(h26x_trans_char_str(inf.transfer_characteristics)));
     push_arg(a, "colormatrix");
-    push_arg(a, h26x_matrix_coef_str(inf.matrix_coefficients));
-    push_arg(a, "range");
+    push_arg(a, unk(h26x_matrix_coef_str(inf.matrix_coefficients)));
+    push_arg(a, nm.range);
     push_arg(
         a,
         if inf.color_range == 1 {
-            "full"
+            nm.range_full
         } else {
-            "limited"
+            nm.range_lim
         },
     );
 
     let csp = inf.chroma_sample_position;
     if (1..=6).contains(&csp) {
         push_arg(a, "chromaloc");
-        push_arg(a, &(csp - 1).to_string());
+        push_fmt(a, format_args!("{}", csp - 1));
     }
     if let Some(ref md) = inf.mastering_display
-        && let Some(converted) = h26x_mastering(md, false)
+        && let Some(converted) = h26x_mastering(md, nm.x264_form)
     {
-        push_arg(a, "master-display");
+        push_arg(a, nm.master);
         push_arg(a, &converted);
     }
     if let Some(ref cl) = inf.content_light {
-        push_arg(a, "max-cll");
+        push_arg(a, nm.cll);
         push_arg(a, cl);
     }
 }
 
-fn make_x264_cmd(cfg: &EncConfig) -> Command {
-    let mut cmd = Command::new("x264");
-
-    cmd.args([
-        "--log-level",
-        "error",
-        "--input-csp",
-        "i420",
-        "--output-csp",
-        "i420",
-        "--input-depth",
-        "10",
-        "--output-depth",
-        "10",
-        "--profile",
-        "high10",
-        "--keyint",
-        "infinite",
-        "--min-keyint",
-        "9999",
-        "--no-scenecut",
-        "--b-adapt",
-        "2",
-        "--muxer",
-        "raw",
-        "--demuxer",
-        "raw",
-        "--threads",
-        "1",
-        "--lookahead-threads",
-        "1",
-        "--force-cfr",
-        "--non-deterministic",
-        "--nal-hrd",
-        "none",
-        "--rc-lookahead",
-        "250",
-        "--fps",
-    ]);
-
-    cmd.arg(format!("{}/{}", cfg.inf.fps_num, cfg.inf.fps_den));
-    cmd.arg("--input-res")
-        .arg(format!("{}x{}", cfg.width, cfg.height));
-    cmd.arg("--frames").arg(cfg.frames.to_string());
-
-    let (sar_n, sar_d) = h26x_sar(cfg.inf);
-    cmd.arg("--sar").arg(format!("{sar_n}:{sar_d}"));
-
-    if let Some(crf) = cfg.crf {
-        cmd.arg("--crf").arg(format!("{crf:.2}"));
-    }
-
-    let cr = cfg.inf.color_range;
-    cmd.args(["--input-range", if cr == 1 { "pc" } else { "tv" }]);
-
-    colorize_x264(&mut cmd, cfg.inf);
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-    cmd.args(["--asm", "avx512"]);
-
-    cmd.args(cfg.params.split_whitespace());
-    cmd.arg("--output").arg(cfg.out);
-    cmd.arg("-");
-    cmd.stdin(Stdio::piped()).stderr(Stdio::piped());
-
-    cmd
-}
-
-fn h26x_sar(inf: &VidInf) -> (u64, u64) {
-    match inf.dar {
+#[cfg(any(feature = "x264", feature = "x265"))]
+fn push_fps_sar(a: &mut Argv, inf: &VidInf) {
+    push_arg(a, "fps");
+    push_fmt(a, format_args!("{}/{}", inf.fps_num, inf.fps_den));
+    let (sar_n, sar_d) = match inf.dar {
         Some((dw, dh)) => {
             let n = u64::from(dw) * u64::from(inf.height);
             let d = u64::from(dh) * u64::from(inf.width);
@@ -555,39 +613,12 @@ fn h26x_sar(inf: &VidInf) -> (u64, u64) {
             (n / g, d / g)
         }
         None => (1, 1),
-    }
+    };
+    push_arg(a, "sar");
+    push_fmt(a, format_args!("{sar_n}:{sar_d}"));
 }
 
-fn colorize_x264(cmd: &mut Command, inf: &VidInf) {
-    let unk = |s| if s == "unknown" { "undef" } else { s };
-
-    cmd.args([
-        "--colorprim",
-        unk(h26x_color_prims_str(inf.color_primaries)),
-    ]);
-    cmd.args([
-        "--transfer",
-        unk(h26x_trans_char_str(inf.transfer_characteristics)),
-    ]);
-    cmd.args([
-        "--colormatrix",
-        unk(h26x_matrix_coef_str(inf.matrix_coefficients)),
-    ]);
-    cmd.args(["--range", if inf.color_range == 1 { "pc" } else { "tv" }]);
-    let csp = inf.chroma_sample_position;
-    if (1..=6).contains(&csp) {
-        cmd.args(["--chromaloc", &(csp - 1).to_string()]);
-    }
-    if let Some(ref md) = inf.mastering_display
-        && let Some(converted) = h26x_mastering(md, true)
-    {
-        cmd.args(["--mastering-display", &converted]);
-    }
-    if let Some(ref cl) = inf.content_light {
-        cmd.args(["--cll", cl]);
-    }
-}
-
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
     let pair = |s: &str, p: &str| -> Option<(f64, f64)> {
         let start = s.find(p)? + p.len();
@@ -624,6 +655,7 @@ fn h26x_mastering(md: &str, x264_format: bool) -> Option<String> {
     }
 }
 
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 const fn h26x_color_prims_str(v: i8) -> &'static str {
     match v {
         1 => "bt709",
@@ -640,6 +672,7 @@ const fn h26x_color_prims_str(v: i8) -> &'static str {
     }
 }
 
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 const fn h26x_trans_char_str(v: i8) -> &'static str {
     match v {
         1 => "bt709",
@@ -662,6 +695,7 @@ const fn h26x_trans_char_str(v: i8) -> &'static str {
     }
 }
 
+#[cfg(any(feature = "vvenc", feature = "x264", feature = "x265"))]
 const fn h26x_matrix_coef_str(v: i8) -> &'static str {
     match v {
         0 => "gbr",
@@ -753,7 +787,7 @@ pub fn set_svt_base(
 
 #[cfg(any(feature = "vship", test))]
 pub fn set_svt_crf(conf: *mut EbSvtAv1EncConfiguration, crf: f32) {
-    let c = (f64::from(crf) * 100.0).round() / 100.0;
+    let c = f64::from(crf);
     let ext = (c * 4.0) as u32;
     let qp = (c as u32).min(MAX_QP_VALUE);
     unsafe {

@@ -535,9 +535,9 @@ pub fn avm_snapshot(
     )
 }
 
-pub fn avm_blit(ec: *mut AvmCodecCtx, t: AvmTmpl, extra: &[u8]) {
+pub fn avm_blit(ec: *mut AvmCodecCtx, t: AvmTmpl, extra: *const u8) {
     unsafe {
-        copy_nonoverlapping(extra.as_ptr(), (*ec).priv_.cast::<u8>().add(t.off), t.len);
+        copy_nonoverlapping(extra, (*ec).priv_.cast::<u8>().add(t.off), t.len);
         avm_codec_control(ec, AV2E_SET_COLOR_RANGE, t.range);
     }
 }

@@ -195,7 +195,12 @@ impl Dav1dDec {
         }
     }
 
-    pub fn dec_next(&mut self) -> ([*const u8; 3], [i64; 3]) {
+    pub const fn strides(&self) -> [i64; 3] {
+        let p = &self.pic;
+        [p.stride[0] as i64, p.stride[1] as i64, p.stride[1] as i64]
+    }
+
+    pub fn dec_next(&mut self) -> [*const u8; 3] {
         unsafe {
             dav1d_picture_unref(&raw mut self.pic);
             let r = dav1d_get_picture(self.active, &raw mut self.pic);
@@ -207,14 +212,11 @@ impl Dav1dDec {
                 fatal(format_args!("dav1d: decode error {r}"));
             }
             let p = &self.pic;
-            (
-                [
-                    p.data[0].cast::<u8>().cast_const(),
-                    p.data[1].cast::<u8>().cast_const(),
-                    p.data[2].cast::<u8>().cast_const(),
-                ],
-                [p.stride[0] as i64, p.stride[1] as i64, p.stride[1] as i64],
-            )
+            [
+                p.data[0].cast::<u8>().cast_const(),
+                p.data[1].cast::<u8>().cast_const(),
+                p.data[2].cast::<u8>().cast_const(),
+            ]
         }
     }
 }

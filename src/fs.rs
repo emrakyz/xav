@@ -5,8 +5,6 @@ use core::{hint::cold_path, mem::MaybeUninit};
 
 #[cfg(target_os = "linux")]
 use crate::io::{Error, Read, Result, Write};
-#[cfg(all(target_os = "linux", feature = "vship"))]
-use crate::sys::copy_file_range;
 #[cfg(target_os = "linux")]
 use crate::{
     path::{Path, PathBuf},
@@ -325,25 +323,6 @@ pub fn write_at(f: &File, mut buf: &[u8], mut off: u64) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", feature = "vship"))]
-pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
-    let src = File::open(from)?;
-    let dst = File::create(to)?;
-    let len = src.size()?;
-    let mut copied = 0;
-    while copied < len {
-        let n = copy_file_range(src.fd, dst.fd, (len - copied) as usize);
-        if n < 0 {
-            return err(n as i64);
-        }
-        if n == 0 {
-            break;
-        }
-        copied += n as u64;
-    }
-    Ok(copied)
-}
-
 #[cfg(target_os = "linux")]
 #[cold]
 #[inline(never)]
@@ -451,7 +430,7 @@ pub fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
 }
 
 #[cfg(all(not(target_os = "linux"), feature = "vship"))]
-use std::fs::{copy as std_copy, read as std_read};
+use std::fs::read as std_read;
 #[cfg(not(target_os = "linux"))]
 use std::fs::{
     create_dir_all as std_create_dir_all, metadata as std_metadata, read_dir as std_read_dir,
@@ -492,11 +471,6 @@ pub fn write_at(f: &File, buf: &[u8], off: u64) -> Result<()> {
     let mut f = f;
     f.seek(SeekFrom::Start(off))?;
     f.write_all(buf)
-}
-
-#[cfg(all(not(target_os = "linux"), feature = "vship"))]
-pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
-    std_copy(from, to)
 }
 
 #[cfg(not(target_os = "linux"))]

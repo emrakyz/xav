@@ -1,4 +1,4 @@
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct ByteRange {
     pub offset: usize,
     pub len: usize,

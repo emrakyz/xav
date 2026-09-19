@@ -2,10 +2,8 @@ use alloc::sync::Arc;
 #[cfg(target_os = "linux")]
 use alloc::vec::Vec;
 use core::{
-    fmt::{self, Write as _},
     iter::repeat_with,
-    mem::MaybeUninit,
-    str::from_utf8,
+    mem::{MaybeUninit, size_of},
     sync::atomic::{
         AtomicBool, AtomicU32, AtomicU64, AtomicUsize,
         Ordering::{Relaxed, Release},
@@ -16,63 +14,26 @@ use core::{
 use crate::{
     chunk::{Chunk, PRIOR_SECS},
     clk::Mono,
-    encoder::{
-        Encoder,
-        Encoder::{Avm, SvtAv1, Vvenc, X264, X265},
-    },
-    error::eprint,
     ffms::VidInf,
-    io::{Read, Write as _, print_fmt, stdout as io_stdout},
-    sync::{Guard, Mutex},
+    io::{Write as _, print_fmt, stdout as io_stdout},
     thread::{JoinHandle, park_state, sleep, spawn},
 };
 
-const BAR_WIDTH: usize = 20;
 pub const INTERVAL_MS: u64 = 512;
-const READ_CAP: usize = 8192;
 
-use crate::util::{C, G, P, W, Y, assume_unreachable};
-
-const B_HASH: &str = "\x1b[1;94m#";
-const Y_DASH: &str = "\x1b[1;93m-";
-
-const LINE_CAP: usize = 512;
-
-#[derive(Clone)]
-#[repr(C)]
-struct Line {
-    buf: [u8; LINE_CAP],
-    len: usize,
-}
-
-impl Line {
-    const fn new() -> Self {
-        Self {
-            buf: [0; LINE_CAP],
-            len: 0,
-        }
-    }
-}
-
-impl fmt::Write for Line {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let b = s.as_bytes();
-        let n = b.len().min(LINE_CAP - self.len);
-        unsafe {
-            self.buf
-                .get_unchecked_mut(self.len..self.len + n)
-                .copy_from_slice(b.get_unchecked(..n));
-        }
-        self.len += n;
-        Ok(())
-    }
-}
+// FMTSLOT -> 7+1+4+18+17+160+16+3+17+6+16+3+15+3 = 286
+// + 6 for line sept; rest is store overshoot slack
+const DRAW_CAP: usize = 320;
 
 const TAG_EMPTY: u32 = 0;
 const TAG_LIB: u32 = 1;
 #[cfg(feature = "vship")]
 const TAG_MET: u32 = 2;
-const TAG_TXT: u32 = 3;
+#[cfg(feature = "vship")]
+const TAG_MET_DONE: u32 = 3;
+
+// pbf.asm walks boards by SLOTSZ; reads these by S_* offset
+const _: [(); 64] = [(); size_of::<Slot>()];
 
 #[repr(C, align(64))]
 struct Slot {
@@ -86,7 +47,6 @@ struct Slot {
     start: u64,
     c: f32,
     s: f32,
-    txt: Mutex<Line>,
 }
 
 impl Slot {
@@ -102,25 +62,7 @@ impl Slot {
             start: 0,
             c: 0.0,
             s: 0.0,
-            txt: Mutex::new(Line::new()),
         }
-    }
-}
-
-fn write_tag(w: &mut impl fmt::Write, idx: u16, cs: Option<(f32, Option<f32>)>) {
-    match cs {
-        Some((c, Some(s))) => _ = write!(w, "{C}[{idx:04} / F {c:5.2} / {s:5.2}{C}]"),
-        Some((c, None)) => _ = write!(w, "{C}[{idx:04} / F {c:5.2} / {:5}{C}]", ""),
-        None => _ = write!(w, "{C}[{idx:04}{C}]"),
-    }
-}
-
-fn write_bar(w: &mut impl fmt::Write, filled: usize, hash: &str, dash: &str) {
-    for _ in 0..filled {
-        _ = w.write_str(hash);
-    }
-    for _ in filled..BAR_WIDTH {
-        _ = w.write_str(dash);
     }
 }
 
@@ -207,10 +149,6 @@ pub fn monitor_au(
     }
 }
 
-fn guard(m: &Mutex<Line>) -> Guard<'_, Line> {
-    m.lock()
-}
-
 struct Shared {
     boards: Vec<Slot>,
     processed: AtomicUsize,
@@ -227,31 +165,9 @@ struct Shared {
 }
 
 impl Shared {
-    fn put(&self, id: usize, line: Line) {
-        if let Some(s) = self.boards.get(id) {
-            *guard(&s.txt) = line;
-            s.tag.store(TAG_TXT, Release);
-        }
-    }
-
     fn board(&self, id: usize) -> *mut Slot {
         unsafe { (&raw const *self.boards.get_unchecked(id)).cast_mut() }
     }
-
-    fn clear(&self, id: usize) {
-        if let Some(s) = self.boards.get(id) {
-            s.tag.store(TAG_EMPTY, Release);
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct Watch {
-    pub worker_id: usize,
-    pub chnk_idx: u16,
-    pub frames: usize,
-    pub track_frames: bool,
-    pub crf_score: Option<(f32, Option<f32>)>,
 }
 
 pub struct ProgsTrack {
@@ -298,15 +214,6 @@ impl ProgsTrack {
         let handle = spawn(move || display_loop(&disp));
 
         (Self { inner }, handle)
-    }
-
-    pub fn watch_enc<R: Read + Send + 'static>(&self, stderr: R, w: Watch, encoder: Encoder) {
-        let inner = Arc::clone(&self.inner);
-
-        spawn(move || match encoder {
-            SvtAv1 | Avm | Vvenc | X265 => assume_unreachable(),
-            X264 => watch_x264(&inner, stderr, w),
-        });
     }
 }
 
@@ -401,6 +308,7 @@ impl Tracker {
         feature = "vship",
         feature = "avm",
         feature = "vvenc",
+        feature = "x264",
         feature = "x265"
     ))]
     #[inline]
@@ -416,142 +324,20 @@ impl Tracker {
     pub fn finish(&self) {
         unsafe { xav_pb_fin(self.slot.cast(), self.prc) }
     }
-}
 
-struct LineReader<R: Read> {
-    rd: R,
-    acc: [u8; READ_CAP],
-    len: usize,
-    start: usize,
-    delim: u8,
-}
-
-impl<R: Read> LineReader<R> {
-    const fn new(rd: R, delim: u8) -> Self {
-        Self {
-            rd,
-            acc: [0; READ_CAP],
-            len: 0,
-            start: 0,
-            delim,
+    // start becomes the frozen elapsed; line stays; fps stops
+    #[cfg(feature = "vship")]
+    pub fn freeze(&self) {
+        unsafe {
+            (*self.slot).start = Mono::now().raw() - (*self.slot).start;
+            (*self.slot).tag.store(TAG_MET_DONE, Release);
         }
     }
-
-    fn fill(&mut self) -> bool {
-        match self.rd.read(&mut self.acc[self.len..]) {
-            Ok(0) | Err(_) => false,
-            Ok(n) => {
-                self.len += n;
-                true
-            }
-        }
-    }
-
-    fn next_buffered(&mut self) -> Option<&[u8]> {
-        let buf = &self.acc[self.start..self.len];
-        if let Some(rel) = buf.iter().position(|&b| b == self.delim) {
-            let s = self.start;
-            self.start = s + rel + 1;
-            return Some(&self.acc[s..s + rel]);
-        }
-        self.acc.copy_within(self.start..self.len, 0);
-        self.len -= self.start;
-        self.start = 0;
-        if self.len == READ_CAP {
-            self.len = 0;
-        }
-        None
-    }
-}
-
-fn watch_x264(inner: &Shared, rd: impl Read, w: Watch) {
-    let Watch {
-        worker_id,
-        chnk_idx,
-        frames,
-        track_frames,
-        crf_score,
-    } = w;
-    let mut lr = LineReader::new(rd, b'\r');
-    let mut last_frames = 0;
-    let mut last_update = Mono::now();
-
-    loop {
-        if !lr.fill() {
-            break;
-        }
-
-        while let Some(rec) = lr.next_buffered() {
-            let Ok(raw) = from_utf8(rec) else {
-                continue;
-            };
-            let text = raw.trim();
-
-            if text.is_empty() {
-                continue;
-            }
-
-            if !text.starts_with('[') {
-                if !text.starts_with("encoded") {
-                    eprint(format_args!("{text}"));
-                }
-                continue;
-            }
-
-            if last_update.elapsed() < Durat::from_millis(INTERVAL_MS) {
-                continue;
-            }
-            last_update = Mono::now();
-
-            let Some((cur, fps, kbps)) = parse_x264(text) else {
-                continue;
-            };
-
-            let filled = (BAR_WIDTH * cur / frames.max(1)).min(BAR_WIDTH);
-            let perc = cur * 100 / frames.max(1);
-
-            let mut line = Line::new();
-            write_tag(&mut line, chnk_idx, crf_score);
-            _ = write!(line, " {P}[");
-            write_bar(&mut line, filled, B_HASH, Y_DASH);
-            _ = write!(
-                line,
-                "{P}] {W}{perc:3}% {Y}{cur:3}/{frames:3} {G}{fps:6.2} {W}| {P}{kbps:.0} kb/s"
-            );
-
-            if track_frames {
-                let d = cur.saturating_sub(last_frames);
-                last_frames = cur;
-                inner.processed.fetch_add(d, Relaxed);
-            }
-            inner.put(worker_id, line);
-        }
-    }
-
-    inner.clear(worker_id);
-}
-
-fn parse_x264(s: &str) -> Option<(usize, f32, f32)> {
-    let rest = s.split(']').nth(1)?;
-    let mut parts = rest.split(',');
-
-    let cur = parts
-        .next()?
-        .trim()
-        .split('/')
-        .next()?
-        .trim()
-        .parse()
-        .ok()?;
-    let fps = parts.next()?.split_whitespace().next()?.parse().ok()?;
-    let kbps = parts.next()?.split_whitespace().next()?.parse().ok()?;
-
-    Some((cur, fps, kbps))
 }
 
 fn display_loop(s: &Shared) {
     let nb = s.boards.len();
-    let mut buf: Vec<u8> = Vec::with_capacity(nb * (LINE_CAP + 64) + 1024);
+    let mut buf: Vec<u8> = Vec::with_capacity(nb * DRAW_CAP + 1024);
     let dw = Draw {
         boards: s.boards.as_ptr().cast(),
         nb,

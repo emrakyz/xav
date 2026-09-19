@@ -1,6 +1,7 @@
 use core::{
-    ffi::{c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     hint::cold_path,
+    mem::MaybeUninit,
     ptr::{null, null_mut},
 };
 
@@ -8,11 +9,12 @@ use crate::{
     Xerr,
     error::fatal,
     ffms::{
-        AV_CODEC_ID_HEVC, AVPacket, VidFrame, av_frame_alloc, av_frame_free, av_packet_alloc,
-        av_packet_free, avcodec_alloc_context3, avcodec_find_decoder_by_name,
-        avcodec_flush_buffers, avcodec_free_context, avcodec_open2, avcodec_receive_frame,
-        avcodec_send_packet, set_thread_cnt,
+        AVPacket, VidFrame, av_frame_alloc, av_frame_free, av_packet_alloc, av_packet_free,
+        avcodec_alloc_context3, avcodec_find_decoder_by_name, avcodec_flush_buffers,
+        avcodec_free_context, avcodec_open2, avcodec_receive_frame, avcodec_send_packet,
+        set_thread_cnt,
     },
+    h26x::text,
 };
 
 const AVERROR_EAGAIN: c_int = -11;
@@ -37,7 +39,7 @@ unsafe extern "C" {
     ) -> c_int;
 }
 
-pub struct HevcDec {
+pub struct AnnexbDec {
     codec_ctx: *mut c_void,
     parser: *mut c_void,
     pkt: *mut AVPacket,
@@ -49,26 +51,27 @@ pub struct HevcDec {
     flushed: bool,
 }
 
-impl HevcDec {
-    pub fn new(threads: i32) -> Result<Self, Xerr> {
+impl AnnexbDec {
+    pub fn new(threads: i32, codec_id: c_int, name: &'static CStr) -> Result<Self, Xerr> {
+        let n = text(name.to_bytes());
         unsafe {
-            let dec = avcodec_find_decoder_by_name(c"hevc".as_ptr());
+            let dec = avcodec_find_decoder_by_name(name.as_ptr());
             if dec.is_null() {
-                return Err("hevc: decoder missing".into());
+                return Err(format!("{n}: decoder missing").into());
             }
             let mut codec_ctx = avcodec_alloc_context3(dec);
             if codec_ctx.is_null() {
-                return Err("hevc: alloc codec failed".into());
+                return Err(format!("{n}: alloc codec failed").into());
             }
             set_thread_cnt(codec_ctx, threads);
             if avcodec_open2(codec_ctx, dec, null_mut()) < 0 {
                 avcodec_free_context(&raw mut codec_ctx);
-                return Err("hevc: codec open failed".into());
+                return Err(format!("{n}: codec open failed").into());
             }
-            let parser = av_parser_init(AV_CODEC_ID_HEVC);
+            let parser = av_parser_init(codec_id);
             if parser.is_null() {
                 avcodec_free_context(&raw mut codec_ctx);
-                return Err("hevc: parser missing".into());
+                return Err(format!("{n}: parser missing").into());
             }
             Ok(Self {
                 codec_ctx,
@@ -87,7 +90,7 @@ impl HevcDec {
     // guaranteed PAD zero byte past annexb; aus read inplace
     pub fn load(&mut self, annexb: &[u8]) {
         unsafe { avcodec_flush_buffers(self.codec_ctx) };
-        // no reset; last au needs 0-length call; sets `parsed` first
+        // no reset; last au needs 0length call; sets `parsed` first
         self.buf = annexb.as_ptr();
         self.len = annexb.len();
         self.pos = 0;
@@ -97,15 +100,15 @@ impl HevcDec {
 
     fn feed(&mut self) -> bool {
         while !self.parsed {
-            let mut out: *mut u8 = null_mut();
-            let mut out_sz: c_int = 0;
+            let mut out = MaybeUninit::<*mut u8>::uninit();
+            let mut out_sz = MaybeUninit::<c_int>::uninit();
             let left = self.len - self.pos;
             let used = unsafe {
                 av_parser_parse2(
                     self.parser,
                     self.codec_ctx,
-                    &raw mut out,
-                    &raw mut out_sz,
+                    out.as_mut_ptr(),
+                    out_sz.as_mut_ptr(),
                     self.buf.add(self.pos),
                     left as c_int,
                     0,
@@ -116,9 +119,10 @@ impl HevcDec {
             self.pos += used as usize;
             // 0-length is EOS; emits last au
             self.parsed = left == 0;
+            let out_sz = unsafe { out_sz.assume_init() };
             if out_sz > 0 {
                 unsafe {
-                    (*self.pkt).data = out;
+                    (*self.pkt).data = out.assume_init();
                     (*self.pkt).size = out_sz;
                     avcodec_send_packet(self.codec_ctx, self.pkt);
                 }
@@ -133,38 +137,42 @@ impl HevcDec {
         true
     }
 
-    pub fn dec_next(&mut self) -> ([*const u8; 3], [i64; 3]) {
+    pub fn strides(&self) -> [i64; 3] {
+        let f = unsafe { &*self.frame };
+        [
+            i64::from(f.linesize[0]),
+            i64::from(f.linesize[1]),
+            i64::from(f.linesize[2]),
+        ]
+    }
+
+    pub fn dec_next(&mut self) -> [*const u8; 3] {
         loop {
             let ret = unsafe { avcodec_receive_frame(self.codec_ctx, self.frame) };
             if ret == 0 {
                 let f = unsafe { &*self.frame };
-                return (
-                    [
-                        f.data[0].cast_const(),
-                        f.data[1].cast_const(),
-                        f.data[2].cast_const(),
-                    ],
-                    [
-                        i64::from(f.linesize[0]),
-                        i64::from(f.linesize[1]),
-                        i64::from(f.linesize[2]),
-                    ],
-                );
+                return [
+                    f.data[0].cast_const(),
+                    f.data[1].cast_const(),
+                    f.data[2].cast_const(),
+                ];
             }
-            cold_path();
+            // EAGAIN; feed() sends one au; every frame waits once
             if ret != AVERROR_EAGAIN {
-                fatal(format_args!("hevc: decode error {ret}"));
+                cold_path();
+                fatal(format_args!("annexb: decode error {ret}"));
             }
             if !self.feed() {
-                fatal("hevc: probe truncated");
+                cold_path();
+                fatal("annexb: probe truncated");
             }
         }
     }
 }
 
-unsafe impl Send for HevcDec {}
+unsafe impl Send for AnnexbDec {}
 
-impl Drop for HevcDec {
+impl Drop for AnnexbDec {
     fn drop(&mut self) {
         unsafe {
             av_frame_free(&raw mut self.frame);
