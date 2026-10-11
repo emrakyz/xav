@@ -259,11 +259,8 @@ pub fn getpid() -> i32 {
     syscall!(39) as i32
 }
 
-#[cold]
-#[inline(never)]
-pub fn isatty(fd: i32) -> bool {
-    let mut termios = [0u8; 64];
-    syscall!(16, fd, 0x5401i32, termios.as_mut_ptr()) == 0
+pub fn ispipe(fd: i32) -> bool {
+    syscall!(72, fd, 1032i32) > 0
 }
 
 pub fn faccessat(path: *const u8) -> i32 {

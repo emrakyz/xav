@@ -104,6 +104,7 @@ mod plat;
 mod platform;
 mod process;
 mod progs;
+mod scal;
 mod scd;
 mod svt;
 mod svterr;
@@ -191,6 +192,7 @@ pub struct Args {
     pub alt_param: Option<String>,
     pub sc_only: bool,
     pub hwdec: bool,
+    pub scale: u8,
 }
 
 extern "C" fn restore() {
@@ -262,6 +264,7 @@ fn print_help() {
     println!("{C}-s {P}┃ {C}--sc         {W}SCD file");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
     println!("   {P}┃ {C}--hwdec      {W}GPU decode");
+    println!("   {P}┃ {C}--scale      {W}Downscale by {G}N {W} factor");
     println!("{C}-r {P}┃ {C}--range      {W}Trim/splice: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     #[cfg(feature = "vship")]
@@ -441,6 +444,7 @@ macro_rules! arg {
 
 fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
     let (mut worker, mut chnk_buff, mut sc_only, mut hwdec) = (1usize, None, false, false);
+    let mut scale = 0;
     let (mut sc_file, mut inp, mut out) = (PathBuf::new(), PathBuf::new(), PathBuf::new());
     let (mut encoder, mut params) = (Encoder::default(), String::new());
     let (mut au, mut ranges) = (None, None);
@@ -506,6 +510,12 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
                     out = PathBuf::from(arg);
                 }
             }
+            "--scale" => {
+                if next_arg(args, &mut i) != Some("2") {
+                    return Err("--scale: only 2 is available for now".into());
+                }
+                scale = 2;
+            }
             _ => return Err(format!("Unknown arg: {}", args[i]).into()),
         }
         i += 1;
@@ -554,6 +564,7 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
         ranges,
         sc_only,
         hwdec,
+        scale,
         #[cfg(feature = "vship")]
         tq,
         #[cfg(feature = "vship")]
@@ -742,7 +753,7 @@ fn val_all_scenes(scenes: &[Scene], enc: Encoder) -> Result<(), Xerr> {
     Ok(())
 }
 
-fn main_with_args(args: &Args) -> Result<(), Xerr> {
+fn main_with_args<const S: bool>(args: &Args) -> Result<(), Xerr> {
     IN_ALT_SCREEN.store(true, Relaxed);
     print!("\x1b[?1049h\x1b[H\x1b[?25l");
     _ = stdout().flush();
@@ -782,6 +793,9 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
 
     let thr = available_parallelism() as i32;
     let crop = detect_crop(&args.inp, &inf, thr, 1).unwrap_or((0, 0));
+    if S {
+        scal::chk(&inf, crop)?;
+    }
 
     ensure_sc_file(&args, &inf, crop, 3)?;
 
@@ -825,12 +839,17 @@ fn main_with_args(args: &Args) -> Result<(), Xerr> {
         inf.y_linesz = f.linesize[0] as usize;
         inf.uv_linesz = f.linesize[1] as usize;
     }
+    let crop = if S {
+        scal::virt(&mut inf, crop, &mut args.hwdec, pipe_reader.is_some())?
+    } else {
+        crop
+    };
     args.dec_strat = Some(get_dec_strat(&inf, crop, args.hwdec, tq));
 
     let prior_secs = done.map_or(0, |(_, secs)| secs);
     init_elapsed(prior_secs);
     let enc_start = Mono::now();
-    enc_all(&chnks, &inf, &args, &args.inp, &work_dir, pipe_reader);
+    enc_all::<S>(&chnks, &inf, &args, &args.inp, &work_dir, pipe_reader);
     let enc_time = enc_start.elapsed() + Durat::from_secs(prior_secs);
 
     let au_tracks = if let Some(ref au_spec) = args.au {
@@ -951,7 +970,12 @@ fn run() -> Result<(), Xerr> {
     let h: usize = unsafe { transmute_copy(&(exit_restore as extern "C" fn(i32))) };
     signals(h);
 
-    if let Err(e) = main_with_args(&args) {
+    let r = if args.scale != 0 {
+        main_with_args::<true>(&args)
+    } else {
+        main_with_args::<false>(&args)
+    };
+    if let Err(e) = r {
         print!("\x1b[?1049l");
         _ = stdout().flush();
         fatal(format_args!("{e}\n{}, FAIL", args.out.display()));

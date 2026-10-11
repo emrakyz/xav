@@ -17,13 +17,13 @@ use crate::{
 use crate::{
     error::fatal,
     ffms::bad_fmt,
-    io::{BufRead as _, BufReader, IsTerminal as _, Read as _, Stdin, stdin},
+    io::{BufRead as _, BufReader, IsPipe as _, Read as _, Stdin, stdin},
 };
 
 #[cold]
 #[inline(never)]
 pub fn is_pipe() -> bool {
-    !stdin().is_terminal()
+    stdin().is_pipe()
 }
 
 pub struct Y4mInfo {
@@ -41,6 +41,10 @@ pub struct PipeReader {
 }
 
 impl PipeReader {
+    pub fn buf(&self) -> &[u8] {
+        self.reader.buffer()
+    }
+
     pub fn read_frame(&mut self, dst: &mut [u8]) -> bool {
         if self.reader.read_exact(&mut self.frame_header).is_err() {
             return false;

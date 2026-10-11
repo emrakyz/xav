@@ -196,4 +196,17 @@ impl PkgPool {
         let i = unsafe { p.offset_from(self.slots) } as usize;
         unsafe { (*self.free.add(i / 64)).fetch_or(1u64 << (i % 64), Release) };
     }
+
+    #[cfg(feature = "avm")]
+    pub fn dims(&self, w: u32, h: u32) {
+        let mut n = 0;
+        for i in 0..self.words {
+            n += unsafe { &*self.free.add(i) }.load(Acquire).count_ones() as usize;
+        }
+        for i in 0..n {
+            let p = unsafe { &mut *self.slots.add(i) };
+            p.width = w;
+            p.height = h;
+        }
+    }
 }

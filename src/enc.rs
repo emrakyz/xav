@@ -83,6 +83,7 @@ use crate::{
     path::{Path, leak_path},
     pipeline::Pipeline,
     progs::{ProgsTrack, Tracker},
+    scal,
     svt::{
         EB_BUFFERFLAG_EOS, EB_ERROR_NONE, EbBufferHeaderType, EbComponentType,
         EbSvtAv1EncConfiguration, EbSvtIOFormat, svt_av1_enc_deinit, svt_av1_enc_deinit_handle,
@@ -678,7 +679,7 @@ fn resolve_lib_enc(
     }
 }
 
-pub fn enc_all(
+pub fn enc_all<const S: bool>(
     chnks: &[Chunk],
     inf: &VidInf,
     args: &Args,
@@ -694,7 +695,7 @@ pub fn enc_all(
     #[cfg(feature = "vship")]
     {
         if args.tq.is_some() {
-            enc_tq(chnks, inf, args, path, work_dir, pipe_reader);
+            enc_tq::<S>(chnks, inf, args, path, work_dir, pipe_reader);
             return;
         }
     }
@@ -752,6 +753,10 @@ pub fn enc_all(
         let bufs = Arc::clone(&bufs);
         spawn(move || {
             let rp = Arc::as_ptr(&ring);
+            if S {
+                scal::Dec(&bufs, pipe_reader, &chnks, inf, &skip, &strat, path, rp).run::<false>();
+                return;
+            }
             let send = move |p: *mut WorkPkg| unsafe { spmc_send(rp, p as u64) };
             let sk = bufs.sink(&send);
             if let Some(mut reader) = pipe_reader {
@@ -1642,7 +1647,7 @@ struct TQDecodeResult {
 }
 
 #[cfg(feature = "vship")]
-fn spawn_tq_dec(
+fn spawn_tq_dec<const S: bool>(
     chnks: &[Chunk],
     path: &'static Path,
     inf: &'static VidInf,
@@ -1664,6 +1669,11 @@ fn spawn_tq_dec(
     let handle = spawn(move || {
         let dec = pspawn(move || {
             let rp = Arc::as_ptr(&coord_dec);
+            if S {
+                scal::Dec(&bufs_dec, pipe_reader, &chnks, inf, &skip, &strat, path, rp)
+                    .run::<true>();
+                return;
+            }
             let send = move |p: *mut WorkPkg| unsafe { mpsc_send(rp, p as u64) };
             let sk = bufs_dec.sink(&send);
             if let Some(mut r) = pipe_reader {
@@ -1679,7 +1689,7 @@ fn spawn_tq_dec(
 }
 
 #[cfg(feature = "vship")]
-fn enc_tq(
+fn enc_tq<const S: bool>(
     chnks: &[Chunk],
     inf: &VidInf,
     args: &Args,
@@ -1713,7 +1723,7 @@ fn enc_tq(
     let zones = zone_tmpls(&mut chnks, tmpl_scale(args.encoder, qp));
     let chnks = &chnks;
 
-    let dec = spawn_tq_dec(chnks, path, inf, skip, &strat, &bufs, pipe_reader);
+    let dec = spawn_tq_dec::<S>(chnks, path, inf, skip, &strat, &bufs, pipe_reader);
     let met = Arc::new(SeqRing::new());
 
     let tq_logger = Arc::new(Mutex::new(TqLog {

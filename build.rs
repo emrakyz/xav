@@ -399,6 +399,43 @@ fn stamp_versions(home: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
+const LDS: &str = "SECTIONS { .tpad : { *(.plt) *(.iplt) *(.tpad) __xav_tlen = ALIGN(0x200000) - \
+                   __executable_start; . = ALIGN(0x200000) + (ABSOLUTE(.) & 0x1fffff); } } INSERT \
+                   AFTER .fini;\nSECTIONS { .bx : { *libxavds2.a:*(.bss) } .tx : { *(.txa) \
+                   *libxavds2.a:*(.text .rodata) *(.text.*7enc_allKb1_* .text.*6enc_tqKb1_* \
+                   .text.*12spawn_tq_decKb1_* .text.*3xav4scal* .text.*xav_ds2*) . = \
+                   ALIGN(0x200000); } __xav_txl = SIZEOF(.tx); } INSERT AFTER .bss;\n";
+
+fn ds2(set: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let out = env::var("OUT_DIR")?;
+    let mut b = nasm_rs::Build::new();
+    b.include("asm");
+    b.include(format!("asm/{set}"));
+    b.include(format!("asm/{set}/ds2"));
+    b.file(format!("asm/{set}/ds2/ro.asm"));
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        b.file("asm/srun.asm");
+        b.file(format!("asm/{set}/ds2/tab.asm"));
+        b.define("PC", Some(if set == "avx512" { "384" } else { "192" }));
+        if env::var("CARGO_FEATURE_VSHIP").is_ok() {
+            b.define("VSHIP", None);
+        }
+        for m in 11..=120 {
+            let f = format!("{out}/sc_{m}.asm");
+            fs::write(&f, format!("%define M {m}\n%include \"scal.asm\"\n"))?;
+            b.file(f);
+        }
+    }
+    for m in 11..=120 {
+        let f = format!("{out}/ds2_{m}.asm");
+        fs::write(&f, format!("%define M {m}\n%include \"ds2.asm\"\n"))?;
+        b.file(f);
+    }
+    b.compile("xavds2")?;
+    println!("cargo:rustc-link-lib=static=xavds2");
+    Ok(())
+}
+
 fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
     if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86_64") {
         let feats = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
@@ -477,6 +514,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
             } else {
                 b.file("asm/sync/sem.asm");
                 if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+                    b.file("asm/start.asm");
                     b.file("asm/vdso.asm");
                     b.file("asm/sync/svt_drain.asm");
                     b.file("asm/sync/ring_spsc.asm");
@@ -488,6 +526,7 @@ fn build_asm() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             b.compile("xavasm")?;
             println!("cargo:rustc-link-lib=static=xavasm");
+            ds2(set)?;
         }
         println!("cargo:rerun-if-changed=asm");
     }
@@ -635,6 +674,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             "cargo:rustc-link-lib={}=m",
             if stat { "static" } else { "dylib" }
         );
+        let ld = format!("{}/xav.ld", env::var("OUT_DIR")?);
+        fs::write(&ld, LDS)?;
+        println!("cargo:rustc-link-arg=-Wl,-T,{ld}");
+        println!("cargo:rustc-link-arg=-Wl,-e,xav_start");
     }
     Ok(())
 }

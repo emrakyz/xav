@@ -206,6 +206,16 @@ impl Bufs {
         self.pool.give(p);
         sem_release(&self.sem);
     }
+
+    pub fn take(&self) -> *mut WorkPkg {
+        sem_acq(&self.sem);
+        self.pool.take()
+    }
+
+    #[cfg(feature = "avm")]
+    pub fn dims(&self, w: u32, h: u32) {
+        self.pool.dims(w, h);
+    }
 }
 
 pub struct Sink<'a> {

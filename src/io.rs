@@ -29,7 +29,7 @@ use std::process::{
 };
 
 #[cfg(target_os = "linux")]
-use crate::sys::{isatty, read as sys_read, write as sys_write};
+use crate::sys::{ispipe, read as sys_read, write as sys_write};
 #[cfg(feature = "vvenc")]
 use crate::util::assume_unreachable;
 
@@ -244,8 +244,8 @@ pub trait BufRead: Read {
     }
 }
 
-pub trait IsTerminal {
-    fn is_terminal(&self) -> bool;
+pub trait IsPipe {
+    fn is_pipe(&self) -> bool;
 }
 
 pub const BUF: usize = 1 << 16;
@@ -330,6 +330,10 @@ impl<R: Read> BufReader<R> {
             pos: 0,
             cap: 0,
         }
+    }
+
+    pub fn buffer(&self) -> &[u8] {
+        unsafe { self.buf.get_unchecked(self.pos..self.cap) }
     }
 }
 
@@ -430,10 +434,10 @@ impl Write for Stderr {
 }
 
 #[cfg(target_os = "linux")]
-impl IsTerminal for Stdin {
+impl IsPipe for Stdin {
     #[inline]
-    fn is_terminal(&self) -> bool {
-        isatty(0)
+    fn is_pipe(&self) -> bool {
+        ispipe(0)
     }
 }
 
@@ -550,9 +554,9 @@ impl Write for Stderr {
 }
 
 #[cfg(not(target_os = "linux"))]
-impl IsTerminal for Stdin {
-    fn is_terminal(&self) -> bool {
-        StdIsTerminal::is_terminal(&self.0)
+impl IsPipe for Stdin {
+    fn is_pipe(&self) -> bool {
+        !StdIsTerminal::is_terminal(&self.0)
     }
 }
 
