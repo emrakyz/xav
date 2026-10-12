@@ -403,8 +403,9 @@ const LDS: &str = "SECTIONS { .tpad : { *(.plt) *(.iplt) *(.tpad) __xav_tlen = A
                    __executable_start; . = ALIGN(0x200000) + (ABSOLUTE(.) & 0x1fffff); } } INSERT \
                    AFTER .fini;\nSECTIONS { .bx : { *libxavds2.a:*(.bss) } .tx : { *(.txa) \
                    *libxavds2.a:*(.text .rodata) *(.text.*7enc_allKb1_* .text.*6enc_tqKb1_* \
-                   .text.*12spawn_tq_decKb1_* .text.*3xav4scal* .text.*xav_ds2*) . = \
-                   ALIGN(0x200000); } __xav_txl = SIZEOF(.tx); } INSERT AFTER .bss;\n";
+                   .text.*12spawn_tq_decKb1_* .text.*3xav4scal* .text.*xav_ds2*) \
+                   *libxavds2.a:*(.rofr) . = ALIGN(0x200000); } __xav_txl = SIZEOF(.tx); } INSERT \
+                   AFTER .bss;\n";
 
 fn ds2(set: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     let out = env::var("OUT_DIR")?;

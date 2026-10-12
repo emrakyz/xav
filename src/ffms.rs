@@ -43,6 +43,7 @@ const AV_DICT_IGNORE_SUFFIX: c_int = 2;
 const AV_FRAME_DATA_MASTERING_DISPLAY_METADATA: c_int = 11;
 const AV_FRAME_DATA_CONTENT_LIGHT_LEVEL: c_int = 14;
 const AV_PIX_FMT_YUV420P: c_int = 0;
+const AV_PIX_FMT_YUVJ420P: c_int = 12;
 const AV_PIX_FMT_YUV420P10LE: c_int = 62;
 #[cfg(not(feature = "cuda"))]
 const AV_HWDEVICE_TYPE_HW: c_int = 11;
@@ -1223,7 +1224,7 @@ pub fn bad_fmt() -> ! {
 
 unsafe fn extr_frame_meta(f: &VidFrame, par_color_space: c_int) -> FrameMeta {
     let is_10b = match f.format {
-        AV_PIX_FMT_YUV420P => false,
+        AV_PIX_FMT_YUV420P | AV_PIX_FMT_YUVJ420P => false,
         AV_PIX_FMT_YUV420P10LE => true,
         _ => bad_fmt(),
     };

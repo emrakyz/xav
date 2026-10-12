@@ -61,6 +61,7 @@ const _: () = {
 
 unsafe extern "C" {
     static xav_ds2f: u8;
+    static mut xav_rs: u8;
     fn xav_ds2i(w: u32, h: u32, cv: u32, ch: u32, fl: u32, ls: usize, cs: usize) -> Geo;
     fn xav_ds2w(wm: usize) -> usize;
     fn xav_ds2r(c: *const c_void);
@@ -108,18 +109,15 @@ extern "C" fn xav_ds2s(d: &mut VidDecoder, e: &Ent) {
 }
 
 pub fn chk(inf: &VidInf, crop: (u32, u32)) -> Result<(), Xerr> {
-    if (
-        inf.transfer_characteristics,
-        inf.matrix_coefficients,
-        inf.color_range,
-        inf.chroma_sample_position,
-    ) != (1, 1, 0, 1)
-    {
-        return Err(
-            "--scale: Only BT709 (transfer, matrix), limited range, left chroma siting allowed \
-             for now"
-                .into(),
-        );
+    if !matches!(
+        (
+            inf.transfer_characteristics,
+            inf.matrix_coefficients,
+            inf.chroma_sample_position,
+        ),
+        (1, 1, 1)
+    ) {
+        return Err("--scale: Only BT709, left chroma siting for now".into());
     }
     geo(inf, crop)
 }
@@ -153,6 +151,7 @@ pub fn virt(
         geo(inf, crop)?;
     }
     let g = unsafe {
+        xav_rs = u8::from(inf.color_range != 0) << (3 + u8::from(!inf.is_10b));
         xav_ds2i(
             inf.width,
             inf.height,

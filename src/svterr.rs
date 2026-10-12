@@ -13,18 +13,26 @@ const NOT_RELEVANT: &[&str] = &[
     "errlog",
     "recon",
     "r",
+    "ivf",
+    "obu",
     "stat-file",
     "progress",
     "no-progress",
+    "hide-banner",
+    "crop",
     "svtav1-params",
     "allow-mmap-file",
     "inj",
     "inj-frm-rt",
     "enable-stat-report",
     "asm",
+    "tier",
     "qpfile",
+    "use-q-file",
     "max-qp",
     "min-qp",
+    "max-intra-bitrate-pct",
+    "max-inter-bitrate-pct",
     "use-fixed-qindex-offsets",
     "key-frame-qindex-offset",
     "key-frame-chroma-qindex-offset",
@@ -47,6 +55,7 @@ const NOT_RELEVANT: &[&str] = &[
     "maxsection-pct",
     "roi-map-file",
     "irefresh-type",
+    "min-keyint",
     "startup-qp-offset",
     "superres-mode",
     "superres-denom",
@@ -73,6 +82,8 @@ const NOT_RELEVANT: &[&str] = &[
     "low-memory",
     "fgs-table",
     "enable-mfmv",
+    "dolby-vision-rpu",
+    "hdr10plus-json",
 ];
 
 const AUTO_SET: &[&str] = &[
@@ -84,6 +95,7 @@ const AUTO_SET: &[&str] = &[
     "forced-max-frame-height",
     "skip",
     "n",
+    "frames",
     "nb",
     "color-format",
     "profile",
@@ -119,9 +131,11 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
                  mode decisions as it's objectively superior This parameter should not be set"
             ),
         ),
-        "qp" | "q" => err(
+        "qp" | "q" | "cqp" => err(
             key,
-            format_args!("{Y}xav does not use q|qp mode. CRF mode is used. It should not be set"),
+            format_args!(
+                "{Y}xav does not use q|qp|cqp mode. CRF mode is used. It should not be set"
+            ),
         ),
         "tbr" => err(
             key,
@@ -144,7 +158,7 @@ fn reject_msg(name: &str, key: &str) -> Option<Xerr> {
                 "{Y}2 pass is not relevant for svt-av1 CRF encoding. This should not be set"
             ),
         ),
-        "keyint" | "force-key-frames" => err(
+        "keyint" | "intra-period" | "force-key-frames" => err(
             key,
             format_args!(
                 "{Y}This parameter is set by xav automatically. You should not change it.\nWith \
@@ -192,7 +206,7 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
                 key,
                 val,
                 -1,
-                10,
+                7,
                 format_args!(
                     "{Y}--preset should be between {C}-1 {Y}and {C}7\n{Y}presets 8+ are intended \
                      for real-time usage and inconsistent"
@@ -251,6 +265,8 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
         | "adaptive-film-grain"
         | "alt-lambda-factors"
         | "noise-chroma-from-luma"
+        | "enable-kf-tf"
+        | "enable-intrabc"
         | "sharp-tx" => {
             chk_switch(key, name, val)?;
         }
@@ -285,6 +301,7 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
         | "noise-norm-strength"
         | "kf-tf-strength"
         | "noise-adaptive-filtering"
+        | "enable-daala"
         | "distortion-bias-preset" => {
             chk_range(key, name, val, 0, 4)?;
         }
@@ -319,6 +336,10 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
 
         "complex-hvs" => {
             chk_range(key, name, val, 0, 1)?;
+        }
+
+        "enable-qmpsnr" => {
+            chk_range(key, name, val, -1, 1)?;
         }
 
         "variance-boost-strength" => {
@@ -396,7 +417,7 @@ pub fn val(params: &str) -> Result<(), Xerr> {
                 smgs = Some((v, key));
             }
             "tune" => {
-                tune = Some(chk_range(key, name, val, 0, 5)?);
+                tune = Some(chk_range(key, name, val, 0, 6)?);
             }
             "alt-ssim-tuning" => {
                 chk_switch(key, name, val)?;

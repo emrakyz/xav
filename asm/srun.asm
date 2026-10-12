@@ -31,11 +31,16 @@
 
 %if PC == 384
 %define ST     3
+%define RO     3264
 %else
 %define ST     5
+%define RO     6336
 %endif
 
 extern xav_ds2
+extern xav_rol
+extern xav_rof
+extern xav_ro8
 extern xav_flt
 extern xav_o2
 extern xav_dec_next
@@ -58,9 +63,11 @@ extern pthread_join
 extern __xav_txl
 
 global xav_dp
+global xav_ro
 global xav_fp
 global xav_op
 global xav_ds2f
+global xav_rs
 global xav_ds2i
 global xav_ds2w
 global xav_ds2r
@@ -72,9 +79,10 @@ SECTION .txa align=2097152
 
 txa:
 
-SECTION .bss align=64
+SECTION .bss align=4096
 
 xav_dp:  resb 128
+xav_ro:  resb RO
 xav_fp:  resb 192
 xav_op:  resb 128
 sj:      resb RSZ
@@ -103,6 +111,7 @@ ghc:     resq 1
 sci:     resq 1
 dli:     resq 1
 xav_ds2f: resb 1
+xav_rs:  resb 1
 
 SECTION .rodata align=64
 
@@ -133,6 +142,8 @@ kih:   db 2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15
        db 2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15
 riota: dd 0, 1, 2, 3, 4, 5, 6, 7, 8
 %endif
+align 8
+rimg:  dq xav_rol, xav_rof, xav_ro8
 
 SECTION .text align=64
 
@@ -421,10 +432,22 @@ xav_ds2i:
     shl          r11, 32
     lea          rdx, [rdi + r11]
     vzeroupper
+    jmp          rocp
+
+SECTION .text.xav_ds2i progbits alloc exec nowrite align=1
+
+rocp:
+    movzx        esi, byte [rel xav_rs]
+    mov          rsi, [rsi + rimg]
+    mov          edi, xav_ro
+    mov          ecx, RO
+    rep          movsb
     pop          r12
     pop          rbp
     pop          rbx
     ret
+
+SECTION .text
 
 xav_ds2w:
     mov          rcx, [rel gm]
