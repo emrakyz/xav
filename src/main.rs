@@ -264,7 +264,7 @@ fn print_help() {
     println!("{C}-s {P}┃ {C}--sc         {W}SCD file");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
     println!("   {P}┃ {C}--hwdec      {W}GPU decode");
-    println!("   {P}┃ {C}--scale      {W}Downscale by {G}N {W} factor");
+    println!("   {P}┃ {C}--scale      {W}Downscale by {G}N{W} factor");
     println!("{C}-r {P}┃ {C}--range      {W}Trim/splice: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     #[cfg(feature = "vship")]

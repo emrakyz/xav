@@ -31,16 +31,23 @@
 
 %if PC == 384
 %define ST     3
-%define RO     3264
+%define RO     7360
+%define LS     3264
+%define LQ     7208
 %else
 %define ST     5
-%define RO     6336
+%define RO     10432
+%define LS     6336
+%define LQ     9888
 %endif
 
 extern xav_ds2
 extern xav_rol
 extern xav_rof
 extern xav_ro8
+extern xav_pq2
+extern xav_pql
+extern xav_pqf
 extern xav_flt
 extern xav_o2
 extern xav_dec_next
@@ -142,8 +149,19 @@ kih:   db 2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15
        db 2, 3, 2, 3, 6, 7, 6, 7, 10, 11, 10, 11, 14, 15, 14, 15
 riota: dd 0, 1, 2, 3, 4, 5, 6, 7, 8
 %endif
-align 8
-rimg:  dq xav_rol, xav_rof, xav_ro8
+
+SECTION .rofr progbits alloc noexec nowrite align=16
+
+rimg:  dq xav_ds2 - 88
+       dd xav_rol, LS
+       dq xav_pq2 - 88
+       dd xav_pql, LQ
+       dq xav_ds2 - 88
+       dd xav_rof, LS
+       dq xav_pq2 - 88
+       dd xav_pqf, LQ
+       dq xav_ds2 - 88
+       dd xav_ro8, LS
 
 SECTION .text align=64
 
@@ -241,8 +259,6 @@ xav_ds2i:
     mov          [rel gm], rcx
     mov          edx, ecx
     shl          edx, 6
-    mov          rbx, [xav_ds2 + rcx*8 - 88]
-    mov          [rel kern], rbx
     lea          ebp, [rdi + 64]
     sub          ebp, edx
     mov          ebx, ecx
@@ -438,9 +454,12 @@ SECTION .text.xav_ds2i progbits alloc exec nowrite align=1
 
 rocp:
     movzx        esi, byte [rel xav_rs]
-    mov          rsi, [rsi + rimg]
+    mov          r8, [rsi + rimg]
+    mov          r8, [r8 + rcx*8]
+    mov          [rel kern], r8
+    mov          ecx, [rsi + rimg + 12]
+    mov          esi, [rsi + rimg + 8]
     mov          edi, xav_ro
-    mov          ecx, RO
     rep          movsb
     pop          r12
     pop          rbp

@@ -108,16 +108,19 @@ extern "C" fn xav_ds2s(d: &mut VidDecoder, e: &Ent) {
     d.skip_to(unsafe { (*e.ch).start });
 }
 
+const SMSG: &str = "--scale: Only BT709/left or BT2020NCL/PQ/topleft";
+
 pub fn chk(inf: &VidInf, crop: (u32, u32)) -> Result<(), Xerr> {
     if !matches!(
         (
             inf.transfer_characteristics,
             inf.matrix_coefficients,
             inf.chroma_sample_position,
+            inf.is_10b,
         ),
-        (1, 1, 1)
+        (1, 1, 1, _) | (16, 9, 2, true)
     ) {
-        return Err("--scale: Only BT709, left chroma siting for now".into());
+        return Err(SMSG.into());
     }
     geo(inf, crop)
 }
@@ -147,11 +150,15 @@ pub fn virt(
     hw: &mut bool,
     pipe: bool,
 ) -> Result<(u32, u32), Xerr> {
+    let pq = inf.transfer_characteristics.cast_unsigned() & 16;
     if pipe {
+        if pq != 0 && !inf.is_10b {
+            return Err(SMSG.into());
+        }
         geo(inf, crop)?;
     }
     let g = unsafe {
-        xav_rs = u8::from(inf.color_range != 0) << (3 + u8::from(!inf.is_10b));
+        xav_rs = (u8::from(inf.color_range != 0) << (5 + u8::from(!inf.is_10b))) | pq;
         xav_ds2i(
             inf.width,
             inf.height,

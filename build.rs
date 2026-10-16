@@ -404,17 +404,18 @@ const LDS: &str = "SECTIONS { .tpad : { *(.plt) *(.iplt) *(.tpad) __xav_tlen = A
                    AFTER .fini;\nSECTIONS { .bx : { *libxavds2.a:*(.bss) } .tx : { *(.txa) \
                    *libxavds2.a:*(.text .rodata) *(.text.*7enc_allKb1_* .text.*6enc_tqKb1_* \
                    .text.*12spawn_tq_decKb1_* .text.*3xav4scal* .text.*xav_ds2*) \
-                   *libxavds2.a:*(.rofr) . = ALIGN(0x200000); } __xav_txl = SIZEOF(.tx); } INSERT \
-                   AFTER .bss;\n";
+                   *libxavds2.a:*(.rofr) *libxavpq2.a:*(.text .rodata) . = ALIGN(0x200000); } \
+                   __xav_txl = SIZEOF(.tx); } INSERT AFTER .bss;\n";
 
 fn ds2(set: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     let out = env::var("OUT_DIR")?;
+    let lx = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux");
     let mut b = nasm_rs::Build::new();
     b.include("asm");
     b.include(format!("asm/{set}"));
     b.include(format!("asm/{set}/ds2"));
     b.file(format!("asm/{set}/ds2/ro.asm"));
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+    if lx {
         b.file("asm/srun.asm");
         b.file(format!("asm/{set}/ds2/tab.asm"));
         b.define("PC", Some(if set == "avx512" { "384" } else { "192" }));
@@ -434,6 +435,19 @@ fn ds2(set: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
     }
     b.compile("xavds2")?;
     println!("cargo:rustc-link-lib=static=xavds2");
+    if lx {
+        let mut p = nasm_rs::Build::new();
+        p.include("asm");
+        p.include(format!("asm/{set}/pq2"));
+        p.file(format!("asm/{set}/pq2/ro.asm"));
+        for m in 11..=120 {
+            let f = format!("{out}/pq2_{m}.asm");
+            fs::write(&f, format!("%define M {m}\n%include \"pq2.asm\"\n"))?;
+            p.file(f);
+        }
+        p.compile("xavpq2")?;
+        println!("cargo:rustc-link-lib=static=xavpq2");
+    }
     Ok(())
 }
 

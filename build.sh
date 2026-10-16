@@ -764,6 +764,9 @@ build_avm() {
 
         cd "${BUILD_DIR}/avm"
 
+        git fetch origin av2-enc:av2-enc > /dev/null 2>&1
+        git switch av2-enc > /dev/null 2>&1
+
         grep -q tls_part_split av2/encoder/part_split_prune_tflite.cc || sed -i '/^static void ensure_tflite_init(void \*\*context, MODEL_TYPE model_type) {$/i\
 static thread_local PartSplitContext *tls_part_split;' av2/encoder/part_split_prune_tflite.cc
         sed -i 's|^  if (\*context == nullptr) \*context = new PartSplitContext();$|  if (*context == nullptr) {\n    if (tls_part_split == nullptr) tls_part_split = new PartSplitContext();\n    *context = tls_part_split;\n  }|' av2/encoder/part_split_prune_tflite.cc
@@ -774,6 +777,8 @@ static thread_local DipContext *tls_dip;' av2/encoder/intra_dip_mode_prune_tflit
         sed -i 's|^    \*context = new DipContext();$|    if (tls_dip == nullptr) tls_dip = new DipContext();\n    *context = tls_dip;|' av2/encoder/intra_dip_mode_prune_tflite.cc
         sed -i '/^extern "C" void intra_dip_mode_prune_close(void \*\*context) {$/,/^}$/c\
 extern "C" void intra_dip_mode_prune_close(void **context) { *context = nullptr; }' av2/encoder/intra_dip_mode_prune_tflite.cc
+
+        sed -i 's|^    \*kf_group_err +=$|    if (kf_group_err != NULL) *kf_group_err +=|' av2/encoder/pass2_strategy.c
 
         sed -i '\|generic/avm_scale.c"$|d;\|generic/gen_scalers.c"$|d' avm_scale/avm_scale.cmake
 
