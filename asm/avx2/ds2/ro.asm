@@ -13,7 +13,7 @@ c_w8e: dd 0x3f9488ae, 0x3fbfffaa, 0x3ff68ab1, 0x401ae8f8, 0x4039f643, 0x4063845e
 c_w8o: dd 0x3f83467d, 0x3f898b8c, 0x3f8f4de9, 0x3f9498d9, 0x3f99e756, 0x3f9f2c4e, 0x3fa3b9bb, 0x3fa8fd87
 c_r8o: dd 0x3f70effc, 0x3f576a31, 0x3f4337ff, 0x3f32f1e6, 0x3f247e1d, 0x3f17b994, 0x3f0dcbd5, 0x3f036c99
 c_r8x: dd 0x7ef09c9a, 0x7ed83501, 0x7ec2d0b8, 0x7eb12034, 0x7ea42488, 0x7e96e9a7, 0x7e8dca50, 0x7e839ebe
-c_c8e: dd 0x3681ed35, 0x37ab706d, 0, 0x38e23720, 0x3a153f18, 0, 0x3b44ee90, 0
+c_c8e: dd 0x3601ed35, 0x372b706d, 0, 0x38623720, 0x39953f18, 0, 0x3ac4ee90, 0
 c_p8e: dd 0xfa000000, 0, 0x06000000, 0x0c000000, 0x12000000, 0xe8000000, 0xee000000, 0xf4000000
 c_pd8: dd 0, 4, 1, 5, 2, 6, 3, 7
 c_s2: dd 0x40000000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000
@@ -30,8 +30,8 @@ c_q8o2: times 8 dd 0x3d83ac9a
 c_q8o3: times 8 dd 0xbd2a296f
 c_eq: times 8 dd 0x3ed57359
 c_ieq: times 8 dd 0x40198401
-c_snegl: times 8 dd 0x375c8583
-c_snegh: times 8 dd 0x37dc8583
+c_snegl: times 8 dd 0x371beea9
+c_snegh: times 8 dd 0x379beea9
 c_k5e: times 8 dd 26215
 c_xflr: times 8 dd 0x35800000
 c_xlo: times 8 dd 0x38000000
@@ -57,10 +57,10 @@ c_oml0: times 8 dd 0x34a3a5ba
 c_oml1: times 8 dd 0x3483a5a5
 c_oml2: times 8 dd 0x34c3a5cf
 c_anegl: times 8 dd 0x358dc34d
-c_tabsl: times 8 dd 0x2fa43252
-c_mtl0: times 8 dd 0x4088a915
-c_mtl1: times 8 dd 0x4165de07
-c_mtl2: times 8 dd 0x3fb9a46c
+c_tabsl: times 8 dd 0x2f243252
+c_mtl0: times 8 dd 0x40b66b7c
+c_mtl1: times 8 dd 0x41996b03
+c_mtl2: times 8 dd 0x3ff7cd7e
 c_slkl: times 8 dd 0x3786d510
 c_rgh0: times 8 dd 0x35075c87
 c_rgh1: times 8 dd 0x352dc308
@@ -69,13 +69,13 @@ c_omh0: times 8 dd 0x34c3a5cf
 c_omh1: times 8 dd 0x34a3a5ba
 c_omh2: times 8 dd 0x34c3a5cf
 c_anegh: times 8 dd 0x35adc37a
-c_tabsh: times 8 dd 0x30a43252
-c_mth0: times 8 dd 0x40b87fe1
-c_mth1: times 8 dd 0x3fa91ba6
-c_mth2: times 8 dd 0x408e38f8
-c_mth3: times 8 dd 0x40b87fe1
-c_mth4: times 8 dd 0x40a794fe
-c_mth5: times 8 dd 0x3f07571c
+c_tabsh: times 8 dd 0x30243252
+c_mth0: times 8 dd 0x40f646ff
+c_mth1: times 8 dd 0x3fe1bb6b
+c_mth2: times 8 dd 0x40bdd824
+c_mth3: times 8 dd 0x40f646ff
+c_mth4: times 8 dd 0x40dfb1f4
+c_mth5: times 8 dd 0x3f34a858
 c_slkh0: times 8 dd 0x37814176
 c_slkh1: times 8 dd 0x37b78fd4
 c_sign: times 8 dd 0x80000000
@@ -148,28 +148,28 @@ u_half: times 4 dq 0x3fe0000000000000
 u_mhalf: times 4 dq 0xbfe0000000000000
 u_magic: times 4 dq 0x43380000000003ff
 u_anegl: times 4 dq 0x3eb1b85f230ee769
-u_snegl: times 4 dq 0x3eeb8e76f9ee5729
-u_tabsl: times 4 dq 0x3df4863cd212ebcd
+u_snegl: times 4 dq 0x3ee37c428664a1cc
+u_tabsl: times 4 dq 0x3de4863cd212ebcd
 u_rgl0: times 4 dq 0x3e99d70c9fca5d88
 u_rgl1: times 4 dq 0x3ea1b8538621a5de
 u_rgl2: times 4 dq 0x3e99d70c9fca5d88
-u_mtl0: times 4 dq 0x401576fc202d13ce
-u_mtl1: times 4 dq 0x40320d5ec231f3c2
-u_mtl2: times 4 dq 0x3ffd287eb5f19d31
+u_mtl0: times 4 dq 0x401ca6ecbf81a1ba
+u_mtl1: times 4 dq 0x403818c9ffb48c5a
+u_mtl2: times 4 dq 0x400375f3e3206a7a
 u_slol0: times 4 dq 0x404fffff792922a4
 u_shil0: times 4 dq 0x40500000436b6eae
 u_anegh: times 4 dq 0x3eb5b862605dc537
-u_snegh: times 4 dq 0x3efb8e76f9ee5729
-u_tabsh: times 4 dq 0x3e14863cd212ebcd
+u_snegh: times 4 dq 0x3ef37c428664a1cc
+u_tabsh: times 4 dq 0x3e04863cd212ebcd
 u_rgh0: times 4 dq 0x3ea0eb86ee1cf3c5
 u_rgh1: times 4 dq 0x3ea5b85424596adf
 u_rgh2: times 4 dq 0x3ea0eb86ee1cf3c5
-u_mth0: times 4 dq 0x401cfa8be2377e73
-u_mth1: times 4 dq 0x3ffa8faafb61d389
-u_mth2: times 4 dq 0x401656a1235f0990
-u_mth3: times 4 dq 0x401cfa8be2377e73
-u_mth4: times 4 dq 0x401a524f11bfd53d
-u_mth5: times 4 dq 0x3fe541e683bd49b5
+u_mth0: times 4 dq 0x40235749245c70d8
+u_mth1: times 4 dq 0x4001ba3bddc83ad8
+u_mth2: times 4 dq 0x401dd17459d4c445
+u_mth3: times 4 dq 0x40235749245c70d8
+u_mth4: times 4 dq 0x4021914817a9dc85
+u_mth5: times 4 dq 0x3fec6010cb294542
 u_sloh0: times 4 dq 0x407fffffefd79720
 u_sloh1: times 4 dq 0x407fffffe90dcfd6
 u_shih0: times 4 dq 0x4080000008143470
@@ -227,7 +227,7 @@ const rof
     dd 0x3f83467d, 0x3f898b8c, 0x3f8f4de9, 0x3f9498d9, 0x3f99e756, 0x3f9f2c4e, 0x3fa3b9bb, 0x3fa8fd87
     dd 0x3f70effc, 0x3f576a31, 0x3f4337ff, 0x3f32f1e6, 0x3f247e1d, 0x3f17b994, 0x3f0dcbd5, 0x3f036c99
     dd 0x7ef09c9a, 0x7ed83501, 0x7ec2d0b8, 0x7eb12034, 0x7ea42488, 0x7e96e9a7, 0x7e8dca50, 0x7e839ebe
-    dd 0x3681ed35, 0x37ab706d, 0, 0x38e23720, 0x3a153f18, 0, 0x3b44ee90, 0
+    dd 0x3601ed35, 0x372b706d, 0, 0x38623720, 0x39953f18, 0, 0x3ac4ee90, 0
     dd 0xfa000000, 0, 0x06000000, 0x0c000000, 0x12000000, 0xe8000000, 0xee000000, 0xf4000000
     dd 0, 4, 1, 5, 2, 6, 3, 7
     dd 0x40000000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000
@@ -244,8 +244,8 @@ const rof
     times 8 dd 0xbd2a296f
     times 8 dd 0x3ed57359
     times 8 dd 0x40198401
-    times 8 dd 0x36bb624a
-    times 8 dd 0x373b624a
+    times 8 dd 0x3684801e
+    times 8 dd 0x3704801e
     times 8 dd 26215
     times 8 dd 0x35800000
     times 8 dd 0x38000000
@@ -271,10 +271,10 @@ const rof
     times 8 dd 0x3483a5a5
     times 8 dd 0x34c3a5cf
     times 8 dd 0x358dc34d
-    times 8 dd 0x2eb6dc5d
-    times 8 dd 0x4088a915
-    times 8 dd 0x4165de07
-    times 8 dd 0x3fb9a46c
+    times 8 dd 0x2e36dc5d
+    times 8 dd 0x40b66b7c
+    times 8 dd 0x41996b03
+    times 8 dd 0x3ff7cd7e
     times 8 dd 0x3749b4d8
     times 8 dd 0x35075c87
     times 8 dd 0x352dc308
@@ -283,13 +283,13 @@ const rof
     times 8 dd 0x34a3a5ba
     times 8 dd 0x34c3a5cf
     times 8 dd 0x35adc37a
-    times 8 dd 0x2fb6dc5d
-    times 8 dd 0x40b46199
-    times 8 dd 0x3fa55551
-    times 8 dd 0x408b0c44
-    times 8 dd 0x40b46199
-    times 8 dd 0x40a3d761
-    times 8 dd 0x3f0451bc
+    times 8 dd 0x2f36dc5d
+    times 8 dd 0x40f0c7b2
+    times 8 dd 0x3fdcb185
+    times 8 dd 0x40b99b51
+    times 8 dd 0x40f0c7b2
+    times 8 dd 0x40dab3b2
+    times 8 dd 0x3f30a003
     times 8 dd 0x36eee7d6
     times 8 dd 0x37497095
     times 8 dd 0x80000000
@@ -362,28 +362,28 @@ const rof
     times 4 dq 0xbfe0000000000000
     times 4 dq 0x43380000000003ff
     times 4 dq 0x3eb1b85f230ee769
-    times 4 dq 0x3ed76a657e59d528
-    times 4 dq 0x3dd6db7cac7abb4d
+    times 4 dq 0x3ed08eadaaaae118
+    times 4 dq 0x3dc6db7cac7abb4d
     times 4 dq 0x3e99d70c9fca5d88
     times 4 dq 0x3ea1b8538621a5de
     times 4 dq 0x3e99d70c9fca5d88
-    times 4 dq 0x401576fc202d13cf
-    times 4 dq 0x40320d5ec231f3c2
-    times 4 dq 0x3ffd287eb5f19d32
+    times 4 dq 0x401ca6ecbf81a1ba
+    times 4 dq 0x403818c9ffb48c59
+    times 4 dq 0x400375f3e3206a7a
     times 4 dq 0xbee93713eba54b1e
     times 4 dq 0x3ee93713eba54b1e
     times 4 dq 0x3eb5b862605dc537
-    times 4 dq 0x3ee76a657e59d528
-    times 4 dq 0x3df6db7cac7abb4d
+    times 4 dq 0x3ee08eadaaaae118
+    times 4 dq 0x3de6db7cac7abb4d
     times 4 dq 0x3ea0eb86ee1cf3c5
     times 4 dq 0x3ea5b85424596adf
     times 4 dq 0x3ea0eb86ee1cf3c5
-    times 4 dq 0x401c54f430988a7b
-    times 4 dq 0x3ff9f7e3bca0c919
-    times 4 dq 0x4015d6fb41705835
-    times 4 dq 0x401c54f430988a7b
-    times 4 dq 0x4019bbe6727efac2
-    times 4 dq 0x3fe4c86df0cc7dc6
+    times 4 dq 0x4022e8c414b13c0b
+    times 4 dq 0x400154ef19f97988
+    times 4 dq 0x401d27109c65bb52
+    times 4 dq 0x4022e8c414b13c0b
+    times 4 dq 0x40212ce55722a42b
+    times 4 dq 0x3febbdebd8e97e00
     times 4 dq 0x407ffffff888817d
     times 4 dq 0x407ffffff368ba34
     times 4 dq 0x4080000003bbbf41
@@ -421,7 +421,7 @@ const ro8
     dd 0x3f83467d, 0x3f898b8c, 0x3f8f4de9, 0x3f9498d9, 0x3f99e756, 0x3f9f2c4e, 0x3fa3b9bb, 0x3fa8fd87
     dd 0x3f70effc, 0x3f576a31, 0x3f4337ff, 0x3f32f1e6, 0x3f247e1d, 0x3f17b994, 0x3f0dcbd5, 0x3f036c99
     dd 0x7ef09c9a, 0x7ed83501, 0x7ec2d0b8, 0x7eb12034, 0x7ea42488, 0x7e96e9a7, 0x7e8dca50, 0x7e839ebe
-    dd 0x3681ed35, 0x37ab706d, 0, 0x38e23720, 0x3a153f18, 0, 0x3b44ee90, 0
+    dd 0x3601ed35, 0x372b706d, 0, 0x38623720, 0x39953f18, 0, 0x3ac4ee90, 0
     dd 0xfa000000, 0, 0x06000000, 0x0c000000, 0x12000000, 0xe8000000, 0xee000000, 0xf4000000
     dd 0, 4, 1, 5, 2, 6, 3, 7
     dd 0x40000000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000
@@ -438,8 +438,8 @@ const ro8
     times 8 dd 0xbd2a296f
     times 8 dd 0x3ed57359
     times 8 dd 0x40198401
-    times 8 dd 0x36bb6281
-    times 8 dd 0x373b6281
+    times 8 dd 0x36848045
+    times 8 dd 0x37048045
     times 8 dd 26215
     times 8 dd 0x35800000
     times 8 dd 0x38000000
@@ -465,10 +465,10 @@ const ro8
     times 8 dd 0x3483a5a5
     times 8 dd 0x34c3a5cf
     times 8 dd 0x358dc34d
-    times 8 dd 0x2eb67699
-    times 8 dd 0x40890ffb
-    times 8 dd 0x41668b1b
-    times 8 dd 0x3fba3033
+    times 8 dd 0x2e367699
+    times 8 dd 0x40b6f4d6
+    times 8 dd 0x4199de87
+    times 8 dd 0x3ff88813
     times 8 dd 0x374a4cb8
     times 8 dd 0x35075c87
     times 8 dd 0x352dc308
@@ -477,13 +477,13 @@ const ro8
     times 8 dd 0x34a3a5ba
     times 8 dd 0x34c3a5cf
     times 8 dd 0x35adc37a
-    times 8 dd 0x2fb67699
-    times 8 dd 0x40b4e96a
-    times 8 dd 0x3fa5d1cd
-    times 8 dd 0x408b74f6
-    times 8 dd 0x40b4e96a
-    times 8 dd 0x40a452be
-    times 8 dd 0x3f04b55d
+    times 8 dd 0x2f367699
+    times 8 dd 0x40f17cfd
+    times 8 dd 0x3fdd57b0
+    times 8 dd 0x40ba2711
+    times 8 dd 0x40f17cfd
+    times 8 dd 0x40db585d
+    times 8 dd 0x3f312500
     times 8 dd 0x36ef9bb8
     times 8 dd 0x374a0841
     times 8 dd 0x80000000
@@ -556,28 +556,28 @@ const ro8
     times 4 dq 0xbfe0000000000000
     times 4 dq 0x43380000000003ff
     times 4 dq 0x3eb1b85f230ee769
-    times 4 dq 0x3ed76a6c5cc5176f
-    times 4 dq 0x3dd6cec43a90eab2
+    times 4 dq 0x3ed08eb2860eb726
+    times 4 dq 0x3dc6cec43a90eab2
     times 4 dq 0x3e99d70c9fca5d88
     times 4 dq 0x3ea1b8538621a5de
     times 4 dq 0x3e99d70c9fca5d88
-    times 4 dq 0x4015872586abb43e
-    times 4 dq 0x40321af660e2498e
-    times 4 dq 0x3ffd3e73094d6e39
+    times 4 dq 0x401cbc7f83d596e8
+    times 4 dq 0x40382aeebbf08fc5
+    times 4 dq 0x4003849b0128cb2a
     times 4 dq 0xbee94a0fcf657fda
     times 4 dq 0x3ee94a0fcf657fda
     times 4 dq 0x3eb5b862605dc537
-    times 4 dq 0x3ee76a6c5cc5176f
-    times 4 dq 0x3df6cec43a90eab2
+    times 4 dq 0x3ee08eb2860eb726
+    times 4 dq 0x3de6cec43a90eab2
     times 4 dq 0x3ea0eb86ee1cf3c5
     times 4 dq 0x3ea5b85424596adf
     times 4 dq 0x3ea0eb86ee1cf3c5
-    times 4 dq 0x401c6a493cc92d86
-    times 4 dq 0x3ffa0b7134e6876e
-    times 4 dq 0x4015e76cef8f8bab
-    times 4 dq 0x401c6a493cc92d86
-    times 4 dq 0x4019cf46bfa1fd00
-    times 4 dq 0x3fe4d813e939842a
+    times 4 dq 0x4022f700e490a05c
+    times 4 dq 0x400161fbda0d0831
+    times 4 dq 0x401d3d03dc1abc9f
+    times 4 dq 0x4022f700e490a05c
+    times 4 dq 0x402139d3f1be9a1b
+    times 4 dq 0x3febd2cf2d206403
     times 4 dq 0x407ffffff882e273
     times 4 dq 0x407ffffff35f3f79
     times 4 dq 0x4080000003be8ec7
