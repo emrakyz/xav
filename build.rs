@@ -401,10 +401,11 @@ fn stamp_versions(home: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
 
 const LDS: &str = "SECTIONS { .tpad : { *(.plt) *(.iplt) *(.tpad) __xav_tlen = ALIGN(0x200000) - \
                    __executable_start; . = ALIGN(0x200000) + (ABSOLUTE(.) & 0x1fffff); } } INSERT \
-                   AFTER .fini;\nSECTIONS { .bx : { *libxavds2.a:*(.bss) } .tx : { *(.txa) \
-                   *libxavds2.a:*(.text .rodata) *(.text.*7enc_allKb1_* .text.*6enc_tqKb1_* \
-                   .text.*12spawn_tq_decKb1_* .text.*3xav4scal* .text.*xav_ds2*) \
-                   *libxavds2.a:*(.rofr) *libxavpq2.a:*(.text .rodata) . = ALIGN(0x200000); } \
+                   AFTER .fini;\nSECTIONS { .bx : { *libxavds2.a:*(.bss) *libxavgn.a:*(.bss) } \
+                   .tx : { *(.txa) *libxavds2.a:*(.text .rodata) *(.text.*7enc_allKb1_* \
+                   .text.*6enc_tqKb1_* .text.*12spawn_tq_decKb1_* .text.*3xav4scal* \
+                   .text.*xav_ds2*) *libxavds2.a:*(.rofr) *libxavpq2.a:*(.text .rodata) \
+                   *libxavds2.a:*(.txg .rog) *libxavgn.a:*(.text .rodata) . = ALIGN(0x200000); } \
                    __xav_txl = SIZEOF(.tx); } INSERT AFTER .bss;\n";
 
 fn ds2(set: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -447,6 +448,19 @@ fn ds2(set: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         p.compile("xavpq2")?;
         println!("cargo:rustc-link-lib=static=xavpq2");
+        let mut g = nasm_rs::Build::new();
+        let gn = format!("asm/{set}/gn");
+        g.include(&gn);
+        let mut v = fs::read_dir(&gn)?.collect::<Result<Vec<_>, _>>()?;
+        v.sort_by_key(fs::DirEntry::path);
+        for e in v
+            .iter()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "asm"))
+        {
+            g.file(e.path());
+        }
+        g.compile("xavgn")?;
+        println!("cargo:rustc-link-lib=static=xavgn");
     }
     Ok(())
 }

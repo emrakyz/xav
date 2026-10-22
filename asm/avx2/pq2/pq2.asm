@@ -8827,8 +8827,6 @@ cglobal pq2_ %+ M
     vsubpd ymm7, ymm8, ymm7
     vaddpd ymm8, ymm7, ymm9
     vaddpd ymm9, ymm6, ymm8
-    vsubpd ymm7, ymm9, ymm6
-    vsubpd ymm7, ymm8, ymm7
     vbroadcastsd ymm7, [d_half]
     vbroadcastsd ymm8, [d_one]
     vcmppd ymm4, ymm9, ymm7, 0x1e
@@ -9402,8 +9400,6 @@ cglobal pq2_ %+ M
     vsubpd ymm4, ymm2, ymm4
     vaddpd ymm2, ymm4, ymm15
     vaddpd ymm15, ymm7, ymm2
-    vsubpd ymm4, ymm15, ymm7
-    vsubpd ymm4, ymm2, ymm4
     vdivpd ymm9, ymm15, ymm12
     vaddpd ymm4, ymm5, ymm6
     vsubpd ymm15, ymm4, ymm5
@@ -9596,8 +9592,6 @@ cglobal pq2_ %+ M
     vsubpd ymm7, ymm12, ymm7
     vaddpd ymm12, ymm7, ymm14
     vaddpd ymm14, ymm6, ymm12
-    vsubpd ymm7, ymm14, ymm6
-    vsubpd ymm7, ymm12, ymm7
     vdivpd ymm4, ymm14, ymm2
     vaddpd ymm7, ymm10, ymm9
     vsubpd ymm14, ymm7, ymm10
@@ -9790,8 +9784,6 @@ cglobal pq2_ %+ M
     vsubpd ymm3, ymm4, ymm3
     vaddpd ymm4, ymm3, ymm15
     vaddpd ymm15, ymm6, ymm4
-    vsubpd ymm3, ymm15, ymm6
-    vsubpd ymm3, ymm4, ymm3
     vdivpd ymm9, ymm15, ymm12
     vaddpd ymm3, ymm7, ymm8
     vsubpd ymm15, ymm3, ymm7

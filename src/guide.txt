@@ -31,6 +31,7 @@
 {P}┃       {C}2.14  {C}-v {P}┃ {C}--vship                                                                                                 {P}┃
 {P}┃       {C}2.15  {C}-d {P}┃ {C}--display                                                                                               {P}┃
 {P}┃       {C}2.16  {C}-P {P}┃ {C}--alt-param                                                                                             {P}┃
+{P}┃       {C}2.17     {P}┃ {C}--scale                                                                                                 {P}┃
 {P}┃                                                                                                                          {P}┃
 {P}┃   {C}3   {Y}Encoder Defaults                                                                                                   {P}┃
 {P}┃       {C}3.1   {W}SVT-AV1                                                                                                      {P}┃
@@ -41,7 +42,7 @@
 {P}┃                                                                                                                          {P}┃
 {P}┃   {C}4   {Y}Pipe Into XAV                                                                                                      {P}┃
 {P}┃                                                                                                                          {P}┃
-{P}┃   {C}5   {Y}Scale                                                                                                              {P}┃
+{P}┃   {C}5   {Y}Perfect/True Area Scaling in Linear Light                                                                          {P}┃
 {P}┃                                                                                                                          {P}┃
 {P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
 
@@ -994,6 +995,37 @@
   {P} {W}Usage is exact same with {C}-p {P}┃ {C}--param
 
 
+{P}▌ {C}2.17  {P}┃ {C}--scale      {W}Downscale: {G}factor {W}or {G}height
+{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  {P} {W}Downscales cropped frame before encode; method: section {B}5
+  {P} {W}Integer up to {B}30 {W}factor; above {B}30 {W}considered as height (like 360p)
+  {P} {C}Factor: {B}1.125-30{W}, {B}1/2/4/8 {W}denominator steps: {B}.125 .25 .375 .5 .625 .75 .875
+    {W}Up to {B}3 {W}decimals: {G}1.125{W}, {G}1.875{W}, {G}3.75{W}
+  {P} {C}Height: {W}Integer {B}31-4320{W}; picks factor:
+  {P} {W}Works with pipe input & {C}--hwdec
+  {P} {R}Rejected:
+      {C} {W}Upscale or {B}1x
+      {C} {W}Off-grid factor: {R}1.3{W}, {R}2.2
+      {C} {W}Over {B}3 {W}decimals
+      {C} {W}Height giving off-grid factor
+      {C} {W}Reduced numerator not dividing cropped width
+      {C} {W}Output below {B}256x144
+      {C} {W}Other colors except BT.709 (SDR) or BT.2020NCL (PQ)
+      {C} {W}You should not worry because all the sane, proper, reasonable ratios are supported
+
+   {P} {W}Helper utilities called {B}`xav_tools` {W}will give you more information if needed
+     (all available downscale factors and more info)
+
+{P}    ╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╮
+{P}    ┃ {Y}Examples:                                                                                                            {P}┃
+{P}    ┃ {G}--scale 1.5   {P}# {B}1920x1080 -> 1280x720                                                                                {P}┃
+{P}    ┃ {G}--scale 3.75  {P}# {B}3840x2160 -> 1024x576                                                                                {P}┃
+{P}    ┃ {G}--scale 720   {P}# {B}3840x1600 crop -> 1280x534                                                                           {P}┃
+{P}    ┃ {G}--scale 1080  {P}# {B}3840x2160 -> 1920x1080                                                                               {P}┃
+{P}    ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━━━╯
+
+
 
 {P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
 {P}┃   {Y}󰥼 3 󰥭   ENCODER DEFAULTS                                                                                               {P}┃
@@ -1213,10 +1245,56 @@
 
 
 {P}╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╮
-{P}┃   {Y}󰥼 5 󰥭   Scale                                                                                                          {P}┃
+{P}┃   {Y}󰥼 5 󰥭   Perfect/True Area Scaling in Linear Light                                                                      {P}┃
 {P}╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{P}━━━━━━━━━━━━━━━━━━╯
 
-  {P} {C}--scale 2 {W}halves width & height 2x before encode: 3840x2160 --> 1920x1080 or 1920x1080 --> 960x540
+  {P} {W}Output pixel = exact light average over its area
+  {P} {W}Physical model is bigger-pixel camera sensor; no guess, no tuning
+
+  {Y}▍ Pipeline
+
+  {P} {W}Siting-aware; on-site samples copied as is
+  {P} {W}Y'CbCr {P} {W}R'G'B': range offsets & matrix folded into one affine step
+  {P} {W}R'G'B' {P} {W}linear RGB: {B}BT.1886 {W}EOTF (SDR) or {B}PQ {W}EOTF (HDR)
+      {C} {W}Sub-black & over-range values extended, never clipped
+  {P} {W}Horizontal area reduce = exact fractional weights, periodic
+  {P} {W}Vertical area accumulate = exact fractional weights
+  {P} {W}Luma = footprint average {P} {W}OETF {P} {W}Y'
+  {P} {W}Chroma = {B}2x2 {W}luma footprint average, siting-aware {P} {W}OETF {P} {W}Cb/Cr
+
+  {Y}▍ Why Perfect
+
+  {P} {C}Linear light {W}averages light, not code values
+      {C} {W}Code-value averaging darkens bright detail
+      {C} {W}Linear average keeps fine detail, edge & highlight brightness
+      {C} {W}HDR highlights keep their energy
+  {P} {C}True area = {W}Every input pixel weighted by exact covered fraction
+      {C} {W}No skipped samples (some downscaling skips {P} {W}aliasing, shimmer)
+      {C} {W}Mean light preserved
+      {C} {W}Area weights all positive = scaling adds no ringing, halos, overshoot (Lanczos: negative lobes)
+      {C} {W}No sharpening, no invented detail, no kernel to tune
+  {P} {W}Chroma averaged as linear RGB too, not Cb/Cr code values
+      {C} {W}Saturated fine detail keeps hue & brightness; red/green patterns don't turn dark/brown
+  {P} {W}Chroma footprints follow left/topleft siting; no chroma shift
+  {P} {W}Output frame is edge aligned & covers input frame exactly; no half-pixel shift
+  {P} {W}Weights = exact rationals
+      {C} {W}Implementation is perfect in terms of accuracy (zero pruning, zero shortcuts, zero code change, not even +-1)
+  {P} {C}No clipping
+  {P} {C}Deterministic with {W}same input {P} {W}same output, every run/machine/ISA
+
+  {Y}▍ Fractional (Non-Integer) Scaling Is Non-Issue
+
+  {P} {W}Every output pixel integrates equal-size footprint
+  {P} {W}Footprint edges cutting input pixels get exact partial weights
+  {P} {B}2x{W}: footprints align to pixel grid; {B}1.875x{W}: footprints straddle pixels; both exact
+  {P} {W}Quality depends on output resolution only, not on factor being integer. You don't have to integer-scale
+  {P} {W}Interpolating filters (bilinear/bicubic/Lanczos) point-sample fractional positions
+    {W}Phase-dependent weights {P} {W}varying sharpness, beat patterns at fractional factors
+  {P} {W}Area scaling integrates and never point-samples
+  {P} {B}1/2/4/8 {W}steps because horizontal weight period stays {B}16 {W}or less
+    {W}This is a speed/assembly constraint, not quality constraint
+  {P} {W}Width must divide because every output column gets full footprint; no partial last column
+  {P} {W}It's Height free. Vertical weights per input row; any height works; rounded if necessary
 
 {R}╭━  {R}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{R}━━━━━━━━━━━━━━━━━╮
 {R}┃ {R}Windows {W}users need to scroll back to top manually                                                                        {R}┃

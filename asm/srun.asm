@@ -34,11 +34,17 @@
 %define RO     7360
 %define LS     3264
 %define LQ     7208
+%define GN     xav_g5i
+%define GP     xav_gpi
+%define GR     512
 %else
 %define ST     5
 %define RO     10432
 %define LS     6336
 %define LQ     9888
+%define GN     xav_g2i
+%define GP     xav_gqi
+%define GR     1024
 %endif
 
 extern xav_ds2
@@ -68,6 +74,9 @@ extern xav_ds2s
 extern pthread_create
 extern pthread_join
 extern __xav_txl
+extern xav_pack_10b_rem
+extern GN
+extern GP
 
 global xav_dp
 global xav_ro
@@ -80,6 +89,17 @@ global xav_ds2w
 global xav_ds2r
 %ifdef VSHIP
 global xav_ds2q
+%endif
+global xav_gr
+global xav_gwo
+global xav_amap
+global xav_sarg
+global xav_sgk
+global xav_dsxi
+global xav_dsgw
+global xav_dsgr
+%ifdef VSHIP
+global xav_dsgq
 %endif
 
 SECTION .txa align=2097152
@@ -196,7 +216,7 @@ SECTION .text align=64
 %endif
 %endmacro
 
-xav_ds2i:
+%macro SINP 0
     push         rbx
     push         rbp
     push         r12
@@ -425,6 +445,10 @@ xav_ds2i:
     shr          r11d, 1
     mov          r10, r11
     imul         r10, r9
+%endmacro
+
+xav_ds2i:
+    SINP
     add          rax, rdx
     add          rax, r10
     mov          [rel xav_dp + 8], rax
@@ -651,6 +675,7 @@ w4:
     mov          rax, [rel fsz]
     ret
 
+xav_amap:
 amap:
     xor          edi, edi
     mov          edx, 3
@@ -1095,3 +1120,397 @@ DLF xav_dec_next, V_FRM, xav_mpsc_send, xav_ds2kq, 0q
 DLF xav_dec_next_hw, V_SW, xav_mpsc_send, xav_ds2kq, 1q
 DLP xav_ds2kq, 2q
 %endif
+
+SECTION .bss
+
+alignb 64
+xav_gr:  resb GR
+gof:     resq 8
+gi:      resq 6
+gtc:     resq 1
+gpq:     resq 2
+xav_gwo: resd 1
+np:      resd 1
+scd:     resb 1
+
+SECTION .rog progbits alloc noexec nowrite align=8
+
+tgn:   dq g0n, gxn, d0n, d1n, d2n
+%ifdef VSHIP
+tgq:   dq g0q, gxq, d0q, d1q, d2q
+%endif
+
+SECTION .txg progbits alloc exec nowrite align=64
+
+%macro GI 2
+    SINP
+    mov          [rel gof + 8], rax
+    mov          [rel gof + 16], r8
+    lea          r10, [r8 + r10]
+    lea          r10, [r10 + r9*4]
+    mov          [rel ssz], r10
+    mov          [rel gi + 32], rdx
+    shr          r9d, 1
+    mov          [rel gi + 40], r9
+    mov          r12d, [rel xav_gwo]
+    mov          edx, r12d
+    mov          r8d, ST
+    mov          r9d, gi
+    movzx        ecx, byte [rel xav_rs]
+    test         cl, 16
+    jnz          .pq
+    shr          ecx, 5
+    call         %1
+.gd:
+    mov          eax, [rel gi + 24]
+    mov          ecx, r12d
+    imul         ecx, eax
+    lea          edx, [rcx + rcx]
+    mov          [rel gof + 40], rdx
+    lea          ecx, [rcx + rcx*4]
+    shr          ecx, 1
+    mov          [rel gof + 48], rcx
+    shl          rax, 32
+    lea          rdx, [rax + r12]
+    lea          eax, [r12 + r12]
+    vzeroupper
+    pop          r12
+    pop          rbp
+    pop          rbx
+    ret
+.pq:
+    shr          ecx, 5
+    call         %2
+    jmp          .gd
+%endmacro
+
+xav_sarg:
+    xor          eax, eax
+    xor          ecx, ecx
+    xor          r10d, r10d
+    test         rsi, rsi
+    jz           .z
+.i:
+    movzx        edx, byte [rdi + rcx]
+    sub          edx, 48
+    cmp          edx, 9
+    ja           .d
+    imul         eax, eax, 10
+    add          eax, edx
+    cmp          eax, 4320
+    ja           .z
+    inc          rcx
+    cmp          rcx, rsi
+    jb           .i
+    jmp          .k
+.d:
+    cmp          edx, -2
+    jne          .z
+    test         rcx, rcx
+    jz           .z
+    lea          r8, [rcx + 1]
+    mov          r9, rsi
+    sub          r9, r8
+    dec          r9
+    cmp          r9, 2
+    ja           .z
+    mov          r11d, 3
+.f:
+    imul         r10d, r10d, 10
+    cmp          r8, rsi
+    jae          .p
+    movzx        edx, byte [rdi + r8]
+    sub          edx, 48
+    cmp          edx, 9
+    ja           .z
+    add          r10d, edx
+    inc          r8
+.p:
+    dec          r11d
+    jnz          .f
+    imul         rdx, r10, 0x10624dd3
+    shr          rdx, 35
+    imul         ecx, edx, 125
+    cmp          ecx, r10d
+    jne          .z
+    mov          r10d, edx
+.k:
+    cmp          eax, 30
+    ja           .n
+    lea          eax, [r10 + rax*8]
+    lea          ecx, [rax - 9]
+    cmp          ecx, 231
+    ja           .z
+    mov          ecx, 2
+    cmp          eax, 16
+    cmove        eax, ecx
+    mov          [rel scd], al
+    mov          eax, 1
+    ret
+.n:
+    test         r10d, r10d
+    jnz          .z
+    mov          [rel np], eax
+    mov          byte [rel scd], 255
+    mov          eax, 1
+    ret
+.z:
+    xor          eax, eax
+    ret
+
+xav_sgk:
+    movzx        r8d, byte [rel scd]
+    cmp          r8d, 2
+    je           .o
+    cmp          r8d, 255
+    jne          .f
+    mov          r9d, [rel np]
+    lea          eax, [rdi + rdi*8]
+    mov          r10d, esi
+    shl          r10d, 4
+    lea          r11d, [r9 + r9]
+    lea          ecx, [rsi*8]
+    cmp          eax, r10d
+    cmovb        eax, ecx
+    cmovb        r11d, r9d
+    xor          edx, edx
+    div          r11d
+    test         edx, edx
+    jnz          .e
+    lea          ecx, [rax - 9]
+    cmp          ecx, 231
+    ja           .e
+    cmp          eax, 16
+    je           .o
+    mov          r8d, eax
+.f:
+    tzcnt        ecx, r8d
+    mov          eax, 3
+    cmp          ecx, eax
+    cmova        ecx, eax
+    shrx         r9d, r8d, ecx
+    mov          eax, edi
+    xor          edx, edx
+    div          r9d
+    test         edx, edx
+    jnz          .e
+    mov          edx, 8
+    shrx         edx, edx, ecx
+    imul         eax, edx
+    test         al, 1
+    jnz          .e
+    cmp          eax, 256
+    jb           .e
+    mov          edx, esi
+    imul         edx, eax
+    imul         ecx, edi, 143
+    cmp          edx, ecx
+    jb           .e
+    mov          [rel xav_gwo], eax
+.o:
+    mov          eax, 1
+    ret
+.e:
+    xor          eax, eax
+    ret
+
+xav_dsxi:
+    cmp          dword [rel xav_gwo], 0
+    je           xav_ds2i
+xav_dsgi:
+    GI           GN, GP
+
+xav_dsgw:
+    mov          eax, [rel xav_gwo]
+    mov          edx, [rel gi + 24]
+    mov          ecx, eax
+    imul         ecx, edx
+    lea          r8d, [rcx + rcx*2]
+    cmp          edi, 2
+    jb           .w0
+    mov          [rel osz], r8
+    mov          qword [rel sci], 1
+    je           .w2
+    mov          qword [rel ost], gp3
+    lea          r9d, [rax + rax]
+    mov          [rel gpq], r9d
+    shr          eax, 1
+    mov          [rel gpq + 4], eax
+    lea          r9d, [rax + 1]
+    shr          r9d, 1
+    lea          r9d, [r9 + r9*4]
+    imul         r9d, edx
+    mov          [rel gpq + 8], r9
+    PRS          r10d, eax
+    imul         r10d, edx
+    lea          eax, [r9 + r10]
+    mov          [rel fsz], rax
+    ret
+.w2:
+    mov          qword [rel ost], xav_o2
+    imul         eax, ecx, 15
+    shr          eax, 3
+    mov          [rel fsz], rax
+%if PC == 384
+    shr          ecx, 7
+    mov          [rel xav_op + 96], ecx
+    mov          rdx, 0xffffffffff
+    mov          [rel xav_op + 88], rdx
+%else
+    shr          ecx, 6
+    mov          [rel xav_op + 96], ecx
+%endif
+    ret
+.w0:
+    mov          [rel fsz], r8
+    mov          eax, r8d
+    ret
+
+gp3:
+    sub          rsp, 8
+    mov          rdi, r15
+    mov          esi, [rel gpq]
+    mov          edx, [rel xav_gwo]
+    mov          ecx, [rel gi + 24]
+    mov          r8, r13
+    call         xav_pack_10b_rem
+    mov          rdi, [rel gof + 40]
+    add          rdi, r15
+    mov          esi, [rel xav_gwo]
+    mov          edx, [rel gpq + 4]
+    mov          ecx, [rel gi + 24]
+    mov          r8, [rel gpq + 8]
+    add          r8, r13
+    add          rsp, 8
+    jmp          xav_pack_10b_rem
+
+%macro SG0 2
+g0%2:
+    push         rbx
+    push         r12
+    push         r13
+    push         r14
+    sub          rsp, 8
+    mov          eax, 1
+    lock xadd    [rel gtc], rax
+    imul         rax, [rel gi + 16]
+    add          rax, [rel gi + 8]
+    mov          r12, rax
+    mov          r14, [rel gi]
+%%l:
+    mov          edi, sj
+    call         xav_spmc_recv
+    test         rax, rax
+    jz           %%x
+    mov          rbx, rax
+%if PC == 384
+    vpbroadcastq ymm0, [rax + J_SLOT]
+    vpbroadcastq ymm1, [rax + J_DST]
+    vinserti64x4 zmm0, zmm0, ymm1, 1
+    vpaddq       zmm0, zmm0, [rel gof]
+    vmovdqu64    [r12], zmm0
+%else
+    vpbroadcastq ymm0, [rax + J_SLOT]
+    vpaddq       ymm0, ymm0, [rel gof]
+    vmovdqu      [r12], ymm0
+    vpbroadcastq ymm1, [rax + J_DST]
+    vpaddq       ymm1, ymm1, [rel gof + 32]
+    vmovdqu      [r12 + 32], ymm1
+%endif
+    mov          r13, [rax + J_ENT]
+    mov          rdi, r12
+    call         r14
+    mov          edi, sf
+    mov          rsi, rbx
+    call         xav_mpsc_send
+    lock dec     qword [r13 + E_CNT]
+    jnz          %%l
+    mov          rdi, [rel pring]
+    mov          rsi, [r13 + E_PKG]
+    call         %1
+    jmp          %%l
+%%x:
+    add          rsp, 8
+    pop          r14
+    pop          r13
+    pop          r12
+    pop          rbx
+    ret
+%endmacro
+
+%macro SGX 2
+gx%2:
+    push         rbx
+    push         rbp
+    push         r12
+    push         r13
+    push         r14
+    push         r15
+    sub          rsp, 8
+    mov          eax, 1
+    lock xadd    [rel gtc], rax
+    imul         rax, [rel gi + 16]
+    add          rax, [rel gi + 8]
+    mov          r12, rax
+    mov          rbp, [rel ost]
+    mov          rsi, [rel osz]
+    call         amap
+    mov          r15, rax
+%if PC == 384
+    vpbroadcastq ymm1, rax
+%else
+    vmovq        xmm1, rax
+    vpbroadcastq ymm1, xmm1
+%endif
+    vpaddq       ymm1, ymm1, [rel gof + 32]
+    vmovdqu      [r12 + 32], ymm1
+%%l:
+    mov          edi, sj
+    call         xav_spmc_recv
+    test         rax, rax
+    jz           %%x
+    mov          rbx, rax
+    vpbroadcastq ymm0, [rax + J_SLOT]
+    vpaddq       ymm0, ymm0, [rel gof]
+    vmovdqu      [r12], ymm0
+    mov          r13, [rax + J_DST]
+    mov          r14, [rax + J_ENT]
+    mov          rdi, r12
+    call         [rel gi]
+    mov          edi, sf
+    mov          rsi, rbx
+    call         xav_mpsc_send
+    call         rbp
+    lock dec     qword [r14 + E_CNT]
+    jnz          %%l
+    mov          rdi, [rel pring]
+    mov          rsi, [r14 + E_PKG]
+    call         %1
+    jmp          %%l
+%%x:
+    mov          rdi, r15
+    mov          rsi, [rel osz]
+    mov          eax, 11
+    syscall
+    add          rsp, 8
+    pop          r15
+    pop          r14
+    pop          r13
+    pop          r12
+    pop          rbp
+    pop          rbx
+    ret
+%endmacro
+
+SG0 xav_mpmc_send, n
+SGX xav_mpmc_send, n
+%ifdef VSHIP
+SG0 xav_mpsc_send, q
+SGX xav_mpsc_send, q
+xav_dsgq:
+    lea          rax, [rel tgq]
+    jmp          run
+%endif
+xav_dsgr:
+    lea          rax, [rel tgn]
+    jmp          run

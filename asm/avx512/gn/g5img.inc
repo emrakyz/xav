@@ -1,0 +1,40 @@
+%define GRL 384
+%define P_SY24 0
+%define P_TSQR 8
+%define P_TABF 16
+%define P_SLKY 24
+%define P_SLKB 32
+%define P_SLKR 40
+%define t_876 (xav_gr + 48)
+%define t_64 (xav_gr + 56)
+%define t_ylo (xav_gr + 64)
+%define t_yhi (xav_gr + 72)
+%define t_lzm0 (xav_gr + 80)
+%define t_lzm1 (xav_gr + 88)
+%define t_lzm2 (xav_gr + 96)
+%define t_lzm3 (xav_gr + 104)
+%define t_lzm4 (xav_gr + 112)
+%define t_lzm5 (xav_gr + 120)
+%define t_emc0 (xav_gr + 128)
+%define t_emc1 (xav_gr + 136)
+%define t_emc2 (xav_gr + 144)
+%define t_emc3 (xav_gr + 152)
+%define t_emc4 (xav_gr + 160)
+%define t_emc5 (xav_gr + 168)
+%define t_emc6 (xav_gr + 176)
+%define t_emc7 (xav_gr + 184)
+%define t_emc8 (xav_gr + 192)
+%define t_ysc (xav_gr + 208)
+%define t_yof (xav_gr + 224)
+%define t_rcr (xav_gr + 240)
+%define t_gcr (xav_gr + 256)
+%define t_gcb (xav_gr + 272)
+%define t_bcb (xav_gr + 288)
+%define t_cbs (xav_gr + 304)
+%define t_crs (xav_gr + 320)
+%define c_n64 (xav_gr + 336)
+%define c_i64 (xav_gr + 340)
+%define c_xrcr (xav_gr + 344)
+%define c_xgcr (xav_gr + 348)
+%define c_xgcb (xav_gr + 352)
+%define c_xbcb (xav_gr + 356)

@@ -264,7 +264,7 @@ fn print_help() {
     println!("{C}-s {P}┃ {C}--sc         {W}SCD file");
     println!("   {P}┃ {C}--sc-only    {W}Exit after SCD");
     println!("   {P}┃ {C}--hwdec      {W}GPU decode");
-    println!("   {P}┃ {C}--scale      {W}Downscale by {G}N{W} factor");
+    println!("   {P}┃ {C}--scale      {W}Downscale by {G}N{W} factor or to {G}N{R}p");
     println!("{C}-r {P}┃ {C}--range      {W}Trim/splice: {G}\"10-20,90-100\"");
     println!("{C}-a {P}┃ {C}--audio      {W}Opus Enc: {Y}-a {G}\"{R}<{G}auto{P}┃{G}norm{P}┃{G}bitrate{R}> {R}<{G}all{P}┃{G}stream_ids{R}>{G}\"");
     #[cfg(feature = "vship")]
@@ -511,8 +511,8 @@ fn parse_args_loop(args: &[String]) -> Result<Args, Xerr> {
                 }
             }
             "--scale" => {
-                if next_arg(args, &mut i) != Some("2") {
-                    return Err("--scale: only 2 is available for now".into());
+                if !scal::arg(next_arg(args, &mut i)) {
+                    return Err(scal::SARG.into());
                 }
                 scale = 2;
             }

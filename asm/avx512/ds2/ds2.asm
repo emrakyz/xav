@@ -3974,7 +3974,6 @@ PN equ (64 - (($ - $$) + (..@s1 - ..@s0)) % 64) % 64
     imul r3d, r2d, 32*M
     sub r6d, r3d
     mov [r7 + T_J], r2d
-    add r8, [r10 + 16 + S_DST]
     lea r5d, [r9*8]
     call .q2l
     inc r9d
@@ -4290,7 +4289,6 @@ PN equ (64 - (($ - $$) + (..@s1 - ..@s0)) % 64) % 64
     imul r3d, r2d, 16*M
     sub r6d, r3d
     mov [r7 + T_J], r2d
-    add r8, [r10 + 16 + S_DST]
     lea r5d, [r9*8]
     call .q2c
     inc r9d
@@ -7753,8 +7751,6 @@ TSZ equ 12544
     vsubsd xmm4, xmm6, xmm4
     vaddsd xmm6, xmm4, xmm9
     vaddsd xmm9, xmm3, xmm6
-    vsubsd xmm4, xmm9, xmm3
-    vsubsd xmm4, xmm6, xmm4
     vcmpsd xmm5, xmm9, [t_half], 0x1e
     vandpd xmm5, xmm5, [t_one2]
     vcmpsd xmm1, xmm9, [t_mhalf], 0x11
@@ -9466,8 +9462,6 @@ TSZ equ 12544
     vsubsd xmm3, xmm9, xmm3
     vaddsd xmm9, xmm3, xmm15
     vaddsd xmm15, xmm13, xmm9
-    vsubsd xmm3, xmm15, xmm13
-    vsubsd xmm3, xmm9, xmm3
     vcmpsd xmm6, xmm15, [t_half], 0x1e
     vandpd xmm6, xmm6, [t_one2]
     vcmpsd xmm11, xmm15, [t_mhalf], 0x11
@@ -9505,8 +9499,6 @@ TSZ equ 12544
     vsubsd xmm7, xmm8, xmm7
     vaddsd xmm8, xmm7, xmm9
     vaddsd xmm9, xmm6, xmm8
-    vsubsd xmm7, xmm9, xmm6
-    vsubsd xmm7, xmm8, xmm7
     vcmpsd xmm4, xmm9, [t_half], 0x1e
     vandpd xmm4, xmm4, [t_one2]
     vcmpsd xmm3, xmm9, [t_mhalf], 0x11
@@ -10345,8 +10337,6 @@ TSZ equ 12544
     vsubpd zmm15, zmm20, zmm15
     vaddpd zmm20, zmm15, zmm21
     vaddpd zmm21, zmm12, zmm20
-    vsubpd zmm15, zmm21, zmm12
-    vsubpd zmm15, zmm20, zmm15
     vdivpd zmm3, zmm21, zmm4
     vaddpd zmm15, zmm2, zmm14
     vsubpd zmm21, zmm15, zmm2
@@ -10461,8 +10451,6 @@ TSZ equ 12544
     vsubpd zmm2, zmm12, zmm2
     vaddpd zmm12, zmm2, zmm13
     vaddpd zmm13, zmm11, zmm12
-    vsubpd zmm2, zmm13, zmm11
-    vsubpd zmm2, zmm12, zmm2
     vdivpd zmm8, zmm13, zmm18
     vaddpd zmm2, zmm9, zmm19
     vsubpd zmm13, zmm2, zmm9
@@ -10577,8 +10565,6 @@ TSZ equ 12544
     vsubpd zmm9, zmm11, zmm9
     vaddpd zmm11, zmm9, zmm15
     vaddpd zmm15, zmm10, zmm11
-    vsubpd zmm9, zmm15, zmm10
-    vsubpd zmm9, zmm11, zmm9
     vdivpd zmm4, zmm15, zmm14
     vaddpd zmm9, zmm5, zmm20
     vsubpd zmm15, zmm9, zmm5
@@ -10693,8 +10679,6 @@ TSZ equ 12544
     vsubpd zmm5, zmm10, zmm5
     vaddpd zmm10, zmm5, zmm2
     vaddpd zmm2, zmm3, zmm10
-    vsubpd zmm5, zmm2, zmm3
-    vsubpd zmm5, zmm10, zmm5
     vdivpd zmm18, zmm2, zmm19
     vaddpd zmm5, zmm21, zmm12
     vsubpd zmm2, zmm5, zmm21
@@ -10809,8 +10793,6 @@ TSZ equ 12544
     vsubpd zmm21, zmm3, zmm21
     vaddpd zmm3, zmm21, zmm9
     vaddpd zmm9, zmm8, zmm3
-    vsubpd zmm21, zmm9, zmm8
-    vsubpd zmm21, zmm3, zmm21
     vdivpd zmm14, zmm9, zmm20
     vaddpd zmm21, zmm13, zmm11
     vsubpd zmm9, zmm21, zmm13
@@ -10925,8 +10907,6 @@ TSZ equ 12544
     vsubpd zmm13, zmm8, zmm13
     vaddpd zmm8, zmm13, zmm5
     vaddpd zmm5, zmm4, zmm8
-    vsubpd zmm13, zmm5, zmm4
-    vsubpd zmm13, zmm8, zmm13
     vdivpd zmm19, zmm5, zmm12
     vaddpd zmm13, zmm15, zmm10
     vsubpd zmm5, zmm13, zmm15
@@ -11041,8 +11021,6 @@ TSZ equ 12544
     vsubpd zmm15, zmm4, zmm15
     vaddpd zmm4, zmm15, zmm21
     vaddpd zmm21, zmm18, zmm4
-    vsubpd zmm15, zmm21, zmm18
-    vsubpd zmm15, zmm4, zmm15
     vdivpd zmm20, zmm21, zmm11
     vaddpd zmm15, zmm2, zmm3
     vsubpd zmm21, zmm15, zmm2
@@ -11157,8 +11135,6 @@ TSZ equ 12544
     vsubpd zmm2, zmm18, zmm2
     vaddpd zmm18, zmm2, zmm13
     vaddpd zmm13, zmm14, zmm18
-    vsubpd zmm2, zmm13, zmm14
-    vsubpd zmm2, zmm18, zmm2
     vdivpd zmm12, zmm13, zmm10
     vaddpd zmm2, zmm9, zmm8
     vsubpd zmm13, zmm2, zmm9
@@ -11273,8 +11249,6 @@ TSZ equ 12544
     vsubpd zmm9, zmm14, zmm9
     vaddpd zmm14, zmm9, zmm15
     vaddpd zmm15, zmm19, zmm14
-    vsubpd zmm9, zmm15, zmm19
-    vsubpd zmm9, zmm14, zmm9
     vdivpd zmm11, zmm15, zmm3
     vaddpd zmm9, zmm5, zmm4
     vsubpd zmm15, zmm9, zmm5
@@ -11389,8 +11363,6 @@ TSZ equ 12544
     vsubpd zmm5, zmm19, zmm5
     vaddpd zmm19, zmm5, zmm2
     vaddpd zmm2, zmm20, zmm19
-    vsubpd zmm5, zmm2, zmm20
-    vsubpd zmm5, zmm19, zmm5
     vdivpd zmm10, zmm2, zmm8
     vaddpd zmm5, zmm21, zmm18
     vsubpd zmm2, zmm5, zmm21
@@ -11505,8 +11477,6 @@ TSZ equ 12544
     vsubpd zmm21, zmm20, zmm21
     vaddpd zmm20, zmm21, zmm9
     vaddpd zmm9, zmm12, zmm20
-    vsubpd zmm21, zmm9, zmm12
-    vsubpd zmm21, zmm20, zmm21
     vdivpd zmm3, zmm9, zmm4
     vaddpd zmm21, zmm13, zmm14
     vsubpd zmm9, zmm21, zmm13
@@ -11621,8 +11591,6 @@ TSZ equ 12544
     vsubpd zmm13, zmm12, zmm13
     vaddpd zmm12, zmm13, zmm5
     vaddpd zmm5, zmm11, zmm12
-    vsubpd zmm13, zmm5, zmm11
-    vsubpd zmm13, zmm12, zmm13
     vdivpd zmm8, zmm5, zmm18
     vaddpd zmm13, zmm15, zmm19
     vsubpd zmm5, zmm13, zmm15
@@ -11737,8 +11705,6 @@ TSZ equ 12544
     vsubpd zmm15, zmm11, zmm15
     vaddpd zmm11, zmm15, zmm21
     vaddpd zmm21, zmm10, zmm11
-    vsubpd zmm15, zmm21, zmm10
-    vsubpd zmm15, zmm11, zmm15
     vdivpd zmm4, zmm21, zmm14
     vaddpd zmm15, zmm2, zmm20
     vsubpd zmm21, zmm15, zmm2

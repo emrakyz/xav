@@ -441,8 +441,6 @@ cglobal pq2_ %+ M
     lea r5, [rsp + SLT + 2*SPBC]
     mov r3, -(W/2)
 .rz:
-    vbroadcastss zmm31, [c_h0625]
-    vbroadcastss zmm30, [c_h5625]
     vbroadcastss zmm29, [c_krh]
     vbroadcastss zmm28, [c_krl]
     vbroadcastss zmm27, [c_grh]
@@ -7558,8 +7556,6 @@ cglobal pq2_ %+ M
     vsubpd zmm23, zmm24, zmm23
     vaddpd zmm24, zmm23, zmm25
     vaddpd zmm25, zmm22, zmm24
-    vsubpd zmm23, zmm25, zmm22
-    vsubpd zmm23, zmm24, zmm23
     vcmppd k1, zmm25, [d_half]{1to8}, 0x1e
     vaddpd zmm19{k1}, zmm19, [d_one]{1to8}
     vcmppd k1, zmm25, [d_mhalf]{1to8}, 0x11
@@ -8089,8 +8085,6 @@ cglobal pq2_ %+ M
     vsubpd zmm24, zmm31, zmm24
     vaddpd zmm31, zmm24, zmm4
     vaddpd zmm4, zmm18, zmm31
-    vsubpd zmm24, zmm4, zmm18
-    vsubpd zmm24, zmm31, zmm24
     vdivpd zmm28, zmm4, zmm25
     vaddpd zmm24, zmm22, zmm26
     vsubpd zmm4, zmm24, zmm22
@@ -8274,8 +8268,6 @@ cglobal pq2_ %+ M
     vsubpd zmm30, zmm3, zmm30
     vaddpd zmm3, zmm30, zmm4
     vaddpd zmm4, zmm24, zmm3
-    vsubpd zmm30, zmm4, zmm24
-    vsubpd zmm30, zmm3, zmm30
     vdivpd zmm22, zmm4, zmm25
     vaddpd zmm30, zmm27, zmm29
     vsubpd zmm4, zmm30, zmm27
@@ -8462,8 +8454,6 @@ cglobal pq2_ %+ M
     vsubpd zmm27, zmm24, zmm27
     vaddpd zmm24, zmm27, zmm26
     vaddpd zmm26, zmm28, zmm24
-    vsubpd zmm27, zmm26, zmm28
-    vsubpd zmm27, zmm24, zmm27
     vdivpd zmm21, zmm26, zmm30
     vaddpd zmm27, zmm18, zmm20
     vsubpd zmm26, zmm27, zmm18

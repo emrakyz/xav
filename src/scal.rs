@@ -62,10 +62,17 @@ const _: () = {
 unsafe extern "C" {
     static xav_ds2f: u8;
     static mut xav_rs: u8;
-    fn xav_ds2i(w: u32, h: u32, cv: u32, ch: u32, fl: u32, ls: usize, cs: usize) -> Geo;
     fn xav_ds2w(wm: usize) -> usize;
     fn xav_ds2r(c: *const c_void);
     fn xav_ds2q(c: *const c_void);
+    static xav_gwo: u32;
+    fn xav_sarg(p: *const u8, n: usize) -> bool;
+    fn xav_sgk(wc: u32, hc: u32) -> bool;
+    fn xav_dsxi(w: u32, h: u32, cv: u32, ch: u32, fl: u32, ls: usize, cs: usize) -> Geo;
+    fn xav_dsgw(wm: usize) -> usize;
+    fn xav_dsgr(c: *const c_void);
+    #[cfg(feature = "vship")]
+    fn xav_dsgq(c: *const c_void);
 }
 
 #[unsafe(no_mangle)]
@@ -110,6 +117,13 @@ extern "C" fn xav_ds2s(d: &mut VidDecoder, e: &Ent) {
 
 const SMSG: &str = "--scale: Only BT709/left or BT2020NCL/PQ/topleft";
 
+pub const SARG: &str = "--scale: a 1/8-step factor (1.5, 3.75) or height above 30 giving an exact \
+                        output of at least 256x144";
+
+pub fn arg(s: Option<&str>) -> bool {
+    s.is_some_and(|s| unsafe { xav_sarg(s.as_ptr(), s.len()) })
+}
+
 pub fn chk(inf: &VidInf, crop: (u32, u32)) -> Result<(), Xerr> {
     if !matches!(
         (
@@ -141,7 +155,10 @@ fn geo(inf: &VidInf, crop: (u32, u32)) -> Result<(), Xerr> {
         )
         .into());
     }
-    Ok(())
+    if unsafe { xav_sgk(wc, hc) } {
+        return Ok(());
+    }
+    Err(SARG.into())
 }
 
 pub fn virt(
@@ -159,7 +176,7 @@ pub fn virt(
     }
     let g = unsafe {
         xav_rs = (u8::from(inf.color_range != 0) << (5 + u8::from(!inf.is_10b))) | pq;
-        xav_ds2i(
+        xav_dsxi(
             inf.width,
             inf.height,
             crop.0,
@@ -187,11 +204,18 @@ const fn ent(ch: *const Chunk, cnt: usize, n: usize) -> Ent {
     }
 }
 
-fn go<const TQ: bool>(c: &mut Ctx, t: &mut [Ent]) {
+fn go<const TQ: bool>(c: &mut Ctx, t: &mut [Ent], gs: bool) {
     c.tab = t.as_mut_ptr();
     unsafe {
         if TQ {
+            #[cfg(feature = "vship")]
+            if gs {
+                xav_dsgq(from_ref(c).cast());
+                return;
+            }
             xav_ds2q(from_ref(c).cast());
+        } else if gs {
+            xav_dsgr(from_ref(c).cast());
         } else {
             xav_ds2r(from_ref(c).cast());
         }
@@ -204,6 +228,7 @@ fn pipe<const TQ: bool>(
     chnks: &[Chunk],
     skip: &BTreeSet<u16>,
     fsz: usize,
+    gs: bool,
 ) {
     let mut t = Vec::new();
     let mut d = 0;
@@ -223,7 +248,7 @@ fn pipe<const TQ: bool>(
     let pb = r.buf();
     c.pb = pb.as_ptr();
     c.pn = pb.len();
-    go::<TQ>(c, &mut t);
+    go::<TQ>(c, &mut t, gs);
 }
 
 fn file<const TQ: bool>(
@@ -232,6 +257,7 @@ fn file<const TQ: bool>(
     skip: &BTreeSet<u16>,
     path: &Path,
     fsz: usize,
+    gs: bool,
 ) {
     let thr = available_parallelism() as i32;
     let dec = if unsafe { xav_ds2f } > 1 {
@@ -255,7 +281,7 @@ fn file<const TQ: bool>(
         pos = ch.end;
     }
     t.push(ent(null(), 0, 0));
-    go::<TQ>(c, &mut t);
+    go::<TQ>(c, &mut t, gs);
 }
 
 pub struct Dec<'a>(
@@ -275,16 +301,16 @@ impl Dec<'_> {
         let Self(b, reader, chnks, inf, skip, strat, path, ring) = self;
         #[cfg(feature = "avm")]
         b.dims(inf.width, inf.height);
-        let fsz = unsafe {
-            xav_ds2w(match *strat {
-                B10Raw => 0,
-                B10RawStride => 1,
-                B10Fast => 2,
-                B10FastRem => 3,
-                B10StrideRem => 4,
-                _ => assume_unreachable(),
-            })
+        let gs = unsafe { xav_gwo } != 0;
+        let wm = match *strat {
+            B10Raw => 0,
+            B10RawStride => 1,
+            B10Fast => 2,
+            B10FastRem => 3,
+            B10StrideRem => 4,
+            _ => assume_unreachable(),
         };
+        let fsz = unsafe { if gs { xav_dsgw(wm) } else { xav_ds2w(wm) } };
         let mut c = Ctx {
             dec: null_mut(),
             ring,
@@ -294,8 +320,8 @@ impl Dec<'_> {
             pn: 0,
         };
         match reader {
-            Some(r) => pipe::<TQ>(&mut c, &r, chnks, skip, fsz),
-            None => file::<TQ>(&mut c, chnks, skip, path, fsz),
+            Some(r) => pipe::<TQ>(&mut c, &r, chnks, skip, fsz, gs),
+            None => file::<TQ>(&mut c, chnks, skip, path, fsz, gs),
         }
         if !TQ {
             unsafe { spmc_close(ring) };

@@ -4226,64 +4226,34 @@ PN equ (64 - (($ - $$) + (..@s1 - ..@s0) + 2) % 64) % 64
     mov r2, [rsp + 6992]
     jmp .r4
 .c5:
-    mov [rsp + 6976], r1
-    mov [rsp + 6984], r0
-    mov [rsp + 6992], r2
     vmovmskps r2d, ymm2
     lea r1, [r11]
     lea r0, [r14]
     call .tl
-    mov r1, [rsp + 6976]
-    mov r0, [rsp + 6984]
-    mov r2, [rsp + 6992]
     jmp .r5
 .c6:
-    mov [rsp + 6976], r1
-    mov [rsp + 6984], r0
-    mov [rsp + 6992], r2
     vmovmskps r2d, ymm1
     lea r1, [r11 + 16]
     lea r0, [r14 + 256]
     call .tl
-    mov r1, [rsp + 6976]
-    mov r0, [rsp + 6984]
-    mov r2, [rsp + 6992]
     jmp .r6
 .c7:
-    mov [rsp + 6976], r1
-    mov [rsp + 6984], r0
-    mov [rsp + 6992], r2
     vmovmskps r2d, ymm5
     lea r1, [r11 + W]
     lea r0, [r14 + 128]
     call .tl
-    mov r1, [rsp + 6976]
-    mov r0, [rsp + 6984]
-    mov r2, [rsp + 6992]
     jmp .r7
 .c8:
-    mov [rsp + 6976], r1
-    mov [rsp + 6984], r0
-    mov [rsp + 6992], r2
     vmovmskps r2d, ymm0
     lea r1, [r11 + 16 + W]
     lea r0, [r14 + 384]
     call .tl
-    mov r1, [rsp + 6976]
-    mov r0, [rsp + 6984]
-    mov r2, [rsp + 6992]
     jmp .r8
 .c9:
-    mov [rsp + 6976], r1
-    mov [rsp + 6984], r0
-    mov [rsp + 6992], r2
     vmovmskps r2d, ymm12
     mov r1, r6
     lea r0, [r14 + 512]
     call .tc
-    mov r1, [rsp + 6976]
-    mov r0, [rsp + 6984]
-    mov r2, [rsp + 6992]
     jmp .r9
 T_ZS equ 0
 T_E equ 512
@@ -4457,7 +4427,6 @@ TSZ equ 3680
 .tc:
     push r10
     mov r10, rsp
-    push r6
     push r9
     push r3
     push r4
@@ -4466,27 +4435,10 @@ TSZ equ 3680
     push r8
     push r13
     push r14
-    push r11
     push r12
     lea r13, [rsp - TSZ]
     and r13, -32
     lea rsp, [r13 - 64]
-    vmovapd [r13 + T_ZS], ymm0
-    vmovapd [r13 + T_ZS + 32], ymm1
-    vmovapd [r13 + T_ZS + 64], ymm2
-    vmovapd [r13 + T_ZS + 96], ymm3
-    vmovapd [r13 + T_ZS + 128], ymm4
-    vmovapd [r13 + T_ZS + 160], ymm5
-    vmovapd [r13 + T_ZS + 192], ymm6
-    vmovapd [r13 + T_ZS + 224], ymm7
-    vmovapd [r13 + T_ZS + 256], ymm8
-    vmovapd [r13 + T_ZS + 288], ymm9
-    vmovapd [r13 + T_ZS + 320], ymm10
-    vmovapd [r13 + T_ZS + 352], ymm11
-    vmovapd [r13 + T_ZS + 384], ymm12
-    vmovapd [r13 + T_ZS + 416], ymm13
-    vmovapd [r13 + T_ZS + 448], ymm14
-    vmovapd [r13 + T_ZS + 480], ymm15
     movzx r12d, r2b
     mov r14, r1
     mov r11, r0
@@ -4581,25 +4533,8 @@ TSZ equ 3680
     CRST r14, mov [CRS r14 + r3*2], r6w
     jmp .tc_l1
 .tc_n1:
-    vmovapd ymm0, [r13 + T_ZS]
-    vmovapd ymm1, [r13 + T_ZS + 32]
-    vmovapd ymm2, [r13 + T_ZS + 64]
-    vmovapd ymm3, [r13 + T_ZS + 96]
-    vmovapd ymm4, [r13 + T_ZS + 128]
-    vmovapd ymm5, [r13 + T_ZS + 160]
-    vmovapd ymm6, [r13 + T_ZS + 192]
-    vmovapd ymm7, [r13 + T_ZS + 224]
-    vmovapd ymm8, [r13 + T_ZS + 256]
-    vmovapd ymm9, [r13 + T_ZS + 288]
-    vmovapd ymm10, [r13 + T_ZS + 320]
-    vmovapd ymm11, [r13 + T_ZS + 352]
-    vmovapd ymm12, [r13 + T_ZS + 384]
-    vmovapd ymm13, [r13 + T_ZS + 416]
-    vmovapd ymm14, [r13 + T_ZS + 448]
-    vmovapd ymm15, [r13 + T_ZS + 480]
-    lea rsp, [r10 - 88]
+    lea rsp, [r10 - 72]
     pop r12
-    pop r11
     pop r14
     pop r13
     pop r8
@@ -4608,7 +4543,6 @@ TSZ equ 3680
     pop r4
     pop r3
     pop r9
-    pop r6
     pop r10
     ret
 .t1l:
@@ -6159,8 +6093,6 @@ TSZ equ 3680
     vsubsd xmm4, xmm6, xmm4
     vaddsd xmm6, xmm4, xmm9
     vaddsd xmm9, xmm3, xmm6
-    vsubsd xmm4, xmm9, xmm3
-    vsubsd xmm4, xmm6, xmm4
     vcmpsd xmm5, xmm9, [u_half], 0x1e
     vandpd xmm5, xmm5, [u_one]
     vcmpsd xmm1, xmm9, [u_mhalf], 0x11
@@ -6887,8 +6819,6 @@ TSZ equ 3680
     vsubsd xmm3, xmm9, xmm3
     vaddsd xmm9, xmm3, xmm15
     vaddsd xmm15, xmm13, xmm9
-    vsubsd xmm3, xmm15, xmm13
-    vsubsd xmm3, xmm9, xmm3
     vcmpsd xmm6, xmm15, [u_half], 0x1e
     vandpd xmm6, xmm6, [u_one]
     vcmpsd xmm11, xmm15, [u_mhalf], 0x11
@@ -6926,8 +6856,6 @@ TSZ equ 3680
     vsubsd xmm7, xmm8, xmm7
     vaddsd xmm8, xmm7, xmm9
     vaddsd xmm9, xmm6, xmm8
-    vsubsd xmm7, xmm9, xmm6
-    vsubsd xmm7, xmm8, xmm7
     vcmpsd xmm4, xmm9, [u_half], 0x1e
     vandpd xmm4, xmm4, [u_one]
     vcmpsd xmm3, xmm9, [u_mhalf], 0x11
@@ -7487,8 +7415,6 @@ TSZ equ 3680
     vsubpd ymm9, ymm4, ymm9
     vaddpd ymm4, ymm9, ymm12
     vaddpd ymm12, ymm8, ymm4
-    vsubpd ymm9, ymm12, ymm8
-    vsubpd ymm9, ymm4, ymm9
     vdivpd ymm1, ymm12, ymm7
     vaddpd ymm9, ymm6, ymm5
     vsubpd ymm12, ymm9, ymm6
