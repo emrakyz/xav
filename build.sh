@@ -174,26 +174,33 @@ ensure_rustup_nightly() {
     # pin nightly for this script regardless of the user's machine
     export RUSTUP_TOOLCHAIN="nightly"
 
-    rustup toolchain list 2> /dev/null | grep -q '^nightly' ||
+    rustup toolchain list 2> /dev/null | grep -q '^nightly' || {
+        loginf b "Installing Rust ${W}nightly${B} toolchain"
         rustup toolchain install nightly --component rust-src
+        loginf g "Rust ${W}nightly${G} installed"
+    }
 
     local sysroot rust_src
     sysroot="$(rustc --print sysroot 2> /dev/null || true)"
     [[ -n "${sysroot}" ]] || {
-        echo "rustup is installed but nightly rustc does not run. Try: rustup toolchain install nightly"
+        loginf r "rustup is installed but nightly ${B}rustc${R} does not run"
+        echo -e "${C}Try: ${W}rustup toolchain install nightly${N}"
         exit 1
     }
 
     rust_src="${sysroot}/lib/rustlib/src/rust/library/Cargo.lock"
+    [[ -f "${rust_src}" ]] && return 0
+
+    loginf b "Installing ${W}rust-src${B} for nightly"
+    rustup component remove rust-src > /dev/null 2>&1 || true
+    rustup component add rust-src
+
     [[ -f "${rust_src}" ]] || {
-        rustup component remove rust-src > /dev/null 2>&1 || true
-        rustup component add rust-src
-    }
-    [[ -f "${rust_src}" ]] || {
-        echo "rust-src is still missing: ${rust_src}"
-        echo "Try: rustup toolchain uninstall nightly && rustup toolchain install nightly --component rust-src"
+        loginf r "${B}rust-src${R} is still missing: ${B}${rust_src}"
+        echo -e "${C}Try: ${W}rustup toolchain uninstall nightly && rustup toolchain install nightly --component rust-src${N}"
         exit 1
     }
+    loginf g "${W}rust-src${G} installed"
 }
 
 show_build_menu() {
@@ -1340,7 +1347,16 @@ SVT_FORK_URLS=(
     "https://github.com/AOMediaCodec/SVT-AV1"
 )
 
+check_cpu() {
+    grep -qw avx2 /proc/cpuinfo 2> /dev/null && return 0
+    loginf r "xav needs an x86-64 CPU with ${B}AVX2${R} (Intel Haswell (2013) / AMD Excavator (2015) or newer)"
+    echo -e "${C}Your CPU:${W}$(grep -m1 'model name' /proc/cpuinfo 2> /dev/null | cut -d: -f2-)${N}"
+    echo -e "${C}Your instruction sets:${W}$(grep -m1 '^flags' /proc/cpuinfo 2> /dev/null | cut -d: -f2-)${N}"
+    exit 1
+}
+
 main() {
+    check_cpu
     preset="${1:-}"
     svt_fork="${2:-}"
     encoders="${3:-}"
