@@ -42,6 +42,7 @@ install_deps() {
     command -v rustup > /dev/null 2>&1 && {
         rustup-init || true
         rustup toolchain install nightly
+        rustup component add rust-src --toolchain nightly
         rustup default nightly
         rustup update
     }
@@ -167,10 +168,40 @@ detect_deps() {
     has_nvidia && HW=cuda || HW=vulkan
 }
 
+ensure_rustup_nightly() {
+    command -v rustup > /dev/null 2>&1 || return 0
+
+    # pin nightly for this script regardless of the user's machine
+    export RUSTUP_TOOLCHAIN="nightly"
+
+    rustup toolchain list 2> /dev/null | grep -q '^nightly' ||
+        rustup toolchain install nightly --component rust-src
+
+    local sysroot rust_src
+    sysroot="$(rustc --print sysroot 2> /dev/null || true)"
+    [[ -n "${sysroot}" ]] || {
+        echo "rustup is installed but nightly rustc does not run. Try: rustup toolchain install nightly"
+        exit 1
+    }
+
+    rust_src="${sysroot}/lib/rustlib/src/rust/library/Cargo.lock"
+    [[ -f "${rust_src}" ]] || {
+        rustup component remove rust-src > /dev/null 2>&1 || true
+        rustup component add rust-src
+    }
+    [[ -f "${rust_src}" ]] || {
+        echo "rust-src is still missing: ${rust_src}"
+        echo "Try: rustup toolchain uninstall nightly && rustup toolchain install nightly --component rust-src"
+        exit 1
+    }
+}
+
 show_build_menu() {
+    ensure_rustup_nightly
     detect_deps
     "${HAS_HARD_REQS}" || {
         install_deps
+        ensure_rustup_nightly
         detect_deps
     }
 
@@ -1332,7 +1363,10 @@ main() {
         "Without TQ"
     )
 
-    [[ "${preset}" ]] && detect_deps || {
+    [[ "${preset}" ]] && {
+        ensure_rustup_nightly
+        detect_deps
+    } || {
         show_build_menu
 
         while true; do
