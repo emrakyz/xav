@@ -315,10 +315,23 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
         }
 
         "film-grain" => {
-            #[cfg(feature = "svt-essential")]
             chk_range(key, name, val, -1, 50)?;
-            #[cfg(not(feature = "svt-essential"))]
-            chk_range(key, name, val, 0, 50)?;
+        }
+
+        "fgs-multiplier" => {
+            chk_frange(key, name, val, 0.00, 2.00)?;
+        }
+
+        "fgs-seed" => {
+            if val != "-1" && !val.split(',').all(|s| matches!(s.parse::<u16>(), Ok(1..))) {
+                return Err(err(
+                    key,
+                    format_args!(
+                        "{Y}fgs-seed must be {C}-1{Y}, a seed between {C}1 {Y}and {C}65535{Y}, or \
+                         a comma-separated list of such seeds"
+                    ),
+                ));
+            }
         }
 
         "mbr-overshoot-pct" | "luminance-qp-bias" => {
@@ -355,18 +368,6 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
 
         "cdef-scaling" => {
             chk_range(key, name, val, 1, 30)?;
-        }
-
-        "max-tx-size" => {
-            let v = val
-                .parse::<i64>()
-                .map_err(|_e| err(key, format_args!("{Y}{val} {W}is not a valid integer")))?;
-            if v != 32 && v != 64 {
-                return Err(err(
-                    key,
-                    format_args!("{Y}max-tx-size should either be {C}32 {Y}or {C}64"),
-                ));
-            }
         }
 
         "qp-scale-compress-strength" | "ac-bias" => {
