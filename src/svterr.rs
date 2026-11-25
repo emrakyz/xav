@@ -315,6 +315,9 @@ fn check_param(name: &str, key: &str, val: &str) -> Result<(), Xerr> {
         }
 
         "film-grain" => {
+            #[cfg(feature = "svt-essential")]
+            chk_range(key, name, val, -1, 50)?;
+            #[cfg(not(feature = "svt-essential"))]
             chk_range(key, name, val, 0, 50)?;
         }
 
